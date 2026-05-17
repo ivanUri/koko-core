@@ -1,0 +1,15 @@
+<!doctype html><meta charset="utf-8"><script src="../_shared/runtime-invariants.js"></script><script>
+addEventListener("DOMContentLoaded", () => {
+    const inv = RuntimeInvariant;
+    const records = window.__NEW_DOCUMENT_ORDER__ || [];
+    inv.log(records.length ? "new-document:ran" : "new-document:missing");
+    if (records.length) {
+        const record = records[records.length - 1];
+        inv.log(record.objectReady ? "new-document:Object" : "new-document:missing:Object");
+        inv.log(record.functionToStringReady ? "new-document:Function.prototype.toString" : "new-document:missing:Function.prototype.toString");
+        inv.log(record.documentReady ? "new-document:document" : "new-document:missing:document");
+    }
+    inv.checkRealm("domcontentloaded", window);
+    inv.done();
+});
+</script><body></body>

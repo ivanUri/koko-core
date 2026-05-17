@@ -1,0 +1,11 @@
+<!doctype html><meta charset="utf-8"><title>module_evaluate_once</title>
+<script>
+window.TEST_LOGS = [];
+window.TEST_RESULT = { done: false, scenario: "module_evaluate_once" };
+</script>
+<script type="module">
+import "./module.js";
+import "./module.js";
+window.TEST_LOGS.push("imports-complete");
+setTimeout(() => { window.TEST_LOGS.push("stable"); window.TEST_RESULT.done = true; }, 0);
+</script>

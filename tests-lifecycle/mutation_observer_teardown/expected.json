@@ -1,0 +1,15 @@
+{
+  "must_contain": [
+    "next-start",
+    "realm-replaced",
+    "next-stable"
+  ],
+  "must_not_contain": [
+    "stale-observer-callback"
+  ],
+  "semantic_expectations": {
+    "realm_replacement": "old realm globals are not observable after navigation",
+    "mutation_records_on_teardown": "cleared_or_not_delivered_to_observable_next_realm",
+    "ownership": "pending record queues must be released during teardown"
+  }
+}

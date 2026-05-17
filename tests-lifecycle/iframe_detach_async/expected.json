@@ -1,0 +1,15 @@
+{
+  "must_contain": [
+    "parent-start",
+    "child-loaded",
+    "iframe-loaded",
+    "iframe-removed",
+    "parent-stable"
+  ],
+  "must_not_contain": [
+    "stale-iframe-timer-fired"
+  ],
+  "semantic_expectations": {
+    "iframe_async_after_detach": "must_not_survive_frame_deinit"
+  }
+}

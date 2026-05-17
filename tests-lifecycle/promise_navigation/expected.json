@@ -1,0 +1,15 @@
+{
+  "must_contain": [
+    "next-start",
+    "realm-replaced",
+    "next-stable"
+  ],
+  "must_not_contain": [
+    "stale-promise-fired"
+  ],
+  "semantic_expectations": {
+    "realm_replacement": "old realm globals are not observable after navigation",
+    "promise_continuation_from_dead_realm": "must_not_poison_next_realm_or_runtime",
+    "final_page": "next.html stable"
+  }
+}

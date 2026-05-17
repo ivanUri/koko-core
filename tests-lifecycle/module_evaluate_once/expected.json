@@ -1,0 +1,15 @@
+{
+  "must_contain": [
+    "module-evaluated",
+    "imports-complete",
+    "stable"
+  ],
+  "must_not_contain": [
+    "module-evaluated-twice"
+  ],
+  "semantic_expectations": {
+    "module_evaluation_count": {
+      "module.js": 1
+    }
+  }
+}

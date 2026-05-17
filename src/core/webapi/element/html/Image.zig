@@ -1,0 +1,167 @@
+const std = @import("std");
+const js = @import("../../../js/js.zig");
+const Frame = @import("../../../browser/Frame.zig");
+const Node = @import("../../../dom/Node.zig");
+const Element = @import("../../../dom/Element.zig");
+const HtmlElement = @import("../Html.zig");
+
+const Image = @This();
+_proto: *HtmlElement,
+
+pub fn constructor(w_: ?u32, h_: ?u32, frame: *Frame) !*Image {
+    const node = try frame.createElementNS(.html, "img", null);
+    const el = node.as(Element);
+
+    if (w_) |w| blk: {
+        const w_string = std.fmt.bufPrint(&frame.buf, "{d}", .{w}) catch break :blk;
+        try el.setAttributeSafe(comptime .wrap("width"), .wrap(w_string), frame);
+    }
+    if (h_) |h| blk: {
+        const h_string = std.fmt.bufPrint(&frame.buf, "{d}", .{h}) catch break :blk;
+        try el.setAttributeSafe(comptime .wrap("height"), .wrap(h_string), frame);
+    }
+    return el.as(Image);
+}
+
+pub fn asElement(self: *Image) *Element {
+    return self._proto._proto;
+}
+pub fn asConstElement(self: *const Image) *const Element {
+    return self._proto._proto;
+}
+pub fn asNode(self: *Image) *Node {
+    return self.asElement().asNode();
+}
+
+pub fn getSrc(self: *const Image, frame: *Frame) ![]const u8 {
+    const element = self.asConstElement();
+    const src = element.getAttributeSafe(comptime .wrap("src")) orelse return "";
+    if (src.len == 0) {
+        return "";
+    }
+    return element.asConstNode().resolveURL(src, frame, .{});
+}
+
+pub fn setSrc(self: *Image, value: []const u8, frame: *Frame) !void {
+    const element = self.asElement();
+    try element.setAttributeSafe(comptime .wrap("src"), .wrap(value), frame);
+    // No need to check if `Image` is connected to DOM; this is a special case.
+    return self.imageAddedCallback(frame);
+}
+
+pub fn getAlt(self: *const Image) []const u8 {
+    return self.asConstElement().getAttributeSafe(comptime .wrap("alt")) orelse "";
+}
+
+pub fn setAlt(self: *Image, value: []const u8, frame: *Frame) !void {
+    try self.asElement().setAttributeSafe(comptime .wrap("alt"), .wrap(value), frame);
+}
+
+pub fn getWidth(self: *const Image) u32 {
+    const attr = self.asConstElement().getAttributeSafe(comptime .wrap("width")) orelse return 0;
+    return std.fmt.parseUnsigned(u32, attr, 10) catch 0;
+}
+
+pub fn setWidth(self: *Image, value: u32, frame: *Frame) !void {
+    const str = try std.fmt.allocPrint(frame.call_arena, "{d}", .{value});
+    try self.asElement().setAttributeSafe(comptime .wrap("width"), .wrap(str), frame);
+}
+
+pub fn getHeight(self: *const Image) u32 {
+    const attr = self.asConstElement().getAttributeSafe(comptime .wrap("height")) orelse return 0;
+    return std.fmt.parseUnsigned(u32, attr, 10) catch 0;
+}
+
+pub fn setHeight(self: *Image, value: u32, frame: *Frame) !void {
+    const str = try std.fmt.allocPrint(frame.call_arena, "{d}", .{value});
+    try self.asElement().setAttributeSafe(comptime .wrap("height"), .wrap(str), frame);
+}
+
+pub fn getCrossOrigin(self: *const Image) ?[]const u8 {
+    return self.asConstElement().getAttributeSafe(comptime .wrap("crossorigin"));
+}
+
+pub fn setCrossOrigin(self: *Image, value: ?[]const u8, frame: *Frame) !void {
+    if (value) |v| {
+        return self.asElement().setAttributeSafe(comptime .wrap("crossorigin"), .wrap(v), frame);
+    }
+    return self.asElement().removeAttribute(comptime .wrap("crossorigin"), frame);
+}
+
+pub fn getLoading(self: *const Image) []const u8 {
+    return self.asConstElement().getAttributeSafe(comptime .wrap("loading")) orelse "eager";
+}
+
+pub fn setLoading(self: *Image, value: []const u8, frame: *Frame) !void {
+    try self.asElement().setAttributeSafe(comptime .wrap("loading"), .wrap(value), frame);
+}
+
+pub fn getNaturalWidth(_: *const Image) u32 {
+    // this is a valid response under a number of normal conditions, but could
+    // be used to detect the nature of Browser.
+    return 0;
+}
+
+pub fn getNaturalHeight(_: *const Image) u32 {
+    // this is a valid response under a number of normal conditions, but could
+    // be used to detect the nature of Browser.
+    return 0;
+}
+
+pub fn getComplete(_: *const Image) bool {
+    // Per spec, complete is true when: no src/srcset, src is empty,
+    // image is fully available, or image is broken (with no pending request).
+    // Since we never fetch images, they are in the "broken" state, which has
+    // complete=true. This is consistent with naturalWidth/naturalHeight=0.
+    return true;
+}
+
+/// Used in `Page.nodeIsReady`.
+pub fn imageAddedCallback(self: *Image, frame: *Frame) !void {
+    // if we're planning on navigating to another frame, don't trigger load event.
+    if (frame.isGoingAway()) {
+        return;
+    }
+
+    const element = self.asElement();
+    // Exit if src not set.
+    const src = element.getAttributeSafe(comptime .wrap("src")) orelse return;
+    if (src.len == 0) return;
+
+    try frame.queueLoad(self._proto);
+}
+
+pub const JsApi = struct {
+    pub const bridge = js.Bridge(Image);
+
+    pub const Meta = struct {
+        pub const name = "HTMLImageElement";
+        pub const constructor_alias = "Image";
+        pub const prototype_chain = bridge.prototypeChain();
+        pub var class_id: bridge.ClassId = undefined;
+    };
+
+    pub const constructor = bridge.constructor(Image.constructor, .{});
+    pub const src = bridge.accessor(Image.getSrc, Image.setSrc, .{});
+    pub const currentSrc = bridge.accessor(Image.getSrc, null, .{});
+    pub const alt = bridge.accessor(Image.getAlt, Image.setAlt, .{});
+    pub const width = bridge.accessor(Image.getWidth, Image.setWidth, .{});
+    pub const height = bridge.accessor(Image.getHeight, Image.setHeight, .{});
+    pub const crossOrigin = bridge.accessor(Image.getCrossOrigin, Image.setCrossOrigin, .{});
+    pub const loading = bridge.accessor(Image.getLoading, Image.setLoading, .{});
+    pub const naturalWidth = bridge.accessor(Image.getNaturalWidth, null, .{});
+    pub const naturalHeight = bridge.accessor(Image.getNaturalHeight, null, .{});
+    pub const complete = bridge.accessor(Image.getComplete, null, .{});
+};
+
+pub const Build = struct {
+    pub fn created(node: *Node, frame: *Frame) !void {
+        const self = node.as(Image);
+        return self.imageAddedCallback(frame);
+    }
+};
+
+const testing = @import("../../../../testing/testing.zig");
+test "WebApi: HTML.Image" {
+    try testing.htmlRunner("element/html/image.html", .{});
+}

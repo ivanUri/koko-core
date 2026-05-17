@@ -1,0 +1,9 @@
+<!doctype html><meta charset="utf-8"><title>iframe child</title>
+<script>
+window.TEST_LOGS = ["child-start"];
+window.TEST_RESULT = { done: false, scenario: "iframe_detach_async_child" };
+parent.postMessage("child-loaded", "*");
+setTimeout(() => {
+  parent.postMessage("stale-iframe-timer-fired", "*");
+}, 30);
+</script>

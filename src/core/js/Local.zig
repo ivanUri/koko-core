@@ -1,0 +1,1600 @@
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+const std = @import("std");
+const string = @import("../../support/string.zig");
+
+const Page = @import("../browser/Page.zig");
+const FinalizerCallback = @import("../browser/Session.zig").FinalizerCallback;
+
+const js = @import("js.zig");
+const bridge = @import("bridge.zig");
+const Caller = @import("Caller.zig");
+const Context = @import("Context.zig");
+const Isolate = @import("Isolate.zig");
+const TaggedOpaque = @import("TaggedOpaque.zig");
+
+const v8 = js.v8;
+const log = @import("../../support/log.zig");
+const CallOpts = Caller.CallOpts;
+
+// Where js.Context has a lifetime tied to the frame, and holds the
+// v8::Global<v8::Context>, this has a much shorter lifetime and holds a
+// v8::Local<v8::Context>. In V8, you need a Local<v8::Context> or get anything
+// done, but the local only exists for the lifetime of the HandleScope it was
+// created on. When V8 calls into Zig, things are pretty straightforward, since
+// that callback gives us the currently-entered V8::Local<Context>. But when Zig
+// has to call into V8, it's a bit more messy.
+// As a general rule, think of it this way:
+// 1 - Caller.zig is for V8 -> Zig
+// 2 - Context.zig is for Zig -> V8
+// The Local is encapsulates the data and logic they both need. It just happens
+// that it's easier to use Local from Caller than from Context.
+const Local = @This();
+
+ctx: *Context,
+handle: *const v8.Context,
+
+// available on ctx, but accessed often, so pushed into the Local
+isolate: Isolate,
+call_arena: std.mem.Allocator,
+
+pub fn newString(self: *const Local, str: []const u8) js.String {
+    return .{
+        .local = self,
+        .handle = self.isolate.initStringHandle(str),
+    };
+}
+
+// Creates a JS string by mapping each input byte 0..255 directly to a JS
+// code unit, with no UTF-8 decoding. Use this when handing back binary data
+// (e.g. atob output) — passing those bytes through `newString` would treat
+// any byte 0x80..0xFF as malformed UTF-8 and replace it with U+FFFD.
+pub fn newOneByteString(self: *const Local, bytes: []const u8) js.String {
+    return .{
+        .local = self,
+        .handle = self.isolate.initOneByteStringHandle(bytes),
+    };
+}
+
+pub fn newObject(self: *const Local) js.Object {
+    return .{
+        .local = self,
+        .handle = v8.v8__Object__New(self.isolate.handle).?,
+    };
+}
+
+pub fn newArray(self: *const Local, len: u32) js.Array {
+    return .{
+        .local = self,
+        .handle = v8.v8__Array__New(self.isolate.handle, @intCast(len)).?,
+    };
+}
+
+/// Creates a new typed array. Memory is owned by JS context.
+/// https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Typed_arrays
+pub fn createTypedArray(self: *const Local, comptime array_type: js.ArrayType, size: usize) js.ArrayBufferRef(array_type) {
+    return .init(self, size);
+}
+
+pub fn newCallback(
+    self: *const Local,
+    callback: anytype,
+    data: anytype,
+) js.Function {
+    const external = self.isolate.createExternal(data);
+    const handle = v8.v8__Function__New__DEFAULT2(self.handle, struct {
+        fn wrap(info_handle: ?*const js.v8.FunctionCallbackInfo) callconv(.c) void {
+            Caller.Function.call(@TypeOf(data), info_handle.?, callback, .{ .embedded_receiver = true });
+        }
+    }.wrap, @ptrCast(external)).?;
+    return .{ .local = self, .handle = handle };
+}
+
+pub fn runMacrotasks(self: *const Local) void {
+    const env = self.ctx.env;
+    env.pumpMessageLoop();
+    env.runMicrotasks(); // macrotasks can cause microtasks to queue
+}
+
+pub fn runMicrotasks(self: *const Local) void {
+    self.ctx.env.runMicrotasks();
+}
+
+// == Executors ==
+pub fn eval(self: *const Local, src: []const u8, name: ?[]const u8) !void {
+    _ = try self.exec(src, name);
+}
+
+pub fn exec(self: *const Local, src: []const u8, name: ?[]const u8) !js.Value {
+    return self.compileAndRun(src, name);
+}
+
+/// Compiles a function body as function.
+///
+/// https://v8.github.io/api/head/classv8_1_1ScriptCompiler.html#a3a15bb5a7dfc3f998e6ac789e6b4646a
+pub fn compileFunction(
+    self: *const Local,
+    src: anytype,
+    /// We tend to know how many params we'll pass; can remove the comptime if necessary.
+    comptime parameter_names: []const []const u8,
+    extensions: []const v8.Object,
+) !js.Function {
+    // TODO: Make configurable.
+    const script_name = self.isolate.initStringHandle("anonymous");
+    const script_source = if (@TypeOf(src) == js.String) src.handle else self.isolate.initStringHandle(src);
+
+    var parameter_list: [parameter_names.len]*const v8.String = undefined;
+    inline for (0..parameter_names.len) |i| {
+        parameter_list[i] = self.isolate.initStringHandle(parameter_names[i]);
+    }
+
+    // Create `ScriptOrigin`.
+    var origin: v8.ScriptOrigin = undefined;
+    v8.v8__ScriptOrigin__CONSTRUCT(&origin, script_name);
+
+    // Create `ScriptCompilerSource`.
+    var script_compiler_source: v8.ScriptCompilerSource = undefined;
+    v8.v8__ScriptCompiler__Source__CONSTRUCT2(script_source, &origin, null, &script_compiler_source);
+    defer v8.v8__ScriptCompiler__Source__DESTRUCT(&script_compiler_source);
+
+    // Compile the function.
+    const result = v8.v8__ScriptCompiler__CompileFunction(
+        self.handle,
+        &script_compiler_source,
+        parameter_list.len,
+        &parameter_list,
+        extensions.len,
+        @ptrCast(&extensions),
+        v8.kNoCompileOptions,
+        v8.kNoCacheNoReason,
+    ) orelse return error.CompilationError;
+
+    return .{ .local = self, .handle = result };
+}
+
+pub fn compileAndRun(self: *const Local, src: []const u8, name: ?[]const u8) !js.Value {
+    const script_name = self.isolate.initStringHandle(name orelse "anonymous");
+    const script_source = self.isolate.initStringHandle(src);
+
+    // Create ScriptOrigin
+    var origin: v8.ScriptOrigin = undefined;
+    v8.v8__ScriptOrigin__CONSTRUCT(&origin, @ptrCast(script_name));
+
+    // Create ScriptCompilerSource
+    var script_comp_source: v8.ScriptCompilerSource = undefined;
+    v8.v8__ScriptCompiler__Source__CONSTRUCT2(script_source, &origin, null, &script_comp_source);
+    defer v8.v8__ScriptCompiler__Source__DESTRUCT(&script_comp_source);
+
+    // Compile the script
+    const v8_script = v8.v8__ScriptCompiler__Compile(
+        self.handle,
+        &script_comp_source,
+        v8.kNoCompileOptions,
+        v8.kNoCacheNoReason,
+    ) orelse return error.CompilationError;
+
+    // Run the script
+    const result = v8.v8__Script__Run(v8_script, self.handle) orelse return error.JsException;
+    return .{ .local = self, .handle = result };
+}
+
+// == Zig -> JS ==
+
+// To turn a Zig instance into a v8 object, we need to do a number of things.
+// First, if it's a struct, we need to put it on the heap.
+// Second, if we've already returned this instance, we should return
+// the same object. Hence, our executor maintains a map of Zig objects
+// to v8.Global(js.Object) (the "identity_map").
+// Finally, if this is the first time we've seen this instance, we need to:
+//  1 - get the FunctionTemplate (from our templates slice)
+//  2 - Create the TaggedAnyOpaque so that, if needed, we can do the reverse
+//      (i.e. js -> zig)
+//  3 - Create a v8.Global(js.Object) (because Zig owns this object, not v8)
+//  4 - Store our TaggedAnyOpaque into the persistent object
+//  5 - Update our identity_map (so that, if we return this same instance again,
+//      we can just grab it from the identity_map)
+pub fn mapZigInstanceToJs(self: *const Local, js_obj_handle: ?*const v8.Object, value: anytype) !js.Object {
+    const ctx = self.ctx;
+    const context_arena = ctx.arena;
+
+    const T = @TypeOf(value);
+    switch (@typeInfo(T)) {
+        .@"struct" => {
+            // Struct, has to be placed on the heap
+            const heap = try context_arena.create(T);
+            heap.* = value;
+            return self.mapZigInstanceToJs(js_obj_handle, heap);
+        },
+        .pointer => |ptr| {
+            const resolved = resolveValue(value);
+
+            const resolved_ptr_id = @intFromPtr(resolved.ptr);
+            const gop = try ctx.addIdentity(resolved_ptr_id);
+            if (gop.found_existing) {
+                // we've seen this instance before, return the same object
+                return (js.Object.Global{ .handle = gop.value_ptr.* }).local(self);
+            }
+
+            const isolate = self.isolate;
+            const JsApi = bridge.Struct(ptr.child).JsApi;
+
+            // Sometimes we're creating a new Object, like when
+            // we're returning a value from a function. In those cases
+            // we have to get the object template, and we can get an object
+            // by calling initInstance its InstanceTemplate.
+            // Sometimes though we already have the Object to bind to
+            // for example, when we're executing a constructor, v8 has
+            // already created the "this" object.
+            const js_obj = js.Object{
+                .local = self,
+                .handle = js_obj_handle orelse blk: {
+                    const function_template_handle = ctx.templates[resolved.class_id];
+                    const object_template_handle = v8.v8__FunctionTemplate__InstanceTemplate(function_template_handle).?;
+                    break :blk v8.v8__ObjectTemplate__NewInstance(object_template_handle, self.handle).?;
+                },
+            };
+
+            if (!@hasDecl(JsApi.Meta, "empty_with_no_proto")) {
+                // The TAO contains the pointer to our Zig instance as
+                // well as any meta data we'll need to use it later.
+                // See the TaggedOpaque struct for more details.
+                // Use identity_arena so TAOs survive context destruction. V8 objects
+                // are stored in identity_map (session-level) and may be referenced
+                // after their creating context is destroyed (e.g., via microtasks).
+                const tao = try ctx.identity_arena.create(TaggedOpaque);
+                tao.* = .{
+                    .value = resolved.ptr,
+                    .prototype_chain = resolved.prototype_chain.ptr,
+                    .prototype_len = @intCast(resolved.prototype_chain.len),
+                    .subtype = if (@hasDecl(JsApi.Meta, "subtype")) JsApi.Meta.subype else .node,
+                };
+
+                v8.v8__Object__SetAlignedPointerInInternalField(js_obj.handle, 0, tao);
+            } else {
+                // If the struct is empty, we don't need to do all
+                // the TOA stuff and setting the internal data.
+                // When we try to map this from JS->Zig, in
+                // TaggedOpaque, we'll also know there that
+                // the type is empty and can create an empty instance.
+            }
+
+            // dont' use js_obj.persist(), because we don't want to track this in
+            // context.global_objects, we want to track it in context.identity_map.
+            v8.v8__Global__New(isolate.handle, js_obj.handle, gop.value_ptr);
+            if (resolved.finalizer) |finalizer| {
+                const finalizer_ptr_id = finalizer.ptr_id;
+
+                const page = ctx.page;
+                const session = page.session;
+                const finalizer_gop = try page.finalizer_callbacks.getOrPut(page.frame_arena, finalizer_ptr_id);
+                if (finalizer_gop.found_existing == false) {
+                    // This is the first context (and very likely only one) to
+                    // see this Zig instance. We need to create the FinalizerCallback
+                    // so that we can cleanup on Page teardown if v8 doesn't finalize.
+                    errdefer _ = page.finalizer_callbacks.remove(finalizer_ptr_id);
+                    finalizer.acquire_ref(finalizer_ptr_id);
+                    finalizer_gop.value_ptr.* = try self.createFinalizerCallback(resolved_ptr_id, finalizer_ptr_id, finalizer.release_ref_from_zig);
+                }
+                const fc = finalizer_gop.value_ptr.*;
+                const identity_finalizer = try session.fc_identity_pool.create();
+                identity_finalizer.* = .{
+                    .page = page,
+                    .session = session,
+                    .identity = ctx.identity,
+                    .finalizer_ptr_id = finalizer_ptr_id,
+                    .resolved_ptr_id = resolved_ptr_id,
+                    .next = fc.identities,
+                };
+                fc.identities = identity_finalizer;
+                fc.identity_count += 1;
+
+                v8.v8__Global__SetWeakFinalizer(gop.value_ptr, identity_finalizer, finalizer.release_ref, v8.kParameter);
+            }
+            return js_obj;
+        },
+        else => @compileError("Expected a struct or pointer, got " ++ @typeName(T) ++ " (constructors must return struct or pointers)"),
+    }
+}
+
+pub fn zigValueToJs(self: *const Local, value: anytype, comptime opts: CallOpts) !js.Value {
+    const isolate = self.isolate;
+
+    // Check if it's a "simple" type. This is extracted so that it can be
+    // reused by other parts of the code. "simple" types only require an
+    // isolate to create (specifically, they don't our templates array)
+    if (js.simpleZigValueToJs(isolate, value, false, opts.null_as_undefined)) |js_value_handle| {
+        return .{ .local = self, .handle = js_value_handle };
+    }
+
+    const T = @TypeOf(value);
+    switch (@typeInfo(T)) {
+        .void, .bool, .int, .comptime_int, .float, .comptime_float, .@"enum", .null => {
+            // Need to do this to keep the compiler happy
+            // simpleZigValueToJs handles all of these cases.
+            unreachable;
+        },
+        .array => {
+            var js_arr = self.newArray(value.len);
+            for (value, 0..) |v, i| {
+                if (try js_arr.set(@intCast(i), v, opts) == false) {
+                    return error.FailedToCreateArray;
+                }
+            }
+            return js_arr.toValue();
+        },
+        .pointer => |ptr| switch (ptr.size) {
+            .one => {
+                if (@typeInfo(ptr.child) == .@"struct" and @hasDecl(ptr.child, "JsApi")) {
+                    if (bridge.JsApiLookup.has(ptr.child.JsApi)) {
+                        const js_obj = try self.mapZigInstanceToJs(null, value);
+                        return js_obj.toValue();
+                    }
+                }
+
+                if (@typeInfo(ptr.child) == .@"struct" and @hasDecl(ptr.child, "runtimeGenericWrap")) {
+                    const frame = switch (self.ctx.global) {
+                        .frame => |f| f,
+                        .worker => {
+                            // No Worker-related API currently uses this, so haven't
+                            // added support for it
+                            unreachable;
+                        },
+                    };
+                    const wrap = try value.runtimeGenericWrap(frame);
+                    return self.zigValueToJs(wrap, opts);
+                }
+
+                const one_info = @typeInfo(ptr.child);
+                if (one_info == .array and one_info.array.child == u8) {
+                    // Need to do this to keep the compiler happy
+                    // If this was the case, simpleZigValueToJs would
+                    // have handled it
+                    unreachable;
+                }
+            },
+            .slice => {
+                if (ptr.child == u8) {
+                    // Need to do this to keep the compiler happy
+                    // If this was the case, simpleZigValueToJs would
+                    // have handled it
+                    unreachable;
+                }
+                var js_arr = self.newArray(@intCast(value.len));
+                for (value, 0..) |v, i| {
+                    if (try js_arr.set(@intCast(i), v, opts) == false) {
+                        return error.FailedToCreateArray;
+                    }
+                }
+                return js_arr.toValue();
+            },
+            else => {},
+        },
+        .@"struct" => |s| {
+            if (@hasDecl(T, "JsApi")) {
+                if (bridge.JsApiLookup.has(T.JsApi)) {
+                    const js_obj = try self.mapZigInstanceToJs(null, value);
+                    return js_obj.toValue();
+                }
+            }
+            if (T == string.String or T == string.Global) {
+                // would have been handled by simpleZigValueToJs
+                unreachable;
+            }
+
+            // zig fmt: off
+            switch (T) {
+                js.Value => return value,
+                js.Exception => return .{ .local = self, .handle = isolate.throwException(value.handle) },
+
+                js.ArrayBufferRef(.int8).Global, js.ArrayBufferRef(.uint8).Global,
+                js.ArrayBufferRef(.uint8_clamped).Global, js.ArrayBufferRef(.int16).Global,
+                js.ArrayBufferRef(.uint16).Global, js.ArrayBufferRef(.int32).Global,
+                js.ArrayBufferRef(.uint32).Global, js.ArrayBufferRef(.float16).Global,
+                js.ArrayBufferRef(.float32).Global, js.ArrayBufferRef(.float64).Global,
+                => {
+                    return .{ .local = self, .handle = value.local(self).handle };
+                },
+
+                inline
+                js.Array,
+                js.Function,
+                js.Object,
+                js.Promise,
+                js.String => return .{ .local = self, .handle = @ptrCast(value.handle) },
+
+                inline
+                js.Function.Global,
+                js.Function.Temp,
+                js.Value.Global,
+                js.Value.Temp,
+                js.Object.Global,
+                js.Promise.Global,
+                js.Promise.Temp,
+                js.PromiseResolver.Global,
+                js.Module.Global => return .{ .local = self, .handle = @ptrCast(value.local(self).handle) },
+
+                js.Undefined => return .{.local = self, .handle = isolate.initUndefined() },
+
+                else => {}
+            }
+            // zig fmt: on
+
+            if (@hasDecl(T, "runtimeGenericWrap")) {
+                const frame = switch (self.ctx.global) {
+                    .frame => |f| f,
+                    .worker => {
+                        // No Worker-related API currently uses this, so haven't
+                        // added support for it
+                        unreachable;
+                    },
+                };
+                const wrap = try value.runtimeGenericWrap(frame);
+                return self.zigValueToJs(wrap, opts);
+            }
+
+            if (s.is_tuple) {
+                // return the tuple struct as an array
+                var js_arr = self.newArray(@intCast(s.fields.len));
+                inline for (s.fields, 0..) |f, i| {
+                    if (try js_arr.set(@intCast(i), @field(value, f.name), opts) == false) {
+                        return error.FailedToCreateArray;
+                    }
+                }
+                return js_arr.toValue();
+            }
+
+            const js_obj = self.newObject();
+            inline for (s.fields) |f| {
+                if (try js_obj.set(f.name, @field(value, f.name), opts) == false) {
+                    return error.CreateObjectFailure;
+                }
+            }
+            return js_obj.toValue();
+        },
+        .@"union" => |un| {
+            if (T == std.json.Value) {
+                return self.zigJsonToJs(value);
+            }
+            if (un.tag_type) |UnionTagType| {
+                inline for (un.fields) |field| {
+                    if (value == @field(UnionTagType, field.name)) {
+                        return self.zigValueToJs(@field(value, field.name), opts);
+                    }
+                }
+                unreachable;
+            }
+            @compileError("Cannot use untagged union: " ++ @typeName(T));
+        },
+        .optional => {
+            if (value) |v| {
+                return self.zigValueToJs(v, opts);
+            }
+            // would be handled by simpleZigValueToJs
+            unreachable;
+        },
+        .error_union => return self.zigValueToJs(try value, opts),
+        else => {},
+    }
+
+    @compileError("A function returns an unsupported type: " ++ @typeName(T));
+}
+
+fn zigJsonToJs(self: *const Local, value: std.json.Value) !js.Value {
+    const isolate = self.isolate;
+
+    switch (value) {
+        .bool => |v| return .{ .local = self, .handle = js.simpleZigValueToJs(isolate, v, true, false) },
+        .float => |v| return .{ .local = self, .handle = js.simpleZigValueToJs(isolate, v, true, false) },
+        .integer => |v| return .{ .local = self, .handle = js.simpleZigValueToJs(isolate, v, true, false) },
+        .string => |v| return .{ .local = self, .handle = js.simpleZigValueToJs(isolate, v, true, false) },
+        .null => return .{ .local = self, .handle = isolate.initNull() },
+
+        // TODO handle number_string.
+        // It is used to represent too big numbers.
+        .number_string => return error.TODO,
+
+        .array => |v| {
+            const js_arr = self.newArray(@intCast(v.items.len));
+            for (v.items, 0..) |array_value, i| {
+                if (try js_arr.set(@intCast(i), array_value, .{}) == false) {
+                    return error.JSObjectSetValue;
+                }
+            }
+            return js_arr.toArray();
+        },
+        .object => |v| {
+            var js_obj = self.newObject();
+            var it = v.iterator();
+            while (it.next()) |kv| {
+                if (try js_obj.set(kv.key_ptr.*, kv.value_ptr.*, .{}) == false) {
+                    return error.JSObjectSetValue;
+                }
+            }
+            return .{ .local = self, .handle = @ptrCast(js_obj.handle) };
+        },
+    }
+}
+
+// == JS -> Zig ==
+
+pub fn jsValueToZig(self: *const Local, comptime T: type, js_val: js.Value) !T {
+    switch (@typeInfo(T)) {
+        .optional => |o| {
+            // If type type is a ?js.Value or a ?js.Object, then we want to pass
+            // a js.Object, not null. Consider a function,
+            //    _doSomething(arg: ?Env.JsObject) void { ... }
+            //
+            // And then these two calls:
+            //   doSomething();
+            //   doSomething(null);
+            //
+            // In the first case, we'll pass `null`. But in the
+            // second, we'll pass a js.Object which represents
+            // null.
+            // If we don't have this code, both cases will
+            // pass in `null` and the the doSomething won't
+            // be able to tell if `null` was explicitly passed
+            // or whether no parameter was passed.
+            if (comptime o.child == js.Value) {
+                return js_val;
+            }
+
+            if (comptime o.child == js.NullableString) {
+                if (js_val.isUndefined()) {
+                    return null;
+                }
+                return .{ .value = try js_val.toStringSlice() };
+            }
+
+            if (comptime o.child == js.Object) {
+                return js.Object{
+                    .local = self,
+                    .handle = @ptrCast(js_val.handle),
+                };
+            }
+
+            if (js_val.isNullOrUndefined()) {
+                return null;
+            }
+            return try self.jsValueToZig(o.child, js_val);
+        },
+        .float => |f| switch (f.bits) {
+            0...32 => return js_val.toF32(),
+            33...64 => return js_val.toF64(),
+            else => {},
+        },
+        .int => return jsIntToZig(T, js_val),
+        .bool => return js_val.toBool(),
+        .pointer => |ptr| switch (ptr.size) {
+            .one => {
+                if (!js_val.isObject()) {
+                    return error.InvalidArgument;
+                }
+                if (@hasDecl(ptr.child, "JsApi")) {
+                    std.debug.assert(bridge.JsApiLookup.has(ptr.child.JsApi));
+                    return TaggedOpaque.fromJS(*ptr.child, @ptrCast(js_val.handle));
+                }
+            },
+            .slice => {
+                if (ptr.sentinel() == null) {
+                    if (try jsValueToTypedArray(ptr.child, js_val)) |value| {
+                        return value;
+                    }
+                }
+
+                if (ptr.child == u8) {
+                    if (ptr.sentinel()) |s| {
+                        if (comptime s == 0) {
+                            return try js_val.toStringSliceZ();
+                        }
+                    } else {
+                        return try js_val.toStringSlice();
+                    }
+                }
+
+                if (!js_val.isArray()) {
+                    return error.InvalidArgument;
+                }
+                const js_arr = js_val.toArray();
+                const arr = try self.call_arena.alloc(ptr.child, js_arr.len());
+                for (arr, 0..) |*a, i| {
+                    const item_value = try js_arr.get(@intCast(i));
+                    a.* = try self.jsValueToZig(ptr.child, item_value);
+                }
+                return arr;
+            },
+            else => {},
+        },
+        .array => |arr| {
+            // Retrieve fixed-size array as slice
+            const slice_type = []arr.child;
+            const slice_value = try self.jsValueToZig(slice_type, js_val);
+            if (slice_value.len != arr.len) {
+                // Exact length match, we could allow smaller arrays, but we would not be able to communicate how many were written
+                return error.InvalidArgument;
+            }
+            return @as(*T, @ptrCast(slice_value.ptr)).*;
+        },
+        .@"struct" => {
+            return try (self.jsValueToStruct(T, js_val)) orelse {
+                return error.InvalidArgument;
+            };
+        },
+        .@"union" => |u| {
+            // see probeJsValueToZig for some explanation of what we're
+            // trying to do
+
+            // the first field that we find which the js_val could be
+            // coerced to.
+            var coerce_index: ?usize = null;
+
+            // the first field that we find which the js_val is
+            // compatible with. A compatible field has higher precedence
+            // than a coercible, but still isn't a perfect match.
+            var compatible_index: ?usize = null;
+            inline for (u.fields, 0..) |field, i| {
+                switch (try self.probeJsValueToZig(field.type, js_val)) {
+                    .value => |v| return @unionInit(T, field.name, v),
+                    .ok => {
+                        // a perfect match like above case, except the probing
+                        // didn't get the value for us.
+                        return @unionInit(T, field.name, try self.jsValueToZig(field.type, js_val));
+                    },
+                    .coerce => if (coerce_index == null) {
+                        coerce_index = i;
+                    },
+                    .compatible => if (compatible_index == null) {
+                        compatible_index = i;
+                    },
+                    .invalid => {},
+                }
+            }
+
+            // We didn't find a perfect match.
+            const closest = compatible_index orelse coerce_index orelse return error.InvalidArgument;
+            inline for (u.fields, 0..) |field, i| {
+                if (i == closest) {
+                    return @unionInit(T, field.name, try self.jsValueToZig(field.type, js_val));
+                }
+            }
+            unreachable;
+        },
+        .@"enum" => |e| {
+            if (@hasDecl(T, "js_enum_from_string")) {
+                const js_str = js_val.isString() orelse return error.InvalidArgument;
+                return std.meta.stringToEnum(T, try js_str.toSlice()) orelse return error.InvalidArgument;
+            }
+            switch (@typeInfo(e.tag_type)) {
+                .int => return std.meta.intToEnum(T, try jsIntToZig(e.tag_type, js_val)),
+                else => @compileError("unsupported enum parameter type: " ++ @typeName(T)),
+            }
+        },
+        else => {},
+    }
+
+    @compileError("has an unsupported parameter type: " ++ @typeName(T));
+}
+
+// Extracted so that it can be used in both jsValueToZig and in
+// probeJsValueToZig. Avoids having to duplicate this logic when probing.
+fn jsValueToStruct(self: *const Local, comptime T: type, js_val: js.Value) !?T {
+    return switch (T) {
+        js.Function, js.Function.Global, js.Function.Temp => {
+            if (!js_val.isFunction()) {
+                return null;
+            }
+            const js_func = js.Function{ .local = self, .handle = @ptrCast(js_val.handle) };
+            return switch (T) {
+                js.Function => js_func,
+                js.Function.Temp => try js_func.temp(),
+                js.Function.Global => try js_func.persist(),
+                else => unreachable,
+            };
+        },
+        // zig fmt: off
+        js.TypedArray(u8), js.TypedArray(u16), js.TypedArray(u32), js.TypedArray(u64),
+        js.TypedArray(i8), js.TypedArray(i16), js.TypedArray(i32), js.TypedArray(i64),
+        js.TypedArray(f32), js.TypedArray(f64),
+        // zig fmt: on
+        => {
+            const ValueType = @typeInfo(std.meta.fieldInfo(T, .values).type).pointer.child;
+            const arr = (try jsValueToTypedArray(ValueType, js_val)) orelse return null;
+            return .{ .values = arr };
+        },
+        js.Value => js_val,
+        js.Value.Global => return try js_val.persist(),
+        js.Value.Temp => return try js_val.temp(),
+        js.Object => {
+            if (!js_val.isObject()) {
+                return null;
+            }
+            return js.Object{
+                .local = self,
+                .handle = @ptrCast(js_val.handle),
+            };
+        },
+        js.Object.Global => {
+            if (!js_val.isObject()) {
+                return null;
+            }
+            const obj = js.Object{
+                .local = self,
+                .handle = @ptrCast(js_val.handle),
+            };
+            return try obj.persist();
+        },
+
+        js.Promise.Global, js.Promise.Temp => {
+            if (!js_val.isPromise()) {
+                return null;
+            }
+            const js_promise = js.Promise{
+                .local = self,
+                .handle = @ptrCast(js_val.handle),
+            };
+            return switch (T) {
+                js.Promise.Temp => try js_promise.temp(),
+                js.Promise.Global => try js_promise.persist(),
+                else => unreachable,
+            };
+        },
+        js.String => return js_val.isString(),
+        js.String.OneByte => {
+            // Receives a "binary string": each JS code unit must fit in a byte
+            // (0..255). Throws InvalidCharacterError if any code unit is out
+            // of range, matching the WHATWG btoa spec — which is the main
+            // intended caller, but applicable to any binary-string input.
+            const js_str = js_val.isString() orelse return null;
+            if (!js_str.containsOnlyOneByte()) return error.InvalidCharacterError;
+            return .{ .bytes = try js_str.toOneByteSlice(self.call_arena) };
+        },
+        string.String => {
+            const js_str = js_val.isString() orelse return null;
+            return try js_str.toSSO(false);
+        },
+        string.Global => {
+            const js_str = js_val.isString() orelse return null;
+            return try js_str.toSSO(true);
+        },
+        else => {
+            if (!js_val.isObject()) {
+                return null;
+            }
+
+            const isolate = self.isolate;
+            const js_obj = js_val.toObject();
+
+            var value: T = undefined;
+            inline for (@typeInfo(T).@"struct".fields) |field| {
+                const name = field.name;
+                const key = isolate.initStringHandle(name);
+                if (js_obj.has(key)) {
+                    @field(value, name) = try self.jsValueToZig(field.type, try js_obj.get(key));
+                } else if (@typeInfo(field.type) == .optional) {
+                    @field(value, name) = null;
+                } else {
+                    const dflt = field.defaultValue() orelse return null;
+                    @field(value, name) = dflt;
+                }
+            }
+
+            return value;
+        },
+    };
+}
+
+fn jsValueToTypedArray(comptime T: type, js_val: js.Value) !?[]T {
+    var force_u8 = false;
+    var array_buffer: ?*const v8.ArrayBuffer = null;
+    var byte_len: usize = undefined;
+    var byte_offset: usize = undefined;
+
+    if (js_val.isTypedArray()) {
+        const buffer_handle: *const v8.ArrayBufferView = @ptrCast(js_val.handle);
+        byte_len = v8.v8__ArrayBufferView__ByteLength(buffer_handle);
+        byte_offset = v8.v8__ArrayBufferView__ByteOffset(buffer_handle);
+        array_buffer = v8.v8__ArrayBufferView__Buffer(buffer_handle).?;
+    } else if (js_val.isArrayBufferView()) {
+        force_u8 = true;
+        const buffer_handle: *const v8.ArrayBufferView = @ptrCast(js_val.handle);
+        byte_len = v8.v8__ArrayBufferView__ByteLength(buffer_handle);
+        byte_offset = v8.v8__ArrayBufferView__ByteOffset(buffer_handle);
+        array_buffer = v8.v8__ArrayBufferView__Buffer(buffer_handle).?;
+    } else if (js_val.isArrayBuffer()) {
+        force_u8 = true;
+        array_buffer = @ptrCast(js_val.handle);
+        byte_len = v8.v8__ArrayBuffer__ByteLength(array_buffer);
+        byte_offset = 0;
+    }
+
+    const backing_store_ptr = v8.v8__ArrayBuffer__GetBackingStore(array_buffer orelse return null);
+    if (byte_len == 0) {
+        return &[_]T{};
+    }
+
+    const backing_store_handle = v8.std__shared_ptr__v8__BackingStore__get(&backing_store_ptr).?;
+    const data = v8.v8__BackingStore__Data(backing_store_handle);
+    const base = @as([*]u8, @ptrCast(data)) + byte_offset;
+
+    // 2. Validate alignment
+    if (@intFromPtr(base) % @alignOf(T) != 0) {
+        return error.InvalidAlignment;
+    }
+    const num_elements = byte_len / @sizeOf(T);
+
+    switch (T) {
+        u8 => {
+            if (force_u8 or js_val.isUint8Array() or js_val.isUint8ClampedArray()) {
+                return base[0..num_elements];
+            }
+        },
+        i8 => {
+            if (js_val.isInt8Array()) {
+                const ptr = @as([*]i8, @ptrCast(@alignCast(base)));
+                return ptr[0..num_elements];
+            }
+        },
+        u16 => {
+            if (js_val.isUint16Array()) {
+                const ptr = @as([*]u16, @ptrCast(@alignCast(base)));
+                return ptr[0..num_elements];
+            }
+        },
+        i16 => {
+            if (js_val.isInt16Array()) {
+                const ptr = @as([*]i16, @ptrCast(@alignCast(base)));
+                return ptr[0..num_elements];
+            }
+        },
+        u32 => {
+            if (js_val.isUint32Array()) {
+                const ptr = @as([*]u32, @ptrCast(@alignCast(base)));
+                return ptr[0..num_elements];
+            }
+        },
+        i32 => {
+            if (js_val.isInt32Array()) {
+                const ptr = @as([*]i32, @ptrCast(@alignCast(base)));
+                return ptr[0..num_elements];
+            }
+        },
+        u64 => {
+            if (js_val.isBigUint64Array()) {
+                const ptr = @as([*]u64, @ptrCast(@alignCast(base)));
+                return ptr[0..num_elements];
+            }
+        },
+        i64 => {
+            if (js_val.isBigInt64Array()) {
+                const ptr = @as([*]i64, @ptrCast(@alignCast(base)));
+                return ptr[0..num_elements];
+            }
+        },
+        f32 => {
+            if (js_val.isFloat32Array()) {
+                const ptr = @as([*]f32, @ptrCast(@alignCast(base)));
+                return ptr[0..num_elements];
+            }
+        },
+        f64 => {
+            if (js_val.isFloat64Array()) {
+                const ptr = @as([*]f64, @ptrCast(@alignCast(base)));
+                return ptr[0..num_elements];
+            }
+        },
+        else => {},
+    }
+    return error.InvalidArgument;
+}
+
+// Probing is part of trying to map a JS value to a Zig union. There's
+// a lot of ambiguity in this process, in part because some JS values
+// can almost always be coerced. For example, anything can be coerced
+// into an integer (it just becomes 0), or a float (becomes NaN) or a
+// string.
+//
+// The way we'll do this is that, if there's a direct match, we'll use it
+// If there's a potential match, we'll keep looking for a direct match
+// and only use the (first) potential match as a fallback.
+//
+// Finally, I considered adding this probing directly into jsValueToZig
+// but I decided doing this separately was better. However, the goal is
+// obviously that probing is consistent with jsValueToZig.
+fn ProbeResult(comptime T: type) type {
+    return union(enum) {
+        // The js_value maps directly to T
+        value: T,
+
+        // The value is a T. This is almost the same as returning value: T,
+        // but the caller still has to get T by calling jsValueToZig.
+        // We prefer returning .{.ok => {}}, to avoid reducing duplication
+        // with jsValueToZig, but in some cases where probing has a cost
+        // AND yields the value anyways, we'll use .{.value = T}.
+        ok: void,
+
+        // the js_value is compatible with T (i.e. a int -> float),
+        compatible: void,
+
+        // the js_value can be coerced to T (this is a lower precedence
+        // than compatible)
+        coerce: void,
+
+        // the js_value cannot be turned into T
+        invalid: void,
+    };
+}
+fn probeJsValueToZig(self: *const Local, comptime T: type, js_val: js.Value) !ProbeResult(T) {
+    switch (@typeInfo(T)) {
+        .optional => |o| {
+            if (js_val.isNullOrUndefined()) {
+                return .{ .value = null };
+            }
+            return self.probeJsValueToZig(o.child, js_val);
+        },
+        .float => {
+            if (js_val.isNumber() or js_val.isNumberObject()) {
+                if (js_val.isInt32() or js_val.isUint32() or js_val.isBigInt() or js_val.isBigIntObject()) {
+                    // int => float is a reasonable match
+                    return .{ .compatible = {} };
+                }
+                return .{ .ok = {} };
+            }
+            // anything can be coerced into a float, it becomes NaN
+            return .{ .coerce = {} };
+        },
+        .int => {
+            if (js_val.isNumber() or js_val.isNumberObject()) {
+                if (js_val.isInt32() or js_val.isUint32() or js_val.isBigInt() or js_val.isBigIntObject()) {
+                    return .{ .ok = {} };
+                }
+                // float => int is kind of reasonable, I guess
+                return .{ .compatible = {} };
+            }
+            // anything can be coerced into a int, it becomes 0
+            return .{ .coerce = {} };
+        },
+        .bool => {
+            if (js_val.isBoolean() or js_val.isBooleanObject()) {
+                return .{ .ok = {} };
+            }
+            // anything can be coerced into a boolean, it will become
+            // true or false based on..some complex rules I don't know.
+            return .{ .coerce = {} };
+        },
+        .pointer => |ptr| switch (ptr.size) {
+            .one => {
+                if (!js_val.isObject()) {
+                    return .{ .invalid = {} };
+                }
+                if (bridge.JsApiLookup.has(ptr.child.JsApi)) {
+                    // There's a bit of overhead in doing this, so instead
+                    // of having a version of TaggedOpaque which
+                    // returns a boolean or an optional, we rely on the
+                    // main implementation and just handle the error.
+                    const attempt = TaggedOpaque.fromJS(*ptr.child, @ptrCast(js_val.handle));
+                    if (attempt) |value| {
+                        return .{ .value = value };
+                    } else |_| {
+                        return .{ .invalid = {} };
+                    }
+                }
+                // probably an error, but not for us to deal with
+                return .{ .invalid = {} };
+            },
+            .slice => {
+                if (js_val.isTypedArray()) {
+                    switch (ptr.child) {
+                        u8 => if (ptr.sentinel() == null) {
+                            if (js_val.isUint8Array() or js_val.isUint8ClampedArray()) {
+                                return .{ .ok = {} };
+                            }
+                        },
+                        i8 => if (js_val.isInt8Array()) {
+                            return .{ .ok = {} };
+                        },
+                        u16 => if (js_val.isUint16Array()) {
+                            return .{ .ok = {} };
+                        },
+                        i16 => if (js_val.isInt16Array()) {
+                            return .{ .ok = {} };
+                        },
+                        u32 => if (js_val.isUint32Array()) {
+                            return .{ .ok = {} };
+                        },
+                        i32 => if (js_val.isInt32Array()) {
+                            return .{ .ok = {} };
+                        },
+                        u64 => if (js_val.isBigUint64Array()) {
+                            return .{ .ok = {} };
+                        },
+                        i64 => if (js_val.isBigInt64Array()) {
+                            return .{ .ok = {} };
+                        },
+                        f32 => if (js_val.isFloat32Array()) {
+                            return .{ .ok = {} };
+                        },
+                        f64 => if (js_val.isFloat64Array()) {
+                            return .{ .ok = {} };
+                        },
+                        else => {},
+                    }
+                    return .{ .invalid = {} };
+                }
+
+                if (ptr.child == u8) {
+                    if (v8.v8__Value__IsString(js_val.handle)) {
+                        return .{ .ok = {} };
+                    }
+                    // anything can be coerced into a string
+                    return .{ .coerce = {} };
+                }
+
+                if (!js_val.isArray()) {
+                    return .{ .invalid = {} };
+                }
+
+                // This can get tricky.
+                const js_arr = js_val.toArray();
+
+                if (js_arr.len() == 0) {
+                    // not so tricky in this case.
+                    return .{ .value = &.{} };
+                }
+
+                // We settle for just probing the first value. Ok, actually
+                // not tricky in this case either.
+                const first_val = try js_arr.get(0);
+                switch (try self.probeJsValueToZig(ptr.child, first_val)) {
+                    .value, .ok => return .{ .ok = {} },
+                    .compatible => return .{ .compatible = {} },
+                    .coerce => return .{ .coerce = {} },
+                    .invalid => return .{ .invalid = {} },
+                }
+            },
+            else => {},
+        },
+        .array => |arr| {
+            // Retrieve fixed-size array as slice then probe
+            const slice_type = []arr.child;
+            switch (try self.probeJsValueToZig(slice_type, js_val)) {
+                .value => |slice_value| {
+                    if (slice_value.len == arr.len) {
+                        return .{ .value = @as(*T, @ptrCast(slice_value.ptr)).* };
+                    }
+                    return .{ .invalid = {} };
+                },
+                .ok => {
+                    // Exact length match, we could allow smaller arrays as .compatible, but we would not be able to communicate how many were written
+                    if (js_val.isArray()) {
+                        const js_arr = js_val.toArray();
+                        if (js_arr.len() == arr.len) {
+                            return .{ .ok = {} };
+                        }
+                    } else if (arr.child == u8) {
+                        if (js_val.isString()) |js_str| {
+                            if (js_str.lenUtf8(self.isolate) == arr.len) {
+                                return .{ .ok = {} };
+                            }
+                        }
+                    }
+                    return .{ .invalid = {} };
+                },
+                .compatible => return .{ .compatible = {} },
+                .coerce => return .{ .coerce = {} },
+                .invalid => return .{ .invalid = {} },
+            }
+        },
+        .@"struct" => {
+            // Handle string.String and string.Global specially
+            if (T == string.String or T == string.Global) {
+                if (v8.v8__Value__IsString(js_val.handle)) {
+                    return .{ .ok = {} };
+                }
+                // Anything can be coerced to a string
+                return .{ .coerce = {} };
+            }
+
+            // We don't want to duplicate the code for this, so we call
+            // the actual conversion function.
+            const value = (try self.jsValueToStruct(T, js_val)) orelse {
+                return .{ .invalid = {} };
+            };
+            return .{ .value = value };
+        },
+        else => {},
+    }
+
+    return .{ .invalid = {} };
+}
+
+fn jsIntToZig(comptime T: type, js_value: js.Value) !T {
+    const n = @typeInfo(T).int;
+    switch (n.signedness) {
+        .signed => switch (n.bits) {
+            8 => return jsSignedIntToZig(i8, -128, 127, try js_value.toI32()),
+            16 => return jsSignedIntToZig(i16, -32_768, 32_767, try js_value.toI32()),
+            32 => return jsSignedIntToZig(i32, -2_147_483_648, 2_147_483_647, try js_value.toI32()),
+            64 => {
+                if (js_value.isBigInt()) {
+                    const v = js_value.toBigInt();
+                    return v.getInt64();
+                }
+                return jsSignedIntToZig(i64, -2_147_483_648, 2_147_483_647, try js_value.toI32());
+            },
+            else => {},
+        },
+        .unsigned => switch (n.bits) {
+            8 => return jsUnsignedIntToZig(u8, 255, try js_value.toU32()),
+            16 => return jsUnsignedIntToZig(u16, 65_535, try js_value.toU32()),
+            32 => {
+                if (js_value.isBigInt()) {
+                    const v = js_value.toBigInt();
+                    const large = v.getUint64();
+                    if (large <= 4_294_967_295) {
+                        return @intCast(large);
+                    }
+                    return error.InvalidArgument;
+                }
+                return jsUnsignedIntToZig(u32, 4_294_967_295, try js_value.toU32());
+            },
+            64 => {
+                if (js_value.isBigInt()) {
+                    const v = js_value.toBigInt();
+                    return v.getUint64();
+                }
+                return jsUnsignedIntToZig(u64, 4_294_967_295, try js_value.toU32());
+            },
+            else => {},
+        },
+    }
+    @compileError("Only i8, i16, i32, i64, u8, u16, u32 and u64 are supported");
+}
+
+fn jsSignedIntToZig(comptime T: type, comptime min: comptime_int, max: comptime_int, maybe: i32) !T {
+    if (maybe >= min and maybe <= max) {
+        return @intCast(maybe);
+    }
+    return error.InvalidArgument;
+}
+
+fn jsUnsignedIntToZig(comptime T: type, max: comptime_int, maybe: u32) !T {
+    if (maybe <= max) {
+        return @intCast(maybe);
+    }
+    return error.InvalidArgument;
+}
+
+// Every WebApi type has a class_id as T.JsApi.Meta.class_id. We use this to create
+// a JSValue class of the correct type. However, given a Node, we don't want
+// to create a Node class, we want to create a class of the most specific type.
+// In other words, given a Node{._type = .{.document .{}}}, we want to create
+// a Document, not a Node.
+// This function recursively walks the _type union field (if there is one) to
+// get the most specific class_id possible.
+const Resolved = struct {
+    ptr: *anyopaque,
+    class_id: u16,
+    prototype_chain: []const @import("TaggedOpaque.zig").PrototypeChainEntry,
+    finalizer: ?Finalizer,
+
+    const Finalizer = struct {
+        // Resolved.ptr is the most specific value in a chain (e.g. IFrame, not EventTarget, Node,  ...)
+        // Finalizer.ptr_id is the most specific value in a chain that defines an acquireRef
+        ptr_id: usize,
+        acquire_ref: *const fn (ptr_id: usize) void,
+        release_ref: *const fn (handle: ?*const v8.WeakCallbackInfo) callconv(.c) void,
+        release_ref_from_zig: *const fn (ptr_id: usize, page: *Page) void,
+    };
+};
+pub fn resolveValue(value: anytype) Resolved {
+    const T = bridge.Struct(@TypeOf(value));
+    if (!@hasField(T, "_type") or @typeInfo(@TypeOf(value._type)) != .@"union") {
+        return resolveT(T, value);
+    }
+
+    const U = @typeInfo(@TypeOf(value._type)).@"union";
+    inline for (U.fields) |field| {
+        if (value._type == @field(U.tag_type.?, field.name)) {
+            const child = switch (@typeInfo(field.type)) {
+                .pointer => @field(value._type, field.name),
+                .@"struct" => &@field(value._type, field.name),
+                .void => {
+                    // Unusual case, but the Event (and maybe others) can be
+                    // returned as-is. In that case, it has a dummy void type.
+                    return resolveT(T, value);
+                },
+                else => @compileError(@typeName(field.type) ++ " has an unsupported _type field"),
+            };
+            return resolveValue(child);
+        }
+    }
+    unreachable;
+}
+
+fn resolveT(comptime T: type, value: *T) Resolved {
+    const Meta = T.JsApi.Meta;
+    return .{
+        .ptr = value,
+        .class_id = Meta.class_id,
+        .prototype_chain = &Meta.prototype_chain,
+        .finalizer = blk: {
+            const FT = (comptime findFinalizerType(T)) orelse break :blk null;
+            const getFinalizerPtr = comptime finalizerPtrGetter(T, FT);
+            const finalizer_ptr = getFinalizerPtr(value);
+
+            const Wrap = struct {
+                fn acquireRef(ptr_id: usize) void {
+                    FT.acquireRef(@ptrFromInt(ptr_id));
+                }
+
+                fn releaseRef(handle: ?*const v8.WeakCallbackInfo) callconv(.c) void {
+                    const ptr = v8.v8__WeakCallbackInfo__GetParameter(handle.?).?;
+                    const identity_finalizer: *FinalizerCallback.Identity = @ptrCast(@alignCast(ptr));
+
+                    // Identity is allocated from pool, so it's valid even after frame reset.
+                    const page = identity_finalizer.page;
+                    const resolved_ptr_id = identity_finalizer.resolved_ptr_id;
+                    defer page.session.fc_identity_pool.destroy(identity_finalizer);
+
+                    // Always clean up the identity map entry
+                    if (identity_finalizer.identity.identity_map.fetchRemove(resolved_ptr_id)) |kv| {
+                        var global = kv.value;
+                        v8.v8__Global__Reset(&global);
+                    }
+
+                    // If done, FC was already cleaned up during Page teardown.
+                    // The finalizer_ptr_id may have been reused for a new object,
+                    // so we must not look it up in the map. It's also unsafe to
+                    // dereference identity_finalizer.page after done is true.
+                    if (identity_finalizer.done) return;
+
+                    const finalizer_ptr_id = identity_finalizer.finalizer_ptr_id;
+                    const fc = page.finalizer_callbacks.get(finalizer_ptr_id) orelse return;
+
+                    const identity_count = fc.identity_count;
+                    if (identity_count == 1) {
+                        // Last identity - clean up the FC.
+                        // Remove from map before releaseRef to prevent address reuse issues.
+                        _ = page.finalizer_callbacks.remove(finalizer_ptr_id);
+                        FT.releaseRef(@ptrFromInt(finalizer_ptr_id), page);
+                        page.releaseArena(fc.arena);
+                    } else {
+                        fc.identity_count = identity_count - 1;
+                    }
+                }
+
+                fn releaseRefFromZig(ptr_id: usize, page: *Page) void {
+                    FT.releaseRef(@ptrFromInt(ptr_id), page);
+                }
+            };
+            break :blk .{
+                .ptr_id = @intFromPtr(finalizer_ptr),
+                .acquire_ref = Wrap.acquireRef,
+                .release_ref = Wrap.releaseRef,
+                .release_ref_from_zig = Wrap.releaseRefFromZig,
+            };
+        },
+    };
+}
+
+// Start at the "resolved" type (the most specific) and work our way up the
+// prototype chain looking for the type that defines acquireRef
+fn findFinalizerType(comptime T: type) ?type {
+    const S = bridge.Struct(T);
+    if (@hasDecl(S, "acquireRef")) {
+        return S;
+    }
+    if (@hasField(S, "_proto")) {
+        const ProtoPtr = std.meta.fieldInfo(S, ._proto).type;
+        const ProtoChild = @typeInfo(ProtoPtr).pointer.child;
+        return findFinalizerType(ProtoChild);
+    }
+    return null;
+}
+
+// Generate a function that follows the _proto pointer chain to get to the finalizer type
+fn finalizerPtrGetter(comptime T: type, comptime FT: type) *const fn (*T) *FT {
+    const S = bridge.Struct(T);
+    if (S == FT) {
+        return struct {
+            fn get(v: *T) *FT {
+                return v;
+            }
+        }.get;
+    }
+    if (@hasField(S, "_proto")) {
+        const ProtoPtr = std.meta.fieldInfo(S, ._proto).type;
+        const ProtoChild = @typeInfo(ProtoPtr).pointer.child;
+        const childGetter = comptime finalizerPtrGetter(ProtoChild, FT);
+        return struct {
+            fn get(v: *T) *FT {
+                return childGetter(v._proto);
+            }
+        }.get;
+    }
+    @compileError("Cannot find path from " ++ @typeName(T) ++ " to " ++ @typeName(FT));
+}
+
+pub fn stackTrace(self: *const Local) !?[]const u8 {
+    const isolate = self.isolate;
+    const separator = log.separator();
+
+    var buf: std.ArrayList(u8) = .empty;
+    var writer = buf.writer(self.call_arena);
+
+    const stack_trace_handle = v8.v8__StackTrace__CurrentStackTrace__STATIC(isolate.handle, 30).?;
+    const frame_count = v8.v8__StackTrace__GetFrameCount(stack_trace_handle);
+
+    if (v8.v8__StackTrace__CurrentScriptNameOrSourceURL__STATIC(isolate.handle)) |script| {
+        const stack = js.String{ .local = self, .handle = script };
+        try writer.print("{s}<{f}>", .{ separator, stack });
+    }
+
+    for (0..@intCast(frame_count)) |i| {
+        const frame_handle = v8.v8__StackTrace__GetFrame(stack_trace_handle, isolate.handle, @intCast(i)).?;
+        if (v8.v8__StackFrame__GetFunctionName(frame_handle)) |name| {
+            const script = js.String{ .local = self, .handle = name };
+            try writer.print("{s}{f}:{d}", .{ separator, script, v8.v8__StackFrame__GetLineNumber(frame_handle) });
+        } else {
+            try writer.print("{s}<anonymous>:{d}", .{ separator, v8.v8__StackFrame__GetLineNumber(frame_handle) });
+        }
+    }
+    return buf.items;
+}
+
+// == Promise Helpers ==
+pub fn rejectPromise(self: *const Local, err: js.PromiseResolver.RejectError) js.Promise {
+    var resolver = js.PromiseResolver.init(self);
+    resolver.rejectError("Local.rejectPromise", err);
+    return resolver.promise();
+}
+
+pub fn rejectErrorPromise(self: *const Local, value: js.PromiseResolver.RejectError) !js.Promise {
+    var resolver = js.PromiseResolver.init(self);
+    resolver.rejectError("Local.rejectPromise", value);
+    return resolver.promise();
+}
+
+pub fn resolvePromise(self: *const Local, value: anytype) !js.Promise {
+    var resolver = js.PromiseResolver.init(self);
+    resolver.resolve("Local.resolvePromise", value);
+    return resolver.promise();
+}
+
+pub fn createPromiseResolver(self: *const Local) js.PromiseResolver {
+    return js.PromiseResolver.init(self);
+}
+
+pub fn debugValue(self: *const Local, js_val: js.Value, writer: *std.Io.Writer) !void {
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    return self._debugValue(js_val, &seen, 0, writer) catch error.WriteFailed;
+}
+
+fn _debugValue(self: *const Local, js_val: js.Value, seen: *std.AutoHashMapUnmanaged(u32, void), depth: usize, writer: *std.Io.Writer) !void {
+    if (js_val.isNull()) {
+        // I think null can sometimes appear as an object, so check this and
+        // handle it first.
+        return writer.writeAll("null");
+    }
+
+    if (!js_val.isObject()) {
+        // handle these explicitly, so we don't include the type (we only want to include
+        // it when there's some ambiguity, e.g. the string "true")
+        if (js_val.isUndefined()) {
+            return writer.writeAll("undefined");
+        }
+        if (js_val.isTrue()) {
+            return writer.writeAll("true");
+        }
+        if (js_val.isFalse()) {
+            return writer.writeAll("false");
+        }
+
+        if (js_val.isSymbol()) {
+            const symbol_handle = v8.v8__Symbol__Description(@ptrCast(js_val.handle), self.isolate.handle).?;
+            if (v8.v8__Value__IsUndefined(symbol_handle)) {
+                return writer.writeAll("undefined (symbol)");
+            }
+            return writer.print("{f} (symbol)", .{js.String{ .local = self, .handle = @ptrCast(symbol_handle) }});
+        }
+        const js_val_str = try js_val.toStringSlice();
+        if (js_val_str.len > 2000) {
+            try writer.writeAll(js_val_str[0..2000]);
+            try writer.writeAll(" ... (truncated)");
+        } else {
+            try writer.writeAll(js_val_str);
+        }
+        return writer.print(" ({f})", .{js_val.typeOf()});
+    }
+
+    const js_obj = js_val.toObject();
+    {
+        // explicit scope because gop will become invalid in recursive call
+        const obj_id: u32 = @bitCast(v8.v8__Object__GetIdentityHash(js_obj.handle));
+        const gop = try seen.getOrPut(self.call_arena, obj_id);
+        if (gop.found_existing) {
+            return writer.writeAll("<circular>\n");
+        }
+        gop.value_ptr.* = {};
+    }
+
+    if (depth > 20) {
+        return writer.writeAll("...deeply nested object...");
+    }
+
+    const names_arr = js_obj.getOwnPropertyNames() catch {
+        return writer.writeAll("...invalid object...");
+    };
+    const len = names_arr.len();
+
+    const own_len = blk: {
+        const own_names = js_obj.getOwnPropertyNames() catch break :blk 0;
+        break :blk own_names.len();
+    };
+
+    if (own_len == 0) {
+        const js_val_str = try js_val.toStringSlice();
+        if (js_val_str.len > 2000) {
+            try writer.writeAll(js_val_str[0..2000]);
+            return writer.writeAll(" ... (truncated)");
+        }
+        return writer.writeAll(js_val_str);
+    }
+
+    const all_len = js_obj.getPropertyNames().len();
+    try writer.print("({d}/{d})", .{ own_len, all_len });
+    for (0..len) |i| {
+        if (i == 0) {
+            try writer.writeByte('\n');
+        }
+        const field_name = try names_arr.get(@intCast(i));
+        const name = try field_name.toStringSlice();
+        try writer.splatByteAll(' ', depth);
+        try writer.writeAll(name);
+        try writer.writeAll(": ");
+
+        const field_val = try js_obj.get(name);
+        try self._debugValue(field_val, seen, depth + 1, writer);
+        if (i != len - 1) {
+            try writer.writeByte('\n');
+        }
+    }
+}
+
+// == Misc ==
+pub fn parseJSON(self: *const Local, json: []const u8) !js.Value {
+    const string_handle = self.isolate.initStringHandle(json);
+    const value_handle = v8.v8__JSON__Parse(self.handle, string_handle) orelse return error.JsException;
+    return .{
+        .local = self,
+        .handle = value_handle,
+    };
+}
+
+pub fn throw(self: *const Local, err: []const u8) js.Exception {
+    const handle = self.isolate.createError(err);
+    return .{
+        .local = self,
+        .handle = handle,
+    };
+}
+
+// Convert a Global (or optional Global) to a Local (or optional Local).
+// Meant to be used from either frame.js.toLocal, where the context must have an
+// non-null local (orelse panic), or from a LocalScope
+pub fn toLocal(self: *const Local, global: anytype) ToLocalReturnType(@TypeOf(global)) {
+    const T = @TypeOf(global);
+    if (@typeInfo(T) == .optional) {
+        const unwrapped = global orelse return null;
+        return unwrapped.local(self);
+    }
+    return global.local(self);
+}
+
+pub fn ToLocalReturnType(comptime T: type) type {
+    if (@typeInfo(T) == .optional) {
+        const GlobalType = @typeInfo(T).optional.child;
+        const struct_info = @typeInfo(GlobalType).@"struct";
+        inline for (struct_info.decls) |decl| {
+            if (std.mem.eql(u8, decl.name, "local")) {
+                const Fn = @TypeOf(@field(GlobalType, "local"));
+                const fn_info = @typeInfo(Fn).@"fn";
+                return ?fn_info.return_type.?;
+            }
+        }
+        @compileError("Type does not have local method");
+    } else {
+        const struct_info = @typeInfo(T).@"struct";
+        inline for (struct_info.decls) |decl| {
+            if (std.mem.eql(u8, decl.name, "local")) {
+                const Fn = @TypeOf(@field(T, "local"));
+                const fn_info = @typeInfo(Fn).@"fn";
+                return fn_info.return_type.?;
+            }
+        }
+        @compileError("Type does not have local method");
+    }
+}
+
+pub fn debugContextId(self: *const Local) i32 {
+    return v8.v8__Context__DebugContextId(self.handle);
+}
+
+fn createFinalizerCallback(
+    self: *const Local,
+
+    // Key in identity map
+    // The most specific value (KeyboardEvent, not Event)
+    resolved_ptr_id: usize,
+
+    // The most specific value where finalizers are defined
+    // What actually gets acquired / released / deinit
+    finalizer_ptr_id: usize,
+    release_ref: *const fn (ptr_id: usize, page: *Page) void,
+) !*FinalizerCallback {
+    const page = self.ctx.page;
+
+    const arena = try page.getArena(.tiny, "FinalizerCallback");
+    errdefer page.releaseArena(arena);
+
+    const fc = try arena.create(FinalizerCallback);
+    fc.* = .{
+        .page = page,
+        .arena = arena,
+        .release_ref = release_ref,
+        .resolved_ptr_id = resolved_ptr_id,
+        .finalizer_ptr_id = finalizer_ptr_id,
+    };
+    return fc;
+}
+
+// Encapsulates a Local and a HandleScope. When we're going from V8->Zig
+// we easily get both a Local and a HandleScope via Caller.init.
+// But when we're going from Zig -> V8, things are more complicated.
+
+// 1 - In some cases, we're going from Zig -> V8, but the origin is actually V8,
+// so it's really V8 -> Zig -> V8. For example, when element.click() is called,
+// V8 will call the Element.click method, which could then call back into V8 for
+// a click handler.
+//
+// 2 - In other cases, it's always initiated from Zig, e.g. window.setTimeout or
+// window.onload.
+//
+// 3 - Yet in other cases, it might could be either. Event dispatching can both be
+// initiated from Zig and from V8.
+//
+// When JS execution is Zig initiated (or if we aren't sure whether it's Zig
+// initiated or not), we need to create a Local.Scope:
+//
+//   var ls: js.Local.Scope = udnefined;
+//   frame.js.localScope(&ls);
+//   defer ls.deinit();
+//   // can use ls.local as needed.
+//
+// Note: Zig code that is 100% guaranteed to be v8-initiated can get a local via:
+//   frame.js.local.?
+pub const Scope = struct {
+    local: Local,
+    handle_scope: js.HandleScope,
+
+    pub fn deinit(self: *Scope) void {
+        v8.v8__Context__Exit(self.local.handle);
+        self.handle_scope.deinit();
+    }
+
+    pub fn toLocal(self: *Scope, global: anytype) ToLocalReturnType(@TypeOf(global)) {
+        return self.local.toLocal(global);
+    }
+};

@@ -1,0 +1,15 @@
+{
+  "must_contain": [
+    "next-start",
+    "realm-replaced",
+    "next-stable"
+  ],
+  "must_not_contain": [
+    "stale-microtask-runaway"
+  ],
+  "semantic_expectations": {
+    "recursive_microtasks_after_teardown": "survivability_and_navigation_progress",
+    "runtime": "must_remain_recoverable_and_exit_safely",
+    "realm_replacement": "old recursive promise state is not observable after navigation"
+  }
+}

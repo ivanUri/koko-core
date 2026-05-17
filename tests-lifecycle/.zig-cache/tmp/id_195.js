@@ -1,0 +1,1 @@
+!!(window.TEST_RESULT && window.TEST_RESULT.done)

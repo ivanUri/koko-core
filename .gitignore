@@ -1,0 +1,15 @@
+/.zig-cache/
+/zig-pkg/
+zig-out
+velora.id
+/src/html5ever/target/
+src/snapshot.bin
+*.bak
+*.bak/
+node_modules/.lp-cache/
+.velora-cache
+node_modules
+sdk/node_modules
+code-check/tmp
+diff.txt
+.clinerules

@@ -1,0 +1,98 @@
+
+PASS about_blank_iframe_realm
+  done: true
+  TEST_RESULT: {"done":true,"immediateReady":true,"microtaskReady":true,"logs":["immediate:Object","immediate:Function","immediate:Object.prototype","immediate:Function.prototype","immediate:Function.prototype.toString","immediate:Object.prototype.toString","immediate:navigator","immediate:document","immediate:documentElement","immediate:toString-call-ok","immediate:object-toString-call-ok","microtask:Object","microtask:Function","microtask:Object.prototype","microtask:Function.prototype","microtask:Function.prototype.toString","microtask:Object.prototype.toString","microtask:navigator","microtask:document","microtask:documentElement","microtask:toString-call-ok","microtask:object-toString-call-ok","detached:window-null"]}
+  TEST_LOGS: ["immediate:Object","immediate:Function","immediate:Object.prototype","immediate:Function.prototype","immediate:Function.prototype.toString","immediate:Object.prototype.toString","immediate:navigator","immediate:document","immediate:documentElement","immediate:toString-call-ok","immediate:object-toString-call-ok","microtask:Object","microtask:Function","microtask:Object.prototype","microtask:Function.prototype","microtask:Function.prototype.toString","microtask:Object.prototype.toString","microtask:navigator","microtask:document","microtask:documentElement","microtask:toString-call-ok","microtask:object-toString-call-ok","detached:window-null"]
+
+PASS content_window_visibility
+  done: true
+  TEST_RESULT: {"done":true,"logs":["before-attach:null","after-append:Object","after-append:Function","after-append:Array","after-append:Promise","after-append:Reflect","after-append:Object.prototype","after-append:Function.prototype","after-append:Array.prototype","after-append:Promise.prototype","after-append:Object.prototype.toString","after-append:Function.prototype.toString","after-append:navigator","after-append:document","after-append:documentElement","after-append:function-toString-ok","after-append:object-toString-ok","after-append:array-instanceof-own-realm","microtask:Object","microtask:Function","microtask:Array","microtask:Promise","microtask:Reflect","microtask:Object.prototype","microtask:Function.prototype","microtask:Array.prototype","microtask:Promise.prototype","microtask:Object.prototype.toString","microtask:Function.prototype.toString","microtask:navigator","microtask:document","microtask:documentElement","microtask:function-toString-ok","microtask:object-toString-ok","microtask:array-instanceof-own-realm","after-remove:null"],"events":[]}
+  TEST_LOGS: ["before-attach:null","after-append:Object","after-append:Function","after-append:Array","after-append:Promise","after-append:Reflect","after-append:Object.prototype","after-append:Function.prototype","after-append:Array.prototype","after-append:Promise.prototype","after-append:Object.prototype.toString","after-append:Function.prototype.toString","after-append:navigator","after-append:document","after-append:documentElement","after-append:function-toString-ok","after-append:object-toString-ok","after-append:array-instanceof-own-realm","microtask:Object","microtask:Function","microtask:Array","microtask:Promise","microtask:Reflect","microtask:Object.prototype","microtask:Function.prototype","microtask:Array.prototype","microtask:Promise.prototype","microtask:Object.prototype.toString","microtask:Function.prototype.toString","microtask:navigator","microtask:document","microtask:documentElement","microtask:function-toString-ok","microtask:object-toString-ok","microtask:array-instanceof-own-realm","after-remove:null"]
+
+PASS cross_realm_intrinsics
+  done: true
+  TEST_RESULT: {"done":true,"logs":["child:Object","child:Function","child:Array","child:Promise","child:Reflect","child:Object.prototype","child:Function.prototype","child:Array.prototype","child:Promise.prototype","child:Object.prototype.toString","child:Function.prototype.toString","child:navigator","child:document","child:documentElement","child:function-toString-ok","child:object-toString-ok","child:array-instanceof-own-realm","array:child-instanceof-child","array:not-instanceof-parent","navigator:prototype-present","reflect:ownKeys-ok","callable-receiver:function-toString-ok"],"events":[],"ok":true}
+  TEST_LOGS: ["child:Object","child:Function","child:Array","child:Promise","child:Reflect","child:Object.prototype","child:Function.prototype","child:Array.prototype","child:Promise.prototype","child:Object.prototype.toString","child:Function.prototype.toString","child:navigator","child:document","child:documentElement","child:function-toString-ok","child:object-toString-ok","child:array-instanceof-own-realm","array:child-instanceof-child","array:not-instanceof-parent","navigator:prototype-present","reflect:ownKeys-ok","callable-receiver:function-toString-ok"]
+
+FAIL custom_element_navigation
+  done: false
+  TEST_RESULT: {"done":false,"scenario":"custom_element_navigation"}
+  TEST_LOGS: ["index-start"]
+  waitDone: scenario timeout
+  missing: ["connected-before-navigation","navigation-started","realm-replaced"]
+
+PASS custom_element_reconnect
+  done: true
+  TEST_RESULT: {"done":true,"scenario":"custom_element_reconnect"}
+  TEST_LOGS: ["connected","disconnected","connected","stable"]
+
+PASS detached_realm_access
+  done: true
+  TEST_RESULT: {"done":true,"logs":["before-detach:Object","before-detach:Function","before-detach:Array","before-detach:Promise","before-detach:Reflect","before-detach:Object.prototype","before-detach:Function.prototype","before-detach:Array.prototype","before-detach:Promise.prototype","before-detach:Object.prototype.toString","before-detach:Function.prototype.toString","before-detach:navigator","before-detach:document","before-detach:documentElement","before-detach:function-toString-ok","before-detach:object-toString-ok","before-detach:array-instanceof-own-realm","element-contentWindow:null","stale-ref:safe-object-toString"],"events":[]}
+  TEST_LOGS: ["before-detach:Object","before-detach:Function","before-detach:Array","before-detach:Promise","before-detach:Reflect","before-detach:Object.prototype","before-detach:Function.prototype","before-detach:Array.prototype","before-detach:Promise.prototype","before-detach:Object.prototype.toString","before-detach:Function.prototype.toString","before-detach:navigator","before-detach:document","before-detach:documentElement","before-detach:function-toString-ok","before-detach:object-toString-ok","before-detach:array-instanceof-own-realm","element-contentWindow:null","stale-ref:safe-object-toString"]
+
+PASS execution_context_ordering
+  done: true
+  TEST_RESULT: {"done":true,"logs":["event:domcontentloaded","root:Object","root:Function","root:Array","root:Promise","root:Reflect","root:Object.prototype","root:Function.prototype","root:Array.prototype","root:Promise.prototype","root:Object.prototype.toString","root:Function.prototype.toString","root:navigator","root:document","root:documentElement","root:function-toString-ok","root:object-toString-ok","root:array-instanceof-own-realm","iframe-about-blank:Object","iframe-about-blank:Function","iframe-about-blank:Array","iframe-about-blank:Promise","iframe-about-blank:Reflect","iframe-about-blank:Object.prototype","iframe-about-blank:Function.prototype","iframe-about-blank:Array.prototype","iframe-about-blank:Promise.prototype","iframe-about-blank:Object.prototype.toString","iframe-about-blank:Function.prototype.toString","iframe-about-blank:navigator","iframe-about-blank:document","iframe-about-blank:documentElement","iframe-about-blank:function-toString-ok","iframe-about-blank:object-toString-ok","iframe-about-blank:array-instanceof-own-realm","event:microtask-after-iframe","iframe-microtask:Object","iframe-microtask:Function","iframe-microtask:Array","iframe-microtask:Promise","iframe-microtask:Reflect","iframe-microtask:Object.prototype","iframe-microtask:Function.prototype","iframe-microtask:Array.prototype","iframe-microtask:Promise.prototype","iframe-microtask:Object.prototype.toString","iframe-microtask:Function.prototype.toString","iframe-microtask:navigator","iframe-microtask:document","iframe-microtask:documentElement","iframe-microtask:function-toString-ok","iframe-microtask:object-toString-ok","iframe-microtask:array-instanceof-own-realm"],"events":[{"index":0,"type":"domcontentloaded","data":null},{"index":1,"type":"microtask-after-iframe","data":null}]}
+  TEST_LOGS: ["event:domcontentloaded","root:Object","root:Function","root:Array","root:Promise","root:Reflect","root:Object.prototype","root:Function.prototype","root:Array.prototype","root:Promise.prototype","root:Object.prototype.toString","root:Function.prototype.toString","root:navigator","root:document","root:documentElement","root:function-toString-ok","root:object-toString-ok","root:array-instanceof-own-realm","iframe-about-blank:Object","iframe-about-blank:Function","iframe-about-blank:Array","iframe-about-blank:Promise","iframe-about-blank:Reflect","iframe-about-blank:Object.prototype","iframe-about-blank:Function.prototype","iframe-about-blank:Array.prototype","iframe-about-blank:Promise.prototype","iframe-about-blank:Object.prototype.toString","iframe-about-blank:Function.prototype.toString","iframe-about-blank:navigator","iframe-about-blank:document","iframe-about-blank:documentElement","iframe-about-blank:function-toString-ok","iframe-about-blank:object-toString-ok","iframe-about-blank:array-instanceof-own-realm","event:microtask-after-iframe","iframe-microtask:Object","iframe-microtask:Function","iframe-microtask:Array","iframe-microtask:Promise","iframe-microtask:Reflect","iframe-microtask:Object.prototype","iframe-microtask:Function.prototype","iframe-microtask:Array.prototype","iframe-microtask:Promise.prototype","iframe-microtask:Object.prototype.toString","iframe-microtask:Function.prototype.toString","iframe-microtask:navigator","iframe-microtask:document","iframe-microtask:documentElement","iframe-microtask:function-toString-ok","iframe-microtask:object-toString-ok","iframe-microtask:array-instanceof-own-realm"]
+
+PASS fetch_navigation
+  done: true
+  TEST_RESULT: {"done":true,"scenario":"fetch_navigation"}
+  TEST_LOGS: ["next-start","realm-replaced","next-stable"]
+
+PASS iframe_detach_async
+  done: true
+  TEST_RESULT: {"done":true,"scenario":"iframe_detach_async"}
+  TEST_LOGS: ["parent-start","iframe-loaded","iframe-removed","child-loaded","parent-stable"]
+
+FAIL injected_script_ordering
+  done: true
+  TEST_RESULT: {"done":true,"logs":["new-document:missing","domcontentloaded:Object","domcontentloaded:Function","domcontentloaded:Array","domcontentloaded:Promise","domcontentloaded:Reflect","domcontentloaded:Object.prototype","domcontentloaded:Function.prototype","domcontentloaded:Array.prototype","domcontentloaded:Promise.prototype","domcontentloaded:Object.prototype.toString","domcontentloaded:Function.prototype.toString","domcontentloaded:navigator","domcontentloaded:document","domcontentloaded:documentElement","domcontentloaded:function-toString-ok","domcontentloaded:object-toString-ok","domcontentloaded:array-instanceof-own-realm"],"events":[]}
+  TEST_LOGS: ["new-document:missing","domcontentloaded:Object","domcontentloaded:Function","domcontentloaded:Array","domcontentloaded:Promise","domcontentloaded:Reflect","domcontentloaded:Object.prototype","domcontentloaded:Function.prototype","domcontentloaded:Array.prototype","domcontentloaded:Promise.prototype","domcontentloaded:Object.prototype.toString","domcontentloaded:Function.prototype.toString","domcontentloaded:navigator","domcontentloaded:document","domcontentloaded:documentElement","domcontentloaded:function-toString-ok","domcontentloaded:object-toString-ok","domcontentloaded:array-instanceof-own-realm"]
+  missing: ["new-document:ran","new-document:Object","new-document:Function.prototype.toString","new-document:document"]
+  forbidden: ["new-document:missing"]
+
+PASS microtask_teardown
+  done: true
+  TEST_RESULT: {"done":true,"scenario":"microtask_teardown"}
+  TEST_LOGS: ["next-start","realm-replaced","next-stable"]
+
+PASS module_evaluate_once
+  done: true
+  TEST_RESULT: {"done":true,"scenario":"module_evaluate_once"}
+  TEST_LOGS: ["module-evaluated","imports-complete","stable"]
+
+PASS mutation_observer_teardown
+  done: true
+  TEST_RESULT: {"done":true,"scenario":"mutation_observer_teardown"}
+  TEST_LOGS: ["next-start","realm-replaced","next-stable"]
+
+PASS promise_navigation
+  done: true
+  TEST_RESULT: {"done":true,"scenario":"promise_navigation"}
+  TEST_LOGS: ["next-start","realm-replaced","next-stable"]
+
+FAIL slotchange_teardown
+  done: false
+  TEST_RESULT: {"done":false,"scenario":"slotchange_teardown"}
+  TEST_LOGS: ["index-start"]
+  waitDone: scenario timeout
+  missing: ["slotchange-queued","navigation-started","realm-replaced"]
+
+PASS synthetic_navigation_lifecycle
+  done: true
+  TEST_RESULT: {"done":true,"logs":["about-blank:Object","about-blank:Function","about-blank:Array","about-blank:Promise","about-blank:Reflect","about-blank:Object.prototype","about-blank:Function.prototype","about-blank:Array.prototype","about-blank:Promise.prototype","about-blank:Object.prototype.toString","about-blank:Function.prototype.toString","about-blank:navigator","about-blank:document","about-blank:documentElement","about-blank:function-toString-ok","about-blank:object-toString-ok","about-blank:array-instanceof-own-realm","blob:script-ran","iframe:onload","after-synthetic:Object","after-synthetic:Function","after-synthetic:Array","after-synthetic:Promise","after-synthetic:Reflect","after-synthetic:Object.prototype","after-synthetic:Function.prototype","after-synthetic:Array.prototype","after-synthetic:Promise.prototype","after-synthetic:Object.prototype.toString","after-synthetic:Function.prototype.toString","after-synthetic:navigator","after-synthetic:document","after-synthetic:documentElement","after-synthetic:function-toString-ok","after-synthetic:object-toString-ok","after-synthetic:array-instanceof-own-realm"],"events":[]}
+  TEST_LOGS: ["about-blank:Object","about-blank:Function","about-blank:Array","about-blank:Promise","about-blank:Reflect","about-blank:Object.prototype","about-blank:Function.prototype","about-blank:Array.prototype","about-blank:Promise.prototype","about-blank:Object.prototype.toString","about-blank:Function.prototype.toString","about-blank:navigator","about-blank:document","about-blank:documentElement","about-blank:function-toString-ok","about-blank:object-toString-ok","about-blank:array-instanceof-own-realm","blob:script-ran","iframe:onload","after-synthetic:Object","after-synthetic:Function","after-synthetic:Array","after-synthetic:Promise","after-synthetic:Reflect","after-synthetic:Object.prototype","after-synthetic:Function.prototype","after-synthetic:Array.prototype","after-synthetic:Promise.prototype","after-synthetic:Object.prototype.toString","after-synthetic:Function.prototype.toString","after-synthetic:navigator","after-synthetic:document","after-synthetic:documentElement","after-synthetic:function-toString-ok","after-synthetic:object-toString-ok","after-synthetic:array-instanceof-own-realm"]
+
+PASS timer_navigation
+  done: true
+  TEST_RESULT: {"done":true,"scenario":"timer_navigation","stale_dom_mutation":false}
+  TEST_LOGS: ["next-start","realm-replaced","next-stable"]
+
+PASS windowproxy_semantics
+  done: true
+  TEST_RESULT: {"done":true,"logs":["initial:Object","initial:Function","initial:Array","initial:Promise","initial:Reflect","initial:Object.prototype","initial:Function.prototype","initial:Array.prototype","initial:Promise.prototype","initial:Object.prototype.toString","initial:Function.prototype.toString","initial:navigator","initial:document","initial:documentElement","initial:function-toString-ok","initial:object-toString-ok","initial:array-instanceof-own-realm","after-nav:Object","after-nav:Function","after-nav:Array","after-nav:Promise","after-nav:Reflect","after-nav:Object.prototype","after-nav:Function.prototype","after-nav:Array.prototype","after-nav:Promise.prototype","after-nav:Object.prototype.toString","after-nav:Function.prototype.toString","after-nav:navigator","after-nav:document","after-nav:documentElement","after-nav:function-toString-ok","after-nav:object-toString-ok","after-nav:array-instanceof-own-realm","windowproxy:stable-identity","detached:null"],"events":[]}
+  TEST_LOGS: ["initial:Object","initial:Function","initial:Array","initial:Promise","initial:Reflect","initial:Object.prototype","initial:Function.prototype","initial:Array.prototype","initial:Promise.prototype","initial:Object.prototype.toString","initial:Function.prototype.toString","initial:navigator","initial:document","initial:documentElement","initial:function-toString-ok","initial:object-toString-ok","initial:array-instanceof-own-realm","after-nav:Object","after-nav:Function","after-nav:Array","after-nav:Promise","after-nav:Reflect","after-nav:Object.prototype","after-nav:Function.prototype","after-nav:Array.prototype","after-nav:Promise.prototype","after-nav:Object.prototype.toString","after-nav:Function.prototype.toString","after-nav:navigator","after-nav:document","after-nav:documentElement","after-nav:function-toString-ok","after-nav:object-toString-ok","after-nav:array-instanceof-own-realm","windowproxy:stable-identity","detached:null"]
+
+SUMMARY 15/18 passed

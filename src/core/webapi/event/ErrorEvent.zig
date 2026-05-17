@@ -1,0 +1,141 @@
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+const std = @import("std");
+
+const js = @import("../../js/js.zig");
+const Page = @import("../../browser/Page.zig");
+
+const Event = @import("../Event.zig");
+
+const String = @import("../../../support/string.zig").String;
+const Allocator = std.mem.Allocator;
+
+const ErrorEvent = @This();
+
+_proto: *Event,
+_message: []const u8 = "",
+_filename: []const u8 = "",
+_line_number: u32 = 0,
+_column_number: u32 = 0,
+_error: ?js.Value.Temp = null,
+_arena: Allocator,
+
+pub const ErrorEventOptions = struct {
+    message: ?[]const u8 = null,
+    filename: ?[]const u8 = null,
+    lineno: u32 = 0,
+    colno: u32 = 0,
+    @"error": ?js.Value.Temp = null,
+};
+
+const Options = Event.inheritOptions(ErrorEvent, ErrorEventOptions);
+
+pub fn init(typ: []const u8, opts_: ?Options, page: *Page) !*ErrorEvent {
+    const arena = try page.getArena(.small, "ErrorEvent");
+    errdefer page.releaseArena(arena);
+    const type_string = try String.init(arena, typ, .{});
+    return initWithTrusted(arena, type_string, opts_, false, page);
+}
+
+pub fn initTrusted(typ: String, opts_: ?Options, page: *Page) !*ErrorEvent {
+    const arena = try page.getArena(.small, "ErrorEvent.trusted");
+    errdefer page.releaseArena(arena);
+    return initWithTrusted(arena, typ, opts_, true, page);
+}
+
+fn initWithTrusted(arena: Allocator, typ: String, opts_: ?Options, trusted: bool, page: *Page) !*ErrorEvent {
+    const opts = opts_ orelse Options{};
+
+    const event = try page.factory.event(
+        arena,
+        typ,
+        ErrorEvent{
+            ._arena = arena,
+            ._proto = undefined,
+            ._message = if (opts.message) |str| try arena.dupe(u8, str) else "",
+            ._filename = if (opts.filename) |str| try arena.dupe(u8, str) else "",
+            ._line_number = opts.lineno,
+            ._column_number = opts.colno,
+            ._error = opts.@"error",
+        },
+    );
+
+    Event.populatePrototypes(event, opts, trusted);
+    return event;
+}
+
+pub fn deinit(self: *ErrorEvent, page: *Page) void {
+    if (self._error) |e| {
+        e.release();
+    }
+    self._proto.deinit(page);
+}
+
+pub fn releaseRef(self: *ErrorEvent, page: *Page) void {
+    self._proto._rc.release(self, page);
+}
+
+pub fn acquireRef(self: *ErrorEvent) void {
+    self._proto.acquireRef();
+}
+
+pub fn asEvent(self: *ErrorEvent) *Event {
+    return self._proto;
+}
+
+pub fn getMessage(self: *const ErrorEvent) []const u8 {
+    return self._message;
+}
+
+pub fn getFilename(self: *const ErrorEvent) []const u8 {
+    return self._filename;
+}
+
+pub fn getLineNumber(self: *const ErrorEvent) u32 {
+    return self._line_number;
+}
+
+pub fn getColumnNumber(self: *const ErrorEvent) u32 {
+    return self._column_number;
+}
+
+pub fn getError(self: *const ErrorEvent) ?js.Value.Temp {
+    return self._error;
+}
+
+pub const JsApi = struct {
+    pub const bridge = js.Bridge(ErrorEvent);
+
+    pub const Meta = struct {
+        pub const name = "ErrorEvent";
+        pub const prototype_chain = bridge.prototypeChain();
+        pub var class_id: bridge.ClassId = undefined;
+        pub const weak = true;
+        pub const finalizer = bridge.finalizer(ErrorEvent.deinit);
+    };
+
+    // Start API
+    pub const constructor = bridge.constructor(ErrorEvent.init, .{});
+    pub const message = bridge.accessor(ErrorEvent.getMessage, null, .{});
+    pub const filename = bridge.accessor(ErrorEvent.getFilename, null, .{});
+    pub const lineno = bridge.accessor(ErrorEvent.getLineNumber, null, .{});
+    pub const colno = bridge.accessor(ErrorEvent.getColumnNumber, null, .{});
+    pub const @"error" = bridge.accessor(ErrorEvent.getError, null, .{ .null_as_undefined = true });
+};
+
+const testing = @import("../../../testing/testing.zig");
+test "WebApi: ErrorEvent" {
+    try testing.htmlRunner("event/error.html", .{});
+}

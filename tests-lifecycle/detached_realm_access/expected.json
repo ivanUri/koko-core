@@ -1,0 +1,4 @@
+{
+  "must_contain": ["before-detach:function-toString-ok", "element-contentWindow:null", "stale-ref:safe-object-toString"],
+  "must_not_contain": ["before-detach:FAIL:window-null", "element-contentWindow:present", "stale-ref:error:TypeError", "stale-ref:error:RangeError"]
+}

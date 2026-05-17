@@ -1,0 +1,62 @@
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+const std = @import("std");
+const js = @import("../../js/js.zig");
+
+const TextEncoder = @This();
+_pad: bool = false,
+
+pub fn init() TextEncoder {
+    return .{};
+}
+
+pub fn encode(_: *const TextEncoder, v_: ?js.Value) !js.TypedArray(u8) {
+    const v = v_ orelse return .{ .values = "" };
+
+    if (v.isUndefined()) {
+        return .{ .values = "" };
+    }
+
+    if (v.isNull()) {
+        return .{ .values = "null" };
+    }
+
+    const str = try v.toStringSlice();
+    if (!std.unicode.utf8ValidateSlice(str)) {
+        return error.InvalidUtf8;
+    }
+
+    return .{ .values = str };
+}
+
+pub const JsApi = struct {
+    pub const bridge = js.Bridge(TextEncoder);
+
+    pub const Meta = struct {
+        pub const name = "TextEncoder";
+        pub const prototype_chain = bridge.prototypeChain();
+        pub var class_id: bridge.ClassId = undefined;
+        pub const empty_with_no_proto = true;
+    };
+
+    pub const constructor = bridge.constructor(TextEncoder.init, .{});
+    pub const encode = bridge.function(TextEncoder.encode, .{ .as_typed_array = true });
+    pub const encoding = bridge.property("utf-8", .{ .template = false });
+};
+
+const testing = @import("../../../testing/testing.zig");
+test "WebApi: TextEncoder" {
+    try testing.htmlRunner("encoding/text_encoder.html", .{});
+}

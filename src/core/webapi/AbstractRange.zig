@@ -1,0 +1,338 @@
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+const std = @import("std");
+const RC = @import("../../support/rc.zig").RC;
+
+const js = @import("../js/js.zig");
+const Page = @import("../browser/Page.zig");
+
+const Node = @import("../dom/Node.zig");
+const Range = @import("Range.zig");
+
+const Allocator = std.mem.Allocator;
+
+const AbstractRange = @This();
+
+pub const _prototype_root = true;
+
+_rc: RC(u8) = .{},
+_type: Type,
+_arena: Allocator,
+_end_offset: u32,
+_start_offset: u32,
+_frame_loader_id: u32,
+_end_container: *Node,
+_start_container: *Node,
+
+// Intrusive linked list node for tracking live ranges on the Page.
+_range_link: std.DoublyLinkedList.Node = .{},
+
+pub fn acquireRef(self: *AbstractRange) void {
+    self._rc.acquire();
+}
+
+pub fn deinit(self: *AbstractRange, page: *Page) void {
+    if (page.findFrameByLoaderId(self._frame_loader_id)) |frame| {
+        frame._live_ranges.remove(&self._range_link);
+    }
+    page.releaseArena(self._arena);
+}
+
+pub fn releaseRef(self: *AbstractRange, page: *Page) void {
+    self._rc.release(self, page);
+}
+
+pub const Type = union(enum) {
+    range: *Range,
+    // TODO: static_range: *StaticRange,
+};
+
+pub fn as(self: *AbstractRange, comptime T: type) *T {
+    return self.is(T).?;
+}
+
+pub fn is(self: *AbstractRange, comptime T: type) ?*T {
+    switch (self._type) {
+        .range => |r| return if (T == Range) r else null,
+    }
+}
+
+pub fn getStartContainer(self: *const AbstractRange) *Node {
+    return self._start_container;
+}
+
+pub fn getStartOffset(self: *const AbstractRange) u32 {
+    return self._start_offset;
+}
+
+pub fn getEndContainer(self: *const AbstractRange) *Node {
+    return self._end_container;
+}
+
+pub fn getEndOffset(self: *const AbstractRange) u32 {
+    return self._end_offset;
+}
+
+pub fn getCollapsed(self: *const AbstractRange) bool {
+    return self._start_container == self._end_container and
+        self._start_offset == self._end_offset;
+}
+
+pub fn getCommonAncestorContainer(self: *const AbstractRange) *Node {
+    // Let container be start container
+    var container = self._start_container;
+
+    // While container is not an inclusive ancestor of end container
+    while (!isInclusiveAncestorOf(container, self._end_container)) {
+        // Let container be container's parent
+        container = container.parentNode() orelse break;
+    }
+
+    return container;
+}
+
+pub fn isStartAfterEnd(self: *const AbstractRange) bool {
+    return compareBoundaryPoints(
+        self._start_container,
+        self._start_offset,
+        self._end_container,
+        self._end_offset,
+    ) == .after;
+}
+
+const BoundaryComparison = enum {
+    before,
+    equal,
+    after,
+};
+
+pub fn compareBoundaryPoints(
+    node_a: *Node,
+    offset_a: u32,
+    node_b: *Node,
+    offset_b: u32,
+) BoundaryComparison {
+    // If same container, just compare offsets
+    if (node_a == node_b) {
+        if (offset_a < offset_b) return .before;
+        if (offset_a > offset_b) return .after;
+        return .equal;
+    }
+
+    // Check if one contains the other
+    if (isAncestorOf(node_a, node_b)) {
+        // A contains B, so A's position comes before B
+        // But we need to check if the offset in A comes after B
+        var child = node_b;
+        var parent = child.parentNode();
+        while (parent) |p| {
+            if (p == node_a) {
+                const child_index = p.getChildIndex(child) orelse unreachable;
+                if (offset_a <= child_index) {
+                    return .before;
+                }
+                return .after;
+            }
+            child = p;
+            parent = p.parentNode();
+        }
+        unreachable;
+    }
+
+    if (isAncestorOf(node_b, node_a)) {
+        // B contains A, so B's position comes before A
+        var child = node_a;
+        var parent = child.parentNode();
+        while (parent) |p| {
+            if (p == node_b) {
+                const child_index = p.getChildIndex(child) orelse unreachable;
+                if (child_index < offset_b) {
+                    return .before;
+                }
+                return .after;
+            }
+            child = p;
+            parent = p.parentNode();
+        }
+        unreachable;
+    }
+
+    // Neither contains the other, find their relative position in tree order
+    // Walk up from A to find all ancestors
+    var current = node_a;
+    var a_count: usize = 0;
+    var a_ancestors: [64]*Node = undefined;
+    while (a_count < 64) {
+        a_ancestors[a_count] = current;
+        a_count += 1;
+        current = current.parentNode() orelse break;
+    }
+
+    // Walk up from B and find first common ancestor
+    current = node_b;
+    while (current.parentNode()) |parent| {
+        for (a_ancestors[0..a_count]) |ancestor| {
+            if (ancestor != parent) {
+                continue;
+            }
+
+            // Found common ancestor
+            // Now compare positions of the children in this ancestor
+            const a_child = blk: {
+                var node = node_a;
+                while (node.parentNode()) |p| {
+                    if (p == parent) break :blk node;
+                    node = p;
+                }
+                unreachable;
+            };
+            const b_child = current;
+
+            const a_index = parent.getChildIndex(a_child) orelse unreachable;
+            const b_index = parent.getChildIndex(b_child) orelse unreachable;
+
+            if (a_index < b_index) {
+                return .before;
+            }
+            if (a_index > b_index) {
+                return .after;
+            }
+            return .equal;
+        }
+        current = parent;
+    }
+
+    // Should not reach here if nodes are in the same tree
+    return .before;
+}
+
+fn isAncestorOf(potential_ancestor: *Node, node: *Node) bool {
+    var current = node.parentNode();
+    while (current) |parent| {
+        if (parent == potential_ancestor) {
+            return true;
+        }
+        current = parent.parentNode();
+    }
+    return false;
+}
+
+fn isInclusiveAncestorOf(potential_ancestor: *Node, node: *Node) bool {
+    if (potential_ancestor == node) {
+        return true;
+    }
+    return isAncestorOf(potential_ancestor, node);
+}
+
+/// Update this range's boundaries after a replaceData mutation on target.
+/// All parameters are in UTF-16 code unit offsets.
+pub fn updateForCharacterDataReplace(self: *AbstractRange, target: *Node, offset: u32, count: u32, data_len: u32) void {
+    if (self._start_container == target) {
+        if (self._start_offset > offset and self._start_offset <= offset + count) {
+            self._start_offset = offset;
+        } else if (self._start_offset > offset + count) {
+            // Use i64 intermediate to avoid u32 underflow when count > data_len
+            self._start_offset = @intCast(@as(i64, self._start_offset) + @as(i64, data_len) - @as(i64, count));
+        }
+    }
+
+    if (self._end_container == target) {
+        if (self._end_offset > offset and self._end_offset <= offset + count) {
+            self._end_offset = offset;
+        } else if (self._end_offset > offset + count) {
+            self._end_offset = @intCast(@as(i64, self._end_offset) + @as(i64, data_len) - @as(i64, count));
+        }
+    }
+}
+
+/// Update this range's boundaries after a splitText operation.
+/// Steps 7b-7e of the DOM spec splitText algorithm.
+pub fn updateForSplitText(self: *AbstractRange, target: *Node, new_node: *Node, offset: u32, parent: *Node, node_index: u32) void {
+    // Step 7b: ranges on the original node with start > offset move to new node
+    if (self._start_container == target and self._start_offset > offset) {
+        self._start_container = new_node;
+        self._start_offset = self._start_offset - offset;
+    }
+    // Step 7c: ranges on the original node with end > offset move to new node
+    if (self._end_container == target and self._end_offset > offset) {
+        self._end_container = new_node;
+        self._end_offset = self._end_offset - offset;
+    }
+    // Step 7d: ranges on parent with start == node_index + 1 increment
+    if (self._start_container == parent and self._start_offset == node_index + 1) {
+        self._start_offset += 1;
+    }
+    // Step 7e: ranges on parent with end == node_index + 1 increment
+    if (self._end_container == parent and self._end_offset == node_index + 1) {
+        self._end_offset += 1;
+    }
+}
+
+/// Update this range's boundaries after a node insertion.
+pub fn updateForNodeInsertion(self: *AbstractRange, parent: *Node, child_index: u32) void {
+    if (self._start_container == parent and self._start_offset > child_index) {
+        self._start_offset += 1;
+    }
+    if (self._end_container == parent and self._end_offset > child_index) {
+        self._end_offset += 1;
+    }
+}
+
+/// Update this range's boundaries after a node removal.
+pub fn updateForNodeRemoval(self: *AbstractRange, parent: *Node, child: *Node, child_index: u32) void {
+    // Steps 4-5: ranges whose start/end is an inclusive descendant of child
+    // get moved to (parent, child_index).
+    if (isInclusiveDescendantOf(self._start_container, child)) {
+        self._start_container = parent;
+        self._start_offset = child_index;
+    }
+    if (isInclusiveDescendantOf(self._end_container, child)) {
+        self._end_container = parent;
+        self._end_offset = child_index;
+    }
+
+    // Steps 6-7: ranges on parent at offsets > child_index get decremented.
+    if (self._start_container == parent and self._start_offset > child_index) {
+        self._start_offset -= 1;
+    }
+    if (self._end_container == parent and self._end_offset > child_index) {
+        self._end_offset -= 1;
+    }
+}
+
+fn isInclusiveDescendantOf(node: *Node, potential_ancestor: *Node) bool {
+    var current: ?*Node = node;
+    while (current) |n| {
+        if (n == potential_ancestor) return true;
+        current = n.parentNode();
+    }
+    return false;
+}
+
+pub const JsApi = struct {
+    pub const bridge = js.Bridge(AbstractRange);
+
+    pub const Meta = struct {
+        pub const name = "AbstractRange";
+        pub const prototype_chain = bridge.prototypeChain();
+        pub var class_id: bridge.ClassId = undefined;
+    };
+
+    pub const startContainer = bridge.accessor(AbstractRange.getStartContainer, null, .{});
+    pub const startOffset = bridge.accessor(AbstractRange.getStartOffset, null, .{});
+    pub const endContainer = bridge.accessor(AbstractRange.getEndContainer, null, .{});
+    pub const endOffset = bridge.accessor(AbstractRange.getEndOffset, null, .{});
+    pub const collapsed = bridge.accessor(AbstractRange.getCollapsed, null, .{});
+    pub const commonAncestorContainer = bridge.accessor(AbstractRange.getCommonAncestorContainer, null, .{});
+};

@@ -1,0 +1,4 @@
+{
+  "must_contain": ["initial:function-toString-ok", "after-nav:function-toString-ok", "windowproxy:stable-identity", "detached:null"],
+  "must_not_contain": ["initial:FAIL:window-null", "after-nav:FAIL:window-null", "windowproxy:replaced-identity", "detached:present"]
+}

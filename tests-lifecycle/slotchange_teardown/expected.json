@@ -1,0 +1,13 @@
+{
+  "must_contain": [
+    "slotchange-queued",
+    "navigation-started",
+    "realm-replaced"
+  ],
+  "must_not_contain": [
+    "stale-slotchange-fired"
+  ],
+  "semantic_expectations": {
+    "slotchange_after_teardown": "must_not_deliver_to_dead_realm"
+  }
+}

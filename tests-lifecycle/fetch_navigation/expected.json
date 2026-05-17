@@ -1,0 +1,16 @@
+{
+  "must_contain": [
+    "next-start",
+    "realm-replaced",
+    "next-stable"
+  ],
+  "must_not_contain": [
+    "stale-fetch-then",
+    "stale-fetch-dom-mutation"
+  ],
+  "semantic_expectations": {
+    "realm_replacement": "old realm globals are not observable after navigation",
+    "fetch_completion_from_old_realm": "must_not_poison_next_realm_or_runtime",
+    "final_page": "next.html stable"
+  }
+}

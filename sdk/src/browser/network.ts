@@ -1,0 +1,94 @@
+import type { CDPSession } from "../cdp/session.js";
+import { delay, withTimeout } from "../utils/timeout.js";
+
+export interface NetworkRequest {
+  requestId: string;
+  url: string;
+  method?: string;
+  timestamp?: number;
+  redirectChain: string[];
+  response?: NetworkResponse;
+  failureText?: string;
+}
+
+export interface NetworkResponse {
+  url: string;
+  status: number;
+  statusText?: string;
+  headers?: Record<string, string>;
+}
+
+export class NetworkTracker {
+  readonly requests = new Map<string, NetworkRequest>();
+  readonly inflight = new Set<string>();
+  private cleanup: Array<() => void> = [];
+
+  constructor(private readonly session: CDPSession) {}
+
+  async enable(): Promise<void> {
+    this.cleanup.push(
+      this.session.on<any>("Network.requestWillBeSent", (event) => this.onRequest(event)),
+      this.session.on<any>("Network.responseReceived", (event) => this.onResponse(event)),
+      this.session.on<any>("Network.loadingFinished", (event) => this.onDone(event.requestId)),
+      this.session.on<any>("Network.loadingFailed", (event) => this.onFailed(event)),
+    );
+    await this.session.send("Network.enable").catch(() => undefined);
+  }
+
+  dispose(): void {
+    for (const off of this.cleanup) off();
+    this.cleanup = [];
+    this.inflight.clear();
+  }
+
+  waitForIdle(options: { idleMs?: number; timeout?: number } = {}): Promise<void> {
+    const idleMs = options.idleMs ?? 500;
+    const poll = async () => {
+      let idleStarted: number | undefined;
+      while (true) {
+        if (this.inflight.size === 0) {
+          idleStarted ??= Date.now();
+          if (Date.now() - idleStarted >= idleMs) return;
+        } else {
+          idleStarted = undefined;
+        }
+        await delay(50);
+      }
+    };
+    return withTimeout(poll(), { timeout: options.timeout, label: "Waiting for network idle" });
+  }
+
+  private onRequest(event: any): void {
+    const previous = this.requests.get(event.requestId);
+    const redirectChain = previous ? [...previous.redirectChain, previous.url] : [];
+    this.requests.set(event.requestId, {
+      requestId: event.requestId,
+      url: event.request?.url ?? "",
+      method: event.request?.method,
+      timestamp: event.timestamp,
+      redirectChain,
+    });
+    this.inflight.add(event.requestId);
+  }
+
+  private onResponse(event: any): void {
+    const request = this.requests.get(event.requestId);
+    if (!request) return;
+    request.response = {
+      url: event.response?.url ?? request.url,
+      status: event.response?.status ?? 0,
+      statusText: event.response?.statusText,
+      headers: event.response?.headers,
+    };
+  }
+
+  private onDone(requestId: string): void {
+    this.inflight.delete(requestId);
+  }
+
+  private onFailed(event: any): void {
+    const request = this.requests.get(event.requestId);
+    if (request) request.failureText = event.errorText;
+    this.inflight.delete(event.requestId);
+  }
+}

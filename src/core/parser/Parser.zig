@@ -1,0 +1,499 @@
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+const std = @import("std");
+const h5e = @import("html5ever.zig");
+
+const Frame = @import("../browser/Frame.zig");
+const Node = @import("../dom/Node.zig");
+const Element = @import("../dom/Element.zig");
+
+pub const AttributeIterator = h5e.AttributeIterator;
+
+const Allocator = std.mem.Allocator;
+const IS_DEBUG = @import("builtin").mode == .Debug;
+const log = @import("../../support/log.zig");
+
+fn assert(ok: bool, comptime msg: []const u8, args: anytype) void {
+    if (ok) return;
+    log.err(.app, msg, args);
+    std.debug.assert(ok);
+}
+
+pub const ParsedNode = struct {
+    node: *Node,
+
+    // Data associated with this element to be passed back to html5ever as needed
+    // We only have this for Elements. For other types, like comments, it's null.
+    // html5ever should never ask us for this data on a non-element, and we'll
+    // assert that, with this optional, to make sure our assumption is correct.
+    data: ?*anyopaque,
+};
+
+const Parser = @This();
+
+frame: *Frame,
+err: ?Error,
+container: ParsedNode,
+arena: Allocator,
+strings: std.StringHashMapUnmanaged(void),
+
+pub fn init(arena: Allocator, node: *Node, frame: *Frame) Parser {
+    return .{
+        .err = null,
+        .frame = frame,
+        .strings = .empty,
+        .arena = arena,
+        .container = ParsedNode{
+            .data = null,
+            .node = node,
+        },
+    };
+}
+
+const Error = struct {
+    err: anyerror,
+    source: Source,
+
+    const Source = enum {
+        pop,
+        append,
+        create_element,
+        create_comment,
+        create_processing_instruction,
+        append_doctype_to_document,
+        add_attrs_if_missing,
+        get_template_content,
+        remove_from_parent,
+        reparent_children,
+        append_before_sibling,
+        append_based_on_parent_node,
+    };
+};
+
+pub fn parse(self: *Parser, html: []const u8) void {
+    h5e.html5ever_parse_document(
+        html.ptr,
+        html.len,
+        &self.container,
+        self,
+        createElementCallback,
+        getDataCallback,
+        appendCallback,
+        parseErrorCallback,
+        popCallback,
+        createCommentCallback,
+        createProcessingInstruction,
+        appendDoctypeToDocument,
+        addAttrsIfMissingCallback,
+        getTemplateContentsCallback,
+        removeFromParentCallback,
+        reparentChildrenCallback,
+        appendBeforeSiblingCallback,
+        appendBasedOnParentNodeCallback,
+    );
+}
+
+/// Parse HTML with encoding conversion. Converts from charset to UTF-8 before parsing.
+pub fn parseWithEncoding(self: *Parser, html: []const u8, charset: []const u8) void {
+    h5e.html5ever_parse_document_with_encoding(
+        html.ptr,
+        html.len,
+        charset.ptr,
+        charset.len,
+        &self.container,
+        self,
+        createElementCallback,
+        getDataCallback,
+        appendCallback,
+        parseErrorCallback,
+        popCallback,
+        createCommentCallback,
+        createProcessingInstruction,
+        appendDoctypeToDocument,
+        addAttrsIfMissingCallback,
+        getTemplateContentsCallback,
+        removeFromParentCallback,
+        reparentChildrenCallback,
+        appendBeforeSiblingCallback,
+        appendBasedOnParentNodeCallback,
+    );
+}
+
+pub fn parseXML(self: *Parser, xml: []const u8) void {
+    h5e.xml5ever_parse_document(
+        xml.ptr,
+        xml.len,
+        &self.container,
+        self,
+        createXMLElementCallback,
+        getDataCallback,
+        appendCallback,
+        parseErrorCallback,
+        popCallback,
+        createCommentCallback,
+        createProcessingInstruction,
+        appendDoctypeToDocument,
+        addAttrsIfMissingCallback,
+        getTemplateContentsCallback,
+        removeFromParentCallback,
+        reparentChildrenCallback,
+        appendBeforeSiblingCallback,
+        appendBasedOnParentNodeCallback,
+    );
+}
+
+pub fn parseFragment(self: *Parser, html: []const u8) void {
+    h5e.html5ever_parse_fragment(
+        html.ptr,
+        html.len,
+        &self.container,
+        self,
+        createElementCallback,
+        getDataCallback,
+        appendCallback,
+        parseErrorCallback,
+        popCallback,
+        createCommentCallback,
+        createProcessingInstruction,
+        appendDoctypeToDocument,
+        addAttrsIfMissingCallback,
+        getTemplateContentsCallback,
+        removeFromParentCallback,
+        reparentChildrenCallback,
+        appendBeforeSiblingCallback,
+        appendBasedOnParentNodeCallback,
+    );
+}
+
+pub const Streaming = struct {
+    parser: Parser,
+    handle: ?*anyopaque,
+
+    pub fn init(arena: Allocator, node: *Node, frame: *Frame) Streaming {
+        return .{
+            .handle = null,
+            .parser = Parser.init(arena, node, frame),
+        };
+    }
+
+    pub fn deinit(self: *Streaming) void {
+        if (self.handle) |handle| {
+            h5e.html5ever_streaming_parser_destroy(handle);
+        }
+    }
+
+    pub fn start(self: *Streaming) !void {
+        assert(self.handle == null, "Parser.start non-null handle", .{});
+
+        self.handle = h5e.html5ever_streaming_parser_create(
+            &self.parser.container,
+            &self.parser,
+            createElementCallback,
+            getDataCallback,
+            appendCallback,
+            parseErrorCallback,
+            popCallback,
+            createCommentCallback,
+            createProcessingInstruction,
+            appendDoctypeToDocument,
+            addAttrsIfMissingCallback,
+            getTemplateContentsCallback,
+            removeFromParentCallback,
+            reparentChildrenCallback,
+            appendBeforeSiblingCallback,
+            appendBasedOnParentNodeCallback,
+        ) orelse return error.ParserCreationFailed;
+    }
+
+    pub fn read(self: *Streaming, data: []const u8) !void {
+        const result = h5e.html5ever_streaming_parser_feed(
+            self.handle.?,
+            data.ptr,
+            data.len,
+        );
+
+        if (result != 0) {
+            // Parser panicked - clean up and return error
+            // Note: deinit will destroy the handle if it exists
+            if (self.handle) |handle| {
+                h5e.html5ever_streaming_parser_destroy(handle);
+                self.handle = null;
+            }
+            return error.ParserPanic;
+        }
+    }
+
+    pub fn done(self: *Streaming) void {
+        h5e.html5ever_streaming_parser_finish(self.handle.?);
+    }
+};
+
+fn parseErrorCallback(ctx: *anyopaque, err: h5e.StringSlice) callconv(.c) void {
+    _ = ctx;
+    _ = err;
+    // std.debug.print("PEC: {s}\n", .{err.slice()});
+}
+
+fn popCallback(ctx: *anyopaque, node_ref: *anyopaque) callconv(.c) void {
+    const self: *Parser = @ptrCast(@alignCast(ctx));
+    self._popCallback(getNode(node_ref)) catch |err| {
+        self.err = .{ .err = err, .source = .pop };
+    };
+}
+
+fn _popCallback(self: *Parser, node: *Node) !void {
+    try self.frame.nodeComplete(node);
+}
+
+fn createElementCallback(ctx: *anyopaque, data: *anyopaque, qname: h5e.QualName, attributes: h5e.AttributeIterator) callconv(.c) ?*anyopaque {
+    return _createElementCallbackWithDefaultnamespace(ctx, data, qname, attributes, .unknown);
+}
+
+fn createXMLElementCallback(ctx: *anyopaque, data: *anyopaque, qname: h5e.QualName, attributes: h5e.AttributeIterator) callconv(.c) ?*anyopaque {
+    return _createElementCallbackWithDefaultnamespace(ctx, data, qname, attributes, .xml);
+}
+
+fn _createElementCallbackWithDefaultnamespace(ctx: *anyopaque, data: *anyopaque, qname: h5e.QualName, attributes: h5e.AttributeIterator, default_namespace: Element.Namespace) ?*anyopaque {
+    const self: *Parser = @ptrCast(@alignCast(ctx));
+    return self._createElementCallback(data, qname, attributes, default_namespace) catch |err| {
+        self.err = .{ .err = err, .source = .create_element };
+        return null;
+    };
+}
+fn _createElementCallback(self: *Parser, data: *anyopaque, qname: h5e.QualName, attributes: h5e.AttributeIterator, default_namespace: Element.Namespace) !*anyopaque {
+    const frame = self.frame;
+    const name = qname.local.slice();
+    const namespace_string = qname.ns.slice();
+    const namespace = if (namespace_string.len == 0) default_namespace else Element.Namespace.parse(namespace_string);
+    const node = try frame.createElementNS(namespace, name, attributes);
+
+    const pn = try self.arena.create(ParsedNode);
+    pn.* = .{
+        .data = data,
+        .node = node,
+    };
+    return pn;
+}
+
+fn createCommentCallback(ctx: *anyopaque, str: h5e.StringSlice) callconv(.c) ?*anyopaque {
+    const self: *Parser = @ptrCast(@alignCast(ctx));
+    return self._createCommentCallback(str.slice()) catch |err| {
+        self.err = .{ .err = err, .source = .create_comment };
+        return null;
+    };
+}
+fn _createCommentCallback(self: *Parser, str: []const u8) !*anyopaque {
+    const frame = self.frame;
+    const node = try frame.createComment(str);
+    const pn = try self.arena.create(ParsedNode);
+    pn.* = .{
+        .data = null,
+        .node = node,
+    };
+    return pn;
+}
+
+fn createProcessingInstruction(ctx: *anyopaque, target: h5e.StringSlice, data: h5e.StringSlice) callconv(.c) ?*anyopaque {
+    const self: *Parser = @ptrCast(@alignCast(ctx));
+    return self._createProcessingInstruction(target.slice(), data.slice()) catch |err| {
+        self.err = .{ .err = err, .source = .create_processing_instruction };
+        return null;
+    };
+}
+fn _createProcessingInstruction(self: *Parser, target: []const u8, data: []const u8) !*anyopaque {
+    const frame = self.frame;
+    const node = try frame.createProcessingInstruction(target, data);
+    const pn = try self.arena.create(ParsedNode);
+    pn.* = .{
+        .data = null,
+        .node = node,
+    };
+    return pn;
+}
+
+fn appendDoctypeToDocument(ctx: *anyopaque, name: h5e.StringSlice, public_id: h5e.StringSlice, system_id: h5e.StringSlice) callconv(.c) void {
+    const self: *Parser = @ptrCast(@alignCast(ctx));
+    self._appendDoctypeToDocument(name.slice(), public_id.slice(), system_id.slice()) catch |err| {
+        self.err = .{ .err = err, .source = .append_doctype_to_document };
+    };
+}
+fn _appendDoctypeToDocument(self: *Parser, name: []const u8, public_id: []const u8, system_id: []const u8) !void {
+    const frame = self.frame;
+
+    // Create the DocumentType node
+    const DocumentType = @import("../dom/DocumentType.zig");
+    const doctype = try frame._factory.node(DocumentType{
+        ._proto = undefined,
+        ._name = try frame.dupeString(name),
+        ._public_id = try frame.dupeString(public_id),
+        ._system_id = try frame.dupeString(system_id),
+    });
+
+    // Append it to the document
+    try frame.appendNew(self.container.node, .{ .node = doctype.asNode() });
+}
+
+fn addAttrsIfMissingCallback(ctx: *anyopaque, target_ref: *anyopaque, attributes: h5e.AttributeIterator) callconv(.c) void {
+    const self: *Parser = @ptrCast(@alignCast(ctx));
+    self._addAttrsIfMissingCallback(getNode(target_ref), attributes) catch |err| {
+        self.err = .{ .err = err, .source = .add_attrs_if_missing };
+    };
+}
+fn _addAttrsIfMissingCallback(self: *Parser, node: *Node, attributes: h5e.AttributeIterator) !void {
+    const element = node.as(Element);
+    const frame = self.frame;
+
+    const attr_list = try element.getOrCreateAttributeList(frame);
+    while (attributes.next()) |attr| {
+        const name = attr.name.local.slice();
+        const value = attr.value.slice();
+        // putNew only adds if the attribute doesn't already exist
+        try attr_list.putNew(name, value, frame);
+    }
+}
+
+fn getTemplateContentsCallback(ctx: *anyopaque, target_ref: *anyopaque) callconv(.c) ?*anyopaque {
+    const self: *Parser = @ptrCast(@alignCast(ctx));
+    return self._getTemplateContentsCallback(getNode(target_ref)) catch |err| {
+        self.err = .{ .err = err, .source = .get_template_content };
+        return null;
+    };
+}
+
+fn _getTemplateContentsCallback(self: *Parser, node: *Node) !*anyopaque {
+    const element = node.as(Element);
+    const template = element._type.html.is(Element.Html.Template) orelse unreachable;
+    const content_node = template.getContent().asNode();
+
+    // Create a ParsedNode wrapper for the content DocumentFragment
+    const pn = try self.arena.create(ParsedNode);
+    pn.* = .{
+        .data = null,
+        .node = content_node,
+    };
+    return pn;
+}
+
+fn getDataCallback(ctx: *anyopaque) callconv(.c) *anyopaque {
+    const pn: *ParsedNode = @ptrCast(@alignCast(ctx));
+    // For non-elements, data is null. But, we expect this to only ever
+    // be called for elements.
+    assert(pn.data != null, "Parser.getDataCallback null data", .{});
+    return pn.data.?;
+}
+
+fn appendCallback(ctx: *anyopaque, parent_ref: *anyopaque, node_or_text: h5e.NodeOrText) callconv(.c) void {
+    const self: *Parser = @ptrCast(@alignCast(ctx));
+    self._appendCallback(getNode(parent_ref), node_or_text) catch |err| {
+        self.err = .{ .err = err, .source = .append };
+    };
+}
+fn _appendCallback(self: *Parser, parent: *Node, node_or_text: h5e.NodeOrText) !void {
+    // child node is guaranteed not to belong to another parent
+    switch (node_or_text.toUnion()) {
+        .node => |cpn| {
+            const child = getNode(cpn);
+            if (child._parent) |previous_parent| {
+                // html5ever says this can't happen, but we might be screwing up
+                // the node on our side. We shouldn't be, but we're seeing this
+                // in the wild, and I'm not sure why. In debug, let's crash so
+                // we can try to figure it out. In release, let's disconnect
+                // the child first.
+                if (comptime IS_DEBUG) {
+                    unreachable;
+                }
+                self.frame.removeNode(previous_parent, child, .{ .will_be_reconnected = parent.isConnected() });
+            }
+            try self.frame.appendNew(parent, .{ .node = child });
+        },
+        .text => |txt| try self.frame.appendNew(parent, .{ .text = txt }),
+    }
+}
+
+fn removeFromParentCallback(ctx: *anyopaque, target_ref: *anyopaque) callconv(.c) void {
+    const self: *Parser = @ptrCast(@alignCast(ctx));
+    self._removeFromParentCallback(getNode(target_ref)) catch |err| {
+        self.err = .{ .err = err, .source = .remove_from_parent };
+    };
+}
+fn _removeFromParentCallback(self: *Parser, node: *Node) !void {
+    const parent = node.parentNode() orelse return;
+    _ = try parent.removeChild(node, self.frame);
+}
+
+fn reparentChildrenCallback(ctx: *anyopaque, node_ref: *anyopaque, new_parent_ref: *anyopaque) callconv(.c) void {
+    const self: *Parser = @ptrCast(@alignCast(ctx));
+    self._reparentChildrenCallback(getNode(node_ref), getNode(new_parent_ref)) catch |err| {
+        self.err = .{ .err = err, .source = .reparent_children };
+    };
+}
+fn _reparentChildrenCallback(self: *Parser, node: *Node, new_parent: *Node) !void {
+    try self.frame.appendAllChildren(node, new_parent);
+}
+
+fn appendBeforeSiblingCallback(ctx: *anyopaque, sibling_ref: *anyopaque, node_or_text: h5e.NodeOrText) callconv(.c) void {
+    const self: *Parser = @ptrCast(@alignCast(ctx));
+    self._appendBeforeSiblingCallback(getNode(sibling_ref), node_or_text) catch |err| {
+        self.err = .{ .err = err, .source = .append_before_sibling };
+    };
+}
+fn _appendBeforeSiblingCallback(self: *Parser, sibling: *Node, node_or_text: h5e.NodeOrText) !void {
+    const parent = sibling.parentNode() orelse return error.NoParent;
+    const node: *Node = switch (node_or_text.toUnion()) {
+        .node => |cpn| blk: {
+            const child = getNode(cpn);
+            if (child._parent) |previous_parent| {
+                // A custom element constructor may have inserted the node into the
+                // DOM before the parser officially places it (e.g. via foster
+                // parenting). Detach it first so insertNodeRelative's assertion holds.
+                self.frame.removeNode(previous_parent, child, .{ .will_be_reconnected = parent.isConnected() });
+            }
+            break :blk child;
+        },
+        .text => |txt| try self.frame.createTextNode(txt),
+    };
+    try self.frame.insertNodeRelative(parent, node, .{ .before = sibling }, .{});
+}
+
+fn appendBasedOnParentNodeCallback(ctx: *anyopaque, element_ref: *anyopaque, prev_element_ref: *anyopaque, node_or_text: h5e.NodeOrText) callconv(.c) void {
+    const self: *Parser = @ptrCast(@alignCast(ctx));
+    self._appendBasedOnParentNodeCallback(getNode(element_ref), getNode(prev_element_ref), node_or_text) catch |err| {
+        self.err = .{ .err = err, .source = .append_based_on_parent_node };
+    };
+}
+fn _appendBasedOnParentNodeCallback(self: *Parser, element: *Node, prev_element: *Node, node_or_text: h5e.NodeOrText) !void {
+    if (element.parentNode()) |_| {
+        try self._appendBeforeSiblingCallback(element, node_or_text);
+    } else {
+        try self._appendCallback(prev_element, node_or_text);
+    }
+}
+
+fn getNode(ref: *anyopaque) *Node {
+    const pn: *ParsedNode = @ptrCast(@alignCast(ref));
+    return pn.node;
+}
+
+fn asUint(comptime string: anytype) std.meta.Int(
+    .unsigned,
+    @bitSizeOf(@TypeOf(string.*)) - 8, // (- 8) to exclude sentinel 0
+) {
+    const byteLength = @sizeOf(@TypeOf(string.*)) - 1;
+    const expectedType = *const [byteLength:0]u8;
+    if (@TypeOf(string) != expectedType) {
+        @compileError("expected : " ++ @typeName(expectedType) ++ ", got: " ++ @typeName(@TypeOf(string)));
+    }
+
+    return @bitCast(@as(*const [byteLength]u8, string).*);
+}

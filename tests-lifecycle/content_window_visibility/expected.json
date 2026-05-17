@@ -1,0 +1,4 @@
+{
+  "must_contain": ["before-attach:null", "after-append:Object", "after-append:Function.prototype.toString", "after-append:function-toString-ok", "microtask:object-toString-ok", "after-remove:null"],
+  "must_not_contain": ["before-attach:present", "after-append:FAIL:window-null", "after-append:missing:Object.prototype.toString", "after-remove:present", "FAIL:TypeError", "FAIL:RangeError"]
+}

@@ -1,0 +1,135 @@
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+const std = @import("std");
+const js = @import("../../../js/js.zig");
+const Frame = @import("../../../browser/Frame.zig");
+
+const Node = @import("../../../dom/Node.zig");
+const Element = @import("../../../dom/Element.zig");
+const HtmlElement = @import("../Html.zig");
+
+const Link = @This();
+_proto: *HtmlElement,
+
+pub fn asElement(self: *Link) *Element {
+    return self._proto._proto;
+}
+pub fn asConstElement(self: *const Link) *const Element {
+    return self._proto._proto;
+}
+pub fn asNode(self: *Link) *Node {
+    return self.asElement().asNode();
+}
+
+pub fn getHref(self: *Link, frame: *Frame) ![]const u8 {
+    const element = self.asElement();
+    const href = element.getAttributeSafe(comptime .wrap("href")) orelse return "";
+    if (href.len == 0) {
+        return "";
+    }
+    return element.asNode().resolveURL(href, frame, .{});
+}
+
+pub fn setHref(self: *Link, value: []const u8, frame: *Frame) !void {
+    const element = self.asElement();
+    try element.setAttributeSafe(comptime .wrap("href"), .wrap(value), frame);
+
+    if (element.asNode().isConnected()) {
+        try self.linkAddedCallback(frame);
+    }
+}
+
+pub fn getRel(self: *Link) []const u8 {
+    return self.asElement().getAttributeSafe(comptime .wrap("rel")) orelse return "";
+}
+
+pub fn setRel(self: *Link, value: []const u8, frame: *Frame) !void {
+    try self.asElement().setAttributeSafe(comptime .wrap("rel"), .wrap(value), frame);
+}
+
+pub fn getAs(self: *const Link) []const u8 {
+    return self.asConstElement().getAttributeSafe(comptime .wrap("as")) orelse "";
+}
+
+pub fn setAs(self: *Link, value: []const u8, frame: *Frame) !void {
+    return self.asElement().setAttributeSafe(comptime .wrap("as"), .wrap(value), frame);
+}
+
+pub fn getCrossOrigin(self: *const Link) ?[]const u8 {
+    return self.asConstElement().getAttributeSafe(comptime .wrap("crossOrigin"));
+}
+
+pub fn setCrossOrigin(self: *Link, value: []const u8, frame: *Frame) !void {
+    var normalized: []const u8 = "anonymous";
+    if (std.ascii.eqlIgnoreCase(value, "use-credentials")) {
+        normalized = "use-credentials";
+    }
+    return self.asElement().setAttributeSafe(comptime .wrap("crossOrigin"), .wrap(normalized), frame);
+}
+
+pub fn linkAddedCallback(self: *Link, frame: *Frame) !void {
+    // if we're planning on navigating to another frame, don't trigger load event.
+    if (frame.isGoingAway()) {
+        return;
+    }
+
+    const element = self.asElement();
+
+    const rel = element.getAttributeSafe(comptime .wrap("rel")) orelse return;
+    const loadable_rels = std.StaticStringMap(void).initComptime(.{
+        .{ "stylesheet", {} },
+        .{ "preload", {} },
+        .{ "modulepreload", {} },
+    });
+    if (loadable_rels.has(rel) == false) {
+        return;
+    }
+
+    const href = element.getAttributeSafe(comptime .wrap("href")) orelse return;
+    if (href.len == 0) {
+        return;
+    }
+
+    try frame.queueLoad(self._proto);
+}
+
+pub const JsApi = struct {
+    pub const bridge = js.Bridge(Link);
+
+    pub const Meta = struct {
+        pub const name = "HTMLLinkElement";
+        pub const prototype_chain = bridge.prototypeChain();
+        pub var class_id: bridge.ClassId = undefined;
+    };
+
+    pub const as = bridge.accessor(Link.getAs, Link.setAs, .{});
+    pub const rel = bridge.accessor(Link.getRel, Link.setRel, .{});
+    pub const href = bridge.accessor(Link.getHref, Link.setHref, .{});
+    pub const crossOrigin = bridge.accessor(Link.getCrossOrigin, Link.setCrossOrigin, .{});
+    pub const relList = bridge.accessor(_getRelList, null, .{ .null_as_undefined = true });
+
+    fn _getRelList(self: *Link, frame: *Frame) !?*@import("../../collections.zig").DOMTokenList {
+        const element = self.asElement();
+        // relList is only valid for HTML <link> elements, not SVG or MathML
+        if (element._namespace != .html) {
+            return null;
+        }
+        return element.getRelList(frame);
+    }
+};
+
+const testing = @import("../../../../testing/testing.zig");
+test "WebApi: HTML.Link" {
+    try testing.htmlRunner("element/html/link.html", .{});
+}

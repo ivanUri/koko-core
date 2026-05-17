@@ -1,0 +1,12 @@
+<!doctype html><meta charset="utf-8"><title>promise_navigation</title>
+<script>
+window.TEST_LOGS = ["index-start"];
+window.TEST_RESULT = { done: false, scenario: "promise_navigation" };
+Promise.resolve().then(() => {
+  window.TEST_LOGS.push("stale-promise-fired");
+  document.documentElement.setAttribute("data-stale", "promise");
+});
+window.TEST_LOGS.push("promise-scheduled");
+window.TEST_LOGS.push("navigation-started");
+location.replace("next.html");
+</script>

@@ -1,0 +1,16 @@
+<!doctype html><meta charset="utf-8"><script src="../_shared/runtime-invariants.js"></script><script>
+addEventListener("DOMContentLoaded", () => {
+    const inv = RuntimeInvariant;
+    const iframe = document.createElement("iframe");
+    document.body.appendChild(iframe);
+    iframe.src = "about:blank";
+    inv.checkRealm("about-blank", iframe.contentWindow);
+    const blob = new Blob(["<!doctype html><script>parent.RuntimeInvariant.log('blob:script-ran');<\/script>"], { type: "text/html" });
+    iframe.onload = () => {
+        inv.log("iframe:onload");
+        inv.checkRealm("after-synthetic", iframe.contentWindow);
+        inv.done();
+    };
+    iframe.src = URL.createObjectURL(blob);
+});
+</script><body></body>

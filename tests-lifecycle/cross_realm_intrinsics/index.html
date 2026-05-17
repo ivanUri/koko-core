@@ -1,0 +1,22 @@
+<!doctype html><meta charset="utf-8"><script src="../_shared/runtime-invariants.js"></script><script>
+addEventListener("DOMContentLoaded", () => {
+    const inv = RuntimeInvariant;
+    const iframe = document.createElement("iframe");
+    iframe.src = "about:blank";
+    document.body.appendChild(iframe);
+    const win = iframe.contentWindow;
+    const ok = inv.checkRealm("child", win);
+    try {
+        const childArray = new win.Array(1);
+        inv.log(childArray instanceof win.Array ? "array:child-instanceof-child" : "array:bad-child-instanceof-child");
+        inv.log(childArray instanceof Array ? "array:instanceof-parent" : "array:not-instanceof-parent");
+        inv.log(win.Object.getPrototypeOf(win.navigator) ? "navigator:prototype-present" : "navigator:prototype-null");
+        inv.log(typeof win.Reflect.ownKeys(win.Object.prototype) === "object" ? "reflect:ownKeys-ok" : "reflect:ownKeys-bad");
+        win.Function.prototype.toString.call(function sample() {});
+        inv.log("callable-receiver:function-toString-ok");
+    } catch (err) {
+        inv.log("cross-realm-error:" + err.name);
+    }
+    inv.done({ ok });
+});
+</script><body></body>

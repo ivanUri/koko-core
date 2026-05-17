@@ -1,0 +1,14 @@
+<!doctype html><meta charset="utf-8"><title>mutation_observer_teardown</title><div id="target"></div>
+<script>
+window.TEST_LOGS = ["index-start"];
+window.TEST_RESULT = { done: false, scenario: "mutation_observer_teardown" };
+const target = document.getElementById("target");
+const observer = new MutationObserver(() => {
+  window.TEST_LOGS.push("stale-observer-callback");
+});
+observer.observe(target, { childList: true });
+target.appendChild(document.createElement("span"));
+window.TEST_LOGS.push("mutation-queued");
+window.TEST_LOGS.push("navigation-started");
+location.href = "next.html";
+</script>

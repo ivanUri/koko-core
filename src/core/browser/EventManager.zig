@@ -1,0 +1,630 @@
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+const std = @import("std");
+const builtin = @import("builtin");
+
+const js = @import("../js/js.zig");
+const Frame = @import("Frame.zig");
+const EventManagerBase = @import("EventManagerBase.zig");
+
+const Node = @import("../dom/Node.zig");
+const Event = @import("../webapi/Event.zig");
+const EventTarget = @import("../webapi/EventTarget.zig");
+const Element = @import("../dom/Element.zig");
+
+const log = @import("../../support/log.zig");
+const Allocator = std.mem.Allocator;
+
+// Re-export types from EventManagerBase for API compatibility
+pub const RegisterOptions = EventManagerBase.RegisterOptions;
+pub const Callback = EventManagerBase.Callback;
+pub const Listener = EventManagerBase.Listener;
+
+const IS_DEBUG = builtin.mode == .Debug;
+
+pub const EventManager = @This();
+
+frame: *Frame,
+base: EventManagerBase,
+
+// Used as an optimization in Page._documentIsComplete. If we know there are no
+// 'load' listeners in the document, we can skip dispatching the per-resource
+// 'load' event (e.g. amazon product page has no listener and ~350 resources)
+has_dom_load_listener: bool,
+
+ignore_list: std.ArrayList(*Listener),
+
+pub fn init(arena: Allocator, frame: *Frame) EventManager {
+    return .{
+        .frame = frame,
+        .ignore_list = .{},
+        .has_dom_load_listener = false,
+        .base = EventManagerBase.init(arena),
+    };
+}
+
+pub fn register(self: *EventManager, target: *EventTarget, typ: []const u8, callback: Callback, opts: RegisterOptions) !void {
+    const listener = self.base.register(target, typ, callback, opts) catch |err| switch (err) {
+        error.SignalAborted, error.DuplicateListener => return,
+        else => return err,
+    };
+
+    if (listener.typ.eql(comptime .wrap("load"))) {
+        if (target._type == .node) {
+            // Track load listeners on DOM nodes for optimization
+            self.has_dom_load_listener = true;
+        }
+        // Track load listeners for script execution ignore list. See the
+        // `apply_ignore` field of DispatchOpts
+        try self.ignore_list.append(self.base.arena, listener);
+    }
+}
+
+pub fn remove(self: *EventManager, target: *EventTarget, typ: []const u8, callback: Callback, use_capture: bool) void {
+    self.base.remove(target, typ, callback, use_capture);
+}
+
+pub fn clearIgnoreList(self: *EventManager) void {
+    self.ignore_list.clearRetainingCapacity();
+}
+
+// Re-export DispatchError from base
+pub const DispatchError = EventManagerBase.DispatchError;
+
+pub const DispatchOpts = struct {
+    // A "load" event triggered by a script (in ScriptManager) should not trigger
+    // a "load" listener added within that script. Therefore, any "load" listener
+    // that we add go into an ignore list until after the script finishes executing.
+    // The ignore list is only checked when apply_ignore  == true, which is only
+    // set by the ScriptManager when raising the script's "load" event.
+    apply_ignore: bool = false,
+};
+
+pub fn dispatch(self: *EventManager, target: *EventTarget, event: *Event) DispatchError!void {
+    return self.dispatchOpts(target, event, .{});
+}
+
+pub fn dispatchOpts(self: *EventManager, target: *EventTarget, event: *Event, comptime opts: DispatchOpts) DispatchError!void {
+    event.acquireRef();
+    defer _ = event.releaseRef(self.frame._page);
+
+    // Increment event count for Event Timing API
+    self.frame.window._performance._event_counts.increment(event._type_string.str());
+
+    if (comptime IS_DEBUG) {
+        log.debug(.event, "eventManager.dispatch", .{ .type = event._type_string.str(), .bubbles = event._bubbles });
+    }
+
+    switch (target._type) {
+        .node => |node| try self.dispatchNode(node, event, opts),
+        else => try self.dispatchDirect(target, event, null, .{ .context = "dispatch" }),
+    }
+}
+
+// There are a lot of events that can be attached via addEventListener or as
+// a property, like the XHR events, or window.onload. You might think that the
+// property is just a shortcut for calling addEventListener, but they are distinct.
+// An event set via property cannot be removed by removeEventListener. If you
+// set both the property and add a listener, they both execute.
+pub const DispatchDirectOptions = EventManagerBase.DispatchDirectOptions;
+
+// Direct dispatch for non-DOM targets (Window, XHR, AbortSignal) or DOM nodes with
+// property handlers. No propagation - just calls the handler and registered listeners.
+// Handler can be: null, ?js.Function.Global, ?js.Function.Temp, or js.Function
+pub fn dispatchDirect(self: *EventManager, target: *EventTarget, event: *Event, handler: anytype, comptime opts: DispatchDirectOptions) !void {
+    const frame = self.frame;
+
+    // Set window.event to the currently dispatching event (WHATWG spec)
+    const window = frame.window;
+    const prev_event = window._current_event;
+    window._current_event = event;
+    defer window._current_event = prev_event;
+
+    try self.base.dispatchDirect(frame.call_arena, frame.js, target, event, handler, frame._page, opts);
+}
+
+/// Check if there are any listeners for a direct dispatch (non-DOM target).
+/// Use this to avoid creating an event when there are no listeners.
+pub fn hasDirectListeners(self: *EventManager, target: *EventTarget, typ: []const u8, handler: anytype) bool {
+    return self.base.hasDirectListeners(target, typ, handler);
+}
+
+fn dispatchNode(self: *EventManager, target: *Node, event: *Event, comptime opts: DispatchOpts) !void {
+    const ShadowRoot = @import("../webapi/ShadowRoot.zig");
+
+    {
+        const et = target.asEventTarget();
+        event._target = et;
+        event._dispatch_target = et; // Store original target for composedPath()
+    }
+
+    const frame = self.frame;
+
+    // Set window.event to the currently dispatching event (WHATWG spec)
+    const window = frame.window;
+    const prev_event = window._current_event;
+    window._current_event = event;
+    defer window._current_event = prev_event;
+
+    var was_handled = false;
+
+    // Create a single scope for all event handlers in this dispatch.
+    // This ensures function handles passed to queueMicrotask remain valid
+    // throughout the entire dispatch, preventing crashes when microtasks run.
+    var ls: js.Local.Scope = undefined;
+    frame.js.localScope(&ls);
+    defer {
+        if (was_handled) {
+            ls.local.runMicrotasks();
+        }
+        ls.deinit();
+    }
+
+    const activation_state = try ActivationState.create(event, target, frame);
+
+    // Defer runs even on early return - ensures event phase is reset
+    // and default actions execute (unless prevented)
+    defer {
+        event._event_phase = .none;
+        event._stop_propagation = false;
+        event._stop_immediate_propagation = false;
+        // Handle checkbox/radio activation rollback or commit
+        if (activation_state) |state| {
+            state.restore(event, frame);
+        }
+
+        // Execute default action if not prevented
+        if (event._prevent_default) {
+            // can't return in a defer (╯°□°)╯︵ ┻━┻
+        } else if (event._type_string.eql(comptime .wrap("click"))) {
+            frame.handleClick(target) catch |err| {
+                log.warn(.event, "frame.click", .{ .err = err });
+            };
+        } else if (event._type_string.eql(comptime .wrap("keydown"))) {
+            frame.handleKeydown(target, event) catch |err| {
+                log.warn(.event, "frame.keydown", .{ .err = err });
+            };
+        }
+    }
+
+    var path_len: usize = 0;
+    var path_buffer: [128]*EventTarget = undefined;
+
+    var node: ?*Node = target;
+    while (node) |n| {
+        if (path_len >= path_buffer.len) break;
+        path_buffer[path_len] = n.asEventTarget();
+        path_len += 1;
+
+        // Check if this node is a shadow root
+        if (n.is(ShadowRoot)) |shadow| {
+            event._needs_retargeting = true;
+
+            // If event is not composed, stop at shadow boundary
+            if (!event._composed) {
+                break;
+            }
+
+            // Otherwise, jump to the shadow host and continue
+            node = shadow._host.asNode();
+            continue;
+        }
+
+        node = n._parent;
+    }
+
+    // Even though the window isn't part of the DOM, most events propagate
+    // through it in the capture phase (unless we stopped at a shadow boundary)
+    // The only explicit exception is "load"
+    if (event._type_string.eql(comptime .wrap("load")) == false) {
+        if (path_len < path_buffer.len) {
+            path_buffer[path_len] = frame.window.asEventTarget();
+            path_len += 1;
+        }
+    }
+
+    const path = path_buffer[0..path_len];
+
+    // Phase 1: Capturing phase (root → target, excluding target)
+    // This happens for all events, regardless of bubbling
+    event._event_phase = .capturing_phase;
+    var i: usize = path_len;
+    while (i > 1) {
+        i -= 1;
+        if (event._stop_propagation) return;
+        const current_target = path[i];
+        if (self.base.getListeners(current_target, event._type_string)) |list| {
+            try self.dispatchPhase(list, current_target, event, &was_handled, &ls.local, comptime .init(true, opts));
+        }
+    }
+
+    // Phase 2: At target
+    if (event._stop_propagation) return;
+    event._event_phase = .at_target;
+    const target_et = target.asEventTarget();
+
+    blk: {
+        // Get inline handler (e.g., onclick property) for this target
+        if (self.getInlineHandler(target_et, event)) |inline_handler| {
+            was_handled = true;
+            event._current_target = target_et;
+
+            try ls.toLocal(inline_handler).callWithThis(void, target_et, .{event});
+
+            if (event._stop_propagation) {
+                return;
+            }
+
+            if (event._stop_immediate_propagation) {
+                break :blk;
+            }
+        }
+
+        if (self.base.getListeners(target_et, event._type_string)) |list| {
+            try self.dispatchPhase(list, target_et, event, &was_handled, &ls.local, comptime .init(null, opts));
+            if (event._stop_propagation) {
+                return;
+            }
+        }
+    }
+
+    // Phase 3: Bubbling phase (target → root, excluding target)
+    // This only happens if the event bubbles
+    if (event._bubbles) {
+        event._event_phase = .bubbling_phase;
+        for (path[1..]) |current_target| {
+            if (event._stop_propagation) break;
+            if (self.base.getListeners(current_target, event._type_string)) |list| {
+                try self.dispatchPhase(list, current_target, event, &was_handled, &ls.local, comptime .init(false, opts));
+            }
+        }
+    }
+}
+
+const DispatchPhaseOpts = struct {
+    capture_only: ?bool = null,
+    apply_ignore: bool = false,
+
+    fn init(capture_only: ?bool, opts: DispatchOpts) DispatchPhaseOpts {
+        return .{
+            .capture_only = capture_only,
+            .apply_ignore = opts.apply_ignore,
+        };
+    }
+};
+
+fn dispatchPhase(self: *EventManager, list: *std.DoublyLinkedList, current_target: *EventTarget, event: *Event, was_handled: *bool, local: *const js.Local, comptime opts: DispatchPhaseOpts) !void {
+    const frame = self.frame;
+    const base = &self.base;
+
+    // Track dispatch depth for deferred removal
+    base.dispatch_depth += 1;
+    defer {
+        const dispatch_depth = base.dispatch_depth;
+        // Only destroy deferred listeners when we exit the outermost dispatch
+        if (dispatch_depth == 1) {
+            for (base.deferred_removals.items) |removal| {
+                removal.list.remove(&removal.listener.node);
+                base.listener_pool.destroy(removal.listener);
+            }
+            base.deferred_removals.clearRetainingCapacity();
+        } else {
+            base.dispatch_depth = dispatch_depth - 1;
+        }
+    }
+
+    // Use the last listener in the list as sentinel - listeners added during dispatch will be after it
+    const last_node = list.last orelse return;
+    const last_listener: *Listener = @alignCast(@fieldParentPtr("node", last_node));
+
+    // Iterate through the list, stopping after we've encountered the last_listener
+    var node = list.first;
+    var is_done = false;
+    node_loop: while (node) |n| {
+        if (is_done) {
+            break;
+        }
+
+        const listener: *Listener = @alignCast(@fieldParentPtr("node", n));
+        is_done = (listener == last_listener);
+        node = n.next;
+
+        // Skip non-matching listeners
+        if (comptime opts.capture_only) |capture| {
+            if (listener.capture != capture) {
+                continue;
+            }
+        }
+
+        // Skip removed listeners
+        if (listener.removed) {
+            continue;
+        }
+
+        // If the listener has an aborted signal, remove it and skip
+        if (listener.signal) |signal| {
+            if (signal.getAborted()) {
+                base.removeListener(list, listener);
+                continue;
+            }
+        }
+
+        if (comptime opts.apply_ignore) {
+            for (self.ignore_list.items) |ignored| {
+                if (ignored == listener) {
+                    continue :node_loop;
+                }
+            }
+        }
+
+        // Remove "once" listeners BEFORE calling them so nested dispatches don't see them
+        if (listener.once) {
+            base.removeListener(list, listener);
+        }
+
+        was_handled.* = true;
+        event._current_target = current_target;
+
+        // Compute adjusted target for shadow DOM retargeting (only if needed)
+        const original_target = event._target;
+        if (event._needs_retargeting) {
+            event._target = getAdjustedTarget(original_target, current_target);
+        }
+
+        // Listener exceptions are reported, not propagated, so dispatch can continue.
+        switch (listener.function) {
+            .value => |value| local.toLocal(value).callWithThis(void, current_target, .{event}) catch |err| {
+                log.warn(.event, "listener", .{ .err = err });
+            },
+            .string => |string| {
+                const str = try frame.call_arena.dupeZ(u8, string.str());
+                local.eval(str, null) catch |err| {
+                    log.warn(.event, "listener string", .{ .err = err });
+                };
+            },
+            .object => |obj_global| {
+                const obj = local.toLocal(obj_global);
+                const handle_event = obj.getFunction("handleEvent") catch |err| blk: {
+                    log.warn(.event, "listener handleEvent", .{ .err = err });
+                    break :blk null;
+                };
+                if (handle_event) |handleEvent| {
+                    handleEvent.callWithThis(void, obj, .{event}) catch |err| {
+                        log.warn(.event, "listener object", .{ .err = err });
+                    };
+                }
+            },
+        }
+
+        // Restore original target (only if we changed it)
+        if (event._needs_retargeting) {
+            event._target = original_target;
+        }
+
+        if (event._stop_immediate_propagation) {
+            return;
+        }
+    }
+}
+
+fn getInlineHandler(self: *EventManager, target: *EventTarget, event: *Event) ?js.Function.Global {
+    const global_event_handlers = @import("../webapi/global_event_handlers.zig");
+    const handler_type = global_event_handlers.fromEventType(event._type_string.str()) orelse return null;
+
+    // Look up the inline handler for this target
+    const html_element = switch (target._type) {
+        .node => |n| n.is(Element.Html) orelse return null,
+        else => return null,
+    };
+
+    return html_element.getAttributeFunction(handler_type, self.frame) catch |err| {
+        log.warn(.event, "inline html callback", .{ .type = handler_type, .err = err });
+        return null;
+    };
+}
+
+// Computes the adjusted target for shadow DOM event retargeting
+// Returns the lowest shadow-including ancestor of original_target that is
+// also an ancestor-or-self of current_target
+fn getAdjustedTarget(original_target: ?*EventTarget, current_target: *EventTarget) ?*EventTarget {
+    const ShadowRoot = @import("../webapi/ShadowRoot.zig");
+
+    const orig_node = switch ((original_target orelse return null)._type) {
+        .node => |n| n,
+        else => return original_target,
+    };
+    const curr_node = switch (current_target._type) {
+        .node => |n| n,
+        else => return original_target,
+    };
+
+    // Walk up from original target, checking if we can reach current target
+    var node: ?*Node = orig_node;
+    while (node) |n| {
+        // Check if current_target is an ancestor of n (or n itself)
+        if (isAncestorOrSelf(curr_node, n)) {
+            return n.asEventTarget();
+        }
+
+        // Cross shadow boundary if needed
+        if (n.is(ShadowRoot)) |shadow| {
+            node = shadow._host.asNode();
+            continue;
+        }
+
+        node = n._parent;
+    }
+
+    return original_target;
+}
+
+// Check if ancestor is an ancestor of (or the same as) node
+// WITHOUT crossing shadow boundaries (just regular DOM tree)
+fn isAncestorOrSelf(ancestor: *Node, node: *Node) bool {
+    if (ancestor == node) {
+        return true;
+    }
+
+    var current: ?*Node = node._parent;
+    while (current) |n| {
+        if (n == ancestor) {
+            return true;
+        }
+        current = n._parent;
+    }
+
+    return false;
+}
+
+// Handles the default action for clicking on input checked/radio. Maybe this
+// could be generalized if needed, but I'm not sure. This wasn't obvious to me
+// but when an input is clicked, it's important to think about both the intent
+// and the actual result. Imagine you have an unchecked checkbox. When clicked,
+// the checkbox immediately becomes checked, and event handlers see this "checked"
+// intent. But a listener can preventDefault() in which case the check we did at
+// the start will be undone.
+// This is a bit more complicated for radio buttons, as the checking/unchecking
+// and the rollback can impact a different radio input. So if you "check" a radio
+// the intent is that it becomes checked and whatever was checked before becomes
+// unchecked, so that if you have to rollback (because of a preventDefault())
+// then both inputs have to revert to their original values.
+const ActivationState = struct {
+    old_checked: bool,
+    input: *Element.Html.Input,
+    previously_checked_radio: ?*Input,
+
+    const Input = Element.Html.Input;
+
+    fn create(event: *const Event, target: *Node, frame: *Frame) !?ActivationState {
+        if (event._type_string.eql(comptime .wrap("click")) == false) {
+            return null;
+        }
+
+        const input = target.is(Element.Html.Input) orelse return null;
+        if (input._input_type != .checkbox and input._input_type != .radio) {
+            return null;
+        }
+
+        const old_checked = input._checked;
+        var previously_checked_radio: ?*Element.Html.Input = null;
+
+        // For radio buttons, find the currently checked radio in the group
+        if (input._input_type == .radio and !old_checked) {
+            previously_checked_radio = try findCheckedRadioInGroup(input, frame);
+        }
+
+        // Toggle checkbox or check radio (which unchecks others in group)
+        const new_checked = if (input._input_type == .checkbox) !old_checked else true;
+        try input.setChecked(new_checked, frame);
+
+        return .{
+            .input = input,
+            .old_checked = old_checked,
+            .previously_checked_radio = previously_checked_radio,
+        };
+    }
+
+    fn restore(self: *const ActivationState, event: *const Event, frame: *Frame) void {
+        const input = self.input;
+        if (event._prevent_default) {
+            // Rollback: restore previous state
+            input._checked = self.old_checked;
+            input._checked_dirty = true;
+            if (self.previously_checked_radio) |prev_radio| {
+                prev_radio._checked = true;
+                prev_radio._checked_dirty = true;
+            }
+            return;
+        }
+
+        // Commit: fire input and change events only if state actually changed
+        // and the element is connected to a document (detached elements don't fire).
+        // For checkboxes, state always changes. For radios, only if was unchecked.
+        const state_changed = (input._input_type == .checkbox) or !self.old_checked;
+        if (state_changed and input.asElement().asNode().isConnected()) {
+            fireEvent(frame, input, "input") catch |err| {
+                log.warn(.event, "input event", .{ .err = err });
+            };
+            fireEvent(frame, input, "change") catch |err| {
+                log.warn(.event, "change event", .{ .err = err });
+            };
+        }
+    }
+
+    fn findCheckedRadioInGroup(input: *Input, frame: *Frame) !?*Input {
+        const elem = input.asElement();
+
+        const name = elem.getAttributeSafe(comptime .wrap("name")) orelse return null;
+        if (name.len == 0) {
+            return null;
+        }
+
+        const form = input.getForm(frame);
+
+        // Walk from the root of the tree containing this element
+        // This handles both document-attached and orphaned elements
+        const root = elem.asNode().getRootNode(null);
+
+        const TreeWalker = @import("../dom/TreeWalker.zig");
+        var walker = TreeWalker.Full.init(root, .{});
+
+        while (walker.next()) |node| {
+            const other_element = node.is(Element) orelse continue;
+            const other_input = other_element.is(Input) orelse continue;
+
+            if (other_input._input_type != .radio) {
+                continue;
+            }
+
+            // Skip the input we're checking from
+            if (other_input == input) {
+                continue;
+            }
+
+            const other_name = other_element.getAttributeSafe(comptime .wrap("name")) orelse continue;
+            if (!std.mem.eql(u8, name, other_name)) {
+                continue;
+            }
+
+            // Check if same form context
+            const other_form = other_input.getForm(frame);
+            if (form) |f| {
+                const of = other_form orelse continue;
+                if (f != of) {
+                    continue; // Different forms
+                }
+            } else if (other_form != null) {
+                continue; // form is null but other has a form
+            }
+
+            if (other_input._checked) {
+                return other_input;
+            }
+        }
+
+        return null;
+    }
+
+    // Fire input or change event
+    fn fireEvent(frame: *Frame, input: *Input, comptime typ: []const u8) !void {
+        const event = try Event.initTrusted(comptime .wrap(typ), .{
+            .bubbles = true,
+            .cancelable = false,
+        }, frame._page);
+
+        const target = input.asElement().asEventTarget();
+        try frame._event_manager.dispatch(target, event);
+    }
+};

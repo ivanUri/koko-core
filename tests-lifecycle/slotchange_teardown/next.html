@@ -1,0 +1,6 @@
+<!doctype html><meta charset="utf-8"><title>slotchange_teardown next</title>
+<script>
+window.TEST_LOGS = ["next-start", "realm-replaced"];
+window.TEST_RESULT = { done: false, scenario: "slotchange_teardown" };
+setTimeout(() => { window.TEST_LOGS.push("next-stable"); window.TEST_RESULT.done = true; }, 0);
+</script>
