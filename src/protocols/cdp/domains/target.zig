@@ -302,10 +302,6 @@ fn closeTarget(cmd: *CDP.Command) !void {
     }
 
     bc.session.removePage();
-    for (bc.isolated_worlds.items) |world| {
-        world.deinit();
-    }
-    bc.isolated_worlds.clearRetainingCapacity();
     bc.target_id = null;
 }
 

@@ -32,6 +32,7 @@ pub const DOMRect = @import("DOMRect.zig");
 pub const Svg = @import("../webapi/element/Svg.zig");
 pub const Html = @import("../webapi/element/Html.zig");
 pub const Attribute = @import("../webapi/element/Attribute.zig");
+const AttrAssociatedElement = @import("AttrAssociatedElement.zig");
 
 const log = @import("../../support/log.zig");
 const String = @import("../../support/string.zig").String;
@@ -523,38 +524,146 @@ pub fn setSlot(self: *Element, value: []const u8, frame: *Frame) !void {
     return self.setAttributeSafe(comptime .wrap("slot"), .wrap(value), frame);
 }
 
+const dirEnumDef: ReflectedEnumDef = .{
+    .attr_name = "dir",
+    .keywords = &.{ "ltr", "rtl", "auto" },
+    .invalid_val = "",
+};
+
 pub fn getDir(self: *const Element) []const u8 {
-    return self.getAttributeSafe(comptime .wrap("dir")) orelse "";
+    return getReflectedEnumAttribute(self, dirEnumDef) orelse "";
 }
 
 pub fn setDir(self: *Element, value: []const u8, frame: *Frame) !void {
-    return self.setAttributeSafe(comptime .wrap("dir"), .wrap(value), frame);
+    return setReflectedEnumAttributeValue(self, dirEnumDef, value, frame);
 }
 
-// ARIAMixin - ARIA attribute reflection
-pub fn getAriaAtomic(self: *const Element) ?[]const u8 {
-    return self.getAttributeSafe(comptime .wrap("aria-atomic"));
+// ARIAMixin - reflected content attributes. Keep the JS property/attribute
+// mapping in one table-shaped section so spec updates are auditable.
+
+fn getReflectedNullableAttribute(self: *const Element, comptime attr_name: []const u8) ?[]const u8 {
+    return self.getAttributeSafe(String.wrap(attr_name));
 }
 
-pub fn setAriaAtomic(self: *Element, value: ?[]const u8, frame: *Frame) !void {
+fn setReflectedNullableAttribute(self: *Element, comptime attr_name: []const u8, value: ?[]const u8, frame: *Frame) !void {
     if (value) |v| {
-        try self.setAttributeSafe(comptime .wrap("aria-atomic"), .wrap(v), frame);
+        try self.setAttributeSafe(String.wrap(attr_name), .wrap(v), frame);
     } else {
-        try self.removeAttribute(comptime .wrap("aria-atomic"), frame);
+        try self.removeAttribute(String.wrap(attr_name), frame);
     }
 }
 
-pub fn getAriaLive(self: *const Element) ?[]const u8 {
-    return self.getAttributeSafe(comptime .wrap("aria-live"));
+fn reflectedNullableAttribute(comptime attr_name: []const u8) type {
+    return struct {
+        fn get(self: *const Element) ?[]const u8 {
+            return getReflectedNullableAttribute(self, attr_name);
+        }
+
+        fn set(self: *Element, value: ?[]const u8, frame: *Frame) !void {
+            return setReflectedNullableAttribute(self, attr_name, value, frame);
+        }
+    };
 }
 
-pub fn setAriaLive(self: *Element, value: ?[]const u8, frame: *Frame) !void {
+const ReflectedEnumDef = struct {
+    attr_name: []const u8,
+    keywords: []const []const u8,
+    invalid_val: ?[]const u8,
+};
+
+fn getReflectedEnumAttribute(self: *const Element, comptime def: ReflectedEnumDef) ?[]const u8 {
+    const raw = self.getAttributeSafe(String.wrap(def.attr_name));
+    if (raw == null) return null;
+
+    var resolved: ?[]const u8 = def.invalid_val;
+    for (def.keywords) |keyword| {
+        if (std.ascii.eqlIgnoreCase(raw.?, keyword)) {
+            resolved = keyword;
+            break;
+        }
+    }
+    return resolved;
+}
+
+fn setReflectedEnumAttribute(self: *Element, comptime def: ReflectedEnumDef, value: ?[]const u8, frame: *Frame) !void {
+    const attr = String.wrap(def.attr_name);
     if (value) |v| {
-        try self.setAttributeSafe(comptime .wrap("aria-live"), .wrap(v), frame);
+        if (v.len == 0) {
+            try self.setAttributeSafe(attr, .wrap(""), frame);
+            return;
+        }
+        for (def.keywords) |keyword| {
+            if (std.ascii.eqlIgnoreCase(v, keyword)) {
+                try self.setAttributeSafe(attr, .wrap(v), frame);
+                return;
+            }
+        }
+        try self.setAttributeSafe(attr, .wrap(v), frame);
     } else {
-        try self.removeAttribute(comptime .wrap("aria-live"), frame);
+        try self.removeAttribute(attr, frame);
     }
 }
+
+fn setReflectedEnumAttributeValue(self: *Element, comptime def: ReflectedEnumDef, value: []const u8, frame: *Frame) !void {
+    try setReflectedEnumAttribute(self, def, value, frame);
+}
+
+fn reflectedEnumAttribute(comptime def: ReflectedEnumDef) type {
+    return struct {
+        fn get(self: *const Element) ?[]const u8 {
+            return getReflectedEnumAttribute(self, def);
+        }
+
+        fn set(self: *Element, value: ?[]const u8, frame: *Frame) !void {
+            return setReflectedEnumAttribute(self, def, value, frame);
+        }
+    };
+}
+
+pub const RoleReflection = reflectedNullableAttribute("role");
+pub const AriaAtomicReflection = reflectedNullableAttribute("aria-atomic");
+pub const AriaAutoCompleteReflection = reflectedNullableAttribute("aria-autocomplete");
+pub const AriaBrailleLabelReflection = reflectedNullableAttribute("aria-braillelabel");
+pub const AriaBrailleRoleDescriptionReflection = reflectedNullableAttribute("aria-brailleroledescription");
+pub const AriaBusyReflection = reflectedNullableAttribute("aria-busy");
+pub const AriaCheckedReflection = reflectedNullableAttribute("aria-checked");
+pub const AriaColCountReflection = reflectedNullableAttribute("aria-colcount");
+pub const AriaColIndexReflection = reflectedNullableAttribute("aria-colindex");
+pub const AriaColIndexTextReflection = reflectedNullableAttribute("aria-colindextext");
+pub const AriaColSpanReflection = reflectedNullableAttribute("aria-colspan");
+pub const AriaCurrentReflection = reflectedNullableAttribute("aria-current");
+pub const AriaDescriptionReflection = reflectedNullableAttribute("aria-description");
+pub const AriaDisabledReflection = reflectedNullableAttribute("aria-disabled");
+pub const AriaExpandedReflection = reflectedNullableAttribute("aria-expanded");
+pub const AriaHasPopupReflection = reflectedNullableAttribute("aria-haspopup");
+pub const AriaHiddenReflection = reflectedNullableAttribute("aria-hidden");
+pub const AriaInvalidReflection = reflectedNullableAttribute("aria-invalid");
+pub const AriaKeyShortcutsReflection = reflectedNullableAttribute("aria-keyshortcuts");
+pub const AriaLabelReflection = reflectedNullableAttribute("aria-label");
+pub const AriaLevelReflection = reflectedNullableAttribute("aria-level");
+pub const AriaLiveReflection = reflectedNullableAttribute("aria-live");
+pub const AriaModalReflection = reflectedNullableAttribute("aria-modal");
+pub const AriaMultiLineReflection = reflectedNullableAttribute("aria-multiline");
+pub const AriaMultiSelectableReflection = reflectedNullableAttribute("aria-multiselectable");
+pub const AriaOrientationReflection = reflectedNullableAttribute("aria-orientation");
+pub const AriaPlaceholderReflection = reflectedNullableAttribute("aria-placeholder");
+pub const AriaPosInSetReflection = reflectedNullableAttribute("aria-posinset");
+pub const AriaPressedReflection = reflectedNullableAttribute("aria-pressed");
+pub const AriaReadOnlyReflection = reflectedNullableAttribute("aria-readonly");
+pub const AriaRelevantReflection = reflectedNullableAttribute("aria-relevant");
+pub const AriaRequiredReflection = reflectedNullableAttribute("aria-required");
+pub const AriaRoleDescriptionReflection = reflectedNullableAttribute("aria-roledescription");
+pub const AriaRowCountReflection = reflectedNullableAttribute("aria-rowcount");
+pub const AriaRowIndexReflection = reflectedNullableAttribute("aria-rowindex");
+pub const AriaRowIndexTextReflection = reflectedNullableAttribute("aria-rowindextext");
+pub const AriaRowSpanReflection = reflectedNullableAttribute("aria-rowspan");
+pub const AriaSelectedReflection = reflectedNullableAttribute("aria-selected");
+pub const AriaSetSizeReflection = reflectedNullableAttribute("aria-setsize");
+pub const AriaSortReflection = reflectedNullableAttribute("aria-sort");
+pub const AriaValueMaxReflection = reflectedNullableAttribute("aria-valuemax");
+pub const AriaValueMinReflection = reflectedNullableAttribute("aria-valuemin");
+pub const AriaValueNowReflection = reflectedNullableAttribute("aria-valuenow");
+pub const AriaValueTextReflection = reflectedNullableAttribute("aria-valuetext");
 
 pub fn getClassName(self: *const Element) []const u8 {
     return self.getAttributeSafe(comptime .wrap("class")) orelse "";
@@ -780,8 +889,30 @@ pub fn setAttributeNode(self: *Element, attr: *Attribute, frame: *Frame) !?*Attr
 }
 
 pub fn removeAttribute(self: *Element, name: String, frame: *Frame) !void {
+    AttrAssociatedElement.onAttributeRemoved(self, name.str(), frame);
     const attributes = self._attributes orelse return;
     return attributes.delete(name, self, frame);
+}
+
+pub fn getAriaActiveDescendantElement(self: *const Element, frame: *Frame) !?*Element {
+    return AttrAssociatedElement.getSingle(self, .aria_active_descendant, frame);
+}
+
+pub fn setAriaActiveDescendantElement(self: *Element, value: js.Value, frame: *Frame) !void {
+    return AttrAssociatedElement.set(self, .aria_active_descendant, value, frame);
+}
+
+pub fn getAriaDescribedByElements(self: *const Element, frame: *Frame) !?js.Value {
+    const local = frame.js.local orelse return error.NotHandled;
+    const arr = try AttrAssociatedElement.getArray(self, .aria_describedby, frame);
+    if (arr) |array| {
+        return .{ .local = local, .handle = @ptrCast(array.handle) };
+    }
+    return .{ .local = local, .handle = local.isolate.initNull() };
+}
+
+pub fn setAriaDescribedByElements(self: *Element, value: js.Value, frame: *Frame) !void {
+    return AttrAssociatedElement.set(self, .aria_describedby, value, frame);
 }
 
 pub fn toggleAttribute(self: *Element, name: String, force: ?bool, frame: *Frame) !bool {
@@ -1780,8 +1911,52 @@ pub const JsApi = struct {
     pub const localName = bridge.accessor(Element.getLocalName, null, .{});
     pub const id = bridge.accessor(Element.getId, Element.setId, .{});
     pub const slot = bridge.accessor(Element.getSlot, Element.setSlot, .{});
-    pub const ariaAtomic = bridge.accessor(Element.getAriaAtomic, Element.setAriaAtomic, .{});
-    pub const ariaLive = bridge.accessor(Element.getAriaLive, Element.setAriaLive, .{});
+    pub const role = bridge.accessor(Element.RoleReflection.get, Element.RoleReflection.set, .{});
+    pub const ariaAtomic = bridge.accessor(Element.AriaAtomicReflection.get, Element.AriaAtomicReflection.set, .{});
+    pub const ariaAutoComplete = bridge.accessor(Element.AriaAutoCompleteReflection.get, Element.AriaAutoCompleteReflection.set, .{});
+    pub const ariaBrailleLabel = bridge.accessor(Element.AriaBrailleLabelReflection.get, Element.AriaBrailleLabelReflection.set, .{});
+    pub const ariaBrailleRoleDescription = bridge.accessor(Element.AriaBrailleRoleDescriptionReflection.get, Element.AriaBrailleRoleDescriptionReflection.set, .{});
+    pub const ariaBusy = bridge.accessor(Element.AriaBusyReflection.get, Element.AriaBusyReflection.set, .{});
+    pub const ariaChecked = bridge.accessor(Element.AriaCheckedReflection.get, Element.AriaCheckedReflection.set, .{});
+    pub const ariaColCount = bridge.accessor(Element.AriaColCountReflection.get, Element.AriaColCountReflection.set, .{});
+    pub const ariaColIndex = bridge.accessor(Element.AriaColIndexReflection.get, Element.AriaColIndexReflection.set, .{});
+    pub const ariaColIndexText = bridge.accessor(Element.AriaColIndexTextReflection.get, Element.AriaColIndexTextReflection.set, .{});
+    pub const ariaColSpan = bridge.accessor(Element.AriaColSpanReflection.get, Element.AriaColSpanReflection.set, .{});
+    pub const ariaCurrent = bridge.accessor(Element.AriaCurrentReflection.get, Element.AriaCurrentReflection.set, .{});
+    pub const ariaDescription = bridge.accessor(Element.AriaDescriptionReflection.get, Element.AriaDescriptionReflection.set, .{});
+    pub const ariaDisabled = bridge.accessor(Element.AriaDisabledReflection.get, Element.AriaDisabledReflection.set, .{});
+    pub const ariaExpanded = bridge.accessor(Element.AriaExpandedReflection.get, Element.AriaExpandedReflection.set, .{});
+    pub const ariaHasPopup = bridge.accessor(Element.AriaHasPopupReflection.get, Element.AriaHasPopupReflection.set, .{});
+    pub const ariaHidden = bridge.accessor(Element.AriaHiddenReflection.get, Element.AriaHiddenReflection.set, .{});
+    pub const ariaInvalid = bridge.accessor(Element.AriaInvalidReflection.get, Element.AriaInvalidReflection.set, .{});
+    pub const ariaKeyShortcuts = bridge.accessor(Element.AriaKeyShortcutsReflection.get, Element.AriaKeyShortcutsReflection.set, .{});
+    pub const ariaLabel = bridge.accessor(Element.AriaLabelReflection.get, Element.AriaLabelReflection.set, .{});
+    pub const ariaLevel = bridge.accessor(Element.AriaLevelReflection.get, Element.AriaLevelReflection.set, .{});
+    pub const ariaLive = bridge.accessor(Element.AriaLiveReflection.get, Element.AriaLiveReflection.set, .{});
+    pub const ariaModal = bridge.accessor(Element.AriaModalReflection.get, Element.AriaModalReflection.set, .{});
+    pub const ariaMultiLine = bridge.accessor(Element.AriaMultiLineReflection.get, Element.AriaMultiLineReflection.set, .{});
+    pub const ariaMultiSelectable = bridge.accessor(Element.AriaMultiSelectableReflection.get, Element.AriaMultiSelectableReflection.set, .{});
+    pub const ariaOrientation = bridge.accessor(Element.AriaOrientationReflection.get, Element.AriaOrientationReflection.set, .{});
+    pub const ariaPlaceholder = bridge.accessor(Element.AriaPlaceholderReflection.get, Element.AriaPlaceholderReflection.set, .{});
+    pub const ariaPosInSet = bridge.accessor(Element.AriaPosInSetReflection.get, Element.AriaPosInSetReflection.set, .{});
+    pub const ariaPressed = bridge.accessor(Element.AriaPressedReflection.get, Element.AriaPressedReflection.set, .{});
+    pub const ariaReadOnly = bridge.accessor(Element.AriaReadOnlyReflection.get, Element.AriaReadOnlyReflection.set, .{});
+    pub const ariaRelevant = bridge.accessor(Element.AriaRelevantReflection.get, Element.AriaRelevantReflection.set, .{});
+    pub const ariaRequired = bridge.accessor(Element.AriaRequiredReflection.get, Element.AriaRequiredReflection.set, .{});
+    pub const ariaRoleDescription = bridge.accessor(Element.AriaRoleDescriptionReflection.get, Element.AriaRoleDescriptionReflection.set, .{});
+    pub const ariaRowCount = bridge.accessor(Element.AriaRowCountReflection.get, Element.AriaRowCountReflection.set, .{});
+    pub const ariaRowIndex = bridge.accessor(Element.AriaRowIndexReflection.get, Element.AriaRowIndexReflection.set, .{});
+    pub const ariaRowIndexText = bridge.accessor(Element.AriaRowIndexTextReflection.get, Element.AriaRowIndexTextReflection.set, .{});
+    pub const ariaRowSpan = bridge.accessor(Element.AriaRowSpanReflection.get, Element.AriaRowSpanReflection.set, .{});
+    pub const ariaSelected = bridge.accessor(Element.AriaSelectedReflection.get, Element.AriaSelectedReflection.set, .{});
+    pub const ariaSetSize = bridge.accessor(Element.AriaSetSizeReflection.get, Element.AriaSetSizeReflection.set, .{});
+    pub const ariaSort = bridge.accessor(Element.AriaSortReflection.get, Element.AriaSortReflection.set, .{});
+    pub const ariaValueMax = bridge.accessor(Element.AriaValueMaxReflection.get, Element.AriaValueMaxReflection.set, .{});
+    pub const ariaValueMin = bridge.accessor(Element.AriaValueMinReflection.get, Element.AriaValueMinReflection.set, .{});
+    pub const ariaValueNow = bridge.accessor(Element.AriaValueNowReflection.get, Element.AriaValueNowReflection.set, .{});
+    pub const ariaValueText = bridge.accessor(Element.AriaValueTextReflection.get, Element.AriaValueTextReflection.set, .{});
+    pub const ariaActiveDescendantElement = bridge.accessor(Element.getAriaActiveDescendantElement, Element.setAriaActiveDescendantElement, .{});
+    pub const ariaDescribedByElements = bridge.accessor(Element.getAriaDescribedByElements, Element.setAriaDescribedByElements, .{});
     pub const dir = bridge.accessor(Element.getDir, Element.setDir, .{});
     pub const className = bridge.accessor(Element.getClassName, Element.setClassName, .{});
     pub const classList = bridge.accessor(Element.getClassList, Element.setClassList, .{});

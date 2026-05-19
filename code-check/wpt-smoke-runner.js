@@ -109,6 +109,17 @@ function delay(ms) {
     return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
 }
 
+async function stopProcess(proc, signal = "SIGTERM", timeoutMs = 2000) {
+    if (proc.exitCode != null || proc.signalCode != null) return;
+    const exited = new Promise((resolvePromise) => proc.once("exit", resolvePromise));
+    proc.kill(signal);
+    const timedOut = await Promise.race([exited.then(() => false), delay(timeoutMs).then(() => true)]);
+    if (timedOut && proc.exitCode == null && proc.signalCode == null) {
+        proc.kill("SIGKILL");
+        await exited;
+    }
+}
+
 async function getFreePort(host) {
     return new Promise((resolvePromise, reject) => {
         const server = createNetServer();
@@ -157,6 +168,11 @@ function startStaticServer(host, port) {
         if (urlPath === "/resources/testharnessreport.js") {
             res.writeHead(200, { "content-type": contentTypes[".js"] });
             res.end(`(() => {
+                const serializeStatus = (status) => ({
+                    status: status && typeof status.status === 'number' ? status.status : 2,
+                    message: status && status.message ? String(status.message) : '',
+                    stack: status && status.stack ? String(status.stack) : ''
+                });
                 const serializeTest = (test) => ({
                     name: test.name,
                     status: test.status,
@@ -171,7 +187,7 @@ function startStaticServer(host, port) {
                 if (typeof add_completion_callback === 'function') {
                     add_completion_callback((tests, status) => {
                         window.__veloraWptDone = {
-                            status,
+                            status: serializeStatus(status),
                             tests: Array.prototype.slice.call(tests || []).map(serializeTest)
                         };
                     });
@@ -272,8 +288,13 @@ async function navigate(cdp, sessionId, url, timeoutMs) {
 
 async function collectWptResults(cdp, sessionId, timeoutMs) {
     const installExpression = `(() => {
+        const serializeStatus = (status) => ({
+            status: status && typeof status.status === 'number' ? status.status : 2,
+            message: status && status.message ? String(status.message) : '',
+            stack: status && status.stack ? String(status.stack) : ''
+        });
         const serialize = (tests, status) => ({
-            status,
+            status: serializeStatus(status),
             tests: (tests || []).map((test) => ({
                 name: test.name,
                 status: test.status,
@@ -502,9 +523,7 @@ async function main() {
         if (cdp && targetId) await cdp.send("Target.closeTarget", { targetId }, undefined, options.commandTimeoutMs).catch(() => undefined);
         if (cdp) cdp.close();
         await new Promise((resolvePromise) => staticServer.close(resolvePromise));
-        const procExited = proc.exitCode != null || proc.signalCode != null ? Promise.resolve() : new Promise((resolvePromise) => proc.once("exit", resolvePromise));
-        if (proc.exitCode == null && !proc.killed) proc.kill("SIGTERM");
-        await procExited;
+        await stopProcess(proc);
         writeFileSync(options.log, `--- VELORA STDOUT ---\n${Buffer.concat(stdoutChunks)}\n--- VELORA STDERR ---\n${Buffer.concat(stderrChunks)}\n`);
         console.log(`saved log: ${options.log}`);
     }

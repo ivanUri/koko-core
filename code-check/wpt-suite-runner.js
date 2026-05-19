@@ -29,6 +29,7 @@ const defaults = {
     logLevel: "debug",
     logFormat: "pretty",
     includeManual: false,
+    failFast: false,
     debugLifecycle: false,
     rawCdpTrace: false,
     debugDir: resolve(outputDir, "wpt-debug"),
@@ -52,7 +53,7 @@ const contentTypes = {
 };
 
 function usage() {
-    return `Usage: node code-check/wpt-suite-runner.js [options]\n\nOptions:\n  --root <path>         WPT directory or file to scan (default: ${defaults.root})\n  --limit <n>           Max files to run; 0 means unlimited (default: ${defaults.limit})\n  --include-manual      Include manual/no-harness pages as inventory rows\n  --report <path>       JSON report path (default: ${defaults.report})\n  --html <path>         HTML report path (default: ${defaults.html})\n  --timeout <ms>        Per-test timeout (default: ${defaults.testTimeoutMs})\n  --log-level <level>   Velora log level (default: ${defaults.logLevel})\n  --help                Show this help\n\nExamples:\n  npm run test:wpt:suite\n  npm run test:wpt:suite -- --root wpt/html/dom --limit 20\n  npm run test:wpt:suite -- --root wpt --limit 0 --include-manual\n`;
+    return `Usage: node code-check/wpt-suite-runner.js [options]\n\nOptions:\n  --root <path>          WPT directory or file to scan (default: ${defaults.root})\n  --limit <n>            Max files to run; 0 means unlimited (default: ${defaults.limit})\n  --include-manual       Include manual/no-harness pages as inventory rows\n  --fail-fast            Stop after the first AUTO mismatch\n  --report <path>        JSON report path (default: ${defaults.report})\n  --html <path>          HTML report path (default: ${defaults.html})\n  --timeout <ms>         Per-test max wait guardrail (default: ${defaults.testTimeoutMs})\n  --command-timeout <ms> CDP command timeout (default: ${defaults.commandTimeoutMs})\n  --log-level <level>    Velora log level (default: ${defaults.logLevel})\n  --help                 Show this help\n\nExamples:\n  npm run test:wpt:suite\n  npm run test:wpt:suite -- --root wpt/html/dom --limit 20\n  npm run test:wpt:suite -- --root wpt/html/dom --limit 20 --timeout 1000 --fail-fast\n  npm run test:wpt:suite -- --root wpt --limit 0 --include-manual\n`;
 }
 
 function parseArgs(argv) {
@@ -68,10 +69,12 @@ function parseArgs(argv) {
             case "--root": options.root = next(); break;
             case "--limit": options.limit = Number(next()); break;
             case "--include-manual": options.includeManual = true; break;
+            case "--fail-fast": options.failFast = true; break;
             case "--report": options.report = resolve(next()); break;
             case "--html": options.html = resolve(next()); break;
             case "--log": options.log = resolve(next()); break;
             case "--timeout": options.testTimeoutMs = Number(next()); break;
+            case "--command-timeout": options.commandTimeoutMs = Number(next()); break;
             case "--log-level": options.logLevel = next(); break;
             case "--debug-lifecycle": options.debugLifecycle = true; break;
             case "--raw-cdp-trace": options.rawCdpTrace = true; options.debugLifecycle = true; break;
@@ -89,6 +92,17 @@ function parseArgs(argv) {
 
 function delay(ms) {
     return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+}
+
+async function stopProcess(proc, signal = "SIGTERM", timeoutMs = 2000) {
+    if (proc.exitCode != null || proc.signalCode != null) return;
+    const exited = new Promise((resolvePromise) => proc.once("exit", resolvePromise));
+    proc.kill(signal);
+    const timedOut = await Promise.race([exited.then(() => false), delay(timeoutMs).then(() => true)]);
+    if (timedOut && proc.exitCode == null && proc.signalCode == null) {
+        proc.kill("SIGKILL");
+        await exited;
+    }
 }
 
 async function getFreePort(host) {
@@ -143,6 +157,11 @@ function startStaticServer(host, port) {
         if (urlPath === "/resources/testharnessreport.js") {
             res.writeHead(200, { "content-type": contentTypes[".js"] });
             res.end(`(() => {
+                const serializeStatus = (status) => ({
+                    status: status && typeof status.status === 'number' ? status.status : 2,
+                    message: status && status.message ? String(status.message) : '',
+                    stack: status && status.stack ? String(status.stack) : ''
+                });
                 const serializeTest = (test) => ({
                     name: test.name,
                     status: test.status,
@@ -157,7 +176,7 @@ function startStaticServer(host, port) {
                 if (typeof add_completion_callback === 'function') {
                     add_completion_callback((tests, status) => {
                         window.__veloraWptDone = {
-                            status,
+                            status: serializeStatus(status),
                             tests: Array.prototype.slice.call(tests || []).map(serializeTest)
                         };
                     });
@@ -396,6 +415,15 @@ function setupCdpStateTracking(cdp) {
         } else if (method === "Target.detachedFromTarget") {
             const session = diagnostics.state.sessions.get(params.sessionId) || {};
             diagnostics.state.sessions.set(params.sessionId, { ...session, attached: false, reason: params.reason });
+            for (const [id, context] of diagnostics.state.executionContexts) {
+                if (context.sessionId === params.sessionId) diagnostics.state.executionContexts.set(id, { ...context, alive: false, detached: true });
+            }
+        } else if (method === "Inspector.detached") {
+            const session = diagnostics.state.sessions.get(sessionId) || {};
+            diagnostics.state.sessions.set(sessionId, { ...session, attached: false, reason: params.reason });
+            for (const [id, context] of diagnostics.state.executionContexts) {
+                if (context.sessionId === sessionId) diagnostics.state.executionContexts.set(id, { ...context, alive: false, detached: true });
+            }
         } else if (method === "Runtime.executionContextCreated") {
             const context = params.context || {};
             diagnostics.state.executionContexts.set(String(context.id), { sessionId, frameId: context.auxData?.frameId, name: context.name, origin: context.origin, alive: true });
@@ -433,6 +461,22 @@ function logInvariant(cdp, type, page = {}, extra = {}) {
         executionContextExists: page.sessionId ? contextExists : undefined,
         ...extra,
     });
+}
+
+function assertPostCloseInvariant(cdp, page = {}) {
+    const session = page.sessionId ? cdp.diagnostics.state.sessions.get(page.sessionId) : null;
+    const aliveContexts = Array.from(cdp.diagnostics.state.executionContexts.entries())
+        .filter(([, context]) => context.sessionId === page.sessionId && context.alive !== false)
+        .map(([id, context]) => ({ id, frameId: context.frameId, name: context.name }));
+
+    if (session?.attached !== false || aliveContexts.length > 0) {
+        throw cdpError("CONTEXT_LEAK", "Target close left CDP session or execution contexts alive", {
+            targetId: page.targetId,
+            sessionId: page.sessionId,
+            sessionAttached: session?.attached,
+            aliveContexts,
+        });
+    }
 }
 
 async function waitForLifecycle(cdp, sessionId, options) {
@@ -481,6 +525,37 @@ async function createVeloraPage(cdp) {
     return page;
 }
 
+const wptResultHookExpression = `(() => {
+    const serializeStatus = (status) => ({
+        status: status && typeof status.status === 'number' ? status.status : 2,
+        message: status && status.message ? String(status.message) : '',
+        stack: status && status.stack ? String(status.stack) : ''
+    });
+    const serialize = (tests, status) => ({
+        status: serializeStatus(status),
+        tests: (tests || []).map((test) => ({
+            name: test.name,
+            status: test.status,
+            message: test.message || '',
+            stack: test.stack || ''
+        }))
+    });
+    const install = () => {
+        if (window.__veloraWptDone || window.__veloraWptInstalled) return true;
+        if (typeof add_completion_callback !== 'function') return false;
+        window.__veloraWptInstalled = true;
+        add_completion_callback((tests, status) => {
+            window.__veloraWptDone = serialize(tests, status);
+        });
+        return true;
+    };
+    if (!install()) {
+        Object.defineProperty(window, '__veloraInstallWptHook', { value: install, configurable: true });
+        queueMicrotask(install);
+        setTimeout(install, 0);
+    }
+})()`;
+
 async function evaluate(cdp, sessionId, expression, timeoutMs) {
     logInvariant(cdp, "before_runtime_evaluate", { sessionId });
     const result = await cdp.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sessionId, timeoutMs);
@@ -489,32 +564,35 @@ async function evaluate(cdp, sessionId, expression, timeoutMs) {
     return result.result ? result.result.value : undefined;
 }
 
+async function collectDebugProbe(cdp, sessionId, timeoutMs = 500) {
+    try {
+        return await evaluate(cdp, sessionId, `(() => ({
+            readyState: document.readyState,
+            url: location.href,
+            hasTestHarness: typeof add_completion_callback === 'function',
+            installed: Boolean(window.__veloraWptInstalled),
+            done: Boolean(window.__veloraWptDone),
+            resultCount: Array.isArray(window.__veloraWptResults) ? window.__veloraWptResults.length : null,
+            reflectionHarness: typeof window.ReflectionHarness,
+            reflectionElements: typeof window.elements === 'object' && window.elements ? Object.keys(window.elements).length : null
+        }))()`, timeoutMs);
+    } catch (err) {
+        return { probeError: err.message, category: classifyFailure(err) };
+    }
+}
+
 async function collectVeloraWptResults(cdp, sessionId, timeoutMs) {
-    const installExpression = `(() => {
-        const serialize = (tests, status) => ({
-            status,
-            tests: (tests || []).map((test) => ({
-                name: test.name,
-                status: test.status,
-                message: test.message || '',
-                stack: test.stack || ''
-            }))
-        });
-        if (window.__veloraWptDone || window.__veloraWptInstalled) return true;
-        if (typeof add_completion_callback === 'function') {
-            window.__veloraWptInstalled = true;
-            add_completion_callback((tests, status) => {
-                window.__veloraWptDone = serialize(tests, status);
-            });
-            return true;
-        }
-        return false;
-    })()`;
-    await evaluate(cdp, sessionId, installExpression, Math.min(timeoutMs, 5000));
+    await evaluate(cdp, sessionId, `(() => (window.__veloraInstallWptHook && window.__veloraInstallWptHook()) || false)()`, 500);
 
     const started = Date.now();
+    let lastEvaluateError;
     while (Date.now() - started <= timeoutMs) {
-        const report = await evaluate(cdp, sessionId, `(() => window.__veloraWptDone || null)()`, Math.min(timeoutMs, 1000));
+        const remaining = timeoutMs - (Date.now() - started);
+        const report = await evaluate(cdp, sessionId, `(() => window.__veloraWptDone || null)()`, Math.max(1, Math.min(remaining, 250))).catch((err) => {
+            lastEvaluateError = err;
+            cdp.diagnostics.logEvent("RUNTIME", "poll_evaluate_failed", { sessionId, error: err.message, category: classifyFailure(err) });
+            return null;
+        });
         if (report) return report;
         await delay(250);
     }
@@ -523,8 +601,14 @@ async function collectVeloraWptResults(cdp, sessionId, timeoutMs) {
             return { status: { status: 2, message: 'WPT harness did not complete' }, tests: window.__veloraWptResults };
         }
         return null;
-    })()`, Math.min(timeoutMs, 1000));
-    return fallback || { status: { status: 2, message: `Timed out after ${timeoutMs}ms` }, tests: [] };
+    })()`, 250).catch((err) => {
+        lastEvaluateError = err;
+        cdp.diagnostics.logEvent("RUNTIME", "fallback_evaluate_failed", { sessionId, error: err.message, category: classifyFailure(err) });
+        return null;
+    });
+    if (fallback) return fallback;
+    if (lastEvaluateError) throw lastEvaluateError;
+    return { status: { status: 2, message: `Timed out after ${timeoutMs}ms` }, tests: [] };
 }
 
 async function runVeloraTest(cdp, testUrl, options) {
@@ -532,6 +616,7 @@ async function runVeloraTest(cdp, testUrl, options) {
     try {
         page = await createVeloraPage(cdp);
         logInvariant(cdp, "before_navigation", page, { url: testUrl });
+        await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: wptResultHookExpression }, page.sessionId, options.commandTimeoutMs).catch((err) => cdp.diagnostics.logEvent("PAGE", "add_script_failed", { sessionId: page.sessionId, error: err.message }));
         await cdp.send("Page.navigate", { url: testUrl }, page.sessionId, options.navigationTimeoutMs);
         const lifecycle = await waitForLifecycle(cdp, page.sessionId, options);
         cdp.diagnostics.logEvent("LIFECYCLE", "navigation_ready", { sessionId: page.sessionId, targetId: page.targetId, source: lifecycle.source, frameId: lifecycle.frameId, executionContextId: lifecycle.executionContextId });
@@ -540,13 +625,20 @@ async function runVeloraTest(cdp, testUrl, options) {
         return { ok: true, category: undefined, report, diagnostics: { targetId: page.targetId, sessionId: page.sessionId } };
     } catch (err) {
         const category = classifyFailure(err);
-        cdp.diagnostics.logEvent("RUNTIME", "test_failed", { category, error: err.message, targetId: page?.targetId, sessionId: page?.sessionId });
-        return { ok: false, category, error: err.message, report: { status: { status: 2, message: err.message }, tests: [] }, diagnostics: { targetId: page?.targetId, sessionId: page?.sessionId, details: err.details } };
+        const probe = page?.sessionId && cdp.isOpen() ? await collectDebugProbe(cdp, page.sessionId).catch((probeErr) => ({ probeError: probeErr.message })) : null;
+        cdp.diagnostics.logEvent("RUNTIME", "test_failed", { category, error: err.message, targetId: page?.targetId, sessionId: page?.sessionId, probe });
+        return { ok: false, category, error: err.message, report: { status: { status: 2, message: err.message }, tests: [] }, diagnostics: { targetId: page?.targetId, sessionId: page?.sessionId, details: err.details, probe } };
     } finally {
         if (page) {
             logInvariant(cdp, "before_target_close", page);
             await cdp.send("Target.closeTarget", { targetId: page.targetId }, undefined, options.commandTimeoutMs).catch((err) => cdp.diagnostics.logEvent("TARGET", "close_failed", { targetId: page.targetId, error: err.message, category: classifyFailure(err) }));
+            await delay(0);
             logInvariant(cdp, "after_target_close", page);
+            try {
+                assertPostCloseInvariant(cdp, page);
+            } catch (err) {
+                cdp.diagnostics.logEvent("INVARIANT", "post_close_failed", { targetId: page.targetId, sessionId: page.sessionId, error: err.message, details: err.details });
+            }
         }
     }
 }
@@ -588,6 +680,20 @@ function testsToMap(report) {
 }
 
 function compareTestReports(chromeRun, veloraRun) {
+    if (!veloraRun.ok && (veloraRun.report?.tests || []).length === 0) {
+        return {
+            rows: [{
+                name: "(file-level Velora failure)",
+                chrome: `${(chromeRun.report?.tests || []).length} subtests`,
+                velora: veloraRun.category || "ERROR",
+                chromeMessage: chromeRun.ok ? "Chrome completed; subtest comparison skipped because Velora produced no report." : chromeRun.error || "",
+                veloraMessage: veloraRun.error || veloraRun.report?.status?.message || "Velora produced no report.",
+                match: false,
+            }],
+            mismatches: 1,
+            fileLevelFailure: true,
+        };
+    }
     const chrome = testsToMap(chromeRun.report);
     const velora = testsToMap(veloraRun.report);
     const names = Array.from(new Set([...chrome.keys(), ...velora.keys()])).sort();
@@ -885,10 +991,8 @@ async function main() {
                 console.log("skipped");
                 continue;
             }
-            const [chromeRun, veloraRun] = await Promise.all([
-                runChromiumTest(browser, testUrl, options.testTimeoutMs),
-                runVeloraTest(cdp, testUrl, options),
-            ]);
+            const chromeRun = await runChromiumTest(browser, testUrl, options.testTimeoutMs);
+            const veloraRun = await runVeloraTest(cdp, testUrl, options);
             const comparison = compareTestReports(chromeRun, veloraRun);
             const item = {
                 test: test.rel,
@@ -900,6 +1004,10 @@ async function main() {
             };
             results.push(item);
             console.log(comparison.mismatches === 0 ? "match" : `${comparison.mismatches} mismatch(es)`);
+            if (options.failFast && comparison.mismatches > 0) {
+                console.log("stopped early because --fail-fast is enabled");
+                break;
+            }
         }
 
         const totals = {
@@ -934,9 +1042,7 @@ async function main() {
         if (browser) await browser.close().catch(() => undefined);
         if (cdp) { cdp.diagnostics.writeArtifacts(); cdp.close(); }
         await new Promise((resolvePromise) => staticServer.close(resolvePromise));
-        const procExited = proc.exitCode != null || proc.signalCode != null ? Promise.resolve() : new Promise((resolvePromise) => proc.once("exit", resolvePromise));
-        if (proc.exitCode == null && !proc.killed) proc.kill("SIGTERM");
-        await procExited;
+        await stopProcess(proc);
         writeFileSync(options.log, `--- VELORA STDOUT ---\n${Buffer.concat(stdoutChunks)}\n--- VELORA STDERR ---\n${Buffer.concat(stderrChunks)}\n`);
         console.log(`saved log: ${options.log}`);
     }

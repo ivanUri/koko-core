@@ -1,0 +1,432 @@
+src
+├── adapters
+│   ├── cli
+│   │   ├── Sighandler.zig
+│   │   ├── cli.zig
+│   │   └── main.zig
+│   └── server
+│       └── Server.zig
+├── core
+│   ├── browser
+│   │   ├── Browser.zig
+│   │   ├── EventManager.zig
+│   │   ├── EventManagerBase.zig
+│   │   ├── Factory.zig
+│   │   ├── Frame.zig
+│   │   ├── HttpClient.zig
+│   │   ├── Mime.zig
+│   │   ├── Page.zig
+│   │   ├── Runner.zig
+│   │   ├── ScriptManager.zig
+│   │   ├── ScriptManagerBase.zig
+│   │   ├── Session.zig
+│   │   ├── StyleManager.zig
+│   │   ├── URL.zig
+│   │   ├── actions.zig
+│   │   ├── color.zig
+│   │   ├── css
+│   │   │   ├── Parser.zig
+│   │   │   └── Tokenizer.zig
+│   │   ├── dump.zig
+│   │   ├── forms.zig
+│   │   ├── interactive.zig
+│   │   ├── links.zig
+│   │   ├── markdown.zig
+│   │   ├── reflect.zig
+│   │   └── structured_data.zig
+│   ├── dom
+│   │   ├── DOMException.zig
+│   │   ├── DOMImplementation.zig
+│   │   ├── DOMNodeIterator.zig
+│   │   ├── DOMParser.zig
+│   │   ├── DOMRect.zig
+│   │   ├── DOMTreeWalker.zig
+│   │   ├── Document.zig
+│   │   ├── DocumentFragment.zig
+│   │   ├── DocumentType.zig
+│   │   ├── Element.zig
+│   │   ├── Node.zig
+│   │   ├── NodeFilter.zig
+│   │   └── TreeWalker.zig
+│   ├── html5ever
+│   │   ├── Cargo.lock
+│   │   ├── Cargo.toml
+│   │   ├── lib.rs
+│   │   ├── sink.rs
+│   │   └── types.rs
+│   ├── js
+│   │   ├── Array.zig
+│   │   ├── BigInt.zig
+│   │   ├── Caller.zig
+│   │   ├── Context.zig
+│   │   ├── Env.zig
+│   │   ├── Execution.zig
+│   │   ├── Function.zig
+│   │   ├── HandleScope.zig
+│   │   ├── Identity.zig
+│   │   ├── Inspector.zig
+│   │   ├── Integer.zig
+│   │   ├── Isolate.zig
+│   │   ├── Local.zig
+│   │   ├── Module.zig
+│   │   ├── Number.zig
+│   │   ├── Object.zig
+│   │   ├── Origin.zig
+│   │   ├── Platform.zig
+│   │   ├── Private.zig
+│   │   ├── Promise.zig
+│   │   ├── PromiseRejection.zig
+│   │   ├── PromiseResolver.zig
+│   │   ├── RegExp.zig
+│   │   ├── Scheduler.zig
+│   │   ├── Snapshot.zig
+│   │   ├── String.zig
+│   │   ├── TaggedOpaque.zig
+│   │   ├── TryCatch.zig
+│   │   ├── Value.zig
+│   │   ├── bridge.zig
+│   │   └── js.zig
+│   ├── parser
+│   │   ├── Parser.zig
+│   │   └── html5ever.zig
+│   ├── semantic
+│   │   └── SemanticTree.zig
+│   └── webapi
+│       ├── AbortController.zig
+│       ├── AbortSignal.zig
+│       ├── AbstractRange.zig
+│       ├── BatteryManager.zig
+│       ├── Blob.zig
+│       ├── CData.zig
+│       ├── CSS.zig
+│       ├── Console.zig
+│       ├── Crypto.zig
+│       ├── CryptoKey.zig
+│       ├── CustomElementDefinition.zig
+│       ├── CustomElementRegistry.zig
+│       ├── Event.zig
+│       ├── EventCounts.zig
+│       ├── EventTarget.zig
+│       ├── File.zig
+│       ├── FileList.zig
+│       ├── FileReader.zig
+│       ├── HTMLDocument.zig
+│       ├── History.zig
+│       ├── IdleDeadline.zig
+│       ├── ImageData.zig
+│       ├── IntersectionObserver.zig
+│       ├── KeyValueList.zig
+│       ├── Location.zig
+│       ├── MessageChannel.zig
+│       ├── MessagePort.zig
+│       ├── MutationObserver.zig
+│       ├── Navigator.zig
+│       ├── NavigatorUAData.zig
+│       ├── Performance.zig
+│       ├── PerformanceObserver.zig
+│       ├── Permissions.zig
+│       ├── PluginArray.zig
+│       ├── Range.zig
+│       ├── ResizeObserver.zig
+│       ├── Screen.zig
+│       ├── Selection.zig
+│       ├── ShadowRoot.zig
+│       ├── StorageManager.zig
+│       ├── SubtleCrypto.zig
+│       ├── Timers.zig
+│       ├── URL.zig
+│       ├── VisualViewport.zig
+│       ├── WebDriver.zig
+│       ├── Window.zig
+│       ├── Worker.zig
+│       ├── WorkerGlobalScope.zig
+│       ├── XMLDocument.zig
+│       ├── XMLSerializer.zig
+│       ├── animation
+│       │   └── Animation.zig
+│       ├── canvas
+│       │   ├── CanvasRenderingContext2D.zig
+│       │   ├── OffscreenCanvas.zig
+│       │   ├── OffscreenCanvasRenderingContext2D.zig
+│       │   ├── PixelBuffer.zig
+│       │   ├── PngEncoder.zig
+│       │   └── WebGLRenderingContext.zig
+│       ├── cdata
+│       │   ├── CDATASection.zig
+│       │   ├── Comment.zig
+│       │   ├── ProcessingInstruction.zig
+│       │   └── Text.zig
+│       ├── children.zig
+│       ├── collections
+│       │   ├── ChildNodes.zig
+│       │   ├── DOMTokenList.zig
+│       │   ├── HTMLAllCollection.zig
+│       │   ├── HTMLCollection.zig
+│       │   ├── HTMLFormControlsCollection.zig
+│       │   ├── HTMLOptionsCollection.zig
+│       │   ├── NodeList.zig
+│       │   ├── RadioNodeList.zig
+│       │   ├── iterator.zig
+│       │   └── node_live.zig
+│       ├── collections.zig
+│       ├── crypto
+│       │   ├── AES.zig
+│       │   ├── EC.zig
+│       │   ├── HMAC.zig
+│       │   ├── RSA.zig
+│       │   ├── X25519.zig
+│       │   └── algorithm.zig
+│       ├── css
+│       │   ├── CSSRule.zig
+│       │   ├── CSSRuleList.zig
+│       │   ├── CSSStyleDeclaration.zig
+│       │   ├── CSSStyleProperties.zig
+│       │   ├── CSSStyleRule.zig
+│       │   ├── CSSStyleSheet.zig
+│       │   ├── FontFace.zig
+│       │   ├── FontFaceSet.zig
+│       │   ├── MediaQueryList.zig
+│       │   └── StyleSheetList.zig
+│       ├── element
+│       │   ├── Attribute.zig
+│       │   ├── DOMStringMap.zig
+│       │   ├── Html.zig
+│       │   ├── Svg.zig
+│       │   ├── html
+│       │   │   ├── Anchor.zig
+│       │   │   ├── Area.zig
+│       │   │   ├── Audio.zig
+│       │   │   ├── BR.zig
+│       │   │   ├── Base.zig
+│       │   │   ├── Body.zig
+│       │   │   ├── Button.zig
+│       │   │   ├── Canvas.zig
+│       │   │   ├── Custom.zig
+│       │   │   ├── DList.zig
+│       │   │   ├── Data.zig
+│       │   │   ├── DataList.zig
+│       │   │   ├── Details.zig
+│       │   │   ├── Dialog.zig
+│       │   │   ├── Directory.zig
+│       │   │   ├── Div.zig
+│       │   │   ├── Embed.zig
+│       │   │   ├── FieldSet.zig
+│       │   │   ├── Font.zig
+│       │   │   ├── Form.zig
+│       │   │   ├── FrameSet.zig
+│       │   │   ├── Generic.zig
+│       │   │   ├── HR.zig
+│       │   │   ├── Head.zig
+│       │   │   ├── Heading.zig
+│       │   │   ├── Html.zig
+│       │   │   ├── IFrame.zig
+│       │   │   ├── Image.zig
+│       │   │   ├── Input.zig
+│       │   │   ├── LI.zig
+│       │   │   ├── Label.zig
+│       │   │   ├── Legend.zig
+│       │   │   ├── Link.zig
+│       │   │   ├── Map.zig
+│       │   │   ├── Media.zig
+│       │   │   ├── Meta.zig
+│       │   │   ├── Meter.zig
+│       │   │   ├── Mod.zig
+│       │   │   ├── OL.zig
+│       │   │   ├── Object.zig
+│       │   │   ├── OptGroup.zig
+│       │   │   ├── Option.zig
+│       │   │   ├── Output.zig
+│       │   │   ├── Paragraph.zig
+│       │   │   ├── Param.zig
+│       │   │   ├── Picture.zig
+│       │   │   ├── Pre.zig
+│       │   │   ├── Progress.zig
+│       │   │   ├── Quote.zig
+│       │   │   ├── Script.zig
+│       │   │   ├── Select.zig
+│       │   │   ├── Slot.zig
+│       │   │   ├── Source.zig
+│       │   │   ├── Span.zig
+│       │   │   ├── Style.zig
+│       │   │   ├── Table.zig
+│       │   │   ├── TableCaption.zig
+│       │   │   ├── TableCell.zig
+│       │   │   ├── TableCol.zig
+│       │   │   ├── TableRow.zig
+│       │   │   ├── TableSection.zig
+│       │   │   ├── Template.zig
+│       │   │   ├── TextArea.zig
+│       │   │   ├── Time.zig
+│       │   │   ├── Title.zig
+│       │   │   ├── Track.zig
+│       │   │   ├── UL.zig
+│       │   │   ├── Unknown.zig
+│       │   │   ├── ValidityState.zig
+│       │   │   └── Video.zig
+│       │   └── svg
+│       │       ├── Generic.zig
+│       │       └── Rect.zig
+│       ├── encoding
+│       │   ├── TextDecoder.zig
+│       │   ├── TextDecoderStream.zig
+│       │   ├── TextEncoder.zig
+│       │   ├── TextEncoderStream.zig
+│       │   └── base64.zig
+│       ├── event
+│       │   ├── CloseEvent.zig
+│       │   ├── CompositionEvent.zig
+│       │   ├── CustomEvent.zig
+│       │   ├── ErrorEvent.zig
+│       │   ├── FocusEvent.zig
+│       │   ├── FormDataEvent.zig
+│       │   ├── InputEvent.zig
+│       │   ├── KeyboardEvent.zig
+│       │   ├── MessageEvent.zig
+│       │   ├── MouseEvent.zig
+│       │   ├── NavigationCurrentEntryChangeEvent.zig
+│       │   ├── PageTransitionEvent.zig
+│       │   ├── PointerEvent.zig
+│       │   ├── PopStateEvent.zig
+│       │   ├── ProgressEvent.zig
+│       │   ├── PromiseRejectionEvent.zig
+│       │   ├── SubmitEvent.zig
+│       │   ├── TextEvent.zig
+│       │   ├── UIEvent.zig
+│       │   └── WheelEvent.zig
+│       ├── global_event_handlers.zig
+│       ├── media
+│       │   ├── MediaError.zig
+│       │   ├── TextTrackCue.zig
+│       │   └── VTTCue.zig
+│       ├── navigation
+│       │   ├── Navigation.zig
+│       │   ├── NavigationActivation.zig
+│       │   ├── NavigationHistoryEntry.zig
+│       │   └── root.zig
+│       ├── net
+│       │   ├── Fetch.zig
+│       │   ├── FormData.zig
+│       │   ├── Headers.zig
+│       │   ├── Request.zig
+│       │   ├── Response.zig
+│       │   ├── URLSearchParams.zig
+│       │   ├── WebSocket.zig
+│       │   ├── XMLHttpRequest.zig
+│       │   └── XMLHttpRequestEventTarget.zig
+│       ├── selector
+│       │   ├── List.zig
+│       │   ├── Parser.zig
+│       │   └── Selector.zig
+│       ├── storage
+│       │   ├── Cookie.zig
+│       │   └── storage.zig
+│       └── streams
+│           ├── ReadableStream.zig
+│           ├── ReadableStreamDefaultController.zig
+│           ├── ReadableStreamDefaultReader.zig
+│           ├── TransformStream.zig
+│           ├── WritableStream.zig
+│           ├── WritableStreamDefaultController.zig
+│           └── WritableStreamDefaultWriter.zig
+├── data
+│   ├── public_suffix_list.zig
+│   └── public_suffix_list_gen.go
+├── main_legacy_test.zig
+├── main_snapshot_creator.zig
+├── protocols
+│   ├── cdp
+│   │   ├── AXNode.zig
+│   │   ├── CDP.zig
+│   │   ├── Node.zig
+│   │   ├── domains
+│   │   │   ├── accessibility.zig
+│   │   │   ├── audits.zig
+│   │   │   ├── browser.zig
+│   │   │   ├── css.zig
+│   │   │   ├── dom.zig
+│   │   │   ├── emulation.zig
+│   │   │   ├── fetch.zig
+│   │   │   ├── input.zig
+│   │   │   ├── inspector.zig
+│   │   │   ├── log.zig
+│   │   │   ├── lp.zig
+│   │   │   ├── network.zig
+│   │   │   ├── page.zig
+│   │   │   ├── performance.zig
+│   │   │   ├── runtime.zig
+│   │   │   ├── screenshot.pdf
+│   │   │   ├── screenshot.png
+│   │   │   ├── security.zig
+│   │   │   ├── storage.zig
+│   │   │   └── target.zig
+│   │   ├── id.zig
+│   │   └── testing.zig
+│   ├── mcp
+│   │   ├── Server.zig
+│   │   ├── protocol.zig
+│   │   ├── resources.zig
+│   │   ├── router.zig
+│   │   └── tools.zig
+│   └── mcp.zig
+├── public
+│   ├── Browser.zig
+│   ├── Frame.zig
+│   ├── Runtime.zig
+│   └── Session.zig
+├── runtime
+│   ├── App.zig
+│   ├── ArenaPool.zig
+│   ├── Config.zig
+│   ├── Notification.zig
+│   ├── RealmLifecycleKernel.zig
+│   ├── cookies.zig
+│   ├── network
+│   │   ├── IpFilter.zig
+│   │   ├── Network.zig
+│   │   ├── Robots.zig
+│   │   ├── WebBotAuth.zig
+│   │   ├── WsConnection.zig
+│   │   ├── cache
+│   │   │   ├── Cache.zig
+│   │   │   └── FsCache.zig
+│   │   ├── http.zig
+│   │   └── layer
+│   │       ├── CacheLayer.zig
+│   │       ├── Forward.zig
+│   │       ├── InterceptionLayer.zig
+│   │       ├── RobotsLayer.zig
+│   │       └── WebBotAuthLayer.zig
+│   ├── storage
+│   │   ├── Blackhole.zig
+│   │   ├── Storage.zig
+│   │   └── sqlite
+│   │       ├── Pool.zig
+│   │       ├── Sqlite.zig
+│   │       └── migrations.zig
+│   └── telemetry
+│       ├── telemetry.zig
+│       └── velora.zig
+├── snapshot.bin
+├── support
+│   ├── assert.zig
+│   ├── cli.zig
+│   ├── crash_handler.zig
+│   ├── datetime.zig
+│   ├── id.zig
+│   ├── log.zig
+│   ├── rc.zig
+│   ├── slab.zig
+│   ├── string.zig
+│   └── sys
+│       ├── idna.zig
+│       ├── libcrypto.zig
+│       └── libcurl.zig
+├── testing
+│   ├── TestHTTPServer.zig
+│   ├── TestWSServer.zig
+│   ├── test_runner.zig
+│   └── testing.zig
+├── velora.zig
+└── velora.zig.bak
+
+46 directories, 384 files

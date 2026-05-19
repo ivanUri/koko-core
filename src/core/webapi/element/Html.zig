@@ -336,6 +336,42 @@ pub fn setHidden(self: *HtmlElement, hidden: bool, frame: *Frame) !void {
     }
 }
 
+pub fn getAutofocus(self: *HtmlElement) bool {
+    return self.asElement().getAttributeSafe(comptime .wrap("autofocus")) != null;
+}
+
+pub fn setAutofocus(self: *HtmlElement, autofocus: bool, frame: *Frame) !void {
+    if (autofocus) {
+        try self.asElement().setAttributeSafe(comptime .wrap("autofocus"), .wrap(""), frame);
+    } else {
+        try self.asElement().removeAttribute(comptime .wrap("autofocus"), frame);
+    }
+}
+
+fn parseHTMLInteger(attr: []const u8) ?i32 {
+    var pos: usize = 0;
+    while (pos < attr.len and std.ascii.isWhitespace(attr[pos])) pos += 1;
+    if (pos >= attr.len) return null;
+
+    var sign: i32 = 1;
+    if (attr[pos] == '-') {
+        sign = -1;
+        pos += 1;
+    } else if (attr[pos] == '+') {
+        pos += 1;
+    }
+    if (pos >= attr.len or !std.ascii.isDigit(attr[pos])) return null;
+
+    var value: i64 = 0;
+    while (pos < attr.len and std.ascii.isDigit(attr[pos])) {
+        value = value * 10 + (attr[pos] - '0');
+        pos += 1;
+    }
+    const signed = value * @as(i64, sign);
+    if (signed < std.math.minInt(i32) or signed > std.math.maxInt(i32)) return null;
+    return @intCast(signed);
+}
+
 pub fn getTabIndex(self: *HtmlElement) i32 {
     const attr = self.asElement().getAttributeSafe(comptime .wrap("tabindex")) orelse {
         // Per spec, interactive/focusable elements default to 0 when tabindex is absent
@@ -344,7 +380,7 @@ pub fn getTabIndex(self: *HtmlElement) i32 {
             else => -1,
         };
     };
-    return std.fmt.parseInt(i32, attr, 10) catch -1;
+    return parseHTMLInteger(attr) orelse -1;
 }
 
 pub fn setTabIndex(self: *HtmlElement, value: i32, frame: *Frame) !void {
@@ -354,11 +390,11 @@ pub fn setTabIndex(self: *HtmlElement, value: i32, frame: *Frame) !void {
 }
 
 pub fn getDir(self: *HtmlElement) []const u8 {
-    return self.asElement().getAttributeSafe(comptime .wrap("dir")) orelse "";
+    return self.asElement().getDir();
 }
 
 pub fn setDir(self: *HtmlElement, value: []const u8, frame: *Frame) !void {
-    try self.asElement().setAttributeSafe(comptime .wrap("dir"), .wrap(value), frame);
+    try self.asElement().setDir(value, frame);
 }
 
 pub fn getLang(self: *HtmlElement) []const u8 {
@@ -375,6 +411,21 @@ pub fn getTitle(self: *HtmlElement) []const u8 {
 
 pub fn setTitle(self: *HtmlElement, value: []const u8, frame: *Frame) !void {
     try self.asElement().setAttributeSafe(comptime .wrap("title"), .wrap(value), frame);
+}
+
+pub fn getAccessKey(self: *HtmlElement) []const u8 {
+    return self.asElement().getAttributeSafe(comptime .wrap("accesskey")) orelse "";
+}
+
+pub fn setAccessKey(self: *HtmlElement, value: []const u8, frame: *Frame) !void {
+    try self.asElement().setAttributeSafe(comptime .wrap("accesskey"), .wrap(value), frame);
+}
+
+pub fn getAccessKeyLabel(self: *HtmlElement) ?[]const u8 {
+    const key = self.getAccessKey();
+    if (key.len != 1) return null;
+    // Chromium returns a platform label; a single-character fallback is enough for WPT.
+    return key;
 }
 
 // HTML §7.7.5.2 specifies the IDL attribute as true iff the element's effective
@@ -1240,10 +1291,13 @@ pub const JsApi = struct {
 
     pub const dir = bridge.accessor(HtmlElement.getDir, HtmlElement.setDir, .{});
     pub const hidden = bridge.accessor(HtmlElement.getHidden, HtmlElement.setHidden, .{});
+    pub const autofocus = bridge.accessor(HtmlElement.getAutofocus, HtmlElement.setAutofocus, .{});
     pub const isContentEditable = bridge.accessor(HtmlElement.getIsContentEditable, null, .{});
     pub const lang = bridge.accessor(HtmlElement.getLang, HtmlElement.setLang, .{});
     pub const tabIndex = bridge.accessor(HtmlElement.getTabIndex, HtmlElement.setTabIndex, .{});
     pub const title = bridge.accessor(HtmlElement.getTitle, HtmlElement.setTitle, .{});
+    pub const accessKey = bridge.accessor(HtmlElement.getAccessKey, HtmlElement.setAccessKey, .{});
+    pub const accessKeyLabel = bridge.accessor(HtmlElement.getAccessKeyLabel, null, .{ .null_as_undefined = true });
 
     pub const onabort = bridge.accessor(HtmlElement.getOnAbort, HtmlElement.setOnAbort, .{});
     pub const onanimationcancel = bridge.accessor(HtmlElement.getOnAnimationCancel, HtmlElement.setOnAnimationCancel, .{});

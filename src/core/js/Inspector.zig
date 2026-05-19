@@ -137,11 +137,15 @@ pub fn contextDestroyed(self: *Inspector, context: *const v8.Context) void {
     }
 }
 
-pub fn resetContextGroup(self: *const Inspector) void {
+pub fn resetContextGroup(self: *Inspector) void {
     var hs: v8.HandleScope = undefined;
     v8.v8__HandleScope__CONSTRUCT(&hs, self.isolate);
     defer v8.v8__HandleScope__DESTRUCT(&hs);
 
+    // V8 destroys every context in the group without calling contextDestroyed
+    // for each one. Clear our cached default so ensureDefaultContextInGroup
+    // does not hand evaluate() a stale Global after navigation.
+    self.default_context = null;
     v8.v8_inspector__Inspector__ResetContextGroup(self.handle, CONTEXT_GROUP_ID);
 }
 
