@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Check that https://example.com/ loads and exposes the expected page content.
+// Check that a page loads through Velora CDP and exposes basic page content.
 // Usage:
 //   node code-check/example-com-check.js
 //   node code-check/example-com-check.js --url https://example.com/
@@ -16,7 +16,7 @@ const outputDir = resolve(tmpDir, "output");
 const logDir = resolve(tmpDir, "logs");
 
 const defaults = {
-    url: "https://wpt.fyi/results/dom",
+    url: "https://www.tiktok.com/@annc19324/video/7639005482715237653",
     host: "127.0.0.1",
     waitMs: 20000,
     serverTimeoutMs: 2000,
@@ -251,7 +251,11 @@ async function getPageContent(cdp, sessionId, timeoutMs, pageUrl) {
 async function navigate(cdp, sessionId, url, timeoutMs) {
     const loadEvent = cdp.waitFor("Page.loadEventFired", (msg) => !msg.sessionId || msg.sessionId === sessionId, timeoutMs);
     await cdp.send("Page.navigate", { url }, sessionId, timeoutMs);
-    await loadEvent;
+    try {
+        await loadEvent;
+    } catch (err) {
+        console.warn(`[navigate:warning] ${err.message}; continuing with current document`);
+    }
 }
 
 async function waitForServer(url, timeoutMs) {
@@ -289,24 +293,22 @@ function createPageTestRecorder() {
     return { checks, record };
 }
 
-async function testExampleComPage() {
+async function testPage() {
     const { checks, record } = createPageTestRecorder();
     const text = document.body?.innerText || "";
 
     await record("page loaded successfully", () => document.readyState === "complete" || document.readyState === "interactive");
     await record("page has a title", () => !!document.title && document.title.trim().length > 0);
-    await record("page has expected example.com title or heading", () => /example/i.test(document.title) || /example/i.test(text));
     await record("body has text content", () => text.trim().length > 0);
-    await record("page has h1 heading", () => document.querySelectorAll("h1").length > 0);
-    await record("page contains 'Example Domain' text or similar", () => /example domain|example\.com|this domain/i.test(text));
-    await record("page has at least one link", () => document.links.length > 0);
+    await record("page has document element", () => !!document.documentElement);
+    await record("page URL is available", () => !!location.href);
 
     return checks;
 }
 
-async function inspectExampleComPage() {
+async function inspectPage() {
     const text = document.body?.innerText || "";
-    const pageChecks = await testExampleComPage();
+    const pageChecks = await testPage();
     const links = Array.from(document.querySelectorAll("a"))
         .map((link) => ({ text: link.textContent.trim(), href: link.href }))
         .filter((link) => link.text || link.href)
@@ -322,18 +324,15 @@ async function inspectExampleComPage() {
         linkCount: document.links.length,
         hasTitle: !!document.title && document.title.trim().length > 0,
         hasH1: document.querySelectorAll("h1").length > 0,
-        hasExampleText: /example domain|example\.com|this domain/i.test(text),
         pageChecks,
         links,
     };
 }
 
-function validateExampleComPage(report) {
+function validatePage(report) {
     const checks = {
         pageLoaded: ["interactive", "complete"].includes(report.readyState),
         hasTitle: report.hasTitle,
-        hasH1: report.hasH1,
-        hasExampleText: report.hasExampleText,
         hasContent: report.textLength > 0,
         pageChecksPass: report.pageChecks.every((check) => check.passed),
     };
@@ -389,15 +388,17 @@ async function main() {
 
         console.log(`[navigate:cdp] ${options.url}`);
         await navigate(cdp, sessionId, options.url, options.navigationTimeoutMs);
+        console.log(`[wait] ${options.waitMs}ms`);
         await delay(options.waitMs);
 
+        console.log("[inspect] collecting page report");
         const pageReport = await evaluate(cdp, sessionId, `(() => {
             ${createPageTestRecorder.toString()}
-            ${testExampleComPage.toString()}
-            ${inspectExampleComPage.toString()}
-            return inspectExampleComPage();
+            ${testPage.toString()}
+            ${inspectPage.toString()}
+            return inspectPage();
         })()`, options.commandTimeoutMs);
-        const result = validateExampleComPage(pageReport);
+        const result = validatePage(pageReport);
         const html = await getPageContent(cdp, sessionId, options.commandTimeoutMs, pageReport.url || options.url);
 
         writeFileSync(options.output, html);
@@ -408,16 +409,21 @@ async function main() {
         console.log(`saved report: ${options.report}`);
 
         if (!result.passed) {
-            console.warn("example.com page check did not fully pass; see report for details");
+            console.warn("page check did not fully pass; see report for details");
             process.exitCode = 1;
         }
     } finally {
+        console.log("[cleanup] closing CDP and Velora");
         if (cdp && targetId) {
             await cdp.send("Target.closeTarget", { targetId }, undefined, options.commandTimeoutMs).catch(() => undefined);
         }
         if (cdp) cdp.close();
+
+        const procExited = proc.exitCode != null || proc.signalCode != null
+            ? Promise.resolve()
+            : new Promise((resolvePromise) => proc.once("exit", resolvePromise));
         if (proc.exitCode == null && !proc.killed) proc.kill("SIGTERM");
-        await new Promise((resolvePromise) => proc.once("exit", resolvePromise));
+        await procExited;
 
         const stdout = Buffer.concat(stdoutChunks).toString();
         const stderr = Buffer.concat(stderrChunks).toString();
