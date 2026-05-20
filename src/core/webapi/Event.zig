@@ -142,6 +142,9 @@ pub fn acquireRef(self: *Event) void {
 }
 
 pub fn deinit(self: *Event, page: *Page) void {
+    // V8 FinalizerCallback detachment for the Event-side key happens
+    // generically inside `RC.release` (see `src/support/rc.zig`). All we
+    // need to do here is release the per-event arena.
     page.releaseArena(self._arena);
 }
 

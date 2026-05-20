@@ -19,7 +19,10 @@ const Node = @import("../dom/Node.zig");
 const Document = @import("../dom/Document.zig");
 const Element = @import("../dom/Element.zig");
 const DocumentType = @import("../dom/DocumentType.zig");
+const TreeWalker = @import("../dom/TreeWalker.zig");
+const IFrame = @import("element/html/IFrame.zig");
 const collections = @import("collections.zig");
+const String = @import("../../support/string.zig").String;
 
 const HTMLDocument = @This();
 
@@ -39,19 +42,33 @@ pub fn asEventTarget(self: *HTMLDocument) *@import("EventTarget.zig") {
 }
 
 // HTML-specific accessors
-pub fn getHead(self: *HTMLDocument) ?*Element.Html.Head {
+//
+// Per the HTML spec, the head/body IDL attributes return the first
+// child of the document element whose **local name is "head"/"body"
+// in the HTML namespace**, regardless of any prefix. That means
+// `document.createElementNS(HTML_NS, "x:head")` is also a valid head
+// element. The earlier implementation only matched the strongly-typed
+// `Element.Html.Head`/`Body`, which excluded prefixed-but-still-HTML
+// elements as well as foreign-namespace `<head>` lookalikes (the
+// latter must NOT be returned).
+fn isHtmlElementWithLocalName(el: *Element, local: []const u8) bool {
+    if (el._namespace != .html) return false;
+    return std.mem.eql(u8, el.getLocalName(), local);
+}
+
+pub fn getHead(self: *HTMLDocument) ?*Element {
     const doc_el = self._proto.getDocumentElement() orelse return null;
     var child = doc_el.asNode().firstChild();
     while (child) |node| {
-        if (node.is(Element.Html.Head)) |head| {
-            return head;
+        if (node.is(Element)) |el| {
+            if (isHtmlElementWithLocalName(el, "head")) return el;
         }
         child = node.nextSibling();
     }
     return null;
 }
 
-pub fn getBody(self: *HTMLDocument) ?*Element.Html.Body {
+pub fn getBody(self: *HTMLDocument) ?*Element {
     const document_element = self._proto.getDocumentElement() orelse return null;
     return findBodyForDoc(document_element);
 }
@@ -74,97 +91,46 @@ pub fn setBody(self: *HTMLDocument, html: []const u8, frame: *Frame) !void {
     }
 }
 
-fn findBodyForDoc(document_element: *Element) ?*Element.Html.Body {
+fn findBodyForDoc(document_element: *Element) ?*Element {
     var child = document_element.asNode().firstChild();
     while (child) |node| {
-        if (node.is(Element.Html.Body)) |body| {
-            return body;
+        if (node.is(Element)) |el| {
+            if (isHtmlElementWithLocalName(el, "body") or
+                isHtmlElementWithLocalName(el, "frameset"))
+            {
+                return el;
+            }
         }
         child = node.nextSibling();
     }
     return null;
 }
 
-pub fn getTitle(self: *HTMLDocument, frame: *Frame) ![]const u8 {
-    // Search the entire document for the first <title> element
-    const root = self._proto.getDocumentElement() orelse return "";
-    const title_element = blk: {
-        var walker = @import("../dom/TreeWalker.zig").Full.init(root.asNode(), .{});
-        while (walker.next()) |node| {
-            if (node.is(Element.Html.Title)) |title| {
-                break :blk title;
-            }
-        }
-        return "";
+// `getTitle` / `setTitle` live on Document.zig now so that XMLDocument
+// (and SVG-rooted documents created via DOMImplementation.createDocument)
+// expose `title` correctly per spec. Keep this comment as a breadcrumb.
+
+// Per the HTML spec, document.{images,scripts,forms,embeds,plugins}
+// return HTMLCollections whose filter matches **only HTML elements**
+// of the given local name (not foreign-namespace lookalikes). The
+// `.tag` mode in NodeLive intentionally also matches non-HTML
+// elements (because that's what `getElementsByTagName` requires for
+// HTML documents), so we cannot reuse it here. Using `.tag_name_ns`
+// with a fixed HTML namespace gives us the correct scoping.
+const TagNameNsFilter = @import("collections/node_live.zig").TagNameNsFilter;
+fn htmlNamespaceFilter(local: []const u8) TagNameNsFilter {
+    return .{
+        .namespace = .html,
+        .local_name = String.wrap(local),
     };
-
-    var buf = std.Io.Writer.Allocating.init(frame.call_arena);
-    try title_element.asNode().getTextContent(&buf.writer);
-    const text = buf.written();
-
-    if (text.len == 0) {
-        return "";
-    }
-
-    var started = false;
-    var in_whitespace = false;
-    var result: std.ArrayList(u8) = .empty;
-    try result.ensureTotalCapacity(frame.call_arena, text.len);
-
-    for (text) |c| {
-        const is_ascii_ws = c == ' ' or c == '\t' or c == '\n' or c == '\r' or c == '\x0C';
-
-        if (is_ascii_ws) {
-            if (started) {
-                in_whitespace = true;
-            }
-        } else {
-            if (in_whitespace) {
-                result.appendAssumeCapacity(' ');
-                in_whitespace = false;
-            }
-            result.appendAssumeCapacity(c);
-            started = true;
-        }
-    }
-
-    return result.items;
 }
 
-pub fn setTitle(self: *HTMLDocument, title: []const u8, frame: *Frame) !void {
-    const head = self.getHead() orelse return;
-
-    // Find existing title element in head
-    var it = head.asNode().childrenIterator();
-    while (it.next()) |node| {
-        if (node.is(Element.Html.Title)) |title_element| {
-            // Replace children, but don't create text node for empty string
-            if (title.len == 0) {
-                return title_element.asElement().replaceChildren(&.{}, frame);
-            } else {
-                return title_element.asElement().replaceChildren(&.{.{ .text = title }}, frame);
-            }
-        }
-    }
-
-    // No title element found, create one
-    const title_node = try frame.createElementNS(.html, "title", null);
-    const title_element = title_node.as(Element);
-
-    // Only add text if non-empty
-    if (title.len > 0) {
-        try title_element.replaceChildren(&.{.{ .text = title }}, frame);
-    }
-
-    _ = try head.asNode().appendChild(title_node, frame);
+pub fn getImages(self: *HTMLDocument, frame: *Frame) !collections.NodeLive(.tag_name_ns) {
+    return collections.NodeLive(.tag_name_ns).init(self.asNode(), htmlNamespaceFilter("img"), frame);
 }
 
-pub fn getImages(self: *HTMLDocument, frame: *Frame) !collections.NodeLive(.tag) {
-    return collections.NodeLive(.tag).init(self.asNode(), .img, frame);
-}
-
-pub fn getScripts(self: *HTMLDocument, frame: *Frame) !collections.NodeLive(.tag) {
-    return collections.NodeLive(.tag).init(self.asNode(), .script, frame);
+pub fn getScripts(self: *HTMLDocument, frame: *Frame) !collections.NodeLive(.tag_name_ns) {
+    return collections.NodeLive(.tag_name_ns).init(self.asNode(), htmlNamespaceFilter("script"), frame);
 }
 
 pub fn getLinks(self: *HTMLDocument, frame: *Frame) !collections.NodeLive(.links) {
@@ -175,12 +141,89 @@ pub fn getAnchors(self: *HTMLDocument, frame: *Frame) !collections.NodeLive(.anc
     return collections.NodeLive(.anchors).init(self.asNode(), {}, frame);
 }
 
-pub fn getForms(self: *HTMLDocument, frame: *Frame) !collections.NodeLive(.tag) {
-    return collections.NodeLive(.tag).init(self.asNode(), .form, frame);
+pub fn getForms(self: *HTMLDocument, frame: *Frame) !collections.NodeLive(.tag_name_ns) {
+    return collections.NodeLive(.tag_name_ns).init(self.asNode(), htmlNamespaceFilter("form"), frame);
 }
 
-pub fn getEmbeds(self: *HTMLDocument, frame: *Frame) !collections.NodeLive(.tag) {
-    return collections.NodeLive(.tag).init(self.asNode(), .embed, frame);
+pub fn getEmbeds(self: *HTMLDocument, frame: *Frame) !collections.NodeLive(.tag_name_ns) {
+    return collections.NodeLive(.tag_name_ns).init(self.asNode(), htmlNamespaceFilter("embed"), frame);
+}
+
+// ---------------------------------------------------------------------------
+// Named property getter (HTML spec §3.1.5: "named getter on Document").
+// ---------------------------------------------------------------------------
+//
+// Returns the first element in tree order whose name OR id contributes
+// to the supported property names of the document, per the spec rules:
+//
+//   * exposed by `name` content attribute when the element is an
+//     embed/form/iframe/img/object in the HTML namespace and its name
+//     attribute is non-empty;
+//   * exposed by `id` content attribute when the element is an
+//     object in the HTML namespace with non-empty id, or an img with
+//     both a non-empty id AND a non-empty name attribute.
+//
+// Special case: when the matching element is an iframe with a live
+// browsing context, return its contentWindow rather than the element
+// itself, as required by the spec.
+//
+// We currently return only the first matching element; producing an
+// HTMLCollection when multiple elements share the same name is a
+// subsequent refinement (a small minority of WPT cases).
+fn isExposedByName(el: *Element) bool {
+    if (el._namespace != .html) return false;
+    return switch (el.getTag()) {
+        .embed, .form, .iframe, .img, .object => true,
+        else => false,
+    };
+}
+
+fn isExposedById(el: *Element) bool {
+    if (el._namespace != .html) return false;
+    return switch (el.getTag()) {
+        .object => true,
+        .img => blk: {
+            // imgs only contribute their id when they ALSO have a
+            // non-empty name attribute.
+            const name_attr = el.getAttributeSafe(comptime .wrap("name")) orelse break :blk false;
+            break :blk name_attr.len > 0;
+        },
+        else => false,
+    };
+}
+
+fn getNamedItem(self: *HTMLDocument, name: []const u8, frame: *Frame) !js.Value {
+    // We must signal "no such property" by returning error.NotHandled
+    // rather than null/undefined. Returning null with the
+    // `null_as_undefined` opt would cause V8 to treat the named lookup
+    // as intercepted-with-undefined, which makes `name in document`
+    // wrongly evaluate to true and breaks several WPT cases.
+    if (name.len == 0) return error.NotHandled;
+    const local = frame.js.local orelse return error.NotHandled;
+
+    var walker = TreeWalker.Full.Elements.init(self.asNode(), .{});
+    while (walker.next()) |el| {
+        const matches_name = isExposedByName(el) and blk: {
+            const attr = el.getAttributeSafe(comptime .wrap("name")) orelse break :blk false;
+            break :blk attr.len > 0 and std.mem.eql(u8, attr, name);
+        };
+        const matches_id = isExposedById(el) and blk: {
+            const attr = el.getAttributeSafe(comptime .wrap("id")) orelse break :blk false;
+            break :blk attr.len > 0 and std.mem.eql(u8, attr, name);
+        };
+        if (!matches_name and !matches_id) continue;
+
+        // iframe: return its contentWindow when one is available.
+        if (el._namespace == .html and el.getTag() == .iframe) {
+            if (el.is(IFrame)) |iframe| {
+                if (iframe.getContentWindow(frame)) |cw| {
+                    return try local.zigValueToJs(cw, .{});
+                }
+            }
+        }
+        return try local.zigValueToJs(el, .{});
+    }
+    return error.NotHandled;
 }
 
 pub fn getApplets(_: *const HTMLDocument) collections.HTMLCollection {
@@ -296,7 +339,7 @@ pub const JsApi = struct {
     pub const head = bridge.accessor(HTMLDocument.getHead, null, .{});
     pub const body = bridge.accessor(HTMLDocument.getBody, HTMLDocument.setBody, .{ .dom_exception = true });
     pub const lang = bridge.accessor(HTMLDocument.getLang, HTMLDocument.setLang, .{});
-    pub const title = bridge.accessor(HTMLDocument.getTitle, HTMLDocument.setTitle, .{});
+    // `title` is defined on Document so SVG/XML documents see it too.
     pub const images = bridge.accessor(HTMLDocument.getImages, null, .{});
     pub const scripts = bridge.accessor(HTMLDocument.getScripts, null, .{});
     pub const links = bridge.accessor(HTMLDocument.getLinks, null, .{});
@@ -310,4 +353,7 @@ pub const JsApi = struct {
     pub const all = bridge.accessor(HTMLDocument.getAll, null, .{});
     pub const cookie = bridge.accessor(HTMLDocument.getCookie, HTMLDocument.setCookie, .{});
     pub const doctype = bridge.accessor(HTMLDocument.getDocType, null, .{});
+
+    // `document[name]` named property getter (HTML spec).
+    pub const @"[str]" = bridge.namedIndexed(getNamedItem, null, null, .{ .null_as_undefined = true });
 };

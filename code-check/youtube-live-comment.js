@@ -16,10 +16,10 @@ const outputDir = resolve(tmpDir, "output");
 const logDir = resolve(tmpDir, "logs");
 
 const defaults = {
-    url: "https://www.tiktok.com/@annc19324/video/7639005482715237653",
+    url: "https://www.youtube.com/watch?v=36YnV9STBqc",
     host: "127.0.0.1",
     waitMs: 20000,
-    serverTimeoutMs: 2000,
+    serverTimeoutMs: 15000,
     commandTimeoutMs: 15000,
     navigationTimeoutMs: 20000,
     output: resolve(outputDir, "example-com-check.html"),
@@ -357,6 +357,12 @@ async function main() {
 
     const port = await getFreePort(options.host);
     const endpoint = `http://${options.host}:${port}`;
+    // TikTok (and many other origins) block requests whose User-Agent
+    // is "Velora/1.0", returning HTTP 403 before any page content is
+    // delivered. Override it with a stock Chrome UA so the bot-detection
+    // path is bypassed for this end-to-end check.
+    const userAgent = options.userAgent
+        || "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
     const proc = spawn(veloraBin, [
         "serve",
         "--host", options.host,
@@ -364,6 +370,7 @@ async function main() {
         "--log-level", options.logLevel,
         "--log-format", options.logFormat,
         "--http-timeout", String(options.httpTimeoutMs),
+        "--user-agent", userAgent,
     ], {
         cwd: repoRoot,
         stdio: ["ignore", "pipe", "pipe"],

@@ -267,6 +267,133 @@ pub fn getDocumentElement(self: *Document) ?*Element {
     return null;
 }
 
+// ----------------------------------------------------------------------
+// `title` IDL attribute (HTML spec, applies to ALL Document objects).
+// ----------------------------------------------------------------------
+//
+// The "title element of a document" is defined as:
+//   * if the document element is an SVG `svg` element, the first child
+//     element of the document element (in tree order) that is an SVG
+//     `title` element;
+//   * otherwise, the first descendant of the document (in tree order)
+//     that is an HTML `title` element.
+//
+// The setter mirrors the getter, falling through to "do nothing" when
+// the document element is neither an SVG `svg` nor an HTML element.
+// We deliberately put this on Document (not HTMLDocument) so that
+// XMLDocument objects produced by `DOMImplementation.createDocument`
+// expose the IDL attribute with the correct semantics.
+fn isSvgRootSvg(root: *Element) bool {
+    return root._namespace == .svg and std.mem.eql(u8, root.getLocalName(), "svg");
+}
+
+fn findTitleElement(self: *Document) ?*Element {
+    const root = self.getDocumentElement() orelse return null;
+
+    if (isSvgRootSvg(root)) {
+        // SVG case: only direct children of <svg>.
+        var child = root.asNode().firstChild();
+        while (child) |node| : (child = node.nextSibling()) {
+            const el = node.is(Element) orelse continue;
+            if (el._namespace == .svg and std.mem.eql(u8, el.getLocalName(), "title")) {
+                return el;
+            }
+        }
+        return null;
+    }
+
+    // Non-SVG-rooted: first HTML title element anywhere in the document.
+    var walker = @import("TreeWalker.zig").Full.init(self.asNode(), .{});
+    while (walker.next()) |node| {
+        const el = node.is(Element) orelse continue;
+        if (el._namespace == .html and std.mem.eql(u8, el.getLocalName(), "title")) {
+            return el;
+        }
+    }
+    return null;
+}
+
+pub fn getTitle(self: *Document, frame: *Frame) ![]const u8 {
+    const title_element = findTitleElement(self) orelse return "";
+
+    var buf = std.Io.Writer.Allocating.init(frame.call_arena);
+    try title_element.asNode().getTextContent(&buf.writer);
+    const text = buf.written();
+    if (text.len == 0) return "";
+
+    // "Strip and collapse ASCII whitespace" per the spec.
+    var started = false;
+    var in_whitespace = false;
+    var result: std.ArrayList(u8) = .empty;
+    try result.ensureTotalCapacity(frame.call_arena, text.len);
+    for (text) |c| {
+        const is_ascii_ws = c == ' ' or c == '\t' or c == '\n' or c == '\r' or c == '\x0C';
+        if (is_ascii_ws) {
+            if (started) in_whitespace = true;
+            continue;
+        }
+        if (in_whitespace) {
+            result.appendAssumeCapacity(' ');
+            in_whitespace = false;
+        }
+        result.appendAssumeCapacity(c);
+        started = true;
+    }
+    return result.items;
+}
+
+pub fn setTitle(self: *Document, value: []const u8, frame: *Frame) !void {
+    const root = self.getDocumentElement() orelse return;
+
+    if (isSvgRootSvg(root)) {
+        // Find existing SVG title direct child, or create one and prepend.
+        var child = root.asNode().firstChild();
+        while (child) |node| : (child = node.nextSibling()) {
+            const el = node.is(Element) orelse continue;
+            if (el._namespace == .svg and std.mem.eql(u8, el.getLocalName(), "title")) {
+                if (value.len == 0) return el.replaceChildren(&.{}, frame);
+                return el.replaceChildren(&.{.{ .text = value }}, frame);
+            }
+        }
+        const new_title_node = try frame.createElementNS(.svg, "title", null);
+        if (value.len > 0) {
+            try new_title_node.as(Element).replaceChildren(&.{.{ .text = value }}, frame);
+        }
+        const root_node = root.asNode();
+        if (root_node.firstChild()) |first| {
+            _ = try root_node.insertBefore(new_title_node, first, frame);
+        } else {
+            _ = try root_node.appendChild(new_title_node, frame);
+        }
+        return;
+    }
+
+    if (root._namespace != .html) {
+        // Per spec step 3: do nothing.
+        return;
+    }
+
+    // HTML-rooted document: reuse first HTML title in tree, or create one
+    // inside <head> when the document has a head.
+    var walker = @import("TreeWalker.zig").Full.init(self.asNode(), .{});
+    while (walker.next()) |node| {
+        const el = node.is(Element) orelse continue;
+        if (el._namespace == .html and std.mem.eql(u8, el.getLocalName(), "title")) {
+            if (value.len == 0) return el.replaceChildren(&.{}, frame);
+            return el.replaceChildren(&.{.{ .text = value }}, frame);
+        }
+    }
+
+    // No title present yet. We need a <head> to attach it to.
+    const html_doc = self.is(HTMLDocument) orelse return;
+    const head = html_doc.getHead() orelse return;
+    const new_title_node = try frame.createElementNS(.html, "title", null);
+    if (value.len > 0) {
+        try new_title_node.as(Element).replaceChildren(&.{.{ .text = value }}, frame);
+    }
+    _ = try head.asNode().appendChild(new_title_node, frame);
+}
+
 pub fn getSelection(self: *Document) *Selection {
     return &self._selection;
 }
@@ -433,7 +560,7 @@ pub fn getActiveElement(self: *Document) ?*Element {
     // Default to body if it exists
     if (self.is(HTMLDocument)) |html_doc| {
         if (html_doc.getBody()) |body| {
-            return body.asElement();
+            return body;
         }
     }
 
@@ -1102,6 +1229,7 @@ pub const JsApi = struct {
         return doc_frame.charset;
     }
     pub const referrer = bridge.property("", .{ .template = false });
+    pub const title = bridge.accessor(Document.getTitle, Document.setTitle, .{});
 };
 
 const testing = @import("../../testing/testing.zig");

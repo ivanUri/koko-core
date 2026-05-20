@@ -196,6 +196,29 @@ pub fn releaseArena(self: *Page, allocator: Allocator) void {
     return self.session.releaseArena(allocator);
 }
 
+// Detach (and forget) any FinalizerCallback registered for the Zig
+// instance whose finalizer pointer is `finalizer_ptr_id`. This is
+// invoked from a Zig-side `deinit` once the underlying refcount hits
+// zero. Without this, the FC stays in `finalizer_callbacks` and any
+// later V8 weak-callback for an outstanding identity would attempt to
+// `release_ref` against memory that has already been freed (or, worse,
+// recycled by the arena pool for an unrelated instance), producing the
+// "integer overflow" / "ArenaPool counter out of sync" crash chain
+// observed on JS-heavy SPAs (TikTok Live).
+pub fn detachFinalizer(self: *Page, finalizer_ptr_id: usize) void {
+    const fc_entry = self.finalizer_callbacks.fetchRemove(finalizer_ptr_id) orelse return;
+    const fc = fc_entry.value;
+    // Mark every outstanding identity as `done` so any subsequent V8
+    // weak-callback for those identities short-circuits before deref'ing
+    // the (potentially recycled) FC or its target object.
+    var id = fc.identities;
+    while (id) |identity| {
+        identity.done = true;
+        id = identity.next;
+    }
+    self.releaseArena(fc.arena);
+}
+
 pub fn getOrCreateOrigin(self: *Page, key_: ?[]const u8) !*js.Origin {
     const session = self.session;
     const key = key_ orelse {

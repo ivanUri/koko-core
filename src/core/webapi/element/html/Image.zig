@@ -57,6 +57,16 @@ pub fn setAlt(self: *Image, value: []const u8, frame: *Frame) !void {
     try self.asElement().setAttributeSafe(comptime .wrap("alt"), .wrap(value), frame);
 }
 
+// `name` reflects the content attribute of the same name (per HTML spec
+// for HTMLImageElement / nameditem semantics).
+pub fn getName(self: *const Image) []const u8 {
+    return self.asConstElement().getAttributeSafe(comptime .wrap("name")) orelse "";
+}
+
+pub fn setName(self: *Image, value: []const u8, frame: *Frame) !void {
+    try self.asElement().setAttributeSafe(comptime .wrap("name"), .wrap(value), frame);
+}
+
 pub fn getWidth(self: *const Image) u32 {
     const attr = self.asConstElement().getAttributeSafe(comptime .wrap("width")) orelse return 0;
     return std.fmt.parseUnsigned(u32, attr, 10) catch 0;
@@ -145,6 +155,7 @@ pub const JsApi = struct {
     pub const src = bridge.accessor(Image.getSrc, Image.setSrc, .{});
     pub const currentSrc = bridge.accessor(Image.getSrc, null, .{});
     pub const alt = bridge.accessor(Image.getAlt, Image.setAlt, .{});
+    pub const name = bridge.accessor(Image.getName, Image.setName, .{});
     pub const width = bridge.accessor(Image.getWidth, Image.setWidth, .{});
     pub const height = bridge.accessor(Image.getHeight, Image.setHeight, .{});
     pub const crossOrigin = bridge.accessor(Image.getCrossOrigin, Image.setCrossOrigin, .{});

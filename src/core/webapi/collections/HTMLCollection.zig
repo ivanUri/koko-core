@@ -146,12 +146,14 @@ pub const JsApi = struct {
     pub const length = bridge.accessor(HTMLCollection.length, null, .{});
     pub const @"[int]" = bridge.indexed(HTMLCollection.getAtIndex, null, .{ .null_as_undefined = true });
     pub const @"[str]" = bridge.namedIndexed(struct {
-        pub fn wrap(self: *HTMLCollection, name: []const u8, frame: *Frame) !?*Element {
-            if (name.len == 0) {
-                return error.NotHandled;
-            }
-
-            return self.getByName(name, frame);
+        // The bridge interprets a null return value (with `null_as_undefined`)
+        // as "intercepted with undefined", which makes `name in collection`
+        // evaluate to true even when no element matches. Per the HTML spec
+        // we must signal "not handled" to V8 via `error.NotHandled` so the
+        // `in` operator and property enumeration behave correctly.
+        pub fn wrap(self: *HTMLCollection, name: []const u8, frame: *Frame) !*Element {
+            if (name.len == 0) return error.NotHandled;
+            return self.getByName(name, frame) orelse return error.NotHandled;
         }
     }.wrap, null, null, .{ .null_as_undefined = true });
 

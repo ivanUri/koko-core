@@ -553,10 +553,7 @@ pub fn base(self: *const Frame) [:0]const u8 {
 }
 
 pub fn getTitle(self: *Frame) !?[]const u8 {
-    if (self.window._document.is(Document.HTMLDocument)) |html_doc| {
-        return try html_doc.getTitle(self);
-    }
-    return null;
+    return try self.window._document.getTitle(self);
 }
 
 // Add common headers for a request:

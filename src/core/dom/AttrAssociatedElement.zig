@@ -67,6 +67,16 @@ fn resolveIdrefs(owner: *const Element, attr_value: []const u8, frame: *Frame) !
     return try list.toOwnedSlice(frame.arena);
 }
 
+// Convert a JS value into a slice of *Element. Per WebIDL, setters for
+// attr-associated element reflection (Element? / FrozenArray<Element>?)
+// must throw TypeError when given a value that isn't null, an Element, or
+// a sequence of Elements. We surface that as error.InvalidArgument, which
+// the bridge layer maps to a JS TypeError (see Caller.zig handleError).
+//
+// This function is the trust boundary between V8-provided values and the
+// strongly-typed Element pointers downstream code expects, so every cast
+// to an Object must be guarded by an explicit isObject() check rather
+// than relying on Value.toObject()'s debug-only assertion.
 fn elementsFromJsValue(value: js.Value, frame: *Frame) ![]const *Element {
     if (value.isNullOrUndefined()) return &.{};
 
@@ -78,6 +88,8 @@ fn elementsFromJsValue(value: js.Value, frame: *Frame) ![]const *Element {
         var i: u32 = 0;
         while (i < len) : (i += 1) {
             const item = try arr.get(i);
+            if (item.isNullOrUndefined()) return error.InvalidArgument;
+            if (!item.isObject()) return error.InvalidArgument;
             const obj = item.toObject();
             const el = try TaggedOpaque.fromJS(*Element, obj.handle);
             try list.append(frame.arena, el);
@@ -85,6 +97,7 @@ fn elementsFromJsValue(value: js.Value, frame: *Frame) ![]const *Element {
         return try list.toOwnedSlice(frame.arena);
     }
 
+    if (!value.isObject()) return error.InvalidArgument;
     const obj = value.toObject();
     const el = try TaggedOpaque.fromJS(*Element, obj.handle);
     return try frame.arena.dupe(*Element, &.{el});

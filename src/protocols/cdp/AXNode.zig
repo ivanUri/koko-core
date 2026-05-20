@@ -867,8 +867,8 @@ fn writeName(
 
     return switch (node._type) {
         .document => |doc| switch (doc._type) {
-            .html => |doc_html| {
-                try w.write(try doc_html.getTitle(frame));
+            .html => |_| {
+                try w.write(try doc.getTitle(frame));
                 return .title;
             },
             else => null,
