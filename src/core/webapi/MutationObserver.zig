@@ -93,14 +93,14 @@ pub fn deinit(self: *MutationObserver, page: *Page) void {
 
 pub fn clearPendingRecords(self: *MutationObserver, page: *Page) void {
     for (self._pending_records.items) |record| {
-        record.deinit(page);
+        record.releaseRef(page);
     }
     self._pending_records.clearRetainingCapacity();
 }
 
 fn releaseRecordList(records: []*MutationRecord, page: *Page) void {
     for (records) |record| {
-        record.deinit(page);
+        record.releaseRef(page);
     }
 }
 
@@ -186,7 +186,7 @@ pub fn observe(self: *MutationObserver, target: *Node, options: ObserveOptions, 
 
 pub fn disconnect(self: *MutationObserver, frame: *Frame) void {
     for (self._pending_records.items) |record| {
-        record.deinit(frame._page);
+        record.releaseRef(frame._page);
     }
     self._pending_records.clearRetainingCapacity();
 

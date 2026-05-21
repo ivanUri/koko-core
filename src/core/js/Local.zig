@@ -1245,8 +1245,9 @@ fn resolveT(comptime T: type, value: *T) Resolved {
 
                     // Identity is allocated from pool, so it's valid even after frame reset.
                     const page = identity_finalizer.page;
+                    const session = identity_finalizer.session;
                     const resolved_ptr_id = identity_finalizer.resolved_ptr_id;
-                    defer page.session.fc_identity_pool.destroy(identity_finalizer);
+                    defer session.fc_identity_pool.destroy(identity_finalizer);
 
                     // Always clean up the identity map entry
                     if (identity_finalizer.identity.identity_map.fetchRemove(resolved_ptr_id)) |kv| {

@@ -141,13 +141,16 @@ pub fn deinit(self: *Page) void {
     self.identity.deinit();
     self.identity = .{};
 
-    // Force cleanup all remaining finalized objects.
-    {
-        var it = self.finalizer_callbacks.valueIterator();
-        while (it.next()) |fc| {
-            fc.*.deinit(self);
-        }
-        self.finalizer_callbacks = .empty;
+    // Force cleanup all remaining finalized objects. Remove each callback from
+    // the map before releasing it, because release_ref can re-enter
+    // detachFinalizer through RC.release.
+    while (self.finalizer_callbacks.count() > 0) {
+        var it = self.finalizer_callbacks.iterator();
+        const entry = it.next() orelse break;
+        const finalizer_ptr_id = entry.key_ptr.*;
+        const fc = entry.value_ptr.*;
+        _ = self.finalizer_callbacks.remove(finalizer_ptr_id);
+        fc.deinit(self);
     }
 
     {
