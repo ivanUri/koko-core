@@ -38,6 +38,7 @@ const MessageEvent = @import("event/MessageEvent.zig");
 const ErrorEvent = @import("event/ErrorEvent.zig");
 const Fetch = @import("net/Fetch.zig");
 const Performance = @import("Performance.zig");
+const WorkerNavigator = @import("WorkerNavigator.zig");
 
 const builtin = @import("builtin");
 const IS_DEBUG = builtin.mode == .Debug;
@@ -92,6 +93,7 @@ _closed: bool = false,
 _proto: *EventTarget,
 _console: Console = .init,
 _crypto: Crypto = .init,
+_navigator: WorkerNavigator = .init,
 _performance: Performance,
 _on_error: ?JS.Function.Global = null,
 _on_rejection_handled: ?JS.Function.Global = null,
@@ -250,6 +252,10 @@ pub fn getCrypto(self: *WorkerGlobalScope) *Crypto {
 
 pub fn getPerformance(self: *WorkerGlobalScope) *Performance {
     return &self._performance;
+}
+
+pub fn getNavigator(self: *WorkerGlobalScope) *WorkerNavigator {
+    return &self._navigator;
 }
 
 pub fn getOnError(self: *const WorkerGlobalScope) ?JS.Function.Global {
@@ -601,6 +607,7 @@ pub const JsApi = struct {
     pub const console = bridge.accessor(WorkerGlobalScope.getConsole, null, .{});
     pub const crypto = bridge.accessor(WorkerGlobalScope.getCrypto, null, .{});
     pub const performance = bridge.accessor(WorkerGlobalScope.getPerformance, null, .{});
+    pub const navigator = bridge.accessor(WorkerGlobalScope.getNavigator, null, .{});
 
     pub const onerror = bridge.accessor(WorkerGlobalScope.getOnError, WorkerGlobalScope.setOnError, .{});
     pub const onrejectionhandled = bridge.accessor(WorkerGlobalScope.getOnRejectionHandled, WorkerGlobalScope.setOnRejectionHandled, .{});

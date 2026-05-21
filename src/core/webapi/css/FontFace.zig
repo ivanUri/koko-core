@@ -58,13 +58,15 @@ pub fn getFamily(self: *const FontFace) []const u8 {
 }
 
 // load() - resolves immediately; headless browser has no real font loading.
-pub fn load(_: *FontFace, frame: *Frame) !js.Promise {
-    return frame.js.local.?.resolvePromise({});
+// Per spec the promise resolves with the FontFace itself, so callers can read
+// `.family` etc on the resolved value.
+pub fn load(self: *FontFace, frame: *Frame) !js.Promise {
+    return frame.js.local.?.resolvePromise(self);
 }
 
-// loaded - returns an already-resolved Promise.
-pub fn getLoaded(_: *FontFace, frame: *Frame) !js.Promise {
-    return frame.js.local.?.resolvePromise({});
+// loaded - returns an already-resolved Promise resolving to this FontFace.
+pub fn getLoaded(self: *FontFace, frame: *Frame) !js.Promise {
+    return frame.js.local.?.resolvePromise(self);
 }
 
 pub const JsApi = struct {

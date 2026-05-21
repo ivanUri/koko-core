@@ -1,0 +1,87 @@
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+const std = @import("std");
+const builtin = @import("builtin");
+
+const js = @import("../js/js.zig");
+
+const NavigatorUAData = @import("NavigatorUAData.zig");
+const WorkerGlobalScope = @import("WorkerGlobalScope.zig");
+
+/// WorkerNavigator is the worker-context counterpart of Navigator. The HTML
+/// spec defines it as a distinct interface that exposes only the subset of
+/// Navigator that makes sense in a worker (no plugins, no media, no battery,
+/// no protocol handlers, etc).
+///
+/// https://html.spec.whatwg.org/multipage/workers.html#workernavigator
+///
+/// The fields exposed here are the ones probed by fingerprinting libraries
+/// (creepjs, fingerprintjs, etc), which compare them against the matching
+/// `window.navigator` values to detect spoofing. They MUST agree with
+/// `Navigator` so the cross-scope comparison passes.
+const WorkerNavigator = @This();
+
+_pad: bool = false,
+
+pub const init: WorkerNavigator = .{};
+
+pub fn getUserAgent(_: *const WorkerNavigator, worker: *WorkerGlobalScope) []const u8 {
+    return worker._session.browser.http_client.getUserAgent();
+}
+
+pub fn getLanguages(_: *const WorkerNavigator) [2][]const u8 {
+    return .{ "en-US", "en" };
+}
+
+pub fn getPlatform(_: *const WorkerNavigator) []const u8 {
+    return switch (builtin.os.tag) {
+        .macos => "MacIntel",
+        .windows => "Win32",
+        .linux => "Linux x86_64",
+        .freebsd => "FreeBSD",
+        else => "Unknown",
+    };
+}
+
+pub fn getUserAgentData(_: *const WorkerNavigator) NavigatorUAData {
+    return .{};
+}
+
+pub const JsApi = struct {
+    pub const bridge = js.Bridge(WorkerNavigator);
+
+    pub const Meta = struct {
+        pub const name = "WorkerNavigator";
+        pub const prototype_chain = bridge.prototypeChain();
+        pub var class_id: bridge.ClassId = undefined;
+        pub const empty_with_no_proto = true;
+    };
+
+    pub const userAgent = bridge.accessor(WorkerNavigator.getUserAgent, null, .{});
+    pub const appName = bridge.property("Netscape", .{ .template = false });
+    pub const appCodeName = bridge.property("Netscape", .{ .template = false });
+    pub const appVersion = bridge.property("1.0", .{ .template = false });
+    pub const platform = bridge.accessor(WorkerNavigator.getPlatform, null, .{});
+    pub const language = bridge.property("en-US", .{ .template = false });
+    pub const languages = bridge.accessor(WorkerNavigator.getLanguages, null, .{});
+    pub const onLine = bridge.property(true, .{ .template = false });
+    pub const hardwareConcurrency = bridge.property(4, .{ .template = false });
+    pub const deviceMemory = bridge.property(@as(f64, 8.0), .{ .template = false });
+    pub const vendor = bridge.property("", .{ .template = false });
+    pub const product = bridge.property("Gecko", .{ .template = false });
+    pub const webdriver = bridge.property(false, .{ .template = false });
+    pub const doNotTrack = bridge.property(null, .{ .template = false });
+    pub const globalPrivacyControl = bridge.property(true, .{ .template = false });
+    pub const userAgentData = bridge.accessor(WorkerNavigator.getUserAgentData, null, .{});
+};

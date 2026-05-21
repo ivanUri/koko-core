@@ -378,10 +378,6 @@ pub const Mark = struct {
         const opts = _opts orelse Options{};
         const start_time = opts.startTime orelse frame.window._performance.now();
 
-        if (start_time < 0.0) {
-            return error.TypeError;
-        }
-
         const detail = if (opts.detail) |d| try d.persist() else null;
         const m = try frame._factory.create(Mark{
             ._proto = undefined,

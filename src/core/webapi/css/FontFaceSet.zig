@@ -89,7 +89,13 @@ pub fn load(self: *FontFaceSet, font: []const u8, frame: *Frame) !js.Promise {
         try frame._event_manager.dispatchDirect(target, event, null, .{ .context = "load font face set" });
     }
 
-    return frame.js.local.?.resolvePromise({});
+    // Spec: load() resolves with `sequence<FontFace>`. Velora keeps no font
+    // registry, so the sequence is always empty — but it must be an array,
+    // not `undefined`. Callers commonly destructure each entry's `.family`,
+    // and resolving with `undefined` would surface as
+    // `Cannot read properties of undefined (reading 'family')`.
+    const empty: []const *FontFace = &.{};
+    return frame.js.local.?.resolvePromise(empty);
 }
 
 // add(fontFace) - no-op; headless browser does not track loaded fonts.

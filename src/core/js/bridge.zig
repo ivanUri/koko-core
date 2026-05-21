@@ -743,6 +743,7 @@ pub const PageJsApis = flattenTypes(&.{
     @import("../webapi/Console.zig"),
     @import("../webapi/Crypto.zig"),
     @import("../webapi/Permissions.zig"),
+    @import("../webapi/MediaCapabilities.zig"),
     @import("../webapi/StorageManager.zig"),
     @import("../webapi/CSS.zig"),
     @import("../webapi/css/CSSRule.zig"),
@@ -877,12 +878,15 @@ pub const PageJsApis = flattenTypes(&.{
     @import("../webapi/MessagePort.zig"),
     @import("../webapi/Worker.zig"),
     @import("../webapi/media/MediaError.zig"),
+    @import("../webapi/media/MediaSource.zig"),
+    @import("../webapi/media/SourceBuffer.zig"),
     @import("../webapi/media/TextTrackCue.zig"),
     @import("../webapi/media/VTTCue.zig"),
     @import("../webapi/animation/Animation.zig"),
     @import("../webapi/EventTarget.zig"),
     @import("../webapi/Location.zig"),
     @import("../webapi/Navigator.zig"),
+    @import("../webapi/NetworkInformation.zig"),
     @import("../webapi/NavigatorUAData.zig"),
     @import("../webapi/net/FormData.zig"),
     @import("../webapi/net/Headers.zig"),
@@ -922,6 +926,7 @@ pub const PageJsApis = flattenTypes(&.{
     @import("../webapi/navigation/Navigation.zig"),
     @import("../webapi/navigation/NavigationHistoryEntry.zig"),
     @import("../webapi/navigation/NavigationActivation.zig"),
+    @import("../webapi/canvas/CanvasGradient.zig"),
     @import("../webapi/canvas/CanvasRenderingContext2D.zig"),
     @import("../webapi/canvas/WebGLRenderingContext.zig"),
     @import("../webapi/canvas/OffscreenCanvas.zig"),
@@ -937,6 +942,8 @@ pub const PageJsApis = flattenTypes(&.{
 // TODO: Expand this list to include all worker-appropriate APIs.
 pub const WorkerJsApis = flattenTypes(&.{
     @import("../webapi/WorkerGlobalScope.zig"),
+    @import("../webapi/WorkerNavigator.zig"),
+    @import("../webapi/NavigatorUAData.zig"),
     @import("../webapi/EventTarget.zig"),
     @import("../dom/DOMException.zig"),
     @import("../webapi/net/URLSearchParams.zig"),
@@ -962,7 +969,9 @@ pub const WorkerJsApis = flattenTypes(&.{
     @import("../webapi/AbortSignal.zig"),
     @import("../webapi/AbortController.zig"),
     @import("../webapi/URL.zig"),
+    @import("../webapi/canvas/CanvasGradient.zig"),
     @import("../webapi/canvas/OffscreenCanvas.zig"),
+    @import("../webapi/canvas/OffscreenCanvasRenderingContext2D.zig"),
     @import("../webapi/net/XMLHttpRequest.zig"),
     @import("../webapi/net/XMLHttpRequestEventTarget.zig"),
     @import("../webapi/FileReader.zig"),
@@ -974,7 +983,10 @@ pub const WorkerJsApis = flattenTypes(&.{
 // to know about all possible types. Individual snapshots use their own
 // subsets (PageJsApis, WorkerSnapshot.JsApis).
 pub const JsApis = blk: {
-    const base = PageJsApis ++ [_]type{@import("../webapi/WorkerGlobalScope.zig").JsApi};
+    const base = PageJsApis ++ [_]type{
+        @import("../webapi/WorkerGlobalScope.zig").JsApi,
+        @import("../webapi/WorkerNavigator.zig").JsApi,
+    };
     if (build_config.wpt_extensions == false) {
         break :blk base;
     }

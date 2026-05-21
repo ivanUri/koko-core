@@ -16,7 +16,7 @@ const outputDir = resolve(tmpDir, "output");
 const logDir = resolve(tmpDir, "logs");
 
 const defaults = {
-    url: "https://www.youtube.com/watch?v=36YnV9STBqc",
+    url: "https://abrahamjuliot.github.io/creepjs/",
     host: "127.0.0.1",
     waitMs: 20000,
     serverTimeoutMs: 15000,

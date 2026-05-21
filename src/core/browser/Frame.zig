@@ -3358,6 +3358,15 @@ pub fn _insertNodeRelative(self: *Frame, comptime from_parser: bool, parent: *No
             try Element.Html.Custom.invokeConnectedCallbackOnElement(false, el, self);
         }
     }
+
+    // After the subtree is fully connected, fire deferred subresource/load
+    // callbacks for descendants (iframes parsed via innerHTML, scripts/links
+    // brought along by a moved subtree, etc). The root (`child`) was already
+    // dispatched by the `nodeIsReady(false, child)` call above, so we walk
+    // descendants only.
+    if (should_invoke_connected) {
+        try self.notifyDescendantsConnected(child);
+    }
 }
 
 pub fn attributeChange(self: *Frame, element: *Element, name: String, value: String, old_value: ?String) void {
@@ -3615,6 +3624,33 @@ pub fn parseHtmlAsChildren(self: *Frame, node: *Node, html: []const u8) !void {
         while (it.next()) |child| {
             child._parent = node;
         }
+    }
+
+    // If the parser-built children are now part of a connected subtree, fire
+    // deferred subresource/lifecycle callbacks on the descendants. Without
+    // this, iframes/scripts/links/styles introduced via innerHTML on a live
+    // element never get their AddedCallback (e.g. iframes never receive a
+    // contentWindow). The walker excludes `node` itself; callbacks are
+    // idempotent so partial paths remain safe.
+    if (node.isConnected()) {
+        try self.notifyDescendantsConnected(node);
+    }
+}
+
+/// Fire deferred subresource/lifecycle callbacks for every descendant of
+/// `subtree_root` (the root itself is excluded, as callers handle it via
+/// `nodeIsReady`). This bridges the gap where iframes/scripts/links/styles
+/// are introduced as descendants — either through `innerHTML` parsing or by
+/// moving an already-built subtree into a connected parent — and would
+/// otherwise never see their AddedCallback fire.
+///
+/// Each underlying callback is idempotent for replays (iframes guard on
+/// `_executed`, scripts go through `ScriptManager`, etc.), so calling this
+/// from multiple insertion paths is safe.
+pub fn notifyDescendantsConnected(self: *Frame, subtree_root: *Node) !void {
+    var tw = @import("../dom/TreeWalker.zig").FullExcludeSelf.Elements.init(subtree_root, .{});
+    while (tw.next()) |el| {
+        try self.nodeIsReady(false, el.asNode());
     }
 }
 

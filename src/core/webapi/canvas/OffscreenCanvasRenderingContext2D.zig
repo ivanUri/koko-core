@@ -17,6 +17,7 @@ const js = @import("../../js/js.zig");
 const color = @import("../../browser/color.zig");
 const Frame = @import("../../browser/Frame.zig");
 
+const CanvasGradient = @import("CanvasGradient.zig");
 const ImageData = @import("../ImageData.zig");
 
 /// This class doesn't implement a `constructor`.
@@ -109,6 +110,40 @@ pub fn clip(_: *OffscreenCanvasRenderingContext2D) void {}
 pub fn fillText(_: *OffscreenCanvasRenderingContext2D, _: []const u8, _: f64, _: f64, _: ?f64) void {}
 pub fn strokeText(_: *OffscreenCanvasRenderingContext2D, _: []const u8, _: f64, _: f64, _: ?f64) void {}
 
+pub fn createLinearGradient(
+    _: *OffscreenCanvasRenderingContext2D,
+    x0: f64,
+    y0: f64,
+    x1: f64,
+    y1: f64,
+    frame: *Frame,
+) !*CanvasGradient {
+    return CanvasGradient.createLinear(x0, y0, x1, y1, frame);
+}
+
+pub fn createRadialGradient(
+    _: *OffscreenCanvasRenderingContext2D,
+    x0: f64,
+    y0: f64,
+    r0: f64,
+    x1: f64,
+    y1: f64,
+    r1: f64,
+    frame: *Frame,
+) !*CanvasGradient {
+    return CanvasGradient.createRadial(x0, y0, r0, x1, y1, r1, frame);
+}
+
+pub fn createConicGradient(
+    _: *OffscreenCanvasRenderingContext2D,
+    start_angle: f64,
+    x: f64,
+    y: f64,
+    frame: *Frame,
+) !*CanvasGradient {
+    return CanvasGradient.createConic(start_angle, x, y, frame);
+}
+
 pub const JsApi = struct {
     pub const bridge = js.Bridge(OffscreenCanvasRenderingContext2D);
 
@@ -160,4 +195,7 @@ pub const JsApi = struct {
     pub const clip = bridge.function(OffscreenCanvasRenderingContext2D.clip, .{ .noop = true });
     pub const fillText = bridge.function(OffscreenCanvasRenderingContext2D.fillText, .{ .noop = true });
     pub const strokeText = bridge.function(OffscreenCanvasRenderingContext2D.strokeText, .{ .noop = true });
+    pub const createLinearGradient = bridge.function(OffscreenCanvasRenderingContext2D.createLinearGradient, .{});
+    pub const createRadialGradient = bridge.function(OffscreenCanvasRenderingContext2D.createRadialGradient, .{ .dom_exception = true });
+    pub const createConicGradient = bridge.function(OffscreenCanvasRenderingContext2D.createConicGradient, .{});
 };
