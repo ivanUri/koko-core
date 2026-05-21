@@ -15,10 +15,24 @@ const tmpDir = resolve(repoRoot, "code-check/tmp");
 const outputDir = resolve(tmpDir, "output");
 const logDir = resolve(tmpDir, "logs");
 
+const exportConfig = {
+    removeScripts: true,
+    rewriteRenderResourceUrls: true,
+    waitStrategy: "auto",
+    minWaitMs: 20000,
+    quietWindowMs: 500,
+    maxAutoWaitMs: 5000,
+    pollIntervalMs: 150,
+};
+
 const defaults = {
-    url: "https://www.reddit.com/",
+    url: "https://abrahamjuliot.github.io/creepjs/",
     host: "127.0.0.1",
-    waitMs: 20000,
+    waitMs: null,
+    minWaitMs: exportConfig.minWaitMs,
+    quietWindowMs: exportConfig.quietWindowMs,
+    maxAutoWaitMs: exportConfig.maxAutoWaitMs,
+    pollIntervalMs: exportConfig.pollIntervalMs,
     serverTimeoutMs: 15000,
     commandTimeoutMs: 15000,
     navigationTimeoutMs: 20000,
@@ -35,7 +49,10 @@ function usage() {
 
 Options:
   --url <url>          URL to open (default: ${defaults.url})
-  --wait-ms <ms>       Extra wait after navigation (default: ${defaults.waitMs})
+  --wait-ms <ms>       Fixed wait after navigation; disables auto wait (default: auto)
+  --min-wait-ms <ms>   Minimum auto wait after navigation (default: ${defaults.minWaitMs})
+  --quiet-ms <ms>      DOM/content must stay stable for this long (default: ${defaults.quietWindowMs})
+  --max-wait-ms <ms>   Maximum auto wait after navigation (default: ${defaults.maxAutoWaitMs})
   --timeout <ms>       Navigation timeout (default: ${defaults.navigationTimeoutMs})
   --output <path>      HTML output file (default: ${defaults.output})
   --report <path>      JSON report file (default: ${defaults.report})
@@ -62,6 +79,15 @@ function parseArgs(argv) {
                 break;
             case "--wait-ms":
                 options.waitMs = Number(next());
+                break;
+            case "--min-wait-ms":
+                options.minWaitMs = Number(next());
+                break;
+            case "--quiet-ms":
+                options.quietWindowMs = Number(next());
+                break;
+            case "--max-wait-ms":
+                options.maxAutoWaitMs = Number(next());
                 break;
             case "--timeout":
                 options.navigationTimeoutMs = Number(next());
@@ -90,10 +116,13 @@ function parseArgs(argv) {
         }
     }
 
-    for (const key of ["waitMs", "serverTimeoutMs", "commandTimeoutMs", "navigationTimeoutMs", "httpTimeoutMs"]) {
+    for (const key of ["serverTimeoutMs", "commandTimeoutMs", "navigationTimeoutMs", "httpTimeoutMs", "minWaitMs", "quietWindowMs", "maxAutoWaitMs", "pollIntervalMs"]) {
         if (!Number.isFinite(options[key]) || options[key] < 0) {
             throw new Error(`Invalid numeric option ${key}: ${options[key]}`);
         }
+    }
+    if (options.waitMs != null && (!Number.isFinite(options.waitMs) || options.waitMs < 0)) {
+        throw new Error(`Invalid numeric option waitMs: ${options.waitMs}`);
     }
     return options;
 }
@@ -238,14 +267,87 @@ async function evaluate(cdp, sessionId, expression, timeoutMs) {
 }
 
 async function getPageContent(cdp, sessionId, timeoutMs, pageUrl) {
-    const html = await evaluate(cdp, sessionId, "document.documentElement.outerHTML", timeoutMs);
-    const rawHtml = html || "";
-    // Inject <base href="..."> so relative URLs resolve correctly when opening the HTML file locally.
-    const baseTag = pageUrl ? `` : "";
-    const htmlWithBase = baseTag
-        ? rawHtml.replace(/(<head\b[^>]*>)/i, `$1${baseTag}`)
-        : rawHtml;
-    return `<!DOCTYPE html>\n${htmlWithBase}`;
+    const payload = JSON.stringify({ ...exportConfig, pageUrl });
+    const html = await evaluate(cdp, sessionId, `(() => {
+        const config = ${payload};
+        const root = document.documentElement ? document.documentElement.cloneNode(true) : null;
+        const baseUrl = config.pageUrl || document.baseURI || location.href;
+
+        function canResolveUrl(value) {
+            if (!value) return false;
+            const trimmed = String(value).trim();
+            if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("//")) return false;
+            if (/^(?:[a-z][a-z0-9+.-]*:)/i.test(trimmed)) return false;
+            return true;
+        }
+
+        function resolveUrl(value) {
+            if (!canResolveUrl(value)) return value;
+            try {
+                return new URL(value, baseUrl).href;
+            } catch (_) {
+                return value;
+            }
+        }
+
+        function rewriteSrcset(value) {
+            return String(value).split(",").map((item) => {
+                const trimmed = item.trim();
+                if (!trimmed) return item;
+                const parts = trimmed.split(/\s+/);
+                parts[0] = resolveUrl(parts[0]);
+                return parts.join(" ");
+            }).join(", ");
+        }
+
+        function relTokens(el) {
+            return new Set((el.getAttribute("rel") || "").toLowerCase().split(/\s+/).filter(Boolean));
+        }
+
+        function shouldRewriteLinkHref(el) {
+            const rel = relTokens(el);
+            const asValue = (el.getAttribute("as") || "").toLowerCase();
+            if (rel.has("modulepreload")) return false;
+            if ((rel.has("preload") || rel.has("prefetch")) && asValue === "script") return false;
+            return true;
+        }
+
+        function rewriteAttr(selector, attr) {
+            if (!root) return;
+            for (const el of root.querySelectorAll(selector)) {
+                const value = el.getAttribute(attr);
+                if (value) el.setAttribute(attr, resolveUrl(value));
+            }
+        }
+
+        if (config.removeScripts) {
+            for (const el of root ? root.querySelectorAll("script") : []) el.remove();
+        }
+
+        if (config.rewriteRenderResourceUrls) {
+            for (const el of root ? root.querySelectorAll("base") : []) el.remove();
+            for (const el of root ? root.querySelectorAll("link[href]") : []) {
+                if (shouldRewriteLinkHref(el)) el.setAttribute("href", resolveUrl(el.getAttribute("href")));
+            }
+
+            rewriteAttr("img[src]", "src");
+            rewriteAttr("source[src]", "src");
+            rewriteAttr("video[src]", "src");
+            rewriteAttr("video[poster]", "poster");
+            rewriteAttr("audio[src]", "src");
+            rewriteAttr("track[src]", "src");
+            rewriteAttr("embed[src]", "src");
+            rewriteAttr("iframe[src]", "src");
+            rewriteAttr("object[data]", "data");
+
+            for (const el of root ? root.querySelectorAll("img[srcset], source[srcset]") : []) {
+                el.setAttribute("srcset", rewriteSrcset(el.getAttribute("srcset")));
+            }
+        }
+
+        return root ? root.outerHTML : "";
+    })()`, timeoutMs);
+    return `<!DOCTYPE html>\n${html || ""}`;
 }
 
 async function navigate(cdp, sessionId, url, timeoutMs) {
@@ -256,6 +358,70 @@ async function navigate(cdp, sessionId, url, timeoutMs) {
     } catch (err) {
         console.warn(`[navigate:warning] ${err.message}; continuing with current document`);
     }
+}
+
+async function getPageStability(cdp, sessionId, timeoutMs) {
+    return evaluate(cdp, sessionId, `(() => {
+        const bodyText = document.body ? (document.body.innerText || document.body.textContent || "") : "";
+        return {
+            readyState: document.readyState,
+            title: document.title || "",
+            textLength: bodyText.trim().length,
+            bodyChildCount: document.body ? document.body.children.length : 0,
+            nodeCount: document.querySelectorAll("*").length,
+        };
+    })()`, timeoutMs);
+}
+
+function stabilitySignature(state) {
+    return JSON.stringify({
+        readyState: state.readyState,
+        title: state.title,
+        textLength: state.textLength,
+        bodyChildCount: state.bodyChildCount,
+        nodeCount: state.nodeCount,
+    });
+}
+
+async function waitForPageStable(cdp, sessionId, options) {
+    const started = Date.now();
+    if (options.waitMs != null) {
+        console.log(`[wait:fixed] ${options.waitMs}ms`);
+        await delay(options.waitMs);
+        return { strategy: "fixed", reason: "fixed-wait", waitMs: Date.now() - started };
+    }
+
+    console.log(`[wait:auto] quiet=${options.quietWindowMs}ms max=${options.maxAutoWaitMs}ms`);
+    let lastSignature = "";
+    let stableSince = Date.now();
+    let lastState = null;
+
+    while (Date.now() - started <= options.maxAutoWaitMs) {
+        lastState = await getPageStability(cdp, sessionId, options.commandTimeoutMs);
+        const signature = stabilitySignature(lastState);
+        if (signature !== lastSignature) {
+            lastSignature = signature;
+            stableSince = Date.now();
+        }
+
+        const elapsed = Date.now() - started;
+        const stableMs = Date.now() - stableSince;
+        const ready = lastState.readyState === "interactive" || lastState.readyState === "complete";
+        const hasContent = lastState.textLength > 0 || lastState.bodyChildCount > 0;
+        if (elapsed >= options.minWaitMs && ready && hasContent && stableMs >= options.quietWindowMs) {
+            return { strategy: "auto", reason: "stable", waitMs: elapsed, stableMs, state: lastState };
+        }
+
+        await delay(Math.max(25, options.pollIntervalMs));
+    }
+
+    return {
+        strategy: "auto",
+        reason: "timeout",
+        waitMs: Date.now() - started,
+        stableMs: Date.now() - stableSince,
+        state: lastState,
+    };
 }
 
 async function waitForServer(url, timeoutMs) {
@@ -393,10 +559,12 @@ async function main() {
         await cdp.send("Page.enable", {}, sessionId);
         await cdp.send("Network.enable", {}, sessionId).catch(() => undefined);
 
+        const startedAt = Date.now();
         console.log(`[navigate:cdp] ${options.url}`);
+        const navigationStartedAt = Date.now();
         await navigate(cdp, sessionId, options.url, options.navigationTimeoutMs);
-        console.log(`[wait] ${options.waitMs}ms`);
-        await delay(options.waitMs);
+        const navigationMs = Date.now() - navigationStartedAt;
+        const settle = await waitForPageStable(cdp, sessionId, options);
 
         console.log("[inspect] collecting page report");
         const pageReport = await evaluate(cdp, sessionId, `(() => {
@@ -406,6 +574,13 @@ async function main() {
             return inspectPage();
         })()`, options.commandTimeoutMs);
         const result = validatePage(pageReport);
+        result.timing = {
+            navigationMs,
+            settleWaitMs: settle.waitMs,
+            totalMs: Date.now() - startedAt,
+            settledReason: settle.reason,
+            waitStrategy: settle.strategy,
+        };
         const html = await getPageContent(cdp, sessionId, options.commandTimeoutMs, pageReport.url || options.url);
 
         writeFileSync(options.output, html);
