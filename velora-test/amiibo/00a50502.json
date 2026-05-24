@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Roald",
+		"name": "Roald",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04600001-00a50502.png",
+		"tail": "00a50502"
+	},
+	"next": "02a40e02.html",
+	"prev": "016e0502.html",
+	"list": {
+		"004e0502": "Harriet",
+		"005d0502": "Renée",
+		"01180502": "Digby - Raincoat",
+		"01390502": "Eloise",
+		"013f0502": "Merry",
+		"02390602": "8-Bit Mario Modern Color",
+		"02950e02": "Diddy Kong - Horse Racing",
+		"029b0e02": "Bowser Jr. - Soccer",
+		"02ad0e02": "Baby Luigi - Golf",
+		"02fe0502": "Murphy"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Isabelle",
+		"name": "Isabelle - Winter Outfit",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01810100-023f0502.png",
+		"tail": "023f0502"
+	},
+	"next": "02480502.html",
+	"prev": "01570502.html",
+	"list": {
+		"00260002": "Jigglypuff",
+		"00fb0502": "Anicotti",
+		"01680502": "Rolf",
+		"018d0502": "Croque",
+		"01b50502": "Jacques",
+		"01d40502": "Isabelle - Character Parfait",
+		"02660102": "Daisy",
+		"02b30e02": "Birdo - Horse Racing",
+		"038e0402": "Octoling Girl",
+		"03c00502": "Sherb"
+	}
+}

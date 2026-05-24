@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Legend Of Zelda",
+		"character": "Link",
+		"name": "Link - Rider",
+		"gameSeries": "The Legend of Zelda",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01000000-03540902.png",
+		"tail": "03540902"
+	},
+	"next": "014a0502.html",
+	"prev": "04131302.html",
+	"list": {
+		"004c0502": "Digby",
+		"004d0502": "Pascal",
+		"01540502": "Moe",
+		"01680502": "Rolf",
+		"016c0502": "Apollo",
+		"02900e02": "Donkey Kong - Horse Racing",
+		"02a00e02": "Boo - Soccer",
+		"03550902": "Guardian",
+		"03bd0502": "Wardell",
+		"04d61d02": "Dee Jay"
+	}
+}

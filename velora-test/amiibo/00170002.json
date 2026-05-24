@@ -1,0 +1,23 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Zelda",
+		"name": "Sheik",
+		"gameSeries": "The Legend of Zelda",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01010100-00170002.png",
+		"tail": "00170002"
+	},
+	"next": "02c20e02.html",
+	"prev": "00ae0502.html",
+	"list": {
+		"00320002": "Pac-Man",
+		"00d60502": "Scoot",
+		"00fe0502": "Vic",
+		"01680502": "Rolf",
+		"02660102": "Daisy",
+		"02b70e02": "Rosalina - Golf",
+		"030d0502": "Cashmere",
+		"03b90502": "Gulliver",
+		"index": "Sandy"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Gabi",
+		"name": "Gabi",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04990001-00df0502.png",
+		"tail": "00df0502"
+	},
+	"next": "00810502.html",
+	"prev": "02e10f02.html",
+	"list": {
+		"00220002": "Mii Swordfighter",
+		"00290002": "Lucina",
+		"00910502": "Roscoe",
+		"01240502": "Ken",
+		"01b00502": "Peggy",
+		"01b70502": "Doc",
+		"02540c02": "Kirby",
+		"02ee0502": "Tybalt",
+		"041e0002": "Pyra",
+		"04d71d02": "Manon"
+	}
+}

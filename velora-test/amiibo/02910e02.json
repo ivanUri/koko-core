@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Diddy Kong",
+		"name": "Diddy Kong - Soccer",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09c80101-02910e02.png",
+		"tail": "02910e02"
+	},
+	"next": "00580502.html",
+	"prev": "008d0502.html",
+	"list": {
+		"00030002": "Donkey Kong",
+		"001c0002": "Falco",
+		"00540502": "Lottie",
+		"00700502": "Octavian",
+		"00980502": "Pancetti",
+		"00b20502": "Shrunk",
+		"00e00502": "Moose",
+		"01d70502": "Rosie - Amiibo Festival",
+		"029c0e02": "Bowser Jr. - Baseball",
+		"04af1d02": "Kimberly"
+	}
+}

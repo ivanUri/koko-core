@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Nintendo World",
+		"character": "Daisy",
+		"name": "Daisy - Power Up Band",
+		"gameSeries": "Super Mario",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_00130003-039eff02.png",
+		"tail": "039eff02"
+	},
+	"next": "00310002.html",
+	"prev": "01af0502.html",
+	"list": {
+		"000f0002": "Little Mac",
+		"00150002": "Bowser Jr.",
+		"006a0502": "Jitters",
+		"008f0502": "Jeremiah",
+		"00ce0502": "Blaire",
+		"01c70502": "Maelle",
+		"02540c02": "Kirby",
+		"02ee0502": "Tybalt",
+		"03850002": "Pichu",
+		"03bc0502": "Niko"
+	}
+}

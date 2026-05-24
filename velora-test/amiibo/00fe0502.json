@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Vic",
+		"name": "Vic",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02520001-00fe0502.png",
+		"tail": "00fe0502"
+	},
+	"next": "040c0f02.html",
+	"prev": "01d00502.html",
+	"list": {
+		"00000002": "Mario",
+		"003a0202": "Chibi Robo",
+		"00ef0502": "Agnes",
+		"00f90502": "Alice",
+		"01440502": "Klaus",
+		"01b20502": "Annalise",
+		"01ce0502": "Cally",
+		"02550c02": "Meta Knight",
+		"04c61e03": "Meta Knight (\u0026 Shadow Star)",
+		"04d71d02": "Manon"
+	}
+}

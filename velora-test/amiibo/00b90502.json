@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Poncho",
+		"name": "Poncho",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_027f0001-00b90502.png",
+		"tail": "00b90502"
+	},
+	"next": "01830502.html",
+	"prev": "02750e02.html",
+	"list": {
+		"00410302": "Green Yarn Yoshi",
+		"007f0502": "Samson",
+		"00cc0502": "Cookie",
+		"00f20502": "Jay",
+		"01370502": "Tangy",
+		"01390502": "Eloise",
+		"013c0502": "Beardo",
+		"013f0502": "Merry",
+		"027f0e02": "Yoshi - Tennis",
+		"03580902": "Daruk"
+	}
+}

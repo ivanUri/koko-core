@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Dizzy",
+		"name": "Dizzy",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03240001-01890502.png",
+		"tail": "01890502"
+	},
+	"next": "01b30502.html",
+	"prev": "01a90502.html",
+	"list": {
+		"00030002": "Donkey Kong",
+		"00ee0502": "Benedict",
+		"01630502": "Curly",
+		"028a0e02": "Waluigi - Golf",
+		"02a60e02": "Baby Mario - Baseball",
+		"02e90502": "June",
+		"030c0502": "Spike",
+		"03651302": "Samus Aran",
+		"03a50002": "Byleth",
+		"04411c02": "Peach - My Mario Wooden Blocks"
+	}
+}

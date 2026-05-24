@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Street Fighter 6",
+		"character": "Zangief",
+		"name": "Zangief",
+		"gameSeries": "Street Fighter",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_34cf0001-04da1d02.png",
+		"tail": "04da1d02"
+	},
+	"next": "04d41d02.html",
+	"prev": "04d01d02.html",
+	"list": {
+		"00710502": "Winnie",
+		"007e0502": "Nate",
+		"01790502": "Timmy - Suit",
+		"019e0502": "Tammy",
+		"02420502": "Tom Nook",
+		"02600402": "Inkling Boy - Purple",
+		"02930e02": "Diddy Kong - Tennis",
+		"03a60102": "Mario - Cat",
+		"03d70502": "Faith",
+		"043e1b02": "Mio"
+	}
+}

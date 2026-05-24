@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Monster Hunter",
+		"character": "One-Eyed Rathalos",
+		"name": "One-Eyed Rathalos and Rider - Male",
+		"gameSeries": "Monster Hunter",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_35000100-02e10f02.png",
+		"tail": "02e10f02"
+	},
+	"next": "00df0502.html",
+	"prev": "02fb0502.html",
+	"list": {
+		"00030002": "Donkey Kong",
+		"000e0002": "Zelda",
+		"007c0502": "Phil",
+		"01770502": "Leilani",
+		"025c0d02": "Shadow Mewtwo",
+		"02830e02": "Wario - Baseball",
+		"02840e02": "Wario - Tennis",
+		"039bff02": "Mario - Power Up Band",
+		"03bd0502": "Wardell",
+		"04cb1d02": "Ryu"
+	}
+}

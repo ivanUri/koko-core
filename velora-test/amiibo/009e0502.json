@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Muffy",
+		"name": "Muffy",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04d10001-009e0502.png",
+		"tail": "009e0502"
+	},
+	"next": "043d1b02.html",
+	"prev": "01600502.html",
+	"list": {
+		"00270002": "Meta Knight",
+		"00ab0502": "Labelle",
+		"00b30502": "Don Resetti",
+		"01250502": "Mitzi",
+		"01780502": "Resetti - Without Hat",
+		"02840e02": "Wario - Tennis",
+		"03b90502": "Gulliver",
+		"03cd0502": "Petri",
+		"041e0002": "Pyra",
+		"042d1802": "Malzeno"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Legend Of Zelda",
+		"character": "Link",
+		"name": "Link - Tears of the Kingdom",
+		"gameSeries": "The Legend of Zelda",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01000000-04180902.png",
+		"tail": "04180902"
+	},
+	"next": "01a90502.html",
+	"prev": "01cf0502.html",
+	"list": {
+		"00a60502": "Molly",
+		"00b40502": "Isabelle - Winter",
+		"01060502": "Hamphrey",
+		"01bc0502": "Sydney",
+		"02980e02": "Bowser - Tennis",
+		"02b40e02": "Rosalina - Soccer",
+		"03010502": "Claude",
+		"03b60502": "Kicks",
+		"04bd1d02": "Rashid",
+		"04dd1d02": "Rashid"
+	}
+}

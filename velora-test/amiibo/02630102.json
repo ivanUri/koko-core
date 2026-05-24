@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Mario Bros.",
+		"character": "Wario",
+		"name": "Wario",
+		"gameSeries": "Super Mario",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_00070000-02630102.png",
+		"tail": "02630102"
+	},
+	"next": "01230502.html",
+	"prev": "00f90502.html",
+	"list": {
+		"00c50502": "Prince",
+		"00d00502": "Nana",
+		"01670502": "Baabara",
+		"016e0502": "Francine",
+		"01c80502": "Bruce",
+		"023f0502": "Isabelle - Winter Outfit",
+		"03bc0502": "Niko",
+		"03d30502": "Rio",
+		"04121302": "Samus - Metroid Dread",
+		"04350402": "Big Man"
+	}
+}

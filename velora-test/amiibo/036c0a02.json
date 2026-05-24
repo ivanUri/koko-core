@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Shovel Knight",
+		"character": "Plague Knight",
+		"name": "Plague Knight",
+		"gameSeries": "Shovel Knight",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_35c10000-036c0a02.png",
+		"tail": "036c0a02"
+	},
+	"next": "030e0502.html",
+	"prev": "002c0002.html",
+	"list": {
+		"00630502": "Bluebear",
+		"016a0502": "Antonio",
+		"02590002": "Cloud",
+		"02f40502": "Ketchup",
+		"03080502": "Boots",
+		"030f0502": "Norma",
+		"03670102": "Goomba",
+		"03840002": "Squirtle",
+		"03b00502": "Sable",
+		"04b71d02": "Manon"
+	}
+}

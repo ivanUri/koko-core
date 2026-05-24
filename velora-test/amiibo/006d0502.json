@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Marcie",
+		"name": "Marcie",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03db0001-006d0502.png",
+		"tail": "006d0502"
+	},
+	"next": "00570502.html",
+	"prev": "03800002.html",
+	"list": {
+		"00840502": "Midge",
+		"00c00502": "Gwen",
+		"00f50502": "Hugh",
+		"00fd0502": "Charlise",
+		"014f0502": "Buck",
+		"01570502": "Astrid",
+		"02540c02": "Kirby",
+		"02fd0502": "Maggie",
+		"03860002": "Incineroar",
+		"04350402": "Big Man"
+	}
+}

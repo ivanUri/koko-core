@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Tom Nook",
+		"name": "Tom Nook",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01830001-00450502.png",
+		"tail": "00450502"
+	},
+	"next": "00eb0502.html",
+	"prev": "03d10502.html",
+	"list": {
+		"000c0002": "Luigi",
+		"009e0502": "Muffy",
+		"00aa0502": "Kicks",
+		"01390502": "Eloise",
+		"015b0502": "Victoria",
+		"01d20502": "Twiggy",
+		"02e10f02": "One-Eyed Rathalos and Rider - Male",
+		"03cb0502": "Shino",
+		"043d1b02": "Noah",
+		"043f1c02": "Mario - My Mario Wooden Blocks"
+	}
+}

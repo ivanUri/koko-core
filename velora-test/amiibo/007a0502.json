@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Snake",
+		"name": "Snake",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04970001-007a0502.png",
+		"tail": "007a0502"
+	},
+	"next": "03d30502.html",
+	"prev": "03bf0502.html",
+	"list": {
+		"008b0502": "Lionel",
+		"00b10502": "Leila",
+		"00ff0502": "Ankha",
+		"01610502": "Cube",
+		"016f0502": "Chrissy",
+		"01730502": "Phineas",
+		"02a40e02": "Boo - Horse Racing",
+		"03590902": "Urbosa",
+		"03760402": "Pearl",
+		"03d30502": "Rio"
+	}
+}

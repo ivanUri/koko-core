@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Mario Bros.",
+		"character": "Bowser",
+		"name": "Bowser - Wedding",
+		"gameSeries": "Super Mario",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_00050000-03730102.png",
+		"tail": "03730102"
+	},
+	"next": "00460502.html",
+	"prev": "03920a02.html",
+	"list": {
+		"00ea0502": "Beau",
+		"01640502": "Boomer",
+		"01890502": "Dizzy",
+		"018f0502": "Shep",
+		"02830e02": "Wario - Baseball",
+		"02a40e02": "Boo - Horse Racing",
+		"03781402": "Solaire of Astora",
+		"040c0f02": "Razewing Ratha",
+		"04ad1d02": "Jamie",
+		"04cc1d02": "Ken"
+	}
+}

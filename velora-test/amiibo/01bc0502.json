@@ -1,0 +1,23 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Sydney",
+		"name": "Sydney",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03bf0001-01bc0502.png",
+		"tail": "01bc0502"
+	},
+	"next": "030a0502.html",
+	"prev": "00d60502.html",
+	"list": {
+		"00900502": "Cherry",
+		"01c30502": "Margie",
+		"01d80502": "K. K. Slider - Pikopuri",
+		"02a70e02": "Baby Mario - Tennis",
+		"030e0502": "Tad",
+		"035b0902": "Revali",
+		"03b00502": "Sable",
+		"03b80502": "Harvey",
+		"04a30902": "Riju"
+	}
+}

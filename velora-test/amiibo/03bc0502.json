@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Niko",
+		"name": "Niko",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_0a070001-03bc0502.png",
+		"tail": "03bc0502"
+	},
+	"next": "01cd0502.html",
+	"prev": "00800502.html",
+	"list": {
+		"00380102": "Toad",
+		"003e0402": "Inkling Girl",
+		"00670502": "Alli",
+		"00880502": "Bella",
+		"02700e02": "Luigi - Tennis",
+		"030d0502": "Cashmere",
+		"03aa0502": "Isabelle",
+		"03b70502": "Saharah",
+		"03cc0502": "Marlo",
+		"04ec1d02": "Elena"
+	}
+}

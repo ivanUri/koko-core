@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Street Fighter 6",
+		"character": "Blanka",
+		"name": "Blanka",
+		"gameSeries": "Street Fighter",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_34c80001-04d31d02.png",
+		"tail": "04d31d02"
+	},
+	"next": "04d11d02.html",
+	"prev": "04d51d02.html",
+	"list": {
+		"002f0002": "Duck Hunt",
+		"00870502": "Clyde",
+		"00be0502": "Fuchsia",
+		"016c0502": "Apollo",
+		"03781402": "Solaire of Astora",
+		"043f1c02": "Mario - My Mario Wooden Blocks",
+		"04a30902": "Riju",
+		"04bc1d02": "Cammy",
+		"04d91d02": "JP",
+		"04ec1d02": "Elena"
+	}
+}

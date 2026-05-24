@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Mabel",
+		"name": "Mabel",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01880000-02410502.png",
+		"tail": "02410502"
+	},
+	"next": "01060502.html",
+	"prev": "004f0502.html",
+	"list": {
+		"002f0002": "Duck Hunt",
+		"003d0102": "Mario - Silver Edition",
+		"00860502": "Flurry",
+		"00ae0502": "Katie",
+		"013f0502": "Merry",
+		"01aa0502": "Apple",
+		"027c0e02": "Daisy - Horse Racing",
+		"02c20e02": "Pink Gold Peach - Horse Racing",
+		"03b30502": "C.J.",
+		"04180902": "Link - Tears of the Kingdom"
+	}
+}

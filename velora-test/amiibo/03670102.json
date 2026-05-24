@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Mario Bros.",
+		"character": "Goomba",
+		"name": "Goomba",
+		"gameSeries": "Super Mario",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_00150000-03670102.png",
+		"tail": "03670102"
+	},
+	"next": "03640002.html",
+	"prev": "03690402.html",
+	"list": {
+		"00220002": "Mii Swordfighter",
+		"00290002": "Lucina",
+		"004b0502": "Timmy",
+		"01060502": "Hamphrey",
+		"01300502": "Bam",
+		"019f0502": "Olaf",
+		"024e0502": "Kapp'n",
+		"02b30e02": "Birdo - Horse Racing",
+		"02e30f02": "Nabiru",
+		"04a40902": "Sidon"
+	}
+}

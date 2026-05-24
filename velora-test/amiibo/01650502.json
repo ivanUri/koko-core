@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Caroline",
+		"name": "Caroline",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04e30001-01650502.png",
+		"tail": "01650502"
+	},
+	"next": "01120502.html",
+	"prev": "00820502.html",
+	"list": {
+		"00000002": "Mario",
+		"00d90502": "Coco",
+		"01180502": "Digby - Raincoat",
+		"015a0502": "Biskit",
+		"019f0502": "Olaf",
+		"01b70502": "Doc",
+		"02540c02": "Kirby",
+		"030b0502": "Leopold",
+		"03bb0502": "Lottie - Island",
+		"04d81d02": "Marisa"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Birdo",
+		"name": "Birdo - Horse Racing",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09ce0501-02b30e02.png",
+		"tail": "02b30e02"
+	},
+	"next": "03180502.html",
+	"prev": "01cc0502.html",
+	"list": {
+		"00cd0502": "Sly",
+		"00e40502": "Teddy",
+		"014a0502": "Gaston",
+		"01d10502": "Angus",
+		"02850e02": "Wario - Golf",
+		"030b0502": "Leopold",
+		"03a20002": "Hero",
+		"03af0502": "Mabel",
+		"041c0402": "Smallfry",
+		"04ba1d02": "Zangief"
+	}
+}

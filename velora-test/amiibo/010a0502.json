@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Big Top",
+		"name": "Big Top",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03250001-010a0502.png",
+		"tail": "010a0502"
+	},
+	"next": "01130502.html",
+	"prev": "013f0502.html",
+	"list": {
+		"00320002": "Pac-Man",
+		"01110502": "Pete",
+		"01ac0502": "Purrl",
+		"02510002": "Lucas",
+		"02850e02": "Wario - Golf",
+		"030f0502": "Norma",
+		"03a70102": "Peach - Cat",
+		"040d0f02": "Ena",
+		"04200002": "Kazuya",
+		"04ef1d02": "Alex"
+	}
+}

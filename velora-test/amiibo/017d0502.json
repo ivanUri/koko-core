@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Gulliver",
+		"name": "Gulliver",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01a20001-017d0502.png",
+		"tail": "017d0502"
+	},
+	"next": "02880e02.html",
+	"prev": "00ba0502.html",
+	"list": {
+		"000e0002": "Zelda",
+		"00c60502": "Pate",
+		"00d30502": "Cesar",
+		"01170502": "Timmy - Full Apron",
+		"018b0502": "Boone",
+		"019c0502": "Naomi",
+		"04180902": "Link - Tears of the Kingdom",
+		"04350402": "Big Man",
+		"04370402": "Marie - Alterna",
+		"04dc1d02": "Cammy"
+	}
+}

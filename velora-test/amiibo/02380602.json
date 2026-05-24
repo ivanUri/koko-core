@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "8-bit Mario",
+		"character": "Mario",
+		"name": "8-Bit Mario Classic Color",
+		"gameSeries": "Super Mario",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_00000000-02380602.png",
+		"tail": "02380602"
+	},
+	"next": "00d20502.html",
+	"prev": "03900402.html",
+	"list": {
+		"001a0002": "Wario",
+		"009a0502": "Bunnie",
+		"00c20502": "Kitt",
+		"00d90502": "Coco",
+		"017c0502": "Pave",
+		"018a0502": "Penelope",
+		"01d10502": "Angus",
+		"02590002": "Cloud",
+		"02ff0502": "Plucky",
+		"04190902": "Zelda - Tears of the Kingdom"
+	}
+}

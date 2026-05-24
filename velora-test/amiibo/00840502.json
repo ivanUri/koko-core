@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Midge",
+		"name": "Midge",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02350001-00840502.png",
+		"tail": "00840502"
+	},
+	"next": "01ce0502.html",
+	"prev": "00710502.html",
+	"list": {
+		"00510502": "Luna",
+		"024c0502": "Rover",
+		"025c0d02": "Shadow Mewtwo",
+		"02b00e02": "Birdo - Baseball",
+		"02b30e02": "Birdo - Horse Racing",
+		"02c20e02": "Pink Gold Peach - Horse Racing",
+		"03661302": "Metroid",
+		"03b60502": "Kicks",
+		"041e0002": "Pyra",
+		"04dc1d02": "Cammy"
+	}
+}

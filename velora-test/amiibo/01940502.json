@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Queenie",
+		"name": "Queenie",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04360001-01940502.png",
+		"tail": "01940502"
+	},
+	"next": "009c0502.html",
+	"prev": "01680502.html",
+	"list": {
+		"00480502": "Kapp'n",
+		"011e0502": "Anchovy",
+		"018d0502": "Croque",
+		"02990e02": "Bowser - Golf",
+		"03070502": "Ellie",
+		"038d0002": "Piranha Plant",
+		"03ad0502": "Blathers",
+		"03bc0502": "Niko",
+		"04190902": "Zelda - Tears of the Kingdom",
+		"04cc1d02": "Ken"
+	}
+}

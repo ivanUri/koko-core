@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Bea",
+		"name": "Bea",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02f40001-03050502.png",
+		"tail": "03050502"
+	},
+	"next": "018b0502.html",
+	"prev": "023a0702.html",
+	"list": {
+		"00400402": "Inkling Squid",
+		"00c40502": "Tipper",
+		"00d90502": "Coco",
+		"00f40502": "Flip",
+		"014a0502": "Gaston",
+		"01b50502": "Jacques",
+		"02420502": "Tom Nook",
+		"037f0002": "Ridley",
+		"03bb0502": "Lottie - Island",
+		"03cb0502": "Shino"
+	}
+}

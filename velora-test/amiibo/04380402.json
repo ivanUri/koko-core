@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Splatoon",
+		"character": "Pearl",
+		"name": "Pearl - Side Order",
+		"gameSeries": "Splatoon",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_08030000-04380402.png",
+		"tail": "04380402"
+	},
+	"next": "03cb0502.html",
+	"prev": "03760402.html",
+	"list": {
+		"005e0502": "Lopez",
+		"00930502": "Eugene",
+		"00c50502": "Prince",
+		"011b0502": "Franklin",
+		"01610502": "Cube",
+		"01990502": "Bones",
+		"01d40502": "Isabelle - Character Parfait",
+		"02610402": "Inkling Squid - Orange",
+		"03050502": "Bea",
+		"04f01d02": "Ingrid"
+	}
+}

@@ -1,0 +1,23 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Blanca",
+		"name": "Blanca",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01b30001-00b50502.png",
+		"tail": "00b50502"
+	},
+	"next": "01380502.html",
+	"prev": "013d0502.html",
+	"list": {
+		"00460502": "DJ KK",
+		"00950502": "Goose",
+		"00ae0502": "Katie",
+		"00bb0502": "Ozzie",
+		"00f10502": "Bettina",
+		"01300502": "Bam",
+		"01710502": "Brewster",
+		"01a20502": "Puddles",
+		"035d0302": "Poochy"
+	}
+}

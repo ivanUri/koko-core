@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Hans",
+		"name": "Hans",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03730001-01340502.png",
+		"tail": "01340502"
+	},
+	"next": "00b60502.html",
+	"prev": "03701202.html",
+	"list": {
+		"00870502": "Clyde",
+		"00a30502": "Cole",
+		"00b10502": "Leila",
+		"01050502": "Gladys",
+		"01120502": "Mabel",
+		"01200502": "Kody",
+		"02640102": "Donkey Kong",
+		"03820002": "Inkling",
+		"04bf1d02": "Ed",
+		"04fb0f02": "Ratha V"
+	}
+}

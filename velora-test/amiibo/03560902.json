@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Legend Of Zelda",
+		"character": "Zelda",
+		"name": "Zelda",
+		"gameSeries": "The Legend of Zelda",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01010000-03560902.png",
+		"tail": "03560902"
+	},
+	"next": "02e40f02.html",
+	"prev": "01c10502.html",
+	"list": {
+		"000d0002": "Diddy Kong",
+		"004e0502": "Harriet",
+		"00650502": "Kiki",
+		"01340502": "Hans",
+		"02580002": "Mega Man - Gold Edition",
+		"02ff0502": "Plucky",
+		"03620002": "Cloud - Player 2",
+		"03a80502": "Tom Nook",
+		"04261902": "Gakuto Sōgetsu",
+		"04c91e03": "Bandana Waddle Dee (\u0026 Winged Star)"
+	}
+}

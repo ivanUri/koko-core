@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Hamphrey",
+		"name": "Hamphrey",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03850001-01060502.png",
+		"tail": "01060502"
+	},
+	"next": "017c0502.html",
+	"prev": "02410502.html",
+	"list": {
+		"00430302": "Light Blue Yarn Yoshi",
+		"004d0502": "Pascal",
+		"00c60502": "Pate",
+		"027b0e02": "Daisy - Golf",
+		"02910e02": "Diddy Kong - Soccer",
+		"02990e02": "Bowser - Golf",
+		"03670102": "Goomba",
+		"03c40502": "Cyd",
+		"042a1902": "Asana Mutsuba",
+		"04f21d02": "Mai"
+	}
+}

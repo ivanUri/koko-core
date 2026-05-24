@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Yu-Gi-Oh!",
+		"character": "Romin Kirishima",
+		"name": "Romin Kirishima",
+		"gameSeries": "Yu-Gi-Oh!",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_38430001-04271902.png",
+		"tail": "04271902"
+	},
+	"next": "01860502.html",
+	"prev": "01080502.html",
+	"list": {
+		"00a40502": "Willow",
+		"010f0502": "Pelly",
+		"015c0502": "Lyman",
+		"01850502": "Rocco",
+		"019d0502": "Peewee",
+		"02680102": "Boo",
+		"027b0e02": "Daisy - Golf",
+		"03530902": "Link - Archer",
+		"04140902": "Zelda \u0026 Loftwing",
+		"04ab1d02": "Luke"
+	}
+}

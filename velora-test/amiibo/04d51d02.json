@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Street Fighter 6",
+		"character": "E. Honda",
+		"name": "E. Honda",
+		"gameSeries": "Street Fighter",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_34ca0001-04d51d02.png",
+		"tail": "04d51d02"
+	},
+	"next": "04d31d02.html",
+	"prev": "04cb1d02.html",
+	"list": {
+		"00280002": "King Dedede",
+		"00390102": "Bowser",
+		"00410302": "Green Yarn Yoshi",
+		"010c0502": "Rover",
+		"011d0502": "Lily",
+		"01670502": "Baabara",
+		"030d0502": "Cashmere",
+		"03d30502": "Rio",
+		"04d11d02": "Guile",
+		"04e61d02": "Alex"
+	}
+}

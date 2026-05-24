@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Cranston",
+		"name": "Cranston",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_043c0001-01cb0502.png",
+		"tail": "01cb0502"
+	},
+	"next": "037e0002.html",
+	"prev": "03060502.html",
+	"list": {
+		"00fa0502": "Camofrog",
+		"00fd0502": "Charlise",
+		"012f0502": "Freckles",
+		"01550502": "Flora",
+		"027a0e02": "Daisy - Tennis",
+		"02940e02": "Diddy Kong - Golf",
+		"02950e02": "Diddy Kong - Horse Racing",
+		"03080502": "Boots",
+		"0430ff02": "Golden - Power Up Band",
+		"043a1302": "Samus \u0026 Vi-O-La"
+	}
+}

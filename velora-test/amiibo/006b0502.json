@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Gigi",
+		"name": "Gigi",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03480001-006b0502.png",
+		"tail": "006b0502"
+	},
+	"next": "015a0502.html",
+	"prev": "01470502.html",
+	"list": {
+		"002e0002": "R.O.B. - Famicom",
+		"00c10502": "Coach",
+		"00f10502": "Bettina",
+		"01350502": "Chevre",
+		"02950e02": "Diddy Kong - Horse Racing",
+		"02970e02": "Bowser - Baseball",
+		"02a70e02": "Baby Mario - Tennis",
+		"02eb0502": "Paolo",
+		"03911602": "Loot Goblin",
+		"04b91d02": "JP"
+	}
+}

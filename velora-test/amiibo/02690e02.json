@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Mario",
+		"name": "Mario - Soccer",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09c00101-02690e02.png",
+		"tail": "02690e02"
+	},
+	"next": "018d0502.html",
+	"prev": "00fb0502.html",
+	"list": {
+		"004c0502": "Digby",
+		"00ad0502": "Booker",
+		"00b00502": "Porter",
+		"00fe0502": "Vic",
+		"01a00502": "Lucy",
+		"027c0e02": "Daisy - Horse Racing",
+		"03981702": "Daijobu",
+		"03a50002": "Byleth",
+		"03c80502": "Sasha",
+		"04e11d02": "M. Bison"
+	}
+}

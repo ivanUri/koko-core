@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Tasha",
+		"name": "Tasha",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04ea0001-03180502.png",
+		"tail": "03180502"
+	},
+	"next": "01d30502.html",
+	"prev": "02b30e02.html",
+	"list": {
+		"00df0502": "Gabi",
+		"00e50502": "Mathilda",
+		"01690502": "Maple",
+		"01900502": "Lolly",
+		"01960502": "Frita",
+		"01be0502": "Nibbles",
+		"02640102": "Donkey Kong",
+		"02a90e02": "Baby Mario - Horse Racing",
+		"02ad0e02": "Baby Luigi - Golf",
+		"04df1d02": "Ed"
+	}
+}

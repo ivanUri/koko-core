@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Xenoblade Chronicles 3",
+		"character": "Noah",
+		"name": "Noah",
+		"gameSeries": "Xenoblade",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_22430000-043d1b02.png",
+		"tail": "043d1b02"
+	},
+	"next": "043e1b02.html",
+	"prev": "009e0502.html",
+	"list": {
+		"00180002": "Ike",
+		"00270002": "Meta Knight",
+		"00880502": "Bella",
+		"03670102": "Goomba",
+		"03680102": "Koopa Troopa",
+		"03ae0502": "Celeste",
+		"03b60502": "Kicks",
+		"04251902": "Tatsuhisa “Luke” Kamijō",
+		"04261902": "Gakuto Sōgetsu",
+		"042d1802": "Malzeno"
+	}
+}

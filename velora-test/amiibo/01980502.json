@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Melba",
+		"name": "Melba",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03be0001-01980502.png",
+		"tail": "01980502"
+	},
+	"next": "026e0e02.html",
+	"prev": "02ee0502.html",
+	"list": {
+		"002b0002": "Shulk",
+		"00c90502": "Kidd",
+		"01130502": "Leif",
+		"011e0502": "Anchovy",
+		"01200502": "Kody",
+		"01250502": "Mitzi",
+		"03c20502": "Dom",
+		"04d01d02": "Chun-Li",
+		"04db1d02": "Lily",
+		"04de1d02": "A.K.I"
+	}
+}

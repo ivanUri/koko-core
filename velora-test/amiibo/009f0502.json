@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Henry",
+		"name": "Henry",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_034b0001-009f0502.png",
+		"tail": "009f0502"
+	},
+	"next": "02470502.html",
+	"prev": "00400402.html",
+	"list": {
+		"00160002": "Toon Link",
+		"00d90502": "Coco",
+		"00f70502": "Pecan",
+		"019d0502": "Peewee",
+		"025e0402": "Marie",
+		"02760e02": "Peach - Golf",
+		"027f0e02": "Yoshi - Tennis",
+		"030e0502": "Tad",
+		"03120502": "Snooty",
+		"04370402": "Marie - Alterna"
+	}
+}

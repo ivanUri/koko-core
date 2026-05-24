@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Simon",
+		"name": "Simon",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03fb0001-01cf0502.png",
+		"tail": "01cf0502"
+	},
+	"next": "04180902.html",
+	"prev": "00a80502.html",
+	"list": {
+		"00270002": "Meta Knight",
+		"00480502": "Kapp'n",
+		"00b10502": "Leila",
+		"01730502": "Phineas",
+		"01c30502": "Margie",
+		"03c70502": "Reneigh",
+		"041d0002": "Min Min",
+		"04291902": "Nail Saionji",
+		"04d21d02": "Juri",
+		"04d51d02": "E. Honda"
+	}
+}

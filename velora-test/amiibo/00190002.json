@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Mario",
+		"name": "Dr. Mario",
+		"gameSeries": "Super Mario",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_00000100-00190002.png",
+		"tail": "00190002"
+	},
+	"next": "02a90e02.html",
+	"prev": "01690502.html",
+	"list": {
+		"00210002": "Mii Brawler",
+		"00310002": "Mega Man",
+		"00420302": "Pink Yarn Yoshi",
+		"008a0502": "Yuka",
+		"01590502": "Dora",
+		"01710502": "Brewster",
+		"01cd0502": "Grizzly",
+		"02ab0e02": "Baby Luigi - Baseball",
+		"02e80502": "Hopkins",
+		"04f01d02": "Ingrid"
+	}
+}

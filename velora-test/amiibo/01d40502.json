@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Isabelle",
+		"name": "Isabelle - Character Parfait",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01810001-01d40502.png",
+		"tail": "01d40502"
+	},
+	"next": "03010502.html",
+	"prev": "00730502.html",
+	"list": {
+		"01360502": "Drago",
+		"01820502": "Pinky",
+		"019e0502": "Tammy",
+		"01ba0502": "Becky",
+		"02410502": "Mabel",
+		"02500a02": "Shovel Knight",
+		"025d0402": "Callie",
+		"035c0902": "Bokoblin",
+		"04df1d02": "Ed",
+		"04fa0f02": "Ratha"
+	}
+}

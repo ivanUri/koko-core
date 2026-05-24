@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Puddles",
+		"name": "Puddles",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_033e0001-01a20502.png",
+		"tail": "01a20502"
+	},
+	"next": "038f0402.html",
+	"prev": "02430502.html",
+	"list": {
+		"00260002": "Jigglypuff",
+		"00d90502": "Coco",
+		"01270502": "Bubbles",
+		"01300502": "Bam",
+		"02a40e02": "Boo - Horse Racing",
+		"02ab0e02": "Baby Luigi - Baseball",
+		"03130502": "Olive",
+		"034e0902": "Link - Skyward Sword",
+		"040e0f02": "Tsukino",
+		"04ef1d02": "Alex"
+	}
+}

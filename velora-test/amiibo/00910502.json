@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Roscoe",
+		"name": "Roscoe",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03a80001-00910502.png",
+		"tail": "00910502"
+	},
+	"next": "00180002.html",
+	"prev": "02f60502.html",
+	"list": {
+		"00340102": "Mario",
+		"00ab0502": "Labelle",
+		"014d0502": "Joey",
+		"018e0502": "Pashmina",
+		"025c0d02": "Shadow Mewtwo",
+		"03b20502": "K.K. Slider",
+		"03c30502": "Audie",
+		"04210002": "Sephiroth",
+		"042c1802": "Palamute",
+		"043e1b02": "Mio"
+	}
+}

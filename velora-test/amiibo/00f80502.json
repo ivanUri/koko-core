@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Drake",
+		"name": "Drake",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03100001-00f80502.png",
+		"tail": "00f80502"
+	},
+	"next": "03140502.html",
+	"prev": "02920e02.html",
+	"list": {
+		"003f0402": "Inkling Boy",
+		"00470502": "Sable",
+		"00790502": "Deena",
+		"00950502": "Goose",
+		"01420502": "Wolfgang",
+		"01520502": "Curlos",
+		"03781402": "Solaire of Astora",
+		"03840002": "Squirtle",
+		"03a70102": "Peach - Cat",
+		"041d0002": "Min Min"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Wario",
+		"name": "Wario",
+		"gameSeries": "Super Mario",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_00070000-001a0002.png",
+		"tail": "001a0002"
+	},
+	"next": "003a0202.html",
+	"prev": "00070002.html",
+	"list": {
+		"002b0002": "Shulk",
+		"013b0502": "Hazel",
+		"01760502": "Gracie",
+		"017c0502": "Pave",
+		"01a70502": "Pietro",
+		"025b0002": "Bayonetta",
+		"02940e02": "Diddy Kong - Golf",
+		"04421c02": "Yoshi - My Mario Wooden Blocks",
+		"04a30902": "Riju",
+		"04e51d02": "C. Viper"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Street Fighter 6",
+		"character": "Ingrid",
+		"name": "Ingrid",
+		"gameSeries": "Street Fighter",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_34dc0001-04e71d02.png",
+		"tail": "04e71d02"
+	},
+	"next": "04cd1d02.html",
+	"prev": "04e61d02.html",
+	"list": {
+		"00690502": "Patty",
+		"00be0502": "Fuchsia",
+		"00e60502": "Ed",
+		"010f0502": "Pelly",
+		"01490502": "Blanche",
+		"01600502": "Merengue",
+		"01770502": "Leilani",
+		"01a90502": "Papi",
+		"01b90502": "Tank",
+		"01c10502": "Lobo"
+	}
+}

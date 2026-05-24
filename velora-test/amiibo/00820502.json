@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Mint",
+		"name": "Mint",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04e60001-00820502.png",
+		"tail": "00820502"
+	},
+	"next": "01650502.html",
+	"prev": "04140902.html",
+	"list": {
+		"00250002": "Greninja",
+		"00740502": "Bonbon",
+		"01730502": "Phineas",
+		"02af0e02": "Birdo - Soccer",
+		"030d0502": "Cashmere",
+		"03110502": "Sprocket",
+		"031c0502": "Chai",
+		"03760402": "Pearl",
+		"04390402": "Marina - Side Order",
+		"04f21d02": "Mai"
+	}
+}

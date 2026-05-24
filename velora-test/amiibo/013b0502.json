@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Hazel",
+		"name": "Hazel",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04ef0001-013b0502.png",
+		"tail": "013b0502"
+	},
+	"next": "01270502.html",
+	"prev": "00f40502.html",
+	"list": {
+		"00820502": "Mint",
+		"00aa0502": "Kicks",
+		"00f80502": "Drake",
+		"00fe0502": "Vic",
+		"01b50502": "Jacques",
+		"024f0902": "Midna \u0026 Wolf Link",
+		"03680102": "Koopa Troopa",
+		"03d30502": "Rio",
+		"04bb1d02": "Lily",
+		"04fa0f02": "Ratha"
+	}
+}

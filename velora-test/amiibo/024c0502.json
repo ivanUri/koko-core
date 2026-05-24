@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Rover",
+		"name": "Rover",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_018d0000-024c0502.png",
+		"tail": "024c0502"
+	},
+	"next": "016b0502.html",
+	"prev": "00900502.html",
+	"list": {
+		"00370102": "Yoshi",
+		"01050502": "Gladys",
+		"01170502": "Timmy - Full Apron",
+		"013e0502": "Chester",
+		"02b30e02": "Birdo - Horse Racing",
+		"03050502": "Bea",
+		"03060502": "Admiral",
+		"043d1b02": "Noah",
+		"04ab1d02": "Luke",
+		"04e41d02": "Sagat"
+	}
+}

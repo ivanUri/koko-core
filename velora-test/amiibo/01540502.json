@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Moe",
+		"name": "Moe",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02650001-01540502.png",
+		"tail": "01540502"
+	},
+	"next": "02a60e02.html",
+	"prev": "00f00502.html",
+	"list": {
+		"00700502": "Octavian",
+		"011c0502": "Jingle",
+		"014a0502": "Gaston",
+		"01880502": "Peaches",
+		"02f90502": "Maddie",
+		"035f1102": "Pikmin",
+		"03741402": "Super Mario Cereal",
+		"03b80502": "Harvey",
+		"042a1902": "Asana Mutsuba",
+		"04e31d02": "Elena"
+	}
+}

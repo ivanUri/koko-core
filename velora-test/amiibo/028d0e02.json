@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Donkey Kong",
+		"name": "Donkey Kong - Baseball",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09c70201-028d0e02.png",
+		"tail": "028d0e02"
+	},
+	"next": "03d10502.html",
+	"prev": "00360102.html",
+	"list": {
+		"00aa0502": "Kicks",
+		"01460502": "Stinky",
+		"02ae0e02": "Baby Luigi - Horse Racing",
+		"02bc0e02": "Metal Mario - Golf",
+		"03130502": "Olive",
+		"03180502": "Tasha",
+		"03810002": "Ice Climbers",
+		"040d0f02": "Ena",
+		"04af1d02": "Kimberly",
+		"04db1d02": "Lily"
+	}
+}

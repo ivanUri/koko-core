@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Skylanders",
+		"character": "Bowser",
+		"name": "Hammer Slam Bowser",
+		"gameSeries": "Super Mario",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_0005ff00-023a0702.png",
+		"tail": "023a0702"
+	},
+	"next": "03050502.html",
+	"prev": "03080502.html",
+	"list": {
+		"005a0502": "Cheri",
+		"010e0502": "Tom Nook - Jacket",
+		"012e0502": "Spork/Crackle",
+		"016e0502": "Francine",
+		"02870e02": "Waluigi - Soccer",
+		"02a30e02": "Boo - Golf",
+		"02a90e02": "Baby Mario - Horse Racing",
+		"02af0e02": "Birdo - Soccer",
+		"03af0502": "Mabel",
+		"04210002": "Sephiroth"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Isabelle",
+		"name": "Isabelle - Kimono",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01810201-011a0502.png",
+		"tail": "011a0502"
+	},
+	"next": "01000502.html",
+	"prev": "029c0e02.html",
+	"list": {
+		"006b0502": "Gigi",
+		"00850502": "Gruff",
+		"00880502": "Bella",
+		"008f0502": "Jeremiah",
+		"009c0502": "Diana",
+		"014c0502": "Gala",
+		"025d0402": "Callie",
+		"031e0502": "Toby",
+		"03770402": "Marina",
+		"04230002": "Alex"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Mathilda",
+		"name": "Mathilda",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03d20001-00e50502.png",
+		"tail": "00e50502"
+	},
+	"next": "026b0e02.html",
+	"prev": "027d0e02.html",
+	"list": {
+		"001c0002": "Falco",
+		"00280002": "King Dedede",
+		"00540502": "Lottie",
+		"01940502": "Queenie",
+		"026c0e02": "Mario - Golf",
+		"02810e02": "Yoshi - Horse Racing",
+		"02b70e02": "Rosalina - Golf",
+		"03120502": "Snooty",
+		"03a20002": "Hero",
+		"04ef1d02": "Alex"
+	}
+}

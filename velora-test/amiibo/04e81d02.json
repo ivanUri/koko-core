@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Street Fighter 6",
+		"character": "Terry",
+		"name": "Terry",
+		"gameSeries": "Fatal Fury",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_3c800001-04e81d02.png",
+		"tail": "04e81d02"
+	},
+	"next": "04f21d02.html",
+	"prev": "04e11d02.html",
+	"list": {
+		"002e0002": "R.O.B. - Famicom",
+		"01730502": "Phineas",
+		"02490502": "Resetti",
+		"02f20502": "Wade",
+		"030b0502": "Leopold",
+		"03170502": "Ike",
+		"031d0502": "Chelsea",
+		"037d0002": "Isabelle",
+		"03be0502": "Tom Nook - Coat",
+		"04360402": "Callie - Alterna"
+	}
+}

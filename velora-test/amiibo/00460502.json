@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "K.K. Slider",
+		"name": "DJ KK",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01820101-00460502.png",
+		"tail": "00460502"
+	},
+	"next": "03b70502.html",
+	"prev": "03730102.html",
+	"list": {
+		"00520502": "Tortimer",
+		"00e80502": "Filbert",
+		"02760e02": "Peach - Golf",
+		"02f60502": "Stu",
+		"03981702": "Daijobu",
+		"03b90502": "Gulliver",
+		"03cd0502": "Petri",
+		"03d00502": "Chabwick",
+		"04bb1d02": "Lily",
+		"04e71d02": "Ingrid"
+	}
+}

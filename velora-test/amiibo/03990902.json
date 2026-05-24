@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Legend Of Zelda",
+		"character": "Link",
+		"name": "Link - Link's Awakening",
+		"gameSeries": "The Legend of Zelda",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01000000-03990902.png",
+		"tail": "03990902"
+	},
+	"next": "00e00502.html",
+	"prev": "030c0502.html",
+	"list": {
+		"000c0002": "Luigi",
+		"00280002": "King Dedede",
+		"00de0502": "Butch",
+		"00ea0502": "Beau",
+		"01150502": "Cyrus",
+		"01560502": "Hamlet",
+		"015f0502": "Chadder",
+		"01c20502": "Hippeux",
+		"02590002": "Cloud",
+		"04df1d02": "Ed"
+	}
+}

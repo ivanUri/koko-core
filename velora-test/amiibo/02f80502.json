@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Jacob",
+		"name": "Jacob",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02380001-02f80502.png",
+		"tail": "02f80502"
+	},
+	"next": "02680102.html",
+	"prev": "039dff02.html",
+	"list": {
+		"007a0502": "Snake",
+		"007c0502": "Phil",
+		"01610502": "Cube",
+		"01c20502": "Hippeux",
+		"025f0402": "Inkling Girl - Lime Green",
+		"03670102": "Goomba",
+		"03c10502": "Megan",
+		"03c90502": "Ione",
+		"04150402": "Inkling - Yellow",
+		"04b01d02": "Chun-Li"
+	}
+}

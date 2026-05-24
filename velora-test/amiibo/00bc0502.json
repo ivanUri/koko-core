@@ -1,0 +1,23 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Tia",
+		"name": "Tia",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_032d0001-00bc0502.png",
+		"tail": "00bc0502"
+	},
+	"next": "008a0502.html",
+	"prev": "00960502.html",
+	"list": {
+		"00460502": "DJ KK",
+		"007d0502": "Monique",
+		"008c0502": "Flo",
+		"01280502": "Cousteau",
+		"01c80502": "Bruce",
+		"02540c02": "Kirby",
+		"02f60502": "Stu",
+		"039dff02": "Peach - Power Up Band",
+		"04421c02": "Yoshi - My Mario Wooden Blocks"
+	}
+}

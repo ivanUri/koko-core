@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Sprocket",
+		"name": "Sprocket",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04390001-03110502.png",
+		"tail": "03110502"
+	},
+	"next": "00b80502.html",
+	"prev": "00d90502.html",
+	"list": {
+		"00100002": "Pit",
+		"00c90502": "Kidd",
+		"00f90502": "Alice",
+		"01190502": "Don Resetti - Without Hat",
+		"01840502": "Mallary",
+		"019a0502": "Anabelle",
+		"029a0e02": "Bowser - Horse Racing",
+		"030d0502": "Cashmere",
+		"03ac0502": "Wilbur",
+		"03ce0502": "Cephalobot"
+	}
+}

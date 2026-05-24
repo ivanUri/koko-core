@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Nintendo World",
+		"character": "Diddy Kong",
+		"name": "Diddy Kong - Power Up Band",
+		"gameSeries": "Super Mario",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_00090003-0432ff02.png",
+		"tail": "0432ff02"
+	},
+	"next": "012b0502.html",
+	"prev": "02650102.html",
+	"list": {
+		"01880502": "Peaches",
+		"025f0402": "Inkling Girl - Lime Green",
+		"02810e02": "Yoshi - Horse Racing",
+		"028f0e02": "Donkey Kong - Golf",
+		"02ba0e02": "Metal Mario - Baseball",
+		"034e0902": "Link - Skyward Sword",
+		"037a0002": "Daisy",
+		"03b20502": "K.K. Slider",
+		"03d20502": "Ace",
+		"04df1d02": "Ed"
+	}
+}

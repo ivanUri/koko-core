@@ -307,6 +307,40 @@ pub fn abortFrame(self: *Client, frame_id: u32, opts: AbortOpts) void {
     self._abort(false, frame_id, opts);
 }
 
+// Clear `protect_from_abort` on every in-flight transfer for `frame_id`.
+// Used by the deferred commit path (Frame.finalizePendingRootCommit): once
+// the pending page has been committed, its in-flight navigation transfer no
+// longer needs the abort shield. In the non-deferred path, the headerCallback
+// flips the flag directly from `response.inner.transfer`; here we no longer
+// hold that reference and must look the transfer up by frame_id. Safe to call
+// when no matching transfer exists (e.g. the navigation already completed).
+pub fn clearProtectForFrame(self: *Client, frame_id: u32) void {
+    clearProtectInConnList(self.in_use, frame_id);
+    clearProtectInConnList(self.ready_queue, frame_id);
+    var n = self.queue.first;
+    while (n) |node| : (n = node.next) {
+        const transfer: *Transfer = @fieldParentPtr("_node", node);
+        if (transfer.req.params.frame_id == frame_id) {
+            transfer.req.params.protect_from_abort = false;
+        }
+    }
+}
+
+fn clearProtectInConnList(list: std.DoublyLinkedList, frame_id: u32) void {
+    var n = list.first;
+    while (n) |node| : (n = node.next) {
+        const conn: *http.Connection = @fieldParentPtr("node", node);
+        switch (conn.transport) {
+            .http => |transfer| {
+                if (transfer.req.params.frame_id == frame_id) {
+                    transfer.req.params.protect_from_abort = false;
+                }
+            },
+            .websocket, .none => {},
+        }
+    }
+}
+
 // Written this way so that both abort and abortFrame can share the same code
 // but abort can avoid the frame_id check at comptime.
 fn _abort(self: *Client, comptime abort_all: bool, frame_id: u32, opts: AbortOpts) void {

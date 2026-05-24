@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Sasha",
+		"name": "Sasha",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_0a110001-03c80502.png",
+		"tail": "03c80502"
+	},
+	"next": "002a0002.html",
+	"prev": "01b60502.html",
+	"list": {
+		"00640502": "Bill",
+		"00b70502": "Chip",
+		"00c60502": "Pate",
+		"01190502": "Don Resetti - Without Hat",
+		"028c0e02": "Donkey Kong - Soccer",
+		"029f0e02": "Bowser Jr. - Horse Racing",
+		"02bf0e02": "Pink Gold Peach - Baseball",
+		"02f70502": "Ursala",
+		"03c60502": "Raymond",
+		"index": "Sandy"
+	}
+}

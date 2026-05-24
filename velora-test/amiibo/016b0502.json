@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Soleil",
+		"name": "Soleil",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03820001-016b0502.png",
+		"tail": "016b0502"
+	},
+	"next": "01bd0502.html",
+	"prev": "024c0502.html",
+	"list": {
+		"002f0002": "Duck Hunt",
+		"003e0402": "Inkling Girl",
+		"005f0502": "Jambette",
+		"01410502": "Greta",
+		"01c50502": "Rosie",
+		"023e0302": "Mega Yarn Yoshi",
+		"02f20502": "Wade",
+		"02f30502": "Carrie",
+		"04b51d02": "E. Honda",
+		"04be1d02": "A.K.I"
+	}
+}

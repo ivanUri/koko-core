@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Shovel Knight",
+		"character": "Shovel Knight",
+		"name": "Shovel Knight",
+		"gameSeries": "Shovel Knight",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_35c00000-02500a02.png",
+		"tail": "02500a02"
+	},
+	"next": "03911602.html",
+	"prev": "00f20502.html",
+	"list": {
+		"00190002": "Dr. Mario",
+		"00a20502": "Peanut",
+		"00d40502": "Carmen",
+		"00f20502": "Jay",
+		"014b0502": "Marshal",
+		"01520502": "Curlos",
+		"01a30502": "Rory",
+		"01c70502": "Maelle",
+		"03ca0502": "Tiansheng",
+		"04ec1d02": "Elena"
+	}
+}

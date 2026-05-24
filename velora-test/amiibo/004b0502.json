@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Timmy",
+		"name": "Timmy",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01850001-004b0502.png",
+		"tail": "004b0502"
+	},
+	"next": "02f40502.html",
+	"prev": "01400502.html",
+	"list": {
+		"00460502": "DJ KK",
+		"00780502": "Limberg",
+		"01000502": "Drift",
+		"01040502": "Keaton",
+		"011b0502": "Franklin",
+		"01850502": "Rocco",
+		"02680102": "Boo",
+		"027c0e02": "Daisy - Horse Racing",
+		"038f0402": "Octoling Boy",
+		"0430ff02": "Golden - Power Up Band"
+	}
+}

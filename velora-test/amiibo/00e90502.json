@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Kitty",
+		"name": "Kitty",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_026b0001-00e90502.png",
+		"tail": "00e90502"
+	},
+	"next": "01bb0502.html",
+	"prev": "015b0502.html",
+	"list": {
+		"01050502": "Gladys",
+		"01440502": "Klaus",
+		"01c50502": "Rosie",
+		"01cc0502": "Frobert",
+		"02530002": "Ryu",
+		"026f0e02": "Luigi - Baseball",
+		"02720e02": "Luigi - Horse Racing",
+		"034d0902": "Link - Twilight Princess",
+		"038e0402": "Octoling Girl",
+		"04421c02": "Yoshi - My Mario Wooden Blocks"
+	}
+}

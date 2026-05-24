@@ -1,0 +1,23 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Legend Of Zelda",
+		"character": "Link",
+		"name": "Link - Archer",
+		"gameSeries": "The Legend of Zelda",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01000000-03530902.png",
+		"tail": "03530902"
+	},
+	"next": "00af0502.html",
+	"prev": "03b80502.html",
+	"list": {
+		"002e0002": "R.O.B. - Famicom",
+		"00790502": "Deena",
+		"008e0502": "Amelia",
+		"00930502": "Eugene",
+		"013c0502": "Beardo",
+		"02670102": "Waluigi",
+		"030e0502": "Tad",
+		"04281902": "Roa Kirishima",
+		"04360402": "Callie - Alterna"
+	}
+}

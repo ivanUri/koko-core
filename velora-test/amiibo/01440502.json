@@ -1,0 +1,23 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Klaus",
+		"name": "Klaus",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02220001-01440502.png",
+		"tail": "01440502"
+	},
+	"next": "015f0502.html",
+	"prev": "01ba0502.html",
+	"list": {
+		"00230002": "Mii Gunner",
+		"01490502": "Blanche",
+		"01670502": "Baabara",
+		"01b00502": "Peggy",
+		"02a70e02": "Baby Mario - Tennis",
+		"02ea0502": "Piper",
+		"036c0a02": "Plague Knight",
+		"04b51d02": "E. Honda",
+		"04c20102": "Captain Toad \u0026 Talking Flower"
+	}
+}

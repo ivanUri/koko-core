@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Lobo",
+		"name": "Lobo",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_050c0001-01c10502.png",
+		"tail": "01c10502"
+	},
+	"next": "03560902.html",
+	"prev": "003e0402.html",
+	"list": {
+		"00800502": "Tutu",
+		"00890502": "Biff",
+		"00a00502": "Bertha",
+		"00ff0502": "Ankha",
+		"01990502": "Bones",
+		"023f0502": "Isabelle - Winter Outfit",
+		"024a0502": "Kicks",
+		"03981702": "Daijobu",
+		"04230002": "Alex",
+		"04e71d02": "Ingrid"
+	}
+}

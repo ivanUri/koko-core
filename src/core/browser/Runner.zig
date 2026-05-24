@@ -82,6 +82,16 @@ fn _wait(self: *Runner, comptime is_cdp: bool, opts: WaitOpts) !CDPWaitResult {
             self.session.browser.env.memoryPressureNotification(.moderate);
         }
 
+        // A previous _tick iteration may have parked a pending root navigation
+        // commit because JS was on the V8 stack at the time HttpClient.perform
+        // reentrantly drained the pending response (see
+        // Session._deferred_commit_pending). By the top of this loop the script
+        // has unwound, so it is safe to promote the pending page now. Without
+        // this drain, the loop would block on http_client.tick for the full
+        // wait window (up to ~1s) before the commit happens, adding per-
+        // navigation latency for any page that issues fetch() from JS.
+        self.session.drainDeferredCommit();
+
         const tick_result = self._tick(is_cdp, tick_opts) catch |err| {
             switch (err) {
                 error.JsError => {}, // already logged (with hopefully more context)

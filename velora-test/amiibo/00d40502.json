@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Carmen",
+		"name": "Carmen",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04a40001-00d40502.png",
+		"tail": "00d40502"
+	},
+	"next": "01730502.html",
+	"prev": "000a0002.html",
+	"list": {
+		"00250002": "Greninja",
+		"004f0502": "Redd",
+		"00b40502": "Isabelle - Winter",
+		"01150502": "Cyrus",
+		"012c0502": "Colton",
+		"01b40502": "Sylvia",
+		"01bf0502": "Kevin",
+		"01c20502": "Hippeux",
+		"042a1902": "Asana Mutsuba",
+		"04f31d02": "Mai"
+	}
+}

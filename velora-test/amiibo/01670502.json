@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Baabara",
+		"name": "Baabara",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04c60001-01670502.png",
+		"tail": "01670502"
+	},
+	"next": "002d0002.html",
+	"prev": "00430302.html",
+	"list": {
+		"002d0002": "Mr. Game \u0026 Watch",
+		"00e30502": "Pekoe",
+		"00f60502": "Hopper",
+		"01440502": "Klaus",
+		"02a20e02": "Boo - Tennis",
+		"02ec0502": "Hornsby",
+		"034f0902": "8-Bit Link",
+		"035a0902": "Mipha",
+		"036b0402": "Inkling Squid - Neon Purple",
+		"04d21d02": "Juri"
+	}
+}

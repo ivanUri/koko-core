@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Peanut",
+		"name": "Peanut",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04dd0001-00a20502.png",
+		"tail": "00a20502"
+	},
+	"next": "03d00502.html",
+	"prev": "00db0502.html",
+	"list": {
+		"002e0002": "R.O.B. - Famicom",
+		"00480502": "Kapp'n",
+		"011e0502": "Anchovy",
+		"01550502": "Flora",
+		"01660502": "Sparro",
+		"02470502": "Blathers",
+		"024d0502": "Timmy \u0026 Tommy",
+		"03791502": "Mega Man",
+		"03b60502": "Kicks",
+		"04b61d02": "Dee Jay"
+	}
+}

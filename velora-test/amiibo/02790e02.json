@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Daisy",
+		"name": "Daisy - Baseball",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09c30201-02790e02.png",
+		"tail": "02790e02"
+	},
+	"next": "02980e02.html",
+	"prev": "03971702.html",
+	"list": {
+		"000a0002": "Kirby",
+		"00800502": "Tutu",
+		"00a60502": "Molly",
+		"01070502": "Freya",
+		"017e0502": "Redd - Shirt",
+		"01c60502": "Rowan",
+		"02830e02": "Wario - Baseball",
+		"029f0e02": "Bowser Jr. - Horse Racing",
+		"02b00e02": "Birdo - Baseball",
+		"03180502": "Tasha"
+	}
+}

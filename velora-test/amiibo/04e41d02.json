@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Street Fighter 6",
+		"character": "Sagat",
+		"name": "Sagat",
+		"gameSeries": "Street Fighter",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_34d90001-04e41d02.png",
+		"tail": "04e41d02"
+	},
+	"next": "04e51d02.html",
+	"prev": "04e31d02.html",
+	"list": {
+		"010d0502": "Blathers",
+		"010f0502": "Pelly",
+		"01630502": "Curly",
+		"02770e02": "Peach - Horse Racing",
+		"02930e02": "Diddy Kong - Tennis",
+		"03730102": "Bowser - Wedding",
+		"03a50002": "Byleth",
+		"03cb0502": "Shino",
+		"03ce0502": "Cephalobot",
+		"04c30102": "Poplin \u0026 Prince Florian"
+	}
+}

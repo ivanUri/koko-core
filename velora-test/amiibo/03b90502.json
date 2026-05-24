@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Gulliver",
+		"name": "Gulliver",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01a20001-03b90502.png",
+		"tail": "03b90502"
+	},
+	"next": "01080502.html",
+	"prev": "00ff0502.html",
+	"list": {
+		"00150002": "Bowser Jr.",
+		"00830502": "Pudge",
+		"013e0502": "Chester",
+		"016d0502": "Derwin",
+		"018b0502": "Boone",
+		"02510002": "Lucas",
+		"030c0502": "Spike",
+		"03540902": "Link - Rider",
+		"03941702": "Ikari",
+		"04d81d02": "Marisa"
+	}
+}

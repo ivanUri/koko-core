@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Luna",
+		"name": "Luna",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01b50001-00510502.png",
+		"tail": "00510502"
+	},
+	"next": "01b70502.html",
+	"prev": "02400502.html",
+	"list": {
+		"002a0002": "Robin",
+		"004e0502": "Harriet",
+		"010c0502": "Rover",
+		"01350502": "Chevre",
+		"023a0702": "Hammer Slam Bowser",
+		"025e0402": "Marie",
+		"02860e02": "Wario - Horse Racing",
+		"040d0f02": "Ena",
+		"04ba1d02": "Zangief",
+		"04e11d02": "M. Bison"
+	}
+}

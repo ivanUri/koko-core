@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Gonzo",
+		"name": "Gonzo",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03c00001-03100502.png",
+		"tail": "03100502"
+	},
+	"next": "00760502.html",
+	"prev": "00fd0502.html",
+	"list": {
+		"00120002": "Captain Falcon",
+		"00340102": "Mario",
+		"00540502": "Lottie",
+		"008e0502": "Amelia",
+		"00da0502": "Groucho",
+		"017e0502": "Redd - Shirt",
+		"01d30502": "Robin",
+		"02ac0e02": "Baby Luigi - Tennis",
+		"03050502": "Bea",
+		"03080502": "Boots"
+	}
+}

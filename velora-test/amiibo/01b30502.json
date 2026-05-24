@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Chow",
+		"name": "Chow",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02170001-01b30502.png",
+		"tail": "01b30502"
+	},
+	"next": "00c40502.html",
+	"prev": "01890502.html",
+	"list": {
+		"005a0502": "Cheri",
+		"00a30502": "Cole",
+		"012a0502": "Elvis",
+		"01a60502": "Mira",
+		"01af0502": "Zucker",
+		"024a0502": "Kicks",
+		"0431ff02": "Donkey Kong - Power Up Band",
+		"04a30902": "Riju",
+		"04d81d02": "Marisa",
+		"04dc1d02": "Cammy"
+	}
+}

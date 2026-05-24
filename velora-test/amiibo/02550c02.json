@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Kirby",
+		"character": "Meta Knight",
+		"name": "Meta Knight",
+		"gameSeries": "Kirby",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_1f010000-02550c02.png",
+		"tail": "02550c02"
+	},
+	"next": "01b10502.html",
+	"prev": "02ea0502.html",
+	"list": {
+		"00360102": "Peach",
+		"00d20502": "Olivia",
+		"00f40502": "Flip",
+		"01090502": "Agent S",
+		"014a0502": "Gaston",
+		"02600402": "Inkling Boy - Purple",
+		"02890e02": "Waluigi - Tennis",
+		"02fa0502": "Billy",
+		"03060502": "Admiral",
+		"03941702": "Ikari"
+	}
+}

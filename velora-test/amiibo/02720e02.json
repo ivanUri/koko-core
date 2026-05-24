@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Luigi",
+		"name": "Luigi - Horse Racing",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09c10501-02720e02.png",
+		"tail": "02720e02"
+	},
+	"next": "027d0e02.html",
+	"prev": "03a80502.html",
+	"list": {
+		"00190002": "Dr. Mario",
+		"004a0502": "Joan",
+		"00a80502": "K.K. Slider",
+		"02400502": "K. K. Slider",
+		"02580002": "Mega Man - Gold Edition",
+		"02a40e02": "Boo - Horse Racing",
+		"02a50e02": "Baby Mario - Soccer",
+		"036c0a02": "Plague Knight",
+		"03a40002": "Terry",
+		"03c40502": "Cyd"
+	}
+}

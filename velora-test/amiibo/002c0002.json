@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Ness",
+		"name": "Ness",
+		"gameSeries": "Earthbound",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_22800000-002c0002.png",
+		"tail": "002c0002"
+	},
+	"next": "036c0a02.html",
+	"prev": "03951702.html",
+	"list": {
+		"00eb0502": "Nan",
+		"00f60502": "Hopper",
+		"01190502": "Don Resetti - Without Hat",
+		"012b0502": "Canberra",
+		"01470502": "Tammi",
+		"02590002": "Cloud",
+		"037b0002": "King K. Rool",
+		"042d1802": "Malzeno",
+		"04ae1d02": "Kimberly",
+		"04ef1d02": "Alex"
+	}
+}

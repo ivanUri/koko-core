@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Terry",
+		"name": "Terry",
+		"gameSeries": "Fatal Fury",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_3c800000-03a40002.png",
+		"tail": "03a40002"
+	},
+	"next": "027c0e02.html",
+	"prev": "04261902.html",
+	"list": {
+		"00500502": "Saharah",
+		"008d0502": "Cobb",
+		"00960502": "Annalisa",
+		"00ad0502": "Booker",
+		"026f0e02": "Luigi - Baseball",
+		"02710e02": "Luigi - Golf",
+		"03730102": "Bowser - Wedding",
+		"03d50502": "Azalea",
+		"04281902": "Roa Kirishima",
+		"04b51d02": "E. Honda"
+	}
+}

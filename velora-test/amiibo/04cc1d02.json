@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Street Fighter 6",
+		"character": "Ken",
+		"name": "Ken",
+		"gameSeries": "Street Fighter",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_34c10001-04cc1d02.png",
+		"tail": "04cc1d02"
+	},
+	"next": "04d01d02.html",
+	"prev": "04d11d02.html",
+	"list": {
+		"00530502": "Lyle",
+		"005a0502": "Cheri",
+		"00730502": "Sterling",
+		"00830502": "Pudge",
+		"00e10502": "Timbra",
+		"01bd0502": "Barold",
+		"023a0702": "Hammer Slam Bowser",
+		"034b0902": "Link - Ocarina of Time",
+		"03741402": "Super Mario Cereal",
+		"04f31d02": "Mai"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Vivian",
+		"name": "Vivian",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_05130001-02e70502.png",
+		"tail": "02e70502"
+	},
+	"next": "00f10502.html",
+	"prev": "017a0502.html",
+	"list": {
+		"005d0502": "Renée",
+		"00b40502": "Isabelle - Winter",
+		"00d60502": "Scoot",
+		"00e30502": "Pekoe",
+		"01890502": "Dizzy",
+		"03500902": "Toon Link - The Wind Waker",
+		"036c0a02": "Plague Knight",
+		"03ad0502": "Blathers",
+		"03c40502": "Cyd",
+		"04a30902": "Riju"
+	}
+}

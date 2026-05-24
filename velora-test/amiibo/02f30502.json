@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Carrie",
+		"name": "Carrie",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03d30001-02f30502.png",
+		"tail": "02f30502"
+	},
+	"next": "00650502.html",
+	"prev": "00cf0502.html",
+	"list": {
+		"00d50502": "Rodney",
+		"01980502": "Melba",
+		"01c50502": "Rosie",
+		"031d0502": "Chelsea",
+		"03540902": "Link - Rider",
+		"03a30002": "Banjo \u0026 Kazooie",
+		"03ae0502": "Celeste",
+		"03c80502": "Sasha",
+		"04ba1d02": "Zangief",
+		"04e11d02": "M. Bison"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Mega Man",
+		"name": "Mega Man - Gold Edition",
+		"gameSeries": "Megaman",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_34800000-02580002.png",
+		"tail": "02580002"
+	},
+	"next": "01170502.html",
+	"prev": "01750502.html",
+	"list": {
+		"00440502": "Isabelle",
+		"00b20502": "Shrunk",
+		"00d10502": "Peck",
+		"01210502": "Miranda",
+		"02680102": "Boo",
+		"03640002": "Bayonetta - Player 2",
+		"037f0002": "Ridley",
+		"03810002": "Ice Climbers",
+		"03b80502": "Harvey",
+		"03bd0502": "Wardell"
+	}
+}

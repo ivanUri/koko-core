@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Monique",
+		"name": "Monique",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02680001-007d0502.png",
+		"tail": "007d0502"
+	},
+	"next": "02ee0502.html",
+	"prev": "02a40e02.html",
+	"list": {
+		"00010002": "Peach",
+		"00780502": "Limberg",
+		"01170502": "Timmy - Full Apron",
+		"01360502": "Drago",
+		"01980502": "Melba",
+		"01a70502": "Pietro",
+		"01be0502": "Nibbles",
+		"024d0502": "Timmy \u0026 Tommy",
+		"026c0e02": "Mario - Golf",
+		"03630002": "Corrin - Player 2"
+	}
+}

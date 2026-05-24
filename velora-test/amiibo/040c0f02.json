@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Monster Hunter",
+		"character": "Razewing Ratha",
+		"name": "Razewing Ratha",
+		"gameSeries": "Monster Hunter",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_35050000-040c0f02.png",
+		"tail": "040c0f02"
+	},
+	"next": "040d0f02.html",
+	"prev": "00fe0502.html",
+	"list": {
+		"00730502": "Sterling",
+		"00910502": "Roscoe",
+		"00ee0502": "Benedict",
+		"03090502": "Weber",
+		"035a0902": "Mipha",
+		"035c0902": "Bokoblin",
+		"03680102": "Koopa Troopa",
+		"03b80502": "Harvey",
+		"03b90502": "Gulliver",
+		"03d00502": "Chabwick"
+	}
+}

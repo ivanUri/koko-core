@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Redd",
+		"name": "Redd",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01a80001-004f0502.png",
+		"tail": "004f0502"
+	},
+	"next": "02410502.html",
+	"prev": "00130002.html",
+	"list": {
+		"00020002": "Yoshi",
+		"006e0502": "Puck",
+		"00950502": "Goose",
+		"011c0502": "Jingle",
+		"01520502": "Curlos",
+		"01b80502": "Pompom",
+		"028f0e02": "Donkey Kong - Golf",
+		"02f90502": "Maddie",
+		"035a0902": "Mipha",
+		"038f0402": "Octoling Boy"
+	}
+}

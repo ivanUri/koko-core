@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Rudy",
+		"name": "Rudy",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02710001-019b0502.png",
+		"tail": "019b0502"
+	},
+	"next": "00860502.html",
+	"prev": "02590002.html",
+	"list": {
+		"00220002": "Mii Swordfighter",
+		"00ff0502": "Ankha",
+		"014b0502": "Marshal",
+		"01af0502": "Zucker",
+		"01c80502": "Bruce",
+		"025c0d02": "Shadow Mewtwo",
+		"02fa0502": "Billy",
+		"034b0902": "Link - Ocarina of Time",
+		"035a0902": "Mipha",
+		"03810002": "Ice Climbers"
+	}
+}

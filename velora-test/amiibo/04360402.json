@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Splatoon",
+		"character": "Callie",
+		"name": "Callie - Alterna",
+		"gameSeries": "Splatoon",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_08010000-04360402.png",
+		"tail": "04360402"
+	},
+	"next": "031e0502.html",
+	"prev": "025d0402.html",
+	"list": {
+		"00190002": "Dr. Mario",
+		"00240002": "Charizard",
+		"00400402": "Inkling Squid",
+		"00bd0502": "Lucha",
+		"013d0502": "Ava",
+		"02460502": "Cyrus",
+		"024c0502": "Rover",
+		"02ac0e02": "Baby Luigi - Tennis",
+		"035e1002": "Qbby",
+		"03630002": "Corrin - Player 2"
+	}
+}

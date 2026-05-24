@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Lottie",
+		"name": "Lottie",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01c10001-00540502.png",
+		"tail": "00540502"
+	},
+	"next": "02750e02.html",
+	"prev": "02700e02.html",
+	"list": {
+		"00050002": "Fox",
+		"000e0002": "Zelda",
+		"00ac0502": "Copper",
+		"01350502": "Chevre",
+		"017e0502": "Redd - Shirt",
+		"02840e02": "Wario - Tennis",
+		"029e0e02": "Bowser Jr. - Golf",
+		"02b70e02": "Rosalina - Golf",
+		"03ad0502": "Blathers",
+		"040e0f02": "Tsukino"
+	}
+}

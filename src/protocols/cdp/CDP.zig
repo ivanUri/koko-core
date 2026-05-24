@@ -186,6 +186,14 @@ pub fn pageWait(self: *CDP, ms: u32) !Session.Runner.CDPWaitResult {
 }
 
 pub fn tick(self: *CDP) !bool {
+    // Drain any pending root navigation whose commit was deferred because a
+    // previous tick landed inside reentrant HttpClient.perform with JS on the
+    // stack (see Session._deferred_commit_pending). By the top of a fresh
+    // tick all script-eval frames have unwound, so this is a safe point.
+    if (self.browser.session) |*session| {
+        session.drainDeferredCommit();
+    }
+
     // Liveness is enforced by TCP keepalive configured in
     // Network.acceptConnections; the wakeup lets V8 run or terminate.
     const wait_ms: u32 = 1000; // 1s

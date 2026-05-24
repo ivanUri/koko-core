@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Bam",
+		"name": "Bam",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02d70001-01300502.png",
+		"tail": "01300502"
+	},
+	"next": "019a0502.html",
+	"prev": "01450502.html",
+	"list": {
+		"00170002": "Sheik",
+		"00390102": "Bowser",
+		"01770502": "Leilani",
+		"018f0502": "Shep",
+		"01990502": "Bones",
+		"026e0e02": "Luigi - Soccer",
+		"029b0e02": "Bowser Jr. - Soccer",
+		"04281902": "Roa Kirishima",
+		"04a30902": "Riju",
+		"04f21d02": "Mai"
+	}
+}

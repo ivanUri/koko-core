@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Timbra",
+		"name": "Timbra",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04cf0001-00e10502.png",
+		"tail": "00e10502"
+	},
+	"next": "00e60502.html",
+	"prev": "035b0902.html",
+	"list": {
+		"00680502": "Kabuki",
+		"01340502": "Hans",
+		"01420502": "Wolfgang",
+		"01700502": "Isabelle - Dress",
+		"01810502": "Stitches",
+		"01b30502": "Chow",
+		"02c00e02": "Pink Gold Peach - Tennis",
+		"02e40f02": "Rathian and Cheval",
+		"03880002": "Chrom",
+		"04f31d02": "Mai"
+	}
+}

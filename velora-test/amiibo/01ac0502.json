@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Purrl",
+		"name": "Purrl",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02640001-01ac0502.png",
+		"tail": "01ac0502"
+	},
+	"next": "01250502.html",
+	"prev": "02870e02.html",
+	"list": {
+		"002c0002": "Ness",
+		"00e90502": "Kitty",
+		"01090502": "Agent S",
+		"015d0502": "Violet",
+		"02f80502": "Jacob",
+		"03aa0502": "Isabelle",
+		"03ce0502": "Cephalobot",
+		"04251902": "Tatsuhisa “Luke” Kamijō",
+		"04af1d02": "Kimberly",
+		"04e41d02": "Sagat"
+	}
+}

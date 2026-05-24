@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Splatoon",
+		"character": "Big Man",
+		"name": "Big Man",
+		"gameSeries": "Splatoon",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_08090000-04350402.png",
+		"tail": "04350402"
+	},
+	"next": "03d40502.html",
+	"prev": "04340402.html",
+	"list": {
+		"00d60502": "Scoot",
+		"00df0502": "Gabi",
+		"00fa0502": "Camofrog",
+		"010f0502": "Pelly",
+		"012d0502": "Marina",
+		"02380602": "8-Bit Mario Classic Color",
+		"02e80502": "Hopkins",
+		"03ac0502": "Wilbur",
+		"03d30502": "Rio",
+		"04fc0f02": "Rudy"
+	}
+}

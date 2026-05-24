@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Friga",
+		"name": "Friga",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04630001-01310502.png",
+		"tail": "01310502"
+	},
+	"next": "01280502.html",
+	"prev": "03680102.html",
+	"list": {
+		"009a0502": "Bunnie",
+		"01010502": "Vesta",
+		"02600402": "Inkling Boy - Purple",
+		"026c0e02": "Mario - Golf",
+		"02770e02": "Peach - Horse Racing",
+		"03020502": "Raddle",
+		"03520902": "Toon Zelda - The Wind Waker",
+		"04a50902": "Tulin",
+		"04b01d02": "Chun-Li",
+		"04f21d02": "Mai"
+	}
+}

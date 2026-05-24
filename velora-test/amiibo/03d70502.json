@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Faith",
+		"name": "Faith",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_0a200001-03d70502.png",
+		"tail": "03d70502"
+	},
+	"next": "01b20502.html",
+	"prev": "00390102.html",
+	"list": {
+		"00860502": "Flurry",
+		"00fc0502": "Chops",
+		"01440502": "Klaus",
+		"01760502": "Gracie",
+		"018e0502": "Pashmina",
+		"02570c02": "Waddle Dee",
+		"02ae0e02": "Baby Luigi - Horse Racing",
+		"02bf0e02": "Pink Gold Peach - Baseball",
+		"034c0902": "Link - Majora's Mask",
+		"03b80502": "Harvey"
+	}
+}

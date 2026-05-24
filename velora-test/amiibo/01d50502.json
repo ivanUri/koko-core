@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Goldie",
+		"name": "Goldie - Amiibo Festival",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02ea0001-01d50502.png",
+		"tail": "01d50502"
+	},
+	"next": "00560502.html",
+	"prev": "03010502.html",
+	"list": {
+		"00590502": "Leonardo",
+		"00960502": "Annalisa",
+		"01000502": "Drift",
+		"01a00502": "Lucy",
+		"01a10502": "Elmer",
+		"02ef0502": "Huck",
+		"03b60502": "Kicks",
+		"04190902": "Zelda - Tears of the Kingdom",
+		"04271902": "Romin Kirishima",
+		"04cd1d02": "Luke"
+	}
+}

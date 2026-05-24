@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Baby Mario",
+		"name": "Baby Mario - Soccer",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09cc0101-02a50e02.png",
+		"tail": "02a50e02"
+	},
+	"next": "03981702.html",
+	"prev": "00d50502.html",
+	"list": {
+		"00220002": "Mii Swordfighter",
+		"00570502": "Curt",
+		"00770502": "Poppy",
+		"00c70502": "Vladimir",
+		"01710502": "Brewster",
+		"01820502": "Pinky",
+		"023e0302": "Mega Yarn Yoshi",
+		"024f0902": "Midna \u0026 Wolf Link",
+		"02950e02": "Diddy Kong - Horse Racing",
+		"04e61d02": "Alex"
+	}
+}

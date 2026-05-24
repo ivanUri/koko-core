@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Spike",
+		"name": "Spike",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04b40001-030c0502.png",
+		"tail": "030c0502"
+	},
+	"next": "03990902.html",
+	"prev": "03a50002.html",
+	"list": {
+		"000b0002": "Marth",
+		"000f0002": "Little Mac",
+		"003e0402": "Inkling Girl",
+		"004f0502": "Redd",
+		"00f10502": "Bettina",
+		"026b0e02": "Mario - Tennis",
+		"027d0e02": "Yoshi - Soccer",
+		"02f00502": "Sylvana",
+		"04121302": "Samus - Metroid Dread",
+		"04f31d02": "Mai"
+	}
+}

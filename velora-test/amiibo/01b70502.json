@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Doc",
+		"name": "Doc",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_049e0001-01b70502.png",
+		"tail": "01b70502"
+	},
+	"next": "01ae0502.html",
+	"prev": "00510502.html",
+	"list": {
+		"00a50502": "Roald",
+		"00c70502": "Vladimir",
+		"01140502": "Wendell",
+		"01560502": "Hamlet",
+		"01850502": "Rocco",
+		"01ce0502": "Cally",
+		"02510002": "Lucas",
+		"02980e02": "Bowser - Tennis",
+		"02b50e02": "Rosalina - Baseball",
+		"03a60102": "Mario - Cat"
+	}
+}

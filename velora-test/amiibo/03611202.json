@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Fire Emblem",
+		"character": "Celica",
+		"name": "Celica",
+		"gameSeries": "Fire Emblem",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_21070000-03611202.png",
+		"tail": "03611202"
+	},
+	"next": "00790502.html",
+	"prev": "01410502.html",
+	"list": {
+		"00380102": "Toad",
+		"00a90502": "Reese",
+		"01600502": "Merengue",
+		"025a0002": "Corrin",
+		"02a00e02": "Boo - Soccer",
+		"02aa0e02": "Baby Luigi - Soccer",
+		"02e70502": "Vivian",
+		"030c0502": "Spike",
+		"04370402": "Marie - Alterna",
+		"04d71d02": "Manon"
+	}
+}

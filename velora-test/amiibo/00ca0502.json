@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Phoebe",
+		"name": "Phoebe",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04400001-00ca0502.png",
+		"tail": "00ca0502"
+	},
+	"next": "02f70502.html",
+	"prev": "012c0502.html",
+	"list": {
+		"00010002": "Peach",
+		"00360102": "Peach",
+		"00830502": "Pudge",
+		"008e0502": "Amelia",
+		"00a50502": "Roald",
+		"00ce0502": "Blaire",
+		"018c0502": "Broffina",
+		"034f0902": "8-Bit Link",
+		"03b60502": "Kicks",
+		"04f11d02": "Terry"
+	}
+}

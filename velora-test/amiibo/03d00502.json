@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Chabwick",
+		"name": "Chabwick",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_0a190001-03d00502.png",
+		"tail": "03d00502"
+	},
+	"next": "00b10502.html",
+	"prev": "00a20502.html",
+	"list": {
+		"001c0002": "Falco",
+		"00a30502": "Cole",
+		"00da0502": "Groucho",
+		"00db0502": "Wendy",
+		"014e0502": "Pippy",
+		"01500502": "Bree",
+		"02b20e02": "Birdo - Golf",
+		"035c0902": "Bokoblin",
+		"03c40502": "Cyd",
+		"04251902": "Tatsuhisa “Luke” Kamijō"
+	}
+}

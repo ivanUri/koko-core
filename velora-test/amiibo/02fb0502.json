@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Boyd",
+		"name": "Boyd",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_036e0001-02fb0502.png",
+		"tail": "02fb0502"
+	},
+	"next": "02e10f02.html",
+	"prev": "034d0902.html",
+	"list": {
+		"005a0502": "Cheri",
+		"005e0502": "Lopez",
+		"00a60502": "Molly",
+		"00ff0502": "Ankha",
+		"011d0502": "Lily",
+		"01430502": "Diva",
+		"02600402": "Inkling Boy - Purple",
+		"02af0e02": "Birdo - Soccer",
+		"03540902": "Link - Rider",
+		"04fc0f02": "Rudy"
+	}
+}

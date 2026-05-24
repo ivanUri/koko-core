@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Incineroar",
+		"name": "Incineroar",
+		"gameSeries": "Pokemon",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_1bd70000-03860002.png",
+		"tail": "03860002"
+	},
+	"next": "02810e02.html",
+	"prev": "003d0102.html",
+	"list": {
+		"00870502": "Clyde",
+		"00ab0502": "Labelle",
+		"01110502": "Pete",
+		"024c0502": "Rover",
+		"02590002": "Cloud",
+		"02770e02": "Peach - Horse Racing",
+		"02b20e02": "Birdo - Golf",
+		"034f0902": "8-Bit Link",
+		"03590902": "Urbosa",
+		"04c30102": "Poplin \u0026 Prince Florian"
+	}
+}

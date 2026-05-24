@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Mallary",
+		"name": "Mallary",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_030d0001-01840502.png",
+		"tail": "01840502"
+	},
+	"next": "02970e02.html",
+	"prev": "01c30502.html",
+	"list": {
+		"003d0102": "Mario - Silver Edition",
+		"01360502": "Drago",
+		"01440502": "Klaus",
+		"01810502": "Stitches",
+		"01820502": "Pinky",
+		"01bd0502": "Barold",
+		"01bf0502": "Kevin",
+		"02a70e02": "Baby Mario - Tennis",
+		"04c30102": "Poplin \u0026 Prince Florian",
+		"04f21d02": "Mai"
+	}
+}

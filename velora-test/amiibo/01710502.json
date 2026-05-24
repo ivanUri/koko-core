@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Brewster",
+		"name": "Brewster",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01900001-01710502.png",
+		"tail": "01710502"
+	},
+	"next": "015c0502.html",
+	"prev": "00470502.html",
+	"list": {
+		"00a80502": "K.K. Slider",
+		"00d20502": "Olivia",
+		"00d50502": "Rodney",
+		"01720502": "Katrina",
+		"025d0402": "Callie",
+		"02680102": "Boo",
+		"03a70102": "Peach - Cat",
+		"04220002": "Steve",
+		"042b1802": "Palico",
+		"04e61d02": "Alex"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Legend Of Zelda",
+		"character": "Daruk",
+		"name": "Daruk",
+		"gameSeries": "The Legend of Zelda",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01050000-03580902.png",
+		"tail": "03580902"
+	},
+	"next": "04a50902.html",
+	"prev": "018d0502.html",
+	"list": {
+		"00350102": "Luigi",
+		"00610502": "Tiffany",
+		"00670502": "Alli",
+		"01880502": "Peaches",
+		"01b30502": "Chow",
+		"02540c02": "Kirby",
+		"02f30502": "Carrie",
+		"03d00502": "Chabwick",
+		"040c0f02": "Razewing Ratha",
+		"04b41d02": "Dhalsim"
+	}
+}

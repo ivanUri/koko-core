@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Nan",
+		"name": "Nan",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03570001-00eb0502.png",
+		"tail": "00eb0502"
+	},
+	"next": "027e0e02.html",
+	"prev": "00450502.html",
+	"list": {
+		"002c0002": "Ness",
+		"011f0502": "Tabby",
+		"016e0502": "Francine",
+		"01d30502": "Robin",
+		"025f0402": "Inkling Girl - Lime Green",
+		"02f80502": "Jacob",
+		"03040502": "Louie",
+		"04111802": "Palamute",
+		"043f1c02": "Mario - My Mario Wooden Blocks",
+		"04dd1d02": "Rashid"
+	}
+}

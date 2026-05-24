@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Bowser Jr.",
+		"name": "Bowser Jr. - Soccer",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09ca0101-029b0e02.png",
+		"tail": "029b0e02"
+	},
+	"next": "00620502.html",
+	"prev": "004a0502.html",
+	"list": {
+		"00730502": "Sterling",
+		"00da0502": "Groucho",
+		"00e50502": "Mathilda",
+		"01590502": "Dora",
+		"01af0502": "Zucker",
+		"023f0502": "Isabelle - Winter Outfit",
+		"02480502": "Celeste",
+		"02670102": "Waluigi",
+		"02890e02": "Waluigi - Tennis",
+		"02ba0e02": "Metal Mario - Baseball"
+	}
+}

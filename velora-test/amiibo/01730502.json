@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Phineas",
+		"name": "Phineas",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_019c0001-01730502.png",
+		"tail": "01730502"
+	},
+	"next": "011d0502.html",
+	"prev": "00d40502.html",
+	"list": {
+		"00410302": "Green Yarn Yoshi",
+		"00870502": "Clyde",
+		"008b0502": "Lionel",
+		"01980502": "Melba",
+		"019e0502": "Tammy",
+		"025c0d02": "Shadow Mewtwo",
+		"025d0402": "Callie",
+		"02a10e02": "Boo - Baseball",
+		"02a60e02": "Baby Mario - Baseball",
+		"039fff02": "Yoshi - Power Up Band"
+	}
+}

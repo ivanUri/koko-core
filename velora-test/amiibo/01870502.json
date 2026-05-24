@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Graham",
+		"name": "Graham",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03800001-01870502.png",
+		"tail": "01870502"
+	},
+	"next": "02e50f02.html",
+	"prev": "01110502.html",
+	"list": {
+		"00160002": "Toon Link",
+		"00b60502": "Nat",
+		"00eb0502": "Nan",
+		"030b0502": "Leopold",
+		"036f1202": "Chrom",
+		"03b60502": "Kicks",
+		"03d20502": "Ace",
+		"040e0f02": "Tsukino",
+		"04340402": "Frye",
+		"04db1d02": "Lily"
+	}
+}

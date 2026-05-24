@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Al",
+		"name": "Al",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03710001-005c0502.png",
+		"tail": "005c0502"
+	},
+	"next": "01a40502.html",
+	"prev": "03a10002.html",
+	"list": {
+		"00df0502": "Gabi",
+		"014c0502": "Gala",
+		"01b70502": "Doc",
+		"02a50e02": "Baby Mario - Soccer",
+		"03070502": "Ellie",
+		"030c0502": "Spike",
+		"036c0a02": "Plague Knight",
+		"037f0002": "Ridley",
+		"03d10502": "Zoe",
+		"04e01d02": "Akuma"
+	}
+}

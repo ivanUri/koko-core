@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "C.J.",
+		"name": "C.J.",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_0a020001-03b30502.png",
+		"tail": "03b30502"
+	},
+	"next": "02ba0e02.html",
+	"prev": "01530502.html",
+	"list": {
+		"00110002": "Lucario",
+		"00620502": "Sheldon",
+		"01110502": "Pete",
+		"01cb0502": "Cranston",
+		"02900e02": "Donkey Kong - Horse Racing",
+		"037a0002": "Daisy",
+		"03830002": "Ivysaur",
+		"03ca0502": "Tiansheng",
+		"04b91d02": "JP",
+		"04d61d02": "Dee Jay"
+	}
+}

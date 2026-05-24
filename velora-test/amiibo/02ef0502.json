@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Huck",
+		"name": "Huck",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03430001-02ef0502.png",
+		"tail": "02ef0502"
+	},
+	"next": "00cf0502.html",
+	"prev": "037c0002.html",
+	"list": {
+		"003a0202": "Chibi Robo",
+		"007e0502": "Nate",
+		"01270502": "Bubbles",
+		"01520502": "Curlos",
+		"01d80502": "K. K. Slider - Pikopuri",
+		"02480502": "Celeste",
+		"02e70502": "Vivian",
+		"04111802": "Palamute",
+		"04140902": "Zelda \u0026 Loftwing",
+		"04b91d02": "JP"
+	}
+}

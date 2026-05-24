@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Mario Bros.",
+		"character": "Koopa Troopa",
+		"name": "Koopa Troopa",
+		"gameSeries": "Super Mario",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_00230000-03680102.png",
+		"tail": "03680102"
+	},
+	"next": "01310502.html",
+	"prev": "00700502.html",
+	"list": {
+		"001e0002": "Olimar",
+		"009d0502": "Axel",
+		"00c50502": "Prince",
+		"01460502": "Stinky",
+		"02530002": "Ryu",
+		"02a70e02": "Baby Mario - Tennis",
+		"02fe0502": "Murphy",
+		"03030502": "Julia",
+		"03b40502": "Flick",
+		"03cd0502": "Petri"
+	}
+}

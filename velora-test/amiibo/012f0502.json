@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Freckles",
+		"name": "Freckles",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_030e0001-012f0502.png",
+		"tail": "012f0502"
+	},
+	"next": "03d60502.html",
+	"prev": "02e50f02.html",
+	"list": {
+		"01230502": "Paula",
+		"016b0502": "Soleil",
+		"019e0502": "Tammy",
+		"02e50f02": "Barioth and Ayuria",
+		"03090502": "Weber",
+		"03100502": "Gonzo",
+		"034c0902": "Link - Majora's Mask",
+		"037f0002": "Ridley",
+		"039cff02": "Luigi - Power Up Band",
+		"03a10002": "Joker"
+	}
+}

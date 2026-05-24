@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Eloise",
+		"name": "Eloise",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03260001-01390502.png",
+		"tail": "01390502"
+	},
+	"next": "014c0502.html",
+	"prev": "00680502.html",
+	"list": {
+		"00030002": "Donkey Kong",
+		"00840502": "Midge",
+		"009a0502": "Bunnie",
+		"01880502": "Peaches",
+		"018a0502": "Penelope",
+		"01c40502": "Lucky",
+		"03690402": "Inkling Girl - Neon Pink",
+		"039fff02": "Yoshi - Power Up Band",
+		"04a50902": "Tulin",
+		"04e61d02": "Alex"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Baby Luigi",
+		"name": "Baby Luigi - Tennis",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09cd0301-02ac0e02.png",
+		"tail": "02ac0e02"
+	},
+	"next": "00960502.html",
+	"prev": "02a90e02.html",
+	"list": {
+		"010e0502": "Tom Nook - Jacket",
+		"01420502": "Wolfgang",
+		"01660502": "Sparro",
+		"01980502": "Melba",
+		"01990502": "Bones",
+		"02390602": "8-Bit Mario Modern Color",
+		"038d0002": "Piranha Plant",
+		"03981702": "Daijobu",
+		"03b20502": "K.K. Slider",
+		"04b31d02": "Blanka"
+	}
+}

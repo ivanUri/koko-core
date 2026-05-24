@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Axel",
+		"name": "Axel",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03290001-009d0502.png",
+		"tail": "009d0502"
+	},
+	"next": "01c60502.html",
+	"prev": "031b0502.html",
+	"list": {
+		"00340102": "Mario",
+		"00610502": "Tiffany",
+		"00660502": "Deli",
+		"00bf0502": "Harry",
+		"01cb0502": "Cranston",
+		"025d0402": "Callie",
+		"02880e02": "Waluigi - Baseball",
+		"02910e02": "Diddy Kong - Soccer",
+		"03d60502": "Roswell",
+		"0431ff02": "Donkey Kong - Power Up Band"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Chevre",
+		"name": "Chevre",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03560001-01350502.png",
+		"tail": "01350502"
+	},
+	"next": "018f0502.html",
+	"prev": "01010502.html",
+	"list": {
+		"006f0502": "Shari",
+		"007c0502": "Phil",
+		"01160502": "Grams",
+		"016f0502": "Chrissy",
+		"01820502": "Pinky",
+		"02680102": "Boo",
+		"03150502": "Buzz",
+		"03a0ff02": "Toad - Power Up Band",
+		"04a40902": "Sidon",
+		"index": "Sandy"
+	}
+}

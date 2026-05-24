@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Street Fighter 6",
+		"character": "JP",
+		"name": "JP",
+		"gameSeries": "Street Fighter",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_34ce0001-04d91d02.png",
+		"tail": "04d91d02"
+	},
+	"next": "04d21d02.html",
+	"prev": "04db1d02.html",
+	"list": {
+		"00080002": "Villager",
+		"00240002": "Charizard",
+		"00480502": "Kapp'n",
+		"004e0502": "Harriet",
+		"00ae0502": "Katie",
+		"00f50502": "Hugh",
+		"01a70502": "Pietro",
+		"02a90e02": "Baby Mario - Horse Racing",
+		"02b90e02": "Metal Mario - Soccer",
+		"04d71d02": "Manon"
+	}
+}

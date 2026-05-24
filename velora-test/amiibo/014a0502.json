@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Gaston",
+		"name": "Gaston",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04980001-014a0502.png",
+		"tail": "014a0502"
+	},
+	"next": "006c0502.html",
+	"prev": "03540902.html",
+	"list": {
+		"004c0502": "Digby",
+		"013c0502": "Beardo",
+		"017a0502": "Lottie - Black Skirt And Bow",
+		"01c70502": "Maelle",
+		"02aa0e02": "Baby Luigi - Soccer",
+		"03140502": "Dobie",
+		"03640002": "Bayonetta - Player 2",
+		"03720102": "Peach - Wedding",
+		"039fff02": "Yoshi - Power Up Band",
+		"04e71d02": "Ingrid"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "R.O.B.",
+		"name": "R.O.B. - Famicom",
+		"gameSeries": "Classic Nintendo",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_07810000-002e0002.png",
+		"tail": "002e0002"
+	},
+	"next": "03620002.html",
+	"prev": "016d0502.html",
+	"list": {
+		"00ce0502": "Blaire",
+		"01170502": "Timmy - Full Apron",
+		"011d0502": "Lily",
+		"01580502": "Monty",
+		"015a0502": "Biskit",
+		"01bc0502": "Sydney",
+		"026b0e02": "Mario - Tennis",
+		"02730e02": "Peach - Soccer",
+		"03880002": "Chrom",
+		"03951702": "Yabe"
+	}
+}

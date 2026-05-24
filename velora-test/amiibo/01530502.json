@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Skye",
+		"name": "Skye",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_05140001-01530502.png",
+		"tail": "01530502"
+	},
+	"next": "03b30502.html",
+	"prev": "01770502.html",
+	"list": {
+		"00040002": "Link",
+		"002d0002": "Mr. Game \u0026 Watch",
+		"00c30502": "Tom",
+		"00f60502": "Hopper",
+		"01600502": "Merengue",
+		"02710e02": "Luigi - Golf",
+		"02b80e02": "Rosalina - Horse Racing",
+		"03630002": "Corrin - Player 2",
+		"03920a02": "Shovel Knight - Gold Edition",
+		"043c1302": "Sylux"
+	}
+}

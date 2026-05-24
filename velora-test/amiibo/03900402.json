@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Splatoon",
+		"character": "Octoling",
+		"name": "Octoling Octopus",
+		"gameSeries": "Splatoon",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_08050300-03900402.png",
+		"tail": "03900402"
+	},
+	"next": "02380602.html",
+	"prev": "014b0502.html",
+	"list": {
+		"00150002": "Bowser Jr.",
+		"00480502": "Kapp'n",
+		"00650502": "Kiki",
+		"007e0502": "Nate",
+		"009a0502": "Bunnie",
+		"01c10502": "Lobo",
+		"02410502": "Mabel",
+		"03941702": "Ikari",
+		"03ac0502": "Wilbur",
+		"040c0f02": "Razewing Ratha"
+	}
+}

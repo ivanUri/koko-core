@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Dotty",
+		"name": "Dotty",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04950001-01920502.png",
+		"tail": "01920502"
+	},
+	"next": "00ae0502.html",
+	"prev": "00100002.html",
+	"list": {
+		"00820502": "Mint",
+		"01600502": "Merengue",
+		"01c90502": "OHare",
+		"02580002": "Mega Man - Gold Edition",
+		"026a0e02": "Mario - Baseball",
+		"02fd0502": "Maggie",
+		"03110502": "Sprocket",
+		"03130502": "Olive",
+		"035d0302": "Poochy",
+		"04cf1d02": "Kimberly"
+	}
+}

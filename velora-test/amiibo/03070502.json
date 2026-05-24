@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Ellie",
+		"name": "Ellie",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_032a0001-03070502.png",
+		"tail": "03070502"
+	},
+	"next": "00630502.html",
+	"prev": "03ac0502.html",
+	"list": {
+		"01740502": "Celeste",
+		"028b0e02": "Waluigi - Horse Racing",
+		"02930e02": "Diddy Kong - Tennis",
+		"02c00e02": "Pink Gold Peach - Tennis",
+		"03a0ff02": "Toad - Power Up Band",
+		"03a50002": "Byleth",
+		"03d10502": "Zoe",
+		"04200002": "Kazuya",
+		"04340402": "Frye",
+		"04db1d02": "Lily"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Luigi",
+		"name": "Luigi - Soccer",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09c10101-026e0e02.png",
+		"tail": "026e0e02"
+	},
+	"next": "03880002.html",
+	"prev": "01980502.html",
+	"list": {
+		"00810502": "T-Bone",
+		"00a70502": "Walker",
+		"00f60502": "Hopper",
+		"01620502": "Claudia",
+		"016a0502": "Antonio",
+		"018d0502": "Croque",
+		"019c0502": "Naomi",
+		"02470502": "Blathers",
+		"03a40002": "Terry",
+		"04fc0f02": "Rudy"
+	}
+}

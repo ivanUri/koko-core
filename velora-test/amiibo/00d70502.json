@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Whitney",
+		"name": "Whitney",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_050e0001-00d70502.png",
+		"tail": "00d70502"
+	},
+	"next": "017e0502.html",
+	"prev": "01b40502.html",
+	"list": {
+		"011b0502": "Franklin",
+		"01210502": "Miranda",
+		"01780502": "Resetti - Without Hat",
+		"023d0002": "Mewtwo",
+		"02b60e02": "Rosalina - Tennis",
+		"03a80502": "Tom Nook",
+		"03ad0502": "Blathers",
+		"04b41d02": "Dhalsim",
+		"04b91d02": "JP",
+		"04d31d02": "Blanka"
+	}
+}

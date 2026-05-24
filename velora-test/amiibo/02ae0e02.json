@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Baby Luigi",
+		"name": "Baby Luigi - Horse Racing",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09cd0501-02ae0e02.png",
+		"tail": "02ae0e02"
+	},
+	"next": "03170502.html",
+	"prev": "013e0502.html",
+	"list": {
+		"00a30502": "Cole",
+		"00cc0502": "Cookie",
+		"00f80502": "Drake",
+		"01830502": "Mott",
+		"023f0502": "Isabelle - Winter Outfit",
+		"02490502": "Resetti",
+		"02820e02": "Wario - Soccer",
+		"03640002": "Bayonetta - Player 2",
+		"037c0002": "Young Link",
+		"04251902": "Tatsuhisa “Luke” Kamijō"
+	}
+}

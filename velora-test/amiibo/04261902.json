@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Yu-Gi-Oh!",
+		"character": "Gakuto Sōgetsu",
+		"name": "Gakuto Sōgetsu",
+		"gameSeries": "Yu-Gi-Oh!",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_38420001-04261902.png",
+		"tail": "04261902"
+	},
+	"next": "03a40002.html",
+	"prev": "00220002.html",
+	"list": {
+		"00f90502": "Alice",
+		"01480502": "Tucker",
+		"01560502": "Hamlet",
+		"023e0302": "Mega Yarn Yoshi",
+		"027f0e02": "Yoshi - Tennis",
+		"02a50e02": "Baby Mario - Soccer",
+		"02ac0e02": "Baby Luigi - Tennis",
+		"03150502": "Buzz",
+		"03770402": "Marina",
+		"04421c02": "Yoshi - My Mario Wooden Blocks"
+	}
+}

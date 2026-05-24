@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Julian",
+		"name": "Julian",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03b10001-00f00502.png",
+		"tail": "00f00502"
+	},
+	"next": "01540502.html",
+	"prev": "000f0002.html",
+	"list": {
+		"00da0502": "Groucho",
+		"01400502": "Genji",
+		"01a90502": "Papi",
+		"01ae0502": "Celia",
+		"01c30502": "Margie",
+		"02850e02": "Wario - Golf",
+		"03701202": "Tiki",
+		"03a50002": "Byleth",
+		"03ce0502": "Cephalobot",
+		"04111802": "Palamute"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Kapp'n",
+		"name": "Kapp'n",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01960000-024e0502.png",
+		"tail": "024e0502"
+	},
+	"next": "00780502.html",
+	"prev": "03c20502.html",
+	"list": {
+		"00120002": "Captain Falcon",
+		"00490502": "Resetti",
+		"00fb0502": "Anicotti",
+		"01080502": "Kid Cat",
+		"01690502": "Maple",
+		"018e0502": "Pashmina",
+		"01c40502": "Lucky",
+		"02e20f02": "One-Eyed Rathalos and Rider - Female",
+		"035a0902": "Mipha",
+		"04e71d02": "Ingrid"
+	}
+}

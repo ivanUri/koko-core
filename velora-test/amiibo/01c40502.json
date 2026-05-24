@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Lucky",
+		"name": "Lucky",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02ec0001-01c40502.png",
+		"tail": "01c40502"
+	},
+	"next": "02400502.html",
+	"prev": "00ad0502.html",
+	"list": {
+		"00090002": "Pikachu",
+		"003d0102": "Mario - Silver Edition",
+		"00520502": "Tortimer",
+		"016f0502": "Chrissy",
+		"01b40502": "Sylvia",
+		"02410502": "Mabel",
+		"02530002": "Ryu",
+		"03020502": "Raddle",
+		"03a60102": "Mario - Cat",
+		"04131302": "E.M.M.I."
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Timmy",
+		"name": "Timmy - Suit",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01850401-01790502.png",
+		"tail": "01790502"
+	},
+	"next": "03ac0502.html",
+	"prev": "02ec0502.html",
+	"list": {
+		"00d20502": "Olivia",
+		"01170502": "Timmy - Full Apron",
+		"011c0502": "Jingle",
+		"02600402": "Inkling Boy - Purple",
+		"02800e02": "Yoshi - Golf",
+		"02a90e02": "Baby Mario - Horse Racing",
+		"02ba0e02": "Metal Mario - Baseball",
+		"03010502": "Claude",
+		"03651302": "Samus Aran",
+		"04330402": "Shiver"
+	}
+}

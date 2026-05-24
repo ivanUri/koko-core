@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Gwen",
+		"name": "Gwen",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04640001-00c00502.png",
+		"tail": "00c00502"
+	},
+	"next": "028c0e02.html",
+	"prev": "03ce0502.html",
+	"list": {
+		"00040002": "Link",
+		"00570502": "Curt",
+		"00640502": "Bill",
+		"008b0502": "Lionel",
+		"01090502": "Agent S",
+		"01370502": "Tangy",
+		"01620502": "Claudia",
+		"01790502": "Timmy - Suit",
+		"02480502": "Celeste",
+		"04bb1d02": "Lily"
+	}
+}

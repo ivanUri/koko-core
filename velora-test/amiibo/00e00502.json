@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Moose",
+		"name": "Moose",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_041a0001-00e00502.png",
+		"tail": "00e00502"
+	},
+	"next": "02390602.html",
+	"prev": "03990902.html",
+	"list": {
+		"004e0502": "Harriet",
+		"00660502": "Deli",
+		"00680502": "Kabuki",
+		"00f40502": "Flip",
+		"00fc0502": "Chops",
+		"01640502": "Boomer",
+		"01650502": "Caroline",
+		"01ce0502": "Cally",
+		"02560c02": "King Dedede",
+		"02c10e02": "Pink Gold Peach - Golf"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Erik",
+		"name": "Erik",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02df0001-01910502.png",
+		"tail": "01910502"
+	},
+	"next": "01470502.html",
+	"prev": "00c10502.html",
+	"list": {
+		"00360102": "Peach",
+		"00810502": "T-Bone",
+		"00cb0502": "Egbert",
+		"014c0502": "Gala",
+		"01b10502": "Ribbot",
+		"01be0502": "Nibbles",
+		"02750e02": "Peach - Tennis",
+		"02f40502": "Ketchup",
+		"04b71d02": "Manon",
+		"04e31d02": "Elena"
+	}
+}

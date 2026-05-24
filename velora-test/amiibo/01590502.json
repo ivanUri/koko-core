@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Dora",
+		"name": "Dora",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_040c0001-01590502.png",
+		"tail": "01590502"
+	},
+	"next": "018c0502.html",
+	"prev": "03040502.html",
+	"list": {
+		"012a0502": "Elvis",
+		"012b0502": "Canberra",
+		"01590502": "Dora",
+		"016b0502": "Soleil",
+		"017f0502": "Zipper",
+		"023a0702": "Hammer Slam Bowser",
+		"024d0502": "Timmy \u0026 Tommy",
+		"02500a02": "Shovel Knight",
+		"03190502": "Rilla",
+		"03710102": "Mario - Wedding"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Naomi",
+		"name": "Naomi",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02b80001-019c0502.png",
+		"tail": "019c0502"
+	},
+	"next": "03020502.html",
+	"prev": "00290002.html",
+	"list": {
+		"000e0002": "Zelda",
+		"00240002": "Charizard",
+		"007c0502": "Phil",
+		"008a0502": "Yuka",
+		"00a30502": "Cole",
+		"00b90502": "Poncho",
+		"00c30502": "Tom",
+		"014b0502": "Marshal",
+		"03870002": "Pokemon Trainer",
+		"04281902": "Roa Kirishima"
+	}
+}

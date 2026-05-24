@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Legend Of Zelda",
+		"character": "Riju",
+		"name": "Riju",
+		"gameSeries": "The Legend of Zelda",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01090000-04a30902.png",
+		"tail": "04a30902"
+	},
+	"next": "00fc0502.html",
+	"prev": "04a40902.html",
+	"list": {
+		"00760502": "Opal",
+		"01860502": "Katt",
+		"019b0502": "Rudy",
+		"01b30502": "Chow",
+		"026b0e02": "Mario - Tennis",
+		"036e0a02": "King Knight",
+		"038f0402": "Octoling Boy",
+		"039eff02": "Daisy - Power Up Band",
+		"03ad0502": "Blathers",
+		"index": "Sandy"
+	}
+}

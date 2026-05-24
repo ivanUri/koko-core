@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "BoxBoy!",
+		"character": "Qbby",
+		"name": "Qbby",
+		"gameSeries": "BoxBoy!",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_1f400000-035e1002.png",
+		"tail": "035e1002"
+	},
+	"next": "02870e02.html",
+	"prev": "00c90502.html",
+	"list": {
+		"00340102": "Mario",
+		"00680502": "Kabuki",
+		"009b0502": "Clay",
+		"009e0502": "Muffy",
+		"00ab0502": "Labelle",
+		"023b0702": "Turbo Charge Donkey Kong",
+		"02740e02": "Peach - Baseball",
+		"03651302": "Samus Aran",
+		"04411c02": "Peach - My Mario Wooden Blocks",
+		"04fc0f02": "Rudy"
+	}
+}

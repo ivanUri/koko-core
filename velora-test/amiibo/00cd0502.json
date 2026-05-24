@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Sly",
+		"name": "Sly",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02c90001-00cd0502.png",
+		"tail": "00cd0502"
+	},
+	"next": "00950502.html",
+	"prev": "02810e02.html",
+	"list": {
+		"004c0502": "Digby",
+		"00650502": "Kiki",
+		"00ac0502": "Copper",
+		"00be0502": "Fuchsia",
+		"01170502": "Timmy - Full Apron",
+		"01380502": "Mac",
+		"02c20e02": "Pink Gold Peach - Horse Racing",
+		"03540902": "Link - Rider",
+		"04b91d02": "JP",
+		"04c30102": "Poplin \u0026 Prince Florian"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Donkey Kong",
+		"name": "Donkey Kong - Soccer",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09c70101-028c0e02.png",
+		"tail": "028c0e02"
+	},
+	"next": "01bf0502.html",
+	"prev": "00c00502.html",
+	"list": {
+		"00580502": "Portia",
+		"00650502": "Kiki",
+		"007e0502": "Nate",
+		"00eb0502": "Nan",
+		"012b0502": "Canberra",
+		"01970502": "Tex",
+		"01ce0502": "Cally",
+		"024b0502": "Isabelle - Summer Outfit",
+		"03a40002": "Terry",
+		"04df1d02": "Ed"
+	}
+}

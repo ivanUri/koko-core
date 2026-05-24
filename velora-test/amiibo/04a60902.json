@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Legend Of Zelda",
+		"character": "Yunobo",
+		"name": "Yunobo",
+		"gameSeries": "The Legend of Zelda",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_010c0000-04a60902.png",
+		"tail": "04a60902"
+	},
+	"next": "04a40902.html",
+	"prev": "04a50902.html",
+	"list": {
+		"00640502": "Bill",
+		"00850502": "Gruff",
+		"00950502": "Goose",
+		"01620502": "Claudia",
+		"016a0502": "Antonio",
+		"01c20502": "Hippeux",
+		"02ab0e02": "Baby Luigi - Baseball",
+		"02b90e02": "Metal Mario - Soccer",
+		"040f1802": "Magnamalo",
+		"04de1d02": "A.K.I"
+	}
+}

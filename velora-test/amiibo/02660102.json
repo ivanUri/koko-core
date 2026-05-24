@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Mario Bros.",
+		"character": "Daisy",
+		"name": "Daisy",
+		"gameSeries": "Super Mario",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_00130000-02660102.png",
+		"tail": "02660102"
+	},
+	"next": "02960e02.html",
+	"prev": "002b0002.html",
+	"list": {
+		"00780502": "Limberg",
+		"00fd0502": "Charlise",
+		"01760502": "Gracie",
+		"01860502": "Katt",
+		"019e0502": "Tammy",
+		"03b70502": "Saharah",
+		"03c20502": "Dom",
+		"04401c02": "Luigi - My Mario Wooden Blocks",
+		"04b61d02": "Dee Jay",
+		"04e51d02": "C. Viper"
+	}
+}

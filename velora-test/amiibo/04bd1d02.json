@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Street Fighter 6",
+		"character": "Rashid",
+		"name": "Rashid",
+		"gameSeries": "Street Fighter",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_34d20001-04bd1d02.png",
+		"tail": "04bd1d02"
+	},
+	"next": "04be1d02.html",
+	"prev": "04b41d02.html",
+	"list": {
+		"00010002": "Peach",
+		"00090002": "Pikachu",
+		"00490502": "Resetti",
+		"004e0502": "Harriet",
+		"00a60502": "Molly",
+		"00b80502": "Jack",
+		"01270502": "Bubbles",
+		"01700502": "Isabelle - Dress",
+		"025a0002": "Corrin",
+		"03a30002": "Banjo \u0026 Kazooie"
+	}
+}

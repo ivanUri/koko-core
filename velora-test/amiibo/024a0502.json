@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Kicks",
+		"name": "Kicks",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01940000-024a0502.png",
+		"tail": "024a0502"
+	},
+	"next": "02e20f02.html",
+	"prev": "01d70502.html",
+	"list": {
+		"00130002": "Rosalina \u0026 Luma",
+		"01090502": "Agent S",
+		"01270502": "Bubbles",
+		"01b90502": "Tank",
+		"01c10502": "Lobo",
+		"02480502": "Celeste",
+		"028c0e02": "Donkey Kong - Soccer",
+		"03bb0502": "Lottie - Island",
+		"03c50502": "Judy",
+		"04e51d02": "C. Viper"
+	}
+}

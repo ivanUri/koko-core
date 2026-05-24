@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Splatoon",
+		"character": "Inkling",
+		"name": "Inkling Boy",
+		"gameSeries": "Splatoon",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_08000200-003f0402.png",
+		"tail": "003f0402"
+	},
+	"next": "00350102.html",
+	"prev": "01240502.html",
+	"list": {
+		"00940502": "Eunice",
+		"00c00502": "Gwen",
+		"011a0502": "Isabelle - Kimono",
+		"018a0502": "Penelope",
+		"01b40502": "Sylvia",
+		"02be0e02": "Pink Gold Peach - Soccer",
+		"03b40502": "Flick",
+		"04c41e03": "Kirby (\u0026 Warp Star)",
+		"04ce1d02": "Jamie",
+		"04d61d02": "Dee Jay"
+	}
+}

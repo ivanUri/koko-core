@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Diablo",
+		"character": "Loot Goblin",
+		"name": "Loot Goblin",
+		"gameSeries": "Diablo",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_38c00000-03911602.png",
+		"tail": "03911602"
+	},
+	"next": "011f0502.html",
+	"prev": "02500a02.html",
+	"list": {
+		"00160002": "Toon Link",
+		"00450502": "Tom Nook",
+		"004e0502": "Harriet",
+		"00850502": "Gruff",
+		"00d60502": "Scoot",
+		"018d0502": "Croque",
+		"01950502": "Fang",
+		"02b70e02": "Rosalina - Golf",
+		"03760402": "Pearl",
+		"03b90502": "Gulliver"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Monster Hunter",
+		"character": "Barioth",
+		"name": "Barioth and Ayuria",
+		"gameSeries": "Monster Hunter",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_35030100-02e50f02.png",
+		"tail": "02e50f02"
+	},
+	"next": "012f0502.html",
+	"prev": "01870502.html",
+	"list": {
+		"00620502": "Sheldon",
+		"00790502": "Deena",
+		"01260502": "Rodeo",
+		"01540502": "Moe",
+		"01a70502": "Pietro",
+		"01b20502": "Annalise",
+		"01d60502": "Stitches - Amiibo Festival",
+		"03931702": "Pawapuro",
+		"03b00502": "Sable",
+		"03ba0502": "Wisp"
+	}
+}

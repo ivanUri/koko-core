@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Chibi-Robo!",
+		"character": "Chibi-Robo",
+		"name": "Chibi Robo",
+		"gameSeries": "Chibi Robo",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_22c00000-003a0202.png",
+		"tail": "003a0202"
+	},
+	"next": "000d0002.html",
+	"prev": "001a0002.html",
+	"list": {
+		"00e00502": "Moose",
+		"011c0502": "Jingle",
+		"01270502": "Bubbles",
+		"01510502": "Rooney",
+		"01850502": "Rocco",
+		"03540902": "Link - Rider",
+		"03590902": "Urbosa",
+		"03640002": "Bayonetta - Player 2",
+		"03770402": "Marina",
+		"03d40502": "Frett"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Deirdre",
+		"name": "Deirdre",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02da0001-01330502.png",
+		"tail": "01330502"
+	},
+	"next": "03b40502.html",
+	"prev": "04210002.html",
+	"list": {
+		"00060002": "Samus",
+		"00700502": "Octavian",
+		"00b50502": "Blanca",
+		"01780502": "Resetti - Without Hat",
+		"017c0502": "Pave",
+		"01850502": "Rocco",
+		"01a10502": "Elmer",
+		"02850e02": "Wario - Golf",
+		"03110502": "Sprocket",
+		"03120502": "Snooty"
+	}
+}

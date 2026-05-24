@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Flick",
+		"name": "Flick",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_0a030001-03b40502.png",
+		"tail": "03b40502"
+	},
+	"next": "00290002.html",
+	"prev": "01330502.html",
+	"list": {
+		"00210002": "Mii Brawler",
+		"006f0502": "Shari",
+		"00e60502": "Ed",
+		"01510502": "Rooney",
+		"01bc0502": "Sydney",
+		"02790e02": "Daisy - Baseball",
+		"029c0e02": "Bowser Jr. - Baseball",
+		"02eb0502": "Paolo",
+		"036e0a02": "King Knight",
+		"03af0502": "Mabel"
+	}
+}

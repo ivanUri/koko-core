@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Croque",
+		"name": "Croque",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03490001-018d0502.png",
+		"tail": "018d0502"
+	},
+	"next": "03580902.html",
+	"prev": "02690e02.html",
+	"list": {
+		"00030002": "Donkey Kong",
+		"00060002": "Samus",
+		"01090502": "Agent S",
+		"01330502": "Deirdre",
+		"013c0502": "Beardo",
+		"015a0502": "Biskit",
+		"03630002": "Corrin - Player 2",
+		"043a1302": "Samus \u0026 Vi-O-La",
+		"04c41e03": "Kirby (\u0026 Warp Star)",
+		"04da1d02": "Zangief"
+	}
+}

@@ -1,0 +1,23 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Diana",
+		"name": "Diana",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02de0001-009c0502.png",
+		"tail": "009c0502"
+	},
+	"next": "03961702.html",
+	"prev": "01940502.html",
+	"list": {
+		"006b0502": "Gigi",
+		"010d0502": "Blathers",
+		"01160502": "Grams",
+		"01500502": "Bree",
+		"01ba0502": "Becky",
+		"02400502": "K. K. Slider",
+		"03190502": "Rilla",
+		"043f1c02": "Mario - My Mario Wooden Blocks",
+		"04de1d02": "A.K.I"
+	}
+}

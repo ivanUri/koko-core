@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Redd",
+		"name": "Redd - Shirt",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01a80101-017e0502.png",
+		"tail": "017e0502"
+	},
+	"next": "041d0002.html",
+	"prev": "00d70502.html",
+	"list": {
+		"00250002": "Greninja",
+		"00800502": "Tutu",
+		"00820502": "Mint",
+		"00f20502": "Jay",
+		"010d0502": "Blathers",
+		"01c50502": "Rosie",
+		"02420502": "Tom Nook",
+		"02be0e02": "Pink Gold Peach - Soccer",
+		"03a70102": "Peach - Cat",
+		"04200002": "Kazuya"
+	}
+}

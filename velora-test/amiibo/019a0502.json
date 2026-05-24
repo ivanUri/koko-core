@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Anabelle",
+		"name": "Anabelle",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02030001-019a0502.png",
+		"tail": "019a0502"
+	},
+	"next": "00ab0502.html",
+	"prev": "01300502.html",
+	"list": {
+		"002b0002": "Shulk",
+		"00380102": "Toad",
+		"004f0502": "Redd",
+		"014b0502": "Marshal",
+		"01720502": "Katrina",
+		"01750502": "Tommy - Suit",
+		"023a0702": "Hammer Slam Bowser",
+		"025c0d02": "Shadow Mewtwo",
+		"035b0902": "Revali",
+		"04190902": "Zelda - Tears of the Kingdom"
+	}
+}

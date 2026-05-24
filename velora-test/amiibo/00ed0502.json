@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Ruby",
+		"name": "Ruby",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_049d0001-00ed0502.png",
+		"tail": "00ed0502"
+	},
+	"next": "00da0502.html",
+	"prev": "00870502.html",
+	"list": {
+		"00520502": "Tortimer",
+		"00de0502": "Butch",
+		"01030502": "Pango",
+		"027c0e02": "Daisy - Horse Racing",
+		"02950e02": "Diddy Kong - Horse Racing",
+		"02e50f02": "Barioth and Ayuria",
+		"031e0502": "Toby",
+		"03941702": "Ikari",
+		"04140902": "Zelda \u0026 Loftwing",
+		"04291902": "Nail Saionji"
+	}
+}

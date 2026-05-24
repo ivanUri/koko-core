@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Olivia",
+		"name": "Olivia",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02600001-00d20502.png",
+		"tail": "00d20502"
+	},
+	"next": "000e0002.html",
+	"prev": "02380602.html",
+	"list": {
+		"00db0502": "Wendy",
+		"01040502": "Keaton",
+		"01060502": "Hamphrey",
+		"01120502": "Mabel",
+		"01540502": "Moe",
+		"02620102": "Rosalina",
+		"03710102": "Mario - Wedding",
+		"03b60502": "Kicks",
+		"03c80502": "Sasha",
+		"040e0f02": "Tsukino"
+	}
+}

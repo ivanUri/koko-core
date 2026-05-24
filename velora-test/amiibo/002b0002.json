@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Shulk",
+		"name": "Shulk",
+		"gameSeries": "Xenoblade",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_22400000-002b0002.png",
+		"tail": "002b0002"
+	},
+	"next": "02660102.html",
+	"prev": "00150002.html",
+	"list": {
+		"00520502": "Tortimer",
+		"00a80502": "K.K. Slider",
+		"00ab0502": "Labelle",
+		"01950502": "Fang",
+		"01a60502": "Mira",
+		"02a30e02": "Boo - Golf",
+		"03160502": "Cleo",
+		"037d0002": "Isabelle",
+		"03c40502": "Cyd",
+		"04121302": "Samus - Metroid Dread"
+	}
+}

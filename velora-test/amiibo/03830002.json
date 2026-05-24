@@ -1,0 +1,23 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Ivysaur",
+		"name": "Ivysaur",
+		"gameSeries": "Pokemon",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_19020000-03830002.png",
+		"tail": "03830002"
+	},
+	"next": "00e80502.html",
+	"prev": "00790502.html",
+	"list": {
+		"00870502": "Clyde",
+		"00980502": "Pancetti",
+		"01310502": "Friga",
+		"01880502": "Peaches",
+		"01ab0502": "Rod",
+		"01b80502": "Pompom",
+		"028e0e02": "Donkey Kong - Tennis",
+		"04c61e03": "Meta Knight (\u0026 Shadow Star)",
+		"04eb1d02": "M. Bison"
+	}
+}

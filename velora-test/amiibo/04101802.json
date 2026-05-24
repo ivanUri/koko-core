@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Monster Hunter Rise",
+		"character": "Palico",
+		"name": "Palico",
+		"gameSeries": "Monster Hunter",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_35090000-04101802.png",
+		"tail": "04101802"
+	},
+	"next": "042b1802.html",
+	"prev": "040d0f02.html",
+	"list": {
+		"002e0002": "R.O.B. - Famicom",
+		"00ce0502": "Blaire",
+		"01870502": "Graham",
+		"018d0502": "Croque",
+		"01ca0502": "Gayle",
+		"02ee0502": "Tybalt",
+		"036e0a02": "King Knight",
+		"03af0502": "Mabel",
+		"03b30502": "C.J.",
+		"04230002": "Alex"
+	}
+}

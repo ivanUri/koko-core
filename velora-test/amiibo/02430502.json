@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Digby",
+		"name": "Digby",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_018c0000-02430502.png",
+		"tail": "02430502"
+	},
+	"next": "01a20502.html",
+	"prev": "00520502.html",
+	"list": {
+		"00930502": "Eugene",
+		"00ea0502": "Beau",
+		"015e0502": "Frank",
+		"01aa0502": "Apple",
+		"01b00502": "Peggy",
+		"03100502": "Gonzo",
+		"035a0902": "Mipha",
+		"03750d02": "Detective Pikachu",
+		"03a40002": "Terry",
+		"03c50502": "Judy"
+	}
+}

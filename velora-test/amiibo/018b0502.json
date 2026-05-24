@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Boone",
+		"name": "Boone",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_036b0001-018b0502.png",
+		"tail": "018b0502"
+	},
+	"next": "03bd0502.html",
+	"prev": "03050502.html",
+	"list": {
+		"00080002": "Villager",
+		"004f0502": "Redd",
+		"00570502": "Curt",
+		"00d60502": "Scoot",
+		"011f0502": "Tabby",
+		"02520002": "Roy",
+		"02580002": "Mega Man - Gold Edition",
+		"02a60e02": "Baby Mario - Baseball",
+		"04be1d02": "A.K.I",
+		"04de1d02": "A.K.I"
+	}
+}

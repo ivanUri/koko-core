@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Mac",
+		"name": "Mac",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02f80001-01380502.png",
+		"tail": "01380502"
+	},
+	"next": "00bd0502.html",
+	"prev": "00b50502.html",
+	"list": {
+		"001f0002": "Palutena",
+		"002d0002": "Mr. Game \u0026 Watch",
+		"00ad0502": "Booker",
+		"010f0502": "Pelly",
+		"01710502": "Brewster",
+		"01c10502": "Lobo",
+		"02630102": "Wario",
+		"031e0502": "Toby",
+		"03c40502": "Cyd",
+		"0431ff02": "Donkey Kong - Power Up Band"
+	}
+}

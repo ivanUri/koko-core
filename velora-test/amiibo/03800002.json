@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Dark Samus",
+		"name": "Dark Samus",
+		"gameSeries": "Metroid",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_05c30000-03800002.png",
+		"tail": "03800002"
+	},
+	"next": "006d0502.html",
+	"prev": "01a40502.html",
+	"list": {
+		"00060002": "Samus",
+		"00200002": "Dark Pit",
+		"002b0002": "Shulk",
+		"00930502": "Eugene",
+		"01670502": "Baabara",
+		"01a80502": "Aurora",
+		"024a0502": "Kicks",
+		"028d0e02": "Donkey Kong - Baseball",
+		"02c00e02": "Pink Gold Peach - Tennis",
+		"03690402": "Inkling Girl - Neon Pink"
+	}
+}

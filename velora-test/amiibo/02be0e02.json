@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Pink Gold Peach",
+		"name": "Pink Gold Peach - Soccer",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09d10101-02be0e02.png",
+		"tail": "02be0e02"
+	},
+	"next": "00070002.html",
+	"prev": "006c0502.html",
+	"list": {
+		"00490502": "Resetti",
+		"00500502": "Saharah",
+		"011e0502": "Anchovy",
+		"01420502": "Wolfgang",
+		"02380602": "8-Bit Mario Classic Color",
+		"02e50f02": "Barioth and Ayuria",
+		"03ac0502": "Wilbur",
+		"03ba0502": "Wisp",
+		"04a40902": "Sidon",
+		"04d71d02": "Manon"
+	}
+}

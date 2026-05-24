@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Plucky",
+		"name": "Plucky",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02a30001-02ff0502.png",
+		"tail": "02ff0502"
+	},
+	"next": "01400502.html",
+	"prev": "023e0302.html",
+	"list": {
+		"00bd0502": "Lucha",
+		"01100502": "Phyllis",
+		"01790502": "Timmy - Suit",
+		"01910502": "Erik",
+		"025a0002": "Corrin",
+		"03170502": "Ike",
+		"031a0502": "Marty",
+		"040c0f02": "Razewing Ratha",
+		"042e0002": "Sora",
+		"04b51d02": "E. Honda"
+	}
+}

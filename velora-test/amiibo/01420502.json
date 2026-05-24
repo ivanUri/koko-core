@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Wolfgang",
+		"name": "Wolfgang",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_050d0001-01420502.png",
+		"tail": "01420502"
+	},
+	"next": "027f0e02.html",
+	"prev": "00ce0502.html",
+	"list": {
+		"00ce0502": "Blaire",
+		"012a0502": "Elvis",
+		"01860502": "Katt",
+		"01c80502": "Bruce",
+		"025a0002": "Corrin",
+		"02770e02": "Peach - Horse Racing",
+		"02a70e02": "Baby Mario - Tennis",
+		"02b50e02": "Rosalina - Baseball",
+		"03070502": "Ellie",
+		"04d61d02": "Dee Jay"
+	}
+}

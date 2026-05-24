@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Nibbles",
+		"name": "Nibbles",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04e10001-01be0502.png",
+		"tail": "01be0502"
+	},
+	"next": "025e0402.html",
+	"prev": "04c61e03.html",
+	"list": {
+		"00490502": "Resetti",
+		"00ba0502": "Felicity",
+		"00d00502": "Nana",
+		"024f0902": "Midna \u0026 Wolf Link",
+		"02ab0e02": "Baby Luigi - Baseball",
+		"035c0902": "Bokoblin",
+		"03a90502": "Timmy \u0026 Tommy",
+		"03bd0502": "Wardell",
+		"03cf0502": "Quinn",
+		"04210002": "Sephiroth"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Palutena",
+		"name": "Palutena",
+		"gameSeries": "Kid Icarus",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_07420000-001f0002.png",
+		"tail": "001f0002"
+	},
+	"next": "01520502.html",
+	"prev": "02b70e02.html",
+	"list": {
+		"006f0502": "Shari",
+		"01110502": "Pete",
+		"015f0502": "Chadder",
+		"01630502": "Curly",
+		"024e0502": "Kapp'n",
+		"025b0002": "Bayonetta",
+		"02880e02": "Waluigi - Baseball",
+		"03010502": "Claude",
+		"039bff02": "Mario - Power Up Band",
+		"04200002": "Kazuya"
+	}
+}

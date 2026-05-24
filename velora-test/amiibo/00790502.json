@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Deena",
+		"name": "Deena",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_030b0001-00790502.png",
+		"tail": "00790502"
+	},
+	"next": "03830002.html",
+	"prev": "03611202.html",
+	"list": {
+		"00770502": "Poppy",
+		"00a60502": "Molly",
+		"01150502": "Cyrus",
+		"026e0e02": "Luigi - Soccer",
+		"03070502": "Ellie",
+		"03a40002": "Terry",
+		"03b50502": "Daisy Mae",
+		"03cc0502": "Marlo",
+		"04bd1d02": "Rashid",
+		"04c01d02": "Akuma"
+	}
+}

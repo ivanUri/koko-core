@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Pikachu",
+		"name": "Pikachu",
+		"gameSeries": "Pokemon",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_19190000-00090002.png",
+		"tail": "00090002"
+	},
+	"next": "01580502.html",
+	"prev": "02780e02.html",
+	"list": {
+		"00160002": "Toon Link",
+		"009b0502": "Clay",
+		"00fe0502": "Vic",
+		"014b0502": "Marshal",
+		"01750502": "Tommy - Suit",
+		"02690e02": "Mario - Soccer",
+		"03070502": "Ellie",
+		"03730102": "Bowser - Wedding",
+		"03a90502": "Timmy \u0026 Tommy",
+		"03c20502": "Dom"
+	}
+}

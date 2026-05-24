@@ -1,0 +1,23 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Street Fighter 6",
+		"character": "Mai",
+		"name": "Mai",
+		"gameSeries": "Fatal Fury",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_3c810001-04f31d02.png",
+		"tail": "04f31d02"
+	},
+	"next": "04ec1d02.html",
+	"prev": "04f11d02.html",
+	"list": {
+		"01010502": "Vesta",
+		"01060502": "Hamphrey",
+		"01180502": "Digby - Raincoat",
+		"01390502": "Eloise",
+		"01740502": "Celeste",
+		"019d0502": "Peewee",
+		"02f40502": "Ketchup",
+		"03931702": "Pawapuro",
+		"04ec1d02": "Elena"
+	}
+}

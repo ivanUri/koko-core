@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "OHare",
+		"name": "OHare",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04a30001-01c90502.png",
+		"tail": "01c90502"
+	},
+	"next": "00200002.html",
+	"prev": "025a0002.html",
+	"list": {
+		"004e0502": "Harriet",
+		"00eb0502": "Nan",
+		"00f70502": "Pecan",
+		"00fa0502": "Camofrog",
+		"014d0502": "Joey",
+		"025b0002": "Bayonetta",
+		"02a80e02": "Baby Mario - Golf",
+		"036d0a02": "Specter Knight",
+		"03b10502": "Label",
+		"03c90502": "Ione"
+	}
+}

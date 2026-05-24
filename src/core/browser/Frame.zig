@@ -516,6 +516,25 @@ pub fn deinit(self: *Frame) void {
 
     const browser = page.session.browser;
     self.enterRealmDead();
+
+    // Abort in-flight HTTP transfers for this frame BEFORE destroying the V8
+    // context. Each transfer's shutdown_callback (Fetch.httpShutdownCallback,
+    // Worker.httpErrorCallback, etc.) reaches into Execution / Context to do
+    // cleanup (e.g. `response.deinit(self._exec.context.page)`); if the V8
+    // context has already been destroyed, those derefs are UAF and segfault.
+    //
+    // This matters most when commitPendingPage tears down the old active Page
+    // while the previous navigation's JS-initiated transfers (fetch, XHR,
+    // dynamic script loads) are still in flight: they share `_frame_id` with
+    // the pending page (Session reuses it across allocatePage), so the .normal
+    // scope passed below still hits them. With this ordering, kill() fires
+    // the shutdown callbacks against a live context, then we destroy.
+    //
+    // Pending root navigation transfers carry `protect_from_abort = true` and
+    // are excluded by the .normal scope, so they continue uninterrupted.
+    self._script_manager.base.shutdown = true;
+    browser.http_client.abortFrame(self._frame_id, .{});
+
     browser.env.destroyContext(self.js);
 
     // Must be after context is destroyed. A finalizer can reach into the *Worker
@@ -523,11 +542,6 @@ pub fn deinit(self: *Frame) void {
     for (self.workers.items) |worker| {
         worker.deinit();
     }
-
-    self._script_manager.base.shutdown = true;
-
-    // don't abort pending frames.
-    browser.http_client.abortFrame(self._frame_id, .{});
 
     self._script_manager.deinit();
     self._style_manager.deinit();
@@ -1116,7 +1130,7 @@ fn frameHeaderDoneCallback(response: HttpClient.Response) !bool {
         });
     }
 
-    if (self._navigated_options) |no| {
+    if (self._navigated_options) |_| {
         // _navigated_options will be null in special short-circuit cases, like
         // "navigating" to about:blank, in which case this notification has
         // already been sent
@@ -1127,24 +1141,68 @@ fn frameHeaderDoneCallback(response: HttpClient.Response) !bool {
         // CDP frame_created/contextCreated/new-document observers must never
         // see the initializing realm.
         if (is_pending_root) {
-            try self._session.commitPendingPage();
+            const session = self._session;
+            // Re-entrancy guard: if the currently active page has JS on the
+            // V8 stack (the caller chain is JS -> fetch() -> HttpClient.request
+            // -> perform -> processMessages -> headerCallback -> us),
+            // committing now would destroy that V8 context and abortFrame
+            // would kill the in-flight JS-initiated transfer. Defer commit
+            // (and the protect_from_abort flip + frame_navigated dispatch)
+            // until Session.drainDeferredCommit runs at a safe point.
+            if (session.activeIsEvaluating()) {
+                session._deferred_commit_pending = true;
+                return true;
+            }
+            // Commit (tears down the old active page) MUST happen while
+            // protect_from_abort is still true on this transfer, otherwise
+            // the abortFrame inside old Frame.deinit (sharing frame_id with
+            // pending) would kill us mid-flight. Flip the flag AFTER commit.
+            try session.commitPendingPage();
             switch (response.inner) {
                 .transfer => |t| t.req.params.protect_from_abort = false,
                 .fulfilled, .cached => {},
             }
+            self.dispatchFrameNavigated();
+            return true;
         }
 
-        self._session.notification.dispatch(.frame_navigated, &.{
-            .opts = no,
-            .url = self.url,
-            .req_id = self._req_id,
-            .frame_id = self._frame_id,
-            .loader_id = self._loader_id,
-            .timestamp = timestamp(.monotonic),
-        });
+        // Non-pending-root path: the page is already active, no commit needed,
+        // just notify observers.
+        self.dispatchFrameNavigated();
     }
 
     return true;
+}
+
+// Finishes a pending root navigation: commit the pending Page (promote it to
+// active, tearing down the old active), clear protect_from_abort on the
+// in-flight navigation transfer (so future abortFrame calls behave normally),
+// and emit the frame_navigated notification. Called immediately from
+// frameHeaderDoneCallback for the safe (non-reentrant) path, and from
+// Session.drainDeferredCommit when the original commit was deferred due to
+// re-entrant perform inside JS-initiated HTTP.
+pub fn finalizePendingRootCommit(self: *Frame) !void {
+    const session = self._session;
+    try session.commitPendingPage();
+    // In the deferred path we no longer hold `response`, so look the transfer
+    // up by frame_id. Idempotent when called twice (immediate path already
+    // cleared the flag before calling us).
+    session.browser.http_client.clearProtectForFrame(self._frame_id);
+    if (self._navigated_options != null) {
+        self.dispatchFrameNavigated();
+    }
+}
+
+fn dispatchFrameNavigated(self: *Frame) void {
+    const no = self._navigated_options orelse return;
+    self._session.notification.dispatch(.frame_navigated, &.{
+        .opts = no,
+        .url = self.url,
+        .req_id = self._req_id,
+        .frame_id = self._frame_id,
+        .loader_id = self._loader_id,
+        .timestamp = timestamp(.monotonic),
+    });
 }
 
 fn frameDataCallback(response: HttpClient.Response, data: []const u8) !void {

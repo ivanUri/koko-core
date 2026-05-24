@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Monster Hunter",
+		"character": "Rathian",
+		"name": "Rathian and Cheval",
+		"gameSeries": "Monster Hunter",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_35020100-02e40f02.png",
+		"tail": "02e40f02"
+	},
+	"next": "028b0e02.html",
+	"prev": "03560902.html",
+	"list": {
+		"000e0002": "Zelda",
+		"00410302": "Green Yarn Yoshi",
+		"00470502": "Sable",
+		"00f90502": "Alice",
+		"01440502": "Klaus",
+		"01450502": "Daisy",
+		"02480502": "Celeste",
+		"04a30902": "Riju",
+		"04b41d02": "Dhalsim",
+		"04f01d02": "Ingrid"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Renée",
+		"name": "Renée",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04ba0001-005d0502.png",
+		"tail": "005d0502"
+	},
+	"next": "00ef0502.html",
+	"prev": "01140502.html",
+	"list": {
+		"00240002": "Charizard",
+		"00430302": "Light Blue Yarn Yoshi",
+		"00840502": "Midge",
+		"00d40502": "Carmen",
+		"00de0502": "Butch",
+		"01090502": "Agent S",
+		"01480502": "Tucker",
+		"019e0502": "Tammy",
+		"02510002": "Lucas",
+		"03ac0502": "Wilbur"
+	}
+}

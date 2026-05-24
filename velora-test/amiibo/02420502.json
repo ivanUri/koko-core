@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Tom Nook",
+		"name": "Tom Nook",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01830000-02420502.png",
+		"tail": "02420502"
+	},
+	"next": "00c60502.html",
+	"prev": "008a0502.html",
+	"list": {
+		"00410302": "Green Yarn Yoshi",
+		"00f90502": "Alice",
+		"011a0502": "Isabelle - Kimono",
+		"014e0502": "Pippy",
+		"024f0902": "Midna \u0026 Wolf Link",
+		"03670102": "Goomba",
+		"03bc0502": "Niko",
+		"03c40502": "Cyd",
+		"04101802": "Palico",
+		"04a91d02": "Ken"
+	}
+}

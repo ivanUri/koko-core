@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Luigi",
+		"name": "Luigi - Tennis",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09c10301-02700e02.png",
+		"tail": "02700e02"
+	},
+	"next": "00540502.html",
+	"prev": "03cc0502.html",
+	"list": {
+		"005a0502": "Cheri",
+		"008e0502": "Amelia",
+		"01870502": "Graham",
+		"01be0502": "Nibbles",
+		"025c0d02": "Shadow Mewtwo",
+		"02ed0502": "Stella",
+		"02ff0502": "Plucky",
+		"03d70502": "Faith",
+		"043e1b02": "Mio",
+		"04f21d02": "Mai"
+	}
+}

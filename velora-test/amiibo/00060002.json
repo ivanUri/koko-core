@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Samus",
+		"name": "Samus",
+		"gameSeries": "Metroid",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_05c00000-00060002.png",
+		"tail": "00060002"
+	},
+	"next": "043b1302.html",
+	"prev": "03d50502.html",
+	"list": {
+		"00890502": "Biff",
+		"01220502": "Del",
+		"01310502": "Friga",
+		"01ce0502": "Cally",
+		"02810e02": "Yoshi - Horse Racing",
+		"02b90e02": "Metal Mario - Soccer",
+		"02f50502": "Rex",
+		"030e0502": "Tad",
+		"03530902": "Link - Archer",
+		"04bc1d02": "Cammy"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Pit",
+		"name": "Pit",
+		"gameSeries": "Kid Icarus",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_07400000-00100002.png",
+		"tail": "00100002"
+	},
+	"next": "01920502.html",
+	"prev": "039bff02.html",
+	"list": {
+		"00570502": "Curt",
+		"01600502": "Merengue",
+		"025d0402": "Callie",
+		"02e10f02": "One-Eyed Rathalos and Rider - Male",
+		"02ec0502": "Hornsby",
+		"03601202": "Alm",
+		"03680102": "Koopa Troopa",
+		"04291902": "Nail Saionji",
+		"042f1a02": "Donkey Kong \u0026 Pauline",
+		"04b51d02": "E. Honda"
+	}
+}

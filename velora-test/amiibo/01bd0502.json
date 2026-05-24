@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Barold",
+		"name": "Barold",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_028d0001-01bd0502.png",
+		"tail": "01bd0502"
+	},
+	"next": "02b00e02.html",
+	"prev": "016b0502.html",
+	"list": {
+		"00220002": "Mii Swordfighter",
+		"005d0502": "Renée",
+		"00660502": "Deli",
+		"01040502": "Keaton",
+		"01060502": "Hamphrey",
+		"01660502": "Sparro",
+		"018d0502": "Croque",
+		"03620002": "Cloud - Player 2",
+		"03b00502": "Sable",
+		"04261902": "Gakuto Sōgetsu"
+	}
+}

@@ -1,0 +1,23 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Mario Bros.",
+		"character": "Peach",
+		"name": "Peach - Cat",
+		"gameSeries": "Super Mario",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_00020100-03a70102.png",
+		"tail": "03a70102"
+	},
+	"next": "03150502.html",
+	"prev": "02fc0502.html",
+	"list": {
+		"000f0002": "Little Mac",
+		"004a0502": "Joan",
+		"01210502": "Miranda",
+		"01360502": "Drago",
+		"01650502": "Caroline",
+		"01c20502": "Hippeux",
+		"02810e02": "Yoshi - Horse Racing",
+		"03630002": "Corrin - Player 2",
+		"04d71d02": "Manon"
+	}
+}

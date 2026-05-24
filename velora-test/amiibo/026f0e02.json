@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Luigi",
+		"name": "Luigi - Baseball",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09c10201-026f0e02.png",
+		"tail": "026f0e02"
+	},
+	"next": "002f0002.html",
+	"prev": "02560c02.html",
+	"list": {
+		"00090002": "Pikachu",
+		"00570502": "Curt",
+		"00960502": "Annalisa",
+		"010c0502": "Rover",
+		"015c0502": "Lyman",
+		"025f0402": "Inkling Girl - Lime Green",
+		"02bb0e02": "Metal Mario - Tennis",
+		"03590902": "Urbosa",
+		"04230002": "Alex",
+		"04a60902": "Yunobo"
+	}
+}

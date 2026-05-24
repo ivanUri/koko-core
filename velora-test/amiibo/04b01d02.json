@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Street Fighter 6",
+		"character": "Chun-Li",
+		"name": "Chun-Li",
+		"gameSeries": "Street Fighter",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_34c50001-04b01d02.png",
+		"tail": "04b01d02"
+	},
+	"next": "04ba1d02.html",
+	"prev": "04a91d02.html",
+	"list": {
+		"00320002": "Pac-Man",
+		"00e00502": "Moose",
+		"00f10502": "Bettina",
+		"01460502": "Stinky",
+		"01bf0502": "Kevin",
+		"03b30502": "C.J.",
+		"04200002": "Kazuya",
+		"04251902": "Tatsuhisa “Luke” Kamijō",
+		"04b91d02": "JP",
+		"04f01d02": "Ingrid"
+	}
+}

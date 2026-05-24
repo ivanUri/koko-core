@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Link",
+		"name": "Young Link",
+		"gameSeries": "The Legend of Zelda",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01000000-037c0002.png",
+		"tail": "037c0002"
+	},
+	"next": "02ef0502.html",
+	"prev": "004c0502.html",
+	"list": {
+		"00840502": "Midge",
+		"012f0502": "Freckles",
+		"01910502": "Erik",
+		"01bb0502": "Rizzo",
+		"02650102": "Diddy Kong",
+		"02700e02": "Luigi - Tennis",
+		"02800e02": "Yoshi - Golf",
+		"02f20502": "Wade",
+		"03a70102": "Peach - Cat",
+		"042b1802": "Palico"
+	}
+}

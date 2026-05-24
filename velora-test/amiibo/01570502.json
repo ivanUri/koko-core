@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Astrid",
+		"name": "Astrid",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03d60001-01570502.png",
+		"tail": "01570502"
+	},
+	"next": "023f0502.html",
+	"prev": "027a0e02.html",
+	"list": {
+		"001a0002": "Wario",
+		"00610502": "Tiffany",
+		"006f0502": "Shari",
+		"01b10502": "Ribbot",
+		"028a0e02": "Waluigi - Golf",
+		"030f0502": "Norma",
+		"035e1002": "Qbby",
+		"03800002": "Dark Samus",
+		"03971702": "Ganda",
+		"042d1802": "Malzeno"
+	}
+}

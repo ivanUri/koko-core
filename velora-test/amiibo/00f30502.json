@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Sprinkle",
+		"name": "Sprinkle",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_046d0001-00f30502.png",
+		"tail": "00f30502"
+	},
+	"next": "00880502.html",
+	"prev": "01960502.html",
+	"list": {
+		"003e0402": "Inkling Girl",
+		"00520502": "Tortimer",
+		"00810502": "T-Bone",
+		"013b0502": "Hazel",
+		"01490502": "Blanche",
+		"01520502": "Curlos",
+		"02b50e02": "Rosalina - Baseball",
+		"02ff0502": "Plucky",
+		"03c40502": "Cyd",
+		"03d20502": "Ace"
+	}
+}

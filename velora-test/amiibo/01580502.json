@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Monty",
+		"name": "Monty",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03fd0001-01580502.png",
+		"tail": "01580502"
+	},
+	"next": "03120502.html",
+	"prev": "00090002.html",
+	"list": {
+		"00a40502": "Willow",
+		"00bb0502": "Ozzie",
+		"010f0502": "Pelly",
+		"01160502": "Grams",
+		"01280502": "Cousteau",
+		"01950502": "Fang",
+		"01cb0502": "Cranston",
+		"02f00502": "Sylvana",
+		"03ae0502": "Celeste",
+		"04e41d02": "Sagat"
+	}
+}

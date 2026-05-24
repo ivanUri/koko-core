@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Bowser",
+		"name": "Bowser",
+		"gameSeries": "Super Mario",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_00050000-00140002.png",
+		"tail": "00140002"
+	},
+	"next": "00970502.html",
+	"prev": "03d60502.html",
+	"list": {
+		"00a20502": "Peanut",
+		"012d0502": "Marina",
+		"016b0502": "Soleil",
+		"01cb0502": "Cranston",
+		"02830e02": "Wario - Baseball",
+		"03540902": "Link - Rider",
+		"041f0002": "Mythra",
+		"04340402": "Frye",
+		"04a60902": "Yunobo",
+		"04e31d02": "Elena"
+	}
+}

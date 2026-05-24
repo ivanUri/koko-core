@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Label",
+		"name": "Labelle",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01890001-00ab0502.png",
+		"tail": "00ab0502"
+	},
+	"next": "04251902.html",
+	"prev": "019a0502.html",
+	"list": {
+		"00480502": "Kapp'n",
+		"00df0502": "Gabi",
+		"01560502": "Hamlet",
+		"018d0502": "Croque",
+		"01c70502": "Maelle",
+		"024b0502": "Isabelle - Summer Outfit",
+		"026c0e02": "Mario - Golf",
+		"02e40f02": "Rathian and Cheval",
+		"03661302": "Metroid",
+		"036f1202": "Chrom"
+	}
+}

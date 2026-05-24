@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "My Mario Wooden Blocks",
+		"character": "Mario",
+		"name": "Mario - My Mario Wooden Blocks",
+		"gameSeries": "Super Mario",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_00000004-043f1c02.png",
+		"tail": "043f1c02"
+	},
+	"next": "00230002.html",
+	"prev": "00340102.html",
+	"list": {
+		"00480502": "Kapp'n",
+		"00500502": "Saharah",
+		"005f0502": "Jambette",
+		"00bb0502": "Ozzie",
+		"016d0502": "Derwin",
+		"02690e02": "Mario - Soccer",
+		"02a00e02": "Boo - Soccer",
+		"02c00e02": "Pink Gold Peach - Tennis",
+		"03981702": "Daijobu",
+		"04200002": "Kazuya"
+	}
+}

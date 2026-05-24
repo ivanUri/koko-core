@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Sheldon",
+		"name": "Sheldon",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04ed0001-00620502.png",
+		"tail": "00620502"
+	},
+	"next": "013e0502.html",
+	"prev": "029b0e02.html",
+	"list": {
+		"003d0102": "Mario - Silver Edition",
+		"00680502": "Kabuki",
+		"00a80502": "K.K. Slider",
+		"00ac0502": "Copper",
+		"01830502": "Mott",
+		"018b0502": "Boone",
+		"01bd0502": "Barold",
+		"02e30f02": "Nabiru",
+		"036c0a02": "Plague Knight",
+		"03890002": "Ken"
+	}
+}

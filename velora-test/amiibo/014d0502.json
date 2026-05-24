@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Joey",
+		"name": "Joey",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03080001-014d0502.png",
+		"tail": "014d0502"
+	},
+	"next": "03870002.html",
+	"prev": "025b0002.html",
+	"list": {
+		"00690502": "Patty",
+		"01240502": "Ken",
+		"01750502": "Tommy - Suit",
+		"01bc0502": "Sydney",
+		"024e0502": "Kapp'n",
+		"026c0e02": "Mario - Golf",
+		"02c00e02": "Pink Gold Peach - Tennis",
+		"02c20e02": "Pink Gold Peach - Horse Racing",
+		"03590902": "Urbosa",
+		"04eb1d02": "M. Bison"
+	}
+}

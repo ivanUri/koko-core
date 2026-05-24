@@ -1,0 +1,23 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Rosalina",
+		"name": "Rosalina - Golf",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09cf0401-02b70e02.png",
+		"tail": "02b70e02"
+	},
+	"next": "001f0002.html",
+	"prev": "018a0502.html",
+	"list": {
+		"00110002": "Lucario",
+		"00240002": "Charizard",
+		"005f0502": "Jambette",
+		"01020502": "Marcel",
+		"028f0e02": "Donkey Kong - Golf",
+		"02c20e02": "Pink Gold Peach - Horse Racing",
+		"02f90502": "Maddie",
+		"037a0002": "Daisy",
+		"04271902": "Romin Kirishima"
+	}
+}

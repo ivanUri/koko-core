@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Street Fighter 6",
+		"character": "Juri",
+		"name": "Juri",
+		"gameSeries": "Street Fighter",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_34c70001-04d21d02.png",
+		"tail": "04d21d02"
+	},
+	"next": "04d61d02.html",
+	"prev": "04d91d02.html",
+	"list": {
+		"000b0002": "Marth",
+		"007d0502": "Monique",
+		"010c0502": "Rover",
+		"01390502": "Eloise",
+		"01410502": "Greta",
+		"01830502": "Mott",
+		"01980502": "Melba",
+		"03010502": "Claude",
+		"03890002": "Ken",
+		"04f21d02": "Mai"
+	}
+}

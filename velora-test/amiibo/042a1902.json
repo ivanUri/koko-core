@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Yu-Gi-Oh!",
+		"character": "Asana Mutsuba",
+		"name": "Asana Mutsuba",
+		"gameSeries": "Yu-Gi-Oh!",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_38460001-042a1902.png",
+		"tail": "042a1902"
+	},
+	"next": "010e0502.html",
+	"prev": "03810002.html",
+	"list": {
+		"00510502": "Luna",
+		"005c0502": "Al",
+		"01000502": "Drift",
+		"010b0502": "Rocket",
+		"010f0502": "Pelly",
+		"013f0502": "Merry",
+		"01c40502": "Lucky",
+		"02540c02": "Kirby",
+		"02840e02": "Wario - Tennis",
+		"042d1802": "Malzeno"
+	}
+}

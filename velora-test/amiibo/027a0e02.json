@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Daisy",
+		"name": "Daisy - Tennis",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09c30301-027a0e02.png",
+		"tail": "027a0e02"
+	},
+	"next": "01570502.html",
+	"prev": "02af0e02.html",
+	"list": {
+		"00b00502": "Porter",
+		"01140502": "Wendell",
+		"01380502": "Mac",
+		"036b0402": "Inkling Squid - Neon Purple",
+		"03791502": "Mega Man",
+		"03830002": "Ivysaur",
+		"03860002": "Incineroar",
+		"03c80502": "Sasha",
+		"03ca0502": "Tiansheng",
+		"03d10502": "Zoe"
+	}
+}

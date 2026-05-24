@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Cookie",
+		"name": "Cookie",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02f20001-00cc0502.png",
+		"tail": "00cc0502"
+	},
+	"next": "028e0e02.html",
+	"prev": "01220502.html",
+	"list": {
+		"001f0002": "Palutena",
+		"004d0502": "Pascal",
+		"00bb0502": "Ozzie",
+		"00ee0502": "Benedict",
+		"014a0502": "Gaston",
+		"01af0502": "Zucker",
+		"02f80502": "Jacob",
+		"03680102": "Koopa Troopa",
+		"03bf0502": "Isabelle - Sweater",
+		"03d30502": "Rio"
+	}
+}

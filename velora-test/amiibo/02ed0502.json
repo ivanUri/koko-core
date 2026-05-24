@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Stella",
+		"name": "Stella",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04c80001-02ed0502.png",
+		"tail": "02ed0502"
+	},
+	"next": "01070502.html",
+	"prev": "03b60502.html",
+	"list": {
+		"00070002": "Wii Fit Trainer",
+		"00400402": "Inkling Squid",
+		"00450502": "Tom Nook",
+		"005a0502": "Cheri",
+		"00af0502": "Tommy - Uniform",
+		"01c40502": "Lucky",
+		"01cd0502": "Grizzly",
+		"02ac0e02": "Baby Luigi - Tennis",
+		"03100502": "Gonzo",
+		"03140502": "Dobie"
+	}
+}

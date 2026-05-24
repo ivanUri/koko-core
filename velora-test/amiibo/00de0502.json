@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Butch",
+		"name": "Butch",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02eb0001-00de0502.png",
+		"tail": "00de0502"
+	},
+	"next": "014b0502.html",
+	"prev": "030f0502.html",
+	"list": {
+		"004c0502": "Digby",
+		"00af0502": "Tommy - Uniform",
+		"00f50502": "Hugh",
+		"010b0502": "Rocket",
+		"013d0502": "Ava",
+		"01860502": "Katt",
+		"01b20502": "Annalise",
+		"024b0502": "Isabelle - Summer Outfit",
+		"027d0e02": "Yoshi - Soccer",
+		"02ef0502": "Huck"
+	}
+}

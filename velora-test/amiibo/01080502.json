@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Kid Cat",
+		"name": "Kid Cat",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02670001-01080502.png",
+		"tail": "01080502"
+	},
+	"next": "04271902.html",
+	"prev": "03b90502.html",
+	"list": {
+		"002c0002": "Ness",
+		"00730502": "Sterling",
+		"00af0502": "Tommy - Uniform",
+		"00b60502": "Nat",
+		"00db0502": "Wendy",
+		"011c0502": "Jingle",
+		"01790502": "Timmy - Suit",
+		"01830502": "Mott",
+		"02a10e02": "Boo - Baseball",
+		"02ba0e02": "Metal Mario - Baseball"
+	}
+}

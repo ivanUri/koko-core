@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Harry",
+		"name": "Harry",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03980001-00bf0502.png",
+		"tail": "00bf0502"
+	},
+	"next": "00660502.html",
+	"prev": "04f01d02.html",
+	"list": {
+		"00160002": "Toon Link",
+		"001e0002": "Olimar",
+		"002c0002": "Ness",
+		"00710502": "Winnie",
+		"00f20502": "Jay",
+		"01550502": "Flora",
+		"01670502": "Baabara",
+		"01770502": "Leilani",
+		"02910e02": "Diddy Kong - Soccer",
+		"04c30102": "Poplin \u0026 Prince Florian"
+	}
+}

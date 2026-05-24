@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "K.K. Slider",
+		"name": "K.K. Slider",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01820001-00a80502.png",
+		"tail": "00a80502"
+	},
+	"next": "01cf0502.html",
+	"prev": "01c00502.html",
+	"list": {
+		"00160002": "Toon Link",
+		"01030502": "Pango",
+		"01190502": "Don Resetti - Without Hat",
+		"015c0502": "Lyman",
+		"01600502": "Merengue",
+		"01a30502": "Rory",
+		"030e0502": "Tad",
+		"03640002": "Bayonetta - Player 2",
+		"04a60902": "Yunobo",
+		"04b31d02": "Blanka"
+	}
+}

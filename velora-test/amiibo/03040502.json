@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Louie",
+		"name": "Louie",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_036d0001-03040502.png",
+		"tail": "03040502"
+	},
+	"next": "01590502.html",
+	"prev": "028f0e02.html",
+	"list": {
+		"00120002": "Captain Falcon",
+		"004d0502": "Pascal",
+		"01280502": "Cousteau",
+		"01920502": "Dotty",
+		"01d60502": "Stitches - Amiibo Festival",
+		"02890e02": "Waluigi - Tennis",
+		"02fe0502": "Murphy",
+		"03ca0502": "Tiansheng",
+		"04a40902": "Sidon",
+		"04b31d02": "Blanka"
+	}
+}

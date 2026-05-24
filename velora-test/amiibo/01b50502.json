@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Jacques",
+		"name": "Jacques",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_023d0001-01b50502.png",
+		"tail": "01b50502"
+	},
+	"next": "01010502.html",
+	"prev": "008b0502.html",
+	"list": {
+		"007f0502": "Samson",
+		"00970502": "Benjamin",
+		"00c20502": "Kitt",
+		"00c50502": "Prince",
+		"011f0502": "Tabby",
+		"01280502": "Cousteau",
+		"01750502": "Tommy - Suit",
+		"02b70e02": "Rosalina - Golf",
+		"02bc0e02": "Metal Mario - Golf",
+		"04140902": "Zelda \u0026 Loftwing"
+	}
+}

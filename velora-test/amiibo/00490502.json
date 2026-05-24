@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Resetti",
+		"name": "Resetti",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_018e0001-00490502.png",
+		"tail": "00490502"
+	},
+	"next": "01b00502.html",
+	"prev": "027f0e02.html",
+	"list": {
+		"00f50502": "Hugh",
+		"01690502": "Maple",
+		"01930502": "Pierce",
+		"01bd0502": "Barold",
+		"01c90502": "OHare",
+		"02590002": "Cloud",
+		"03880002": "Chrom",
+		"03ae0502": "Celeste",
+		"04220002": "Steve",
+		"04d41d02": "Dhalsim"
+	}
+}

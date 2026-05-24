@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Daisy",
+		"name": "Daisy",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02f10001-01450502.png",
+		"tail": "01450502"
+	},
+	"next": "01300502.html",
+	"prev": "004e0502.html",
+	"list": {
+		"004e0502": "Harriet",
+		"00b70502": "Chip",
+		"00c70502": "Vladimir",
+		"015a0502": "Biskit",
+		"01720502": "Katrina",
+		"01d40502": "Isabelle - Character Parfait",
+		"02860e02": "Wario - Horse Racing",
+		"02a40e02": "Boo - Horse Racing",
+		"02ee0502": "Tybalt",
+		"038d0002": "Piranha Plant"
+	}
+}

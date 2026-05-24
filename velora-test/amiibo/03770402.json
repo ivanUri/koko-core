@@ -1,0 +1,23 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Splatoon",
+		"character": "Marina",
+		"name": "Marina",
+		"gameSeries": "Splatoon",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_08040000-03770402.png",
+		"tail": "03770402"
+	},
+	"next": "04390402.html",
+	"prev": "00950502.html",
+	"list": {
+		"00190002": "Dr. Mario",
+		"007e0502": "Nate",
+		"00940502": "Eunice",
+		"00b20502": "Shrunk",
+		"02e40f02": "Rathian and Cheval",
+		"03651302": "Samus Aran",
+		"03680102": "Koopa Troopa",
+		"038b0002": "Simon",
+		"03cf0502": "Quinn"
+	}
+}

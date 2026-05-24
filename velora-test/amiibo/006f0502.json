@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Shari",
+		"name": "Shari",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04000001-006f0502.png",
+		"tail": "006f0502"
+	},
+	"next": "004a0502.html",
+	"prev": "00380102.html",
+	"list": {
+		"006a0502": "Jitters",
+		"006b0502": "Gigi",
+		"00860502": "Flurry",
+		"00a10502": "Cyrano",
+		"00fd0502": "Charlise",
+		"02720e02": "Luigi - Horse Racing",
+		"02910e02": "Diddy Kong - Soccer",
+		"036d0a02": "Specter Knight",
+		"03a90502": "Timmy \u0026 Tommy",
+		"04241902": "Yuga Ohdo"
+	}
+}

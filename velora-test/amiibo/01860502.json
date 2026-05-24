@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Katt",
+		"name": "Katt",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02720001-01860502.png",
+		"tail": "01860502"
+	},
+	"next": "038d0002.html",
+	"prev": "04271902.html",
+	"list": {
+		"00160002": "Toon Link",
+		"005d0502": "Renée",
+		"00ad0502": "Booker",
+		"01070502": "Freya",
+		"02740e02": "Peach - Baseball",
+		"02e60f02": "Qurupeco and Dan",
+		"03601202": "Alm",
+		"040f1802": "Magnamalo",
+		"04200002": "Kazuya",
+		"04f11d02": "Terry"
+	}
+}

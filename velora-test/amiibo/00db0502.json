@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Wendy",
+		"name": "Wendy",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04ce0001-00db0502.png",
+		"tail": "00db0502"
+	},
+	"next": "00a20502.html",
+	"prev": "02f90502.html",
+	"list": {
+		"00280002": "King Dedede",
+		"00b50502": "Blanca",
+		"00d60502": "Scoot",
+		"00fe0502": "Vic",
+		"01090502": "Agent S",
+		"01630502": "Curly",
+		"018d0502": "Croque",
+		"01990502": "Bones",
+		"01c20502": "Hippeux",
+		"02fc0502": "Bitty"
+	}
+}

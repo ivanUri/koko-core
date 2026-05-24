@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Yoshi's Woolly World",
+		"character": "Yoshi",
+		"name": "Light Blue Yarn Yoshi",
+		"gameSeries": "Super Mario",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_00030102-00430302.png",
+		"tail": "00430302"
+	},
+	"next": "01670502.html",
+	"prev": "03710102.html",
+	"list": {
+		"00480502": "Kapp'n",
+		"00910502": "Roscoe",
+		"00ab0502": "Labelle",
+		"00b90502": "Poncho",
+		"00f30502": "Sprinkle",
+		"01480502": "Tucker",
+		"02a00e02": "Boo - Soccer",
+		"02f90502": "Maddie",
+		"03070502": "Ellie",
+		"04ac1d02": "Jamie"
+	}
+}

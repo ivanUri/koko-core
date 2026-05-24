@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Donkey Kong",
+		"name": "Donkey Kong - Golf",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09c70401-028f0e02.png",
+		"tail": "028f0e02"
+	},
+	"next": "03040502.html",
+	"prev": "037f0002.html",
+	"list": {
+		"00750502": "Punchy",
+		"00da0502": "Groucho",
+		"00ed0502": "Ruby",
+		"00f40502": "Flip",
+		"01800502": "Goldie",
+		"01aa0502": "Apple",
+		"038f0402": "Octoling Boy",
+		"03bf0502": "Isabelle - Sweater",
+		"04411c02": "Peach - My Mario Wooden Blocks",
+		"04c20102": "Captain Toad \u0026 Talking Flower"
+	}
+}

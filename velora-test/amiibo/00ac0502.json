@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Copper",
+		"name": "Copper",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_019d0001-00ac0502.png",
+		"tail": "00ac0502"
+	},
+	"next": "03060502.html",
+	"prev": "02e20f02.html",
+	"list": {
+		"001c0002": "Falco",
+		"00310002": "Mega Man",
+		"009f0502": "Henry",
+		"01690502": "Maple",
+		"01920502": "Dotty",
+		"01d50502": "Goldie - Amiibo Festival",
+		"02a30e02": "Boo - Golf",
+		"038c0002": "Richter",
+		"04241902": "Yuga Ohdo",
+		"04f11d02": "Terry"
+	}
+}

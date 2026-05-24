@@ -1,0 +1,23 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Yoshi",
+		"name": "Yoshi - Baseball",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09c40201-027e0e02.png",
+		"tail": "027e0e02"
+	},
+	"next": "00010002.html",
+	"prev": "00eb0502.html",
+	"list": {
+		"00280002": "King Dedede",
+		"00bb0502": "Ozzie",
+		"010c0502": "Rover",
+		"019b0502": "Rudy",
+		"01b10502": "Ribbot",
+		"02480502": "Celeste",
+		"03b80502": "Harvey",
+		"04271902": "Romin Kirishima",
+		"0432ff02": "Diddy Kong - Power Up Band"
+	}
+}

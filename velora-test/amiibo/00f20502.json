@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Jay",
+		"name": "Jay",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_022d0001-00f20502.png",
+		"tail": "00f20502"
+	},
+	"next": "02500a02.html",
+	"prev": "00830502.html",
+	"list": {
+		"00490502": "Resetti",
+		"006e0502": "Puck",
+		"00860502": "Flurry",
+		"00d70502": "Whitney",
+		"01080502": "Kid Cat",
+		"02820e02": "Wario - Soccer",
+		"02f20502": "Wade",
+		"03ce0502": "Cephalobot",
+		"04a50902": "Tulin",
+		"04c01d02": "Akuma"
+	}
+}

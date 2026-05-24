@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Angus",
+		"name": "Angus",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_024a0001-01d10502.png",
+		"tail": "01d10502"
+	},
+	"next": "01630502.html",
+	"prev": "03630002.html",
+	"list": {
+		"00040002": "Link",
+		"00170002": "Sheik",
+		"00830502": "Pudge",
+		"008a0502": "Yuka",
+		"01870502": "Graham",
+		"02450502": "Reese",
+		"03020502": "Raddle",
+		"031d0502": "Chelsea",
+		"042e0002": "Sora",
+		"0431ff02": "Donkey Kong - Power Up Band"
+	}
+}

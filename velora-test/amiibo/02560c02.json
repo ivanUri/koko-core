@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Kirby",
+		"character": "King Dedede",
+		"name": "King Dedede",
+		"gameSeries": "Kirby",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_1f020000-02560c02.png",
+		"tail": "02560c02"
+	},
+	"next": "026f0e02.html",
+	"prev": "02970e02.html",
+	"list": {
+		"005c0502": "Al",
+		"00a10502": "Cyrano",
+		"00aa0502": "Kicks",
+		"00b40502": "Isabelle - Winter",
+		"011f0502": "Tabby",
+		"01270502": "Bubbles",
+		"01700502": "Isabelle - Dress",
+		"017b0502": "Shrunk - Loud Jacket",
+		"029d0e02": "Bowser Jr. - Tennis",
+		"04bb1d02": "Lily"
+	}
+}

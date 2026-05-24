@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Filbert",
+		"name": "Filbert",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04df0001-00e80502.png",
+		"tail": "00e80502"
+	},
+	"next": "01290502.html",
+	"prev": "03830002.html",
+	"list": {
+		"00a30502": "Cole",
+		"00d20502": "Olivia",
+		"00f80502": "Drake",
+		"01320502": "Ricky",
+		"01b90502": "Tank",
+		"02520002": "Roy",
+		"02810e02": "Yoshi - Horse Racing",
+		"02870e02": "Waluigi - Soccer",
+		"035a0902": "Mipha",
+		"03d60502": "Roswell"
+	}
+}

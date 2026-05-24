@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Mott",
+		"name": "Mott",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03ec0001-01830502.png",
+		"tail": "01830502"
+	},
+	"next": "01af0502.html",
+	"prev": "00b90502.html",
+	"list": {
+		"00590502": "Leonardo",
+		"00910502": "Roscoe",
+		"00e50502": "Mathilda",
+		"00e60502": "Ed",
+		"00f20502": "Jay",
+		"01270502": "Bubbles",
+		"01740502": "Celeste",
+		"03630002": "Corrin - Player 2",
+		"037f0002": "Ridley",
+		"038b0002": "Simon"
+	}
+}

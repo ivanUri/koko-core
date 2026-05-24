@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Splatoon",
+		"character": "Pearl",
+		"name": "Pearl",
+		"gameSeries": "Splatoon",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_08030000-03760402.png",
+		"tail": "03760402"
+	},
+	"next": "04380402.html",
+	"prev": "03850002.html",
+	"list": {
+		"00a90502": "Reese",
+		"01010502": "Vesta",
+		"02530002": "Ryu",
+		"02a80e02": "Baby Mario - Golf",
+		"02aa0e02": "Baby Luigi - Soccer",
+		"02b70e02": "Rosalina - Golf",
+		"02e40f02": "Rathian and Cheval",
+		"03b20502": "K.K. Slider",
+		"043b1302": "Samus",
+		"04fa0f02": "Ratha"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Judy",
+		"name": "Judy",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_0a0e0001-03c50502.png",
+		"tail": "03c50502"
+	},
+	"next": "019d0502.html",
+	"prev": "01070502.html",
+	"list": {
+		"010b0502": "Rocket",
+		"010f0502": "Pelly",
+		"01310502": "Friga",
+		"01480502": "Tucker",
+		"01a90502": "Papi",
+		"01d20502": "Twiggy",
+		"02e80502": "Hopkins",
+		"04af1d02": "Kimberly",
+		"04cf1d02": "Kimberly",
+		"04d51d02": "E. Honda"
+	}
+}

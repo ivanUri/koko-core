@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Fauna",
+		"name": "Fauna",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02d60001-00560502.png",
+		"tail": "00560502"
+	},
+	"next": "00ff0502.html",
+	"prev": "01d50502.html",
+	"list": {
+		"001b0002": "Ganondorf",
+		"00fe0502": "Vic",
+		"01010502": "Vesta",
+		"01450502": "Daisy",
+		"01ab0502": "Rod",
+		"02630102": "Wario",
+		"02f30502": "Carrie",
+		"03890002": "Ken",
+		"03c80502": "Sasha",
+		"04b31d02": "Blanka"
+	}
+}

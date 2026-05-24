@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Peaches",
+		"name": "Peaches",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03ac0001-01880502.png",
+		"tail": "01880502"
+	},
+	"next": "01240502.html",
+	"prev": "010b0502.html",
+	"list": {
+		"000e0002": "Zelda",
+		"00250002": "Greninja",
+		"00350102": "Luigi",
+		"00580502": "Portia",
+		"010e0502": "Tom Nook - Jacket",
+		"01270502": "Bubbles",
+		"01320502": "Ricky",
+		"016d0502": "Derwin",
+		"03120502": "Snooty",
+		"03690402": "Inkling Girl - Neon Pink"
+	}
+}

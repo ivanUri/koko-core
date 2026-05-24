@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Becky",
+		"name": "Becky",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02a20001-01ba0502.png",
+		"tail": "01ba0502"
+	},
+	"next": "01440502.html",
+	"prev": "03ca0502.html",
+	"list": {
+		"00f40502": "Flip",
+		"00f80502": "Drake",
+		"014a0502": "Gaston",
+		"014f0502": "Buck",
+		"02710e02": "Luigi - Golf",
+		"030b0502": "Leopold",
+		"036f1202": "Chrom",
+		"039cff02": "Luigi - Power Up Band",
+		"0430ff02": "Golden - Power Up Band",
+		"04c61e03": "Meta Knight (\u0026 Shadow Star)"
+	}
+}

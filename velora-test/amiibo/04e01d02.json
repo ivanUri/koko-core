@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Street Fighter 6",
+		"character": "Akuma",
+		"name": "Akuma",
+		"gameSeries": "Street Fighter",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_34d50001-04e01d02.png",
+		"tail": "04e01d02"
+	},
+	"next": "04eb1d02.html",
+	"prev": "04df1d02.html",
+	"list": {
+		"007b0502": "Bangle",
+		"01450502": "Daisy",
+		"01490502": "Blanche",
+		"018f0502": "Shep",
+		"01970502": "Tex",
+		"01a00502": "Lucy",
+		"024d0502": "Timmy \u0026 Tommy",
+		"036f1202": "Chrom",
+		"040d0f02": "Ena",
+		"04411c02": "Peach - My Mario Wooden Blocks"
+	}
+}

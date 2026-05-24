@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Celia",
+		"name": "Celia",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04540001-01ae0502.png",
+		"tail": "01ae0502"
+	},
+	"next": "01c20502.html",
+	"prev": "01b70502.html",
+	"list": {
+		"00190002": "Dr. Mario",
+		"002e0002": "R.O.B. - Famicom",
+		"00680502": "Kabuki",
+		"00990502": "Chief",
+		"01020502": "Marcel",
+		"01230502": "Paula",
+		"01660502": "Sparro",
+		"01790502": "Timmy - Suit",
+		"027c0e02": "Daisy - Horse Racing",
+		"03941702": "Ikari"
+	}
+}

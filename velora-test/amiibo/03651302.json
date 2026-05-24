@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Metroid",
+		"character": "Samus",
+		"name": "Samus Aran",
+		"gameSeries": "Metroid",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_05c00000-03651302.png",
+		"tail": "03651302"
+	},
+	"next": "00e20502.html",
+	"prev": "000e0002.html",
+	"list": {
+		"00210002": "Mii Brawler",
+		"00ed0502": "Ruby",
+		"012e0502": "Spork/Crackle",
+		"01760502": "Gracie",
+		"023f0502": "Isabelle - Winter Outfit",
+		"024f0902": "Midna \u0026 Wolf Link",
+		"026c0e02": "Mario - Golf",
+		"02920e02": "Diddy Kong - Baseball",
+		"02eb0502": "Paolo",
+		"04121302": "Samus - Metroid Dread"
+	}
+}

@@ -1,0 +1,23 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Squirtle",
+		"name": "Squirtle",
+		"gameSeries": "Pokemon",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_19070000-03840002.png",
+		"tail": "03840002"
+	},
+	"next": "039dff02.html",
+	"prev": "03550902.html",
+	"list": {
+		"00310002": "Mega Man",
+		"00560502": "Fauna",
+		"00fb0502": "Anicotti",
+		"01290502": "Velma",
+		"028a0e02": "Waluigi - Golf",
+		"02be0e02": "Pink Gold Peach - Soccer",
+		"038c0002": "Richter",
+		"03911602": "Loot Goblin",
+		"03971702": "Ganda"
+	}
+}

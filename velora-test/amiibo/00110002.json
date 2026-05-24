@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Lucario",
+		"name": "Lucario",
+		"gameSeries": "Pokemon",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_1ac00000-00110002.png",
+		"tail": "00110002"
+	},
+	"next": "01660502.html",
+	"prev": "00f70502.html",
+	"list": {
+		"00500502": "Saharah",
+		"00a90502": "Reese",
+		"00aa0502": "Kicks",
+		"013d0502": "Ava",
+		"01650502": "Caroline",
+		"018b0502": "Boone",
+		"02b20e02": "Birdo - Golf",
+		"02f10502": "Boris",
+		"03a10002": "Joker",
+		"03b10502": "Label"
+	}
+}

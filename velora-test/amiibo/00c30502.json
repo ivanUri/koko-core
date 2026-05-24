@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Tom",
+		"name": "Tom",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_026c0001-00c30502.png",
+		"tail": "00c30502"
+	},
+	"next": "04140902.html",
+	"prev": "02830e02.html",
+	"list": {
+		"00280002": "King Dedede",
+		"00480502": "Kapp'n",
+		"00c00502": "Gwen",
+		"02570c02": "Waddle Dee",
+		"02650102": "Diddy Kong",
+		"02940e02": "Diddy Kong - Golf",
+		"02e70502": "Vivian",
+		"03110502": "Sprocket",
+		"03ba0502": "Wisp",
+		"04140902": "Zelda \u0026 Loftwing"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "K.K. Slider",
+		"name": "K. K. Slider - Pikopuri",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01820001-01d80502.png",
+		"tail": "01d80502"
+	},
+	"next": "001e0002.html",
+	"prev": "00c50502.html",
+	"list": {
+		"003f0402": "Inkling Boy",
+		"01340502": "Hans",
+		"01660502": "Sparro",
+		"01c90502": "OHare",
+		"02790e02": "Daisy - Baseball",
+		"027e0e02": "Yoshi - Baseball",
+		"03090502": "Weber",
+		"03741402": "Super Mario Cereal",
+		"04b61d02": "Dee Jay",
+		"04dd1d02": "Rashid"
+	}
+}

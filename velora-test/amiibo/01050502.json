@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Gladys",
+		"name": "Gladys",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04370001-01050502.png",
+		"tail": "01050502"
+	},
+	"next": "01d20502.html",
+	"prev": "02900e02.html",
+	"list": {
+		"00240002": "Charizard",
+		"008b0502": "Lionel",
+		"01540502": "Moe",
+		"01c90502": "OHare",
+		"02400502": "K. K. Slider",
+		"02440502": "Lottie",
+		"026e0e02": "Luigi - Soccer",
+		"02a20e02": "Boo - Tennis",
+		"038c0002": "Richter",
+		"03a40002": "Terry"
+	}
+}

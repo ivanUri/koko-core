@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Tex",
+		"name": "Tex",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_046b0001-01970502.png",
+		"tail": "01970502"
+	},
+	"next": "02450502.html",
+	"prev": "014c0502.html",
+	"list": {
+		"00a10502": "Cyrano",
+		"00b90502": "Poncho",
+		"01250502": "Mitzi",
+		"014e0502": "Pippy",
+		"02ff0502": "Plucky",
+		"03b00502": "Sable",
+		"03b80502": "Harvey",
+		"04360402": "Callie - Alterna",
+		"04a60902": "Yunobo",
+		"04bd1d02": "Rashid"
+	}
+}

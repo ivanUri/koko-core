@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Nintendo World",
+		"character": "Donkey Kong",
+		"name": "Donkey Kong - Power Up Band",
+		"gameSeries": "Super Mario",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_00080003-0431ff02.png",
+		"tail": "0431ff02"
+	},
+	"next": "00900502.html",
+	"prev": "042f1a02.html",
+	"list": {
+		"00180002": "Ike",
+		"00310002": "Mega Man",
+		"015b0502": "Victoria",
+		"015d0502": "Violet",
+		"01b70502": "Doc",
+		"01d60502": "Stitches - Amiibo Festival",
+		"02ba0e02": "Metal Mario - Baseball",
+		"039fff02": "Yoshi - Power Up Band",
+		"04140902": "Zelda \u0026 Loftwing",
+		"04d81d02": "Marisa"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Coach",
+		"name": "Coach",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02510001-00c10502.png",
+		"tail": "00c10502"
+	},
+	"next": "01910502.html",
+	"prev": "040e0f02.html",
+	"list": {
+		"00d60502": "Scoot",
+		"00e10502": "Timbra",
+		"00f20502": "Jay",
+		"01080502": "Kid Cat",
+		"011f0502": "Tabby",
+		"02a90e02": "Baby Mario - Horse Racing",
+		"02f40502": "Ketchup",
+		"03590902": "Urbosa",
+		"03601202": "Alm",
+		"041a0902": "Ganondorf - Tears of the Kingdom"
+	}
+}

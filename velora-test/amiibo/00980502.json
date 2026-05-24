@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Pancetti",
+		"name": "Pancetti",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04880001-00980502.png",
+		"tail": "00980502"
+	},
+	"next": "037f0002.html",
+	"prev": "01370502.html",
+	"list": {
+		"006e0502": "Puck",
+		"00790502": "Deena",
+		"01150502": "Cyrus",
+		"01740502": "Celeste",
+		"02880e02": "Waluigi - Baseball",
+		"03050502": "Bea",
+		"031e0502": "Toby",
+		"03a60102": "Mario - Cat",
+		"03c40502": "Cyd",
+		"04241902": "Yuga Ohdo"
+	}
+}

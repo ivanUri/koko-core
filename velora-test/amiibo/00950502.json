@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Goose",
+		"name": "Goose",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02990001-00950502.png",
+		"tail": "00950502"
+	},
+	"next": "03770402.html",
+	"prev": "00cd0502.html",
+	"list": {
+		"00960502": "Annalisa",
+		"009a0502": "Bunnie",
+		"01120502": "Mabel",
+		"013a0502": "Wart Jr.",
+		"023f0502": "Isabelle - Winter Outfit",
+		"02730e02": "Peach - Soccer",
+		"034f0902": "8-Bit Link",
+		"03800002": "Dark Samus",
+		"04bb1d02": "Lily",
+		"04d01d02": "Chun-Li"
+	}
+}

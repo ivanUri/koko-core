@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Ankha",
+		"name": "Ankha",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02700001-00ff0502.png",
+		"tail": "00ff0502"
+	},
+	"next": "03b90502.html",
+	"prev": "00560502.html",
+	"list": {
+		"00450502": "Tom Nook",
+		"00df0502": "Gabi",
+		"01060502": "Hamphrey",
+		"010b0502": "Rocket",
+		"010c0502": "Rover",
+		"01c00502": "Gloria",
+		"026e0e02": "Luigi - Soccer",
+		"03a20002": "Hero",
+		"03a40002": "Terry",
+		"03bb0502": "Lottie - Island"
+	}
+}

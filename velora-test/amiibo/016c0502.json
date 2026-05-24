@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Apollo",
+		"name": "Apollo",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_044b0001-016c0502.png",
+		"tail": "016c0502"
+	},
+	"next": "03a90502.html",
+	"prev": "029f0e02.html",
+	"list": {
+		"00150002": "Bowser Jr.",
+		"00720502": "Knox",
+		"00c50502": "Prince",
+		"01710502": "Brewster",
+		"017f0502": "Zipper",
+		"027a0e02": "Daisy - Tennis",
+		"02a20e02": "Boo - Tennis",
+		"02e90502": "June",
+		"04e31d02": "Elena",
+		"04e71d02": "Ingrid"
+	}
+}

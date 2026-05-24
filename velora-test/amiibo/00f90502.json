@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Alice",
+		"name": "Alice",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03bd0001-00f90502.png",
+		"tail": "00f90502"
+	},
+	"next": "02630102.html",
+	"prev": "03961702.html",
+	"list": {
+		"00350102": "Luigi",
+		"00590502": "Leonardo",
+		"01090502": "Agent S",
+		"012e0502": "Spork/Crackle",
+		"017b0502": "Shrunk - Loud Jacket",
+		"01850502": "Rocco",
+		"02820e02": "Wario - Soccer",
+		"02a50e02": "Baby Mario - Soccer",
+		"03ad0502": "Blathers",
+		"04261902": "Gakuto Sōgetsu"
+	}
+}

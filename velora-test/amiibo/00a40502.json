@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Willow",
+		"name": "Willow",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04cc0001-00a40502.png",
+		"tail": "00a40502"
+	},
+	"next": "005f0502.html",
+	"prev": "005e0502.html",
+	"list": {
+		"00720502": "Knox",
+		"00930502": "Eugene",
+		"00d80502": "Broccolo",
+		"01040502": "Keaton",
+		"01850502": "Rocco",
+		"01870502": "Graham",
+		"025d0402": "Callie",
+		"02e40f02": "Rathian and Cheval",
+		"04330402": "Shiver",
+		"04a40902": "Sidon"
+	}
+}

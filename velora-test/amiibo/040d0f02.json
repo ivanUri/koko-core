@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Monster Hunter",
+		"character": "Ena",
+		"name": "Ena",
+		"gameSeries": "Monster Hunter",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_35060000-040d0f02.png",
+		"tail": "040d0f02"
+	},
+	"next": "04101802.html",
+	"prev": "040c0f02.html",
+	"list": {
+		"00700502": "Octavian",
+		"009d0502": "Axel",
+		"00c20502": "Kitt",
+		"01a00502": "Lucy",
+		"02980e02": "Bowser - Tennis",
+		"02a80e02": "Baby Mario - Golf",
+		"02c20e02": "Pink Gold Peach - Horse Racing",
+		"03800002": "Dark Samus",
+		"04ef1d02": "Alex",
+		"04fc0f02": "Rudy"
+	}
+}

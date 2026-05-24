@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Lucy",
+		"name": "Lucy",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_047c0001-01a00502.png",
+		"tail": "01a00502"
+	},
+	"next": "02f00502.html",
+	"prev": "037a0002.html",
+	"list": {
+		"00140002": "Bowser",
+		"005e0502": "Lopez",
+		"00a70502": "Walker",
+		"00b20502": "Shrunk",
+		"03760402": "Pearl",
+		"042b1802": "Palico",
+		"042d1802": "Malzeno",
+		"04bc1d02": "Cammy",
+		"04e41d02": "Sagat",
+		"04f21d02": "Mai"
+	}
+}

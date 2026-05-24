@@ -1,0 +1,23 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Boo",
+		"name": "Boo - Horse Racing",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09cb0501-02a40e02.png",
+		"tail": "02a40e02"
+	},
+	"next": "007d0502.html",
+	"prev": "00a50502.html",
+	"list": {
+		"00190002": "Dr. Mario",
+		"00d30502": "Cesar",
+		"00f60502": "Hopper",
+		"019f0502": "Olaf",
+		"01ca0502": "Gayle",
+		"02860e02": "Wario - Horse Racing",
+		"02ea0502": "Piper",
+		"030d0502": "Cashmere",
+		"03d30502": "Rio"
+	}
+}

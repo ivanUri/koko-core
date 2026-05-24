@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Merengue",
+		"name": "Merengue",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04b90001-01600502.png",
+		"tail": "01600502"
+	},
+	"next": "009e0502.html",
+	"prev": "00b30502.html",
+	"list": {
+		"011b0502": "Franklin",
+		"01420502": "Wolfgang",
+		"023d0002": "Mewtwo",
+		"023e0302": "Mega Yarn Yoshi",
+		"02640102": "Donkey Kong",
+		"02ec0502": "Hornsby",
+		"02f10502": "Boris",
+		"02f60502": "Stu",
+		"03680102": "Koopa Troopa",
+		"040f1802": "Magnamalo"
+	}
+}

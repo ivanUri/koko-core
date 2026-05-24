@@ -3,10 +3,12 @@
     "playwright": "^1.59.1"
   },
   "scripts": {
+    "test:velora": "node code-check/velora-test-runner.js",
     "test:wpt:smoke": "node code-check/wpt-smoke-runner.js",
     "test:wpt:file": "node code-check/wpt-smoke-runner.js",
     "test:wpt:update": "node code-check/wpt-smoke-runner.js --update-expected",
     "test:wpt:compare": "node code-check/wpt-smoke-runner.js --compare-browser",
-    "test:wpt:suite": "node code-check/wpt-suite-runner.js"
+    "test:wpt:suite": "node code-check/wpt-suite-runner.js",
+    "bench:velora-test": "node code-check/velora-test-runner.js"
   }
 }

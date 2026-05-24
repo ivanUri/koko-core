@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Clay",
+		"name": "Clay",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03830001-009b0502.png",
+		"tail": "009b0502"
+	},
+	"next": "02a20e02.html",
+	"prev": "00e20502.html",
+	"list": {
+		"000f0002": "Little Mac",
+		"00390102": "Bowser",
+		"00db0502": "Wendy",
+		"016f0502": "Chrissy",
+		"028c0e02": "Donkey Kong - Soccer",
+		"029f0e02": "Bowser Jr. - Horse Racing",
+		"02ad0e02": "Baby Luigi - Golf",
+		"02fc0502": "Bitty",
+		"035a0902": "Mipha",
+		"03cb0502": "Shino"
+	}
+}

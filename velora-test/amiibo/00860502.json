@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Flurry",
+		"name": "Flurry",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03840001-00860502.png",
+		"tail": "00860502"
+	},
+	"next": "019e0502.html",
+	"prev": "019b0502.html",
+	"list": {
+		"006c0502": "Quillson",
+		"00730502": "Sterling",
+		"00890502": "Biff",
+		"01040502": "Keaton",
+		"01770502": "Leilani",
+		"019e0502": "Tammy",
+		"027d0e02": "Yoshi - Soccer",
+		"02a00e02": "Boo - Soccer",
+		"03730102": "Bowser - Wedding",
+		"039eff02": "Daisy - Power Up Band"
+	}
+}

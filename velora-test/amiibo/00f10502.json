@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Bettina",
+		"name": "Bettina",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_041b0001-00f10502.png",
+		"tail": "00f10502"
+	},
+	"next": "04230002.html",
+	"prev": "02e70502.html",
+	"list": {
+		"00b40502": "Isabelle - Winter",
+		"00ba0502": "Felicity",
+		"00de0502": "Butch",
+		"01050502": "Gladys",
+		"01510502": "Rooney",
+		"018d0502": "Croque",
+		"02630102": "Wario",
+		"03090502": "Weber",
+		"030f0502": "Norma",
+		"04c20102": "Captain Toad \u0026 Talking Flower"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Rosie",
+		"name": "Rosie",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_025f0001-01c50502.png",
+		"tail": "01c50502"
+	},
+	"next": "03a50002.html",
+	"prev": "03590902.html",
+	"list": {
+		"005a0502": "Cheri",
+		"00b20502": "Shrunk",
+		"00f30502": "Sprinkle",
+		"01280502": "Cousteau",
+		"012e0502": "Spork/Crackle",
+		"014d0502": "Joey",
+		"016e0502": "Francine",
+		"024f0902": "Midna \u0026 Wolf Link",
+		"02ac0e02": "Baby Luigi - Tennis",
+		"04ab1d02": "Luke"
+	}
+}

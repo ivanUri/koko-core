@@ -1,0 +1,23 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Peach",
+		"name": "Peach",
+		"gameSeries": "Super Mario",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_00020000-00010002.png",
+		"tail": "00010002"
+	},
+	"next": "04411c02.html",
+	"prev": "027e0e02.html",
+	"list": {
+		"00600502": "Rasher",
+		"00660502": "Deli",
+		"007d0502": "Monique",
+		"01c40502": "Lucky",
+		"02810e02": "Yoshi - Horse Racing",
+		"03140502": "Dobie",
+		"03900402": "Octoling Octopus",
+		"03a80502": "Tom Nook",
+		"04a81d02": "Ryu"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Goldie",
+		"name": "Goldie",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02ea0001-01800502.png",
+		"tail": "01800502"
+	},
+	"next": "03951702.html",
+	"prev": "02a20e02.html",
+	"list": {
+		"010a0502": "Big Top",
+		"012c0502": "Colton",
+		"01360502": "Drago",
+		"02430502": "Digby",
+		"02680102": "Boo",
+		"02b20e02": "Birdo - Golf",
+		"03020502": "Raddle",
+		"03781402": "Solaire of Astora",
+		"03890002": "Ken",
+		"04b01d02": "Chun-Li"
+	}
+}

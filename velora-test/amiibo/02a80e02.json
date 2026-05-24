@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Baby Mario",
+		"name": "Baby Mario - Golf",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09cc0401-02a80e02.png",
+		"tail": "02a80e02"
+	},
+	"next": "00c20502.html",
+	"prev": "01260502.html",
+	"list": {
+		"00930502": "Eugene",
+		"00c70502": "Vladimir",
+		"00f80502": "Drake",
+		"00fc0502": "Chops",
+		"017e0502": "Redd - Shirt",
+		"02e20f02": "One-Eyed Rathalos and Rider - Female",
+		"03150502": "Buzz",
+		"03890002": "Ken",
+		"03c20502": "Dom",
+		"04b21d02": "Juri"
+	}
+}

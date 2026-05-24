@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Mabel",
+		"name": "Mabel",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01880001-01120502.png",
+		"tail": "01120502"
+	},
+	"next": "04150402.html",
+	"prev": "01650502.html",
+	"list": {
+		"00100002": "Pit",
+		"005e0502": "Lopez",
+		"00d50502": "Rodney",
+		"013a0502": "Wart Jr.",
+		"01a10502": "Elmer",
+		"01d70502": "Rosie - Amiibo Festival",
+		"02b40e02": "Rosalina - Soccer",
+		"03690402": "Inkling Girl - Neon Pink",
+		"03a70102": "Peach - Cat",
+		"03cf0502": "Quinn"
+	}
+}

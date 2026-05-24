@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Diddy Kong",
+		"name": "Diddy Kong - Horse Racing",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09c80501-02950e02.png",
+		"tail": "02950e02"
+	},
+	"next": "00640502.html",
+	"prev": "03c30502.html",
+	"list": {
+		"00000002": "Mario",
+		"013d0502": "Ava",
+		"01670502": "Baabara",
+		"023d0002": "Mewtwo",
+		"025e0402": "Marie",
+		"02ae0e02": "Baby Luigi - Horse Racing",
+		"02b70e02": "Rosalina - Golf",
+		"02e40f02": "Rathian and Cheval",
+		"03620002": "Cloud - Player 2",
+		"04b41d02": "Dhalsim"
+	}
+}

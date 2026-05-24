@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Corrin",
+		"name": "Corrin",
+		"gameSeries": "Fire Emblem",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_21050000-025a0002.png",
+		"tail": "025a0002"
+	},
+	"next": "01c90502.html",
+	"prev": "01160502.html",
+	"list": {
+		"006f0502": "Shari",
+		"00ee0502": "Benedict",
+		"00f80502": "Drake",
+		"01890502": "Dizzy",
+		"02a50e02": "Baby Mario - Soccer",
+		"03c70502": "Reneigh",
+		"042c1802": "Palamute",
+		"04b01d02": "Chun-Li",
+		"04bd1d02": "Rashid",
+		"04c01d02": "Akuma"
+	}
+}

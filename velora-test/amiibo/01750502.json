@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Tommy",
+		"name": "Tommy - Suit",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01860301-01750502.png",
+		"tail": "01750502"
+	},
+	"next": "02580002.html",
+	"prev": "00b60502.html",
+	"list": {
+		"002f0002": "Duck Hunt",
+		"004b0502": "Timmy",
+		"00740502": "Bonbon",
+		"00940502": "Eunice",
+		"01ab0502": "Rod",
+		"01d20502": "Twiggy",
+		"02500a02": "Shovel Knight",
+		"02fd0502": "Maggie",
+		"03640002": "Bayonetta - Player 2",
+		"04c61e03": "Meta Knight (\u0026 Shadow Star)"
+	}
+}

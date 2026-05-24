@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Falco",
+		"name": "Falco",
+		"gameSeries": "Star Fox",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_05810000-001c0002.png",
+		"tail": "001c0002"
+	},
+	"next": "00c80502.html",
+	"prev": "04200002.html",
+	"list": {
+		"00480502": "Kapp'n",
+		"00620502": "Sheldon",
+		"008e0502": "Amelia",
+		"00d80502": "Broccolo",
+		"01120502": "Mabel",
+		"01890502": "Dizzy",
+		"02790e02": "Daisy - Baseball",
+		"02e60f02": "Qurupeco and Dan",
+		"03a30002": "Banjo \u0026 Kazooie",
+		"04da1d02": "Zangief"
+	}
+}

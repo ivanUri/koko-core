@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Street Fighter 6",
+		"character": "Ed",
+		"name": "Ed",
+		"gameSeries": "Street Fighter",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_34d40001-04bf1d02.png",
+		"tail": "04bf1d02"
+	},
+	"next": "04c01d02.html",
+	"prev": "04be1d02.html",
+	"list": {
+		"00e10502": "Timbra",
+		"017e0502": "Redd - Shirt",
+		"01820502": "Pinky",
+		"01b00502": "Peggy",
+		"028c0e02": "Donkey Kong - Soccer",
+		"02980e02": "Bowser - Tennis",
+		"031a0502": "Marty",
+		"037e0002": "Wolf",
+		"03b10502": "Label",
+		"04ae1d02": "Kimberly"
+	}
+}

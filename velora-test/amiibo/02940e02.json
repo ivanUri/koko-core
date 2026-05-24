@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Diddy Kong",
+		"name": "Diddy Kong - Golf",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09c80401-02940e02.png",
+		"tail": "02940e02"
+	},
+	"next": "01090502.html",
+	"prev": "01bb0502.html",
+	"list": {
+		"01350502": "Chevre",
+		"01490502": "Blanche",
+		"01500502": "Bree",
+		"01ab0502": "Rod",
+		"01af0502": "Zucker",
+		"02460502": "Cyrus",
+		"02730e02": "Peach - Soccer",
+		"02890e02": "Waluigi - Tennis",
+		"029b0e02": "Bowser Jr. - Soccer",
+		"03c20502": "Dom"
+	}
+}

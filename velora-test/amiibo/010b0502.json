@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Rocket",
+		"name": "Rocket",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03720001-010b0502.png",
+		"tail": "010b0502"
+	},
+	"next": "01880502.html",
+	"prev": "041f0002.html",
+	"list": {
+		"00250002": "Greninja",
+		"00270002": "Meta Knight",
+		"00bd0502": "Lucha",
+		"01be0502": "Nibbles",
+		"01cc0502": "Frobert",
+		"025c0d02": "Shadow Mewtwo",
+		"02910e02": "Diddy Kong - Soccer",
+		"02e40f02": "Rathian and Cheval",
+		"03090502": "Weber",
+		"04390402": "Marina - Side Order"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Ed",
+		"name": "Ed",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03aa0001-00e60502.png",
+		"tail": "00e60502"
+	},
+	"next": "03b00502.html",
+	"prev": "00e10502.html",
+	"list": {
+		"00420302": "Pink Yarn Yoshi",
+		"00640502": "Bill",
+		"006f0502": "Shari",
+		"00a30502": "Cole",
+		"00ef0502": "Agnes",
+		"014a0502": "Gaston",
+		"02aa0e02": "Baby Luigi - Soccer",
+		"03b10502": "Label",
+		"03c60502": "Raymond",
+		"04d61d02": "Dee Jay"
+	}
+}

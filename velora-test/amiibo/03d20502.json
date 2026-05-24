@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Ace",
+		"name": "Ace",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_0a1b0001-03d20502.png",
+		"tail": "03d20502"
+	},
+	"next": "00220002.html",
+	"prev": "03cd0502.html",
+	"list": {
+		"005e0502": "Lopez",
+		"00890502": "Biff",
+		"01b80502": "Pompom",
+		"01b90502": "Tank",
+		"01c00502": "Gloria",
+		"01c30502": "Margie",
+		"031a0502": "Marty",
+		"042b1802": "Palico",
+		"04df1d02": "Ed",
+		"04e11d02": "M. Bison"
+	}
+}

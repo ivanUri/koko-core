@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Elmer",
+		"name": "Elmer",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03a70001-01a10502.png",
+		"tail": "01a10502"
+	},
+	"next": "03080502.html",
+	"prev": "01270502.html",
+	"list": {
+		"00300002": "Sonic",
+		"00580502": "Portia",
+		"009b0502": "Clay",
+		"00b90502": "Poncho",
+		"00fd0502": "Charlise",
+		"01b70502": "Doc",
+		"024a0502": "Kicks",
+		"02ef0502": "Huck",
+		"03d10502": "Zoe",
+		"04390402": "Marina - Side Order"
+	}
+}

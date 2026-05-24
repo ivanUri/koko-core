@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Cyrano",
+		"name": "Cyrano",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02000001-00a10502.png",
+		"tail": "00a10502"
+	},
+	"next": "00d80502.html",
+	"prev": "015c0502.html",
+	"list": {
+		"00120002": "Captain Falcon",
+		"004a0502": "Joan",
+		"00ad0502": "Booker",
+		"012a0502": "Elvis",
+		"015b0502": "Victoria",
+		"02530002": "Ryu",
+		"03030502": "Julia",
+		"03800002": "Dark Samus",
+		"04b41d02": "Dhalsim",
+		"04dc1d02": "Cammy"
+	}
+}

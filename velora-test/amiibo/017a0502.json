@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Lottie",
+		"name": "Lottie - Black Skirt And Bow",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01c10101-017a0502.png",
+		"tail": "017a0502"
+	},
+	"next": "02e70502.html",
+	"prev": "034c0902.html",
+	"list": {
+		"00980502": "Pancetti",
+		"01130502": "Leif",
+		"012a0502": "Elvis",
+		"01440502": "Klaus",
+		"025c0d02": "Shadow Mewtwo",
+		"02670102": "Waluigi",
+		"02950e02": "Diddy Kong - Horse Racing",
+		"02aa0e02": "Baby Luigi - Soccer",
+		"03720102": "Peach - Wedding",
+		"04c41e03": "Kirby (\u0026 Warp Star)"
+	}
+}

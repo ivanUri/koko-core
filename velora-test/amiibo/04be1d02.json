@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Street Fighter 6",
+		"character": "A.K.I",
+		"name": "A.K.I",
+		"gameSeries": "Street Fighter",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_34d30001-04be1d02.png",
+		"tail": "04be1d02"
+	},
+	"next": "04bf1d02.html",
+	"prev": "04bd1d02.html",
+	"list": {
+		"003a0202": "Chibi Robo",
+		"00c90502": "Kidd",
+		"01060502": "Hamphrey",
+		"01410502": "Greta",
+		"014a0502": "Gaston",
+		"014d0502": "Joey",
+		"03ce0502": "Cephalobot",
+		"041a0902": "Ganondorf - Tears of the Kingdom",
+		"041e0002": "Pyra",
+		"04220002": "Steve"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Kiki",
+		"name": "Kiki",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02610001-00650502.png",
+		"tail": "00650502"
+	},
+	"next": "024b0502.html",
+	"prev": "02f30502.html",
+	"list": {
+		"000b0002": "Marth",
+		"00b90502": "Poncho",
+		"016f0502": "Chrissy",
+		"018e0502": "Pashmina",
+		"01ce0502": "Cally",
+		"01d30502": "Robin",
+		"02440502": "Lottie",
+		"031d0502": "Chelsea",
+		"04bb1d02": "Lily",
+		"04c41e03": "Kirby (\u0026 Warp Star)"
+	}
+}

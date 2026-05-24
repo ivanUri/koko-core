@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Daisy",
+		"name": "Daisy",
+		"gameSeries": "Super Mario",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_00130000-037a0002.png",
+		"tail": "037a0002"
+	},
+	"next": "01a00502.html",
+	"prev": "01ca0502.html",
+	"list": {
+		"001f0002": "Palutena",
+		"005e0502": "Lopez",
+		"00b90502": "Poncho",
+		"012e0502": "Spork/Crackle",
+		"01460502": "Stinky",
+		"01500502": "Bree",
+		"02630102": "Wario",
+		"02780e02": "Daisy - Soccer",
+		"03741402": "Super Mario Cereal",
+		"041e0002": "Pyra"
+	}
+}

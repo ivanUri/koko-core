@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Ike",
+		"name": "Ike",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_021f0001-03170502.png",
+		"tail": "03170502"
+	},
+	"next": "01770502.html",
+	"prev": "02ae0e02.html",
+	"list": {
+		"00040002": "Link",
+		"005c0502": "Al",
+		"00860502": "Flurry",
+		"00e30502": "Pekoe",
+		"01110502": "Pete",
+		"031c0502": "Chai",
+		"03781402": "Solaire of Astora",
+		"03bc0502": "Niko",
+		"03d50502": "Azalea",
+		"04f21d02": "Mai"
+	}
+}

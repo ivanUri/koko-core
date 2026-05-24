@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Birdo",
+		"name": "Birdo - Soccer",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09ce0101-02af0e02.png",
+		"tail": "02af0e02"
+	},
+	"next": "027a0e02.html",
+	"prev": "04241902.html",
+	"list": {
+		"00640502": "Bill",
+		"00940502": "Eunice",
+		"00d50502": "Rodney",
+		"01430502": "Diva",
+		"02900e02": "Donkey Kong - Horse Racing",
+		"02bb0e02": "Metal Mario - Tennis",
+		"036c0a02": "Plague Knight",
+		"04241902": "Yuga Ohdo",
+		"04ba1d02": "Zangief",
+		"04d91d02": "JP"
+	}
+}

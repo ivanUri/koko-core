@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Fire Emblem",
+		"character": "Tiki",
+		"name": "Tiki",
+		"gameSeries": "Fire Emblem",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_21090000-03701202.png",
+		"tail": "03701202"
+	},
+	"next": "01340502.html",
+	"prev": "01760502.html",
+	"list": {
+		"00580502": "Portia",
+		"006f0502": "Shari",
+		"00840502": "Midge",
+		"009f0502": "Henry",
+		"00f70502": "Pecan",
+		"01420502": "Wolfgang",
+		"01860502": "Katt",
+		"02a90e02": "Baby Mario - Horse Racing",
+		"02f50502": "Rex",
+		"043c1302": "Sylux"
+	}
+}

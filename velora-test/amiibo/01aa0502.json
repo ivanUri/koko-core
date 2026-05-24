@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Apple",
+		"name": "Apple",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_037f0001-01aa0502.png",
+		"tail": "01aa0502"
+	},
+	"next": "02490502.html",
+	"prev": "037e0002.html",
+	"list": {
+		"00140002": "Bowser",
+		"00340102": "Mario",
+		"00740502": "Bonbon",
+		"00820502": "Mint",
+		"01580502": "Monty",
+		"01a20502": "Puddles",
+		"02610402": "Inkling Squid - Orange",
+		"027b0e02": "Daisy - Golf",
+		"04d01d02": "Chun-Li",
+		"04d61d02": "Dee Jay"
+	}
+}

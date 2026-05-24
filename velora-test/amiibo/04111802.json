@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Monster Hunter Rise",
+		"character": "Palamute",
+		"name": "Palamute",
+		"gameSeries": "Monster Hunter",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_350a0000-04111802.png",
+		"tail": "04111802"
+	},
+	"next": "03aa0502.html",
+	"prev": "01150502.html",
+	"list": {
+		"00440502": "Isabelle",
+		"008c0502": "Flo",
+		"00a10502": "Cyrano",
+		"01550502": "Flora",
+		"018e0502": "Pashmina",
+		"01b10502": "Ribbot",
+		"01d80502": "K. K. Slider - Pikopuri",
+		"02700e02": "Luigi - Tennis",
+		"02bd0e02": "Metal Mario - Horse Racing",
+		"04b91d02": "JP"
+	}
+}

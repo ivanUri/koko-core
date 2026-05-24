@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Richter",
+		"name": "Richter",
+		"gameSeries": "Castlevania",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_37c10000-038c0002.png",
+		"tail": "038c0002"
+	},
+	"next": "008f0502.html",
+	"prev": "03601202.html",
+	"list": {
+		"000a0002": "Kirby",
+		"000f0002": "Little Mac",
+		"00600502": "Rasher",
+		"01080502": "Kid Cat",
+		"01150502": "Cyrus",
+		"013a0502": "Wart Jr.",
+		"01450502": "Daisy",
+		"02750e02": "Peach - Tennis",
+		"03661302": "Metroid",
+		"042d1802": "Malzeno"
+	}
+}

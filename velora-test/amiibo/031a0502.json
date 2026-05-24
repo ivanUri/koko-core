@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Marty",
+		"name": "Marty",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_028f0101-031a0502.png",
+		"tail": "031a0502"
+	},
+	"next": "012e0502.html",
+	"prev": "04370402.html",
+	"list": {
+		"00010002": "Peach",
+		"01140502": "Wendell",
+		"01570502": "Astrid",
+		"019e0502": "Tammy",
+		"02540c02": "Kirby",
+		"02570c02": "Waddle Dee",
+		"03820002": "Inkling",
+		"03911602": "Loot Goblin",
+		"03d00502": "Chabwick",
+		"042d1802": "Malzeno"
+	}
+}

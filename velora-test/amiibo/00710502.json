@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Winnie",
+		"name": "Winnie",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03a90001-00710502.png",
+		"tail": "00710502"
+	},
+	"next": "00840502.html",
+	"prev": "00d80502.html",
+	"list": {
+		"009f0502": "Henry",
+		"011b0502": "Franklin",
+		"01290502": "Velma",
+		"01360502": "Drago",
+		"01860502": "Katt",
+		"03170502": "Ike",
+		"038e0402": "Octoling Girl",
+		"043b1302": "Samus",
+		"04421c02": "Yoshi - My Mario Wooden Blocks",
+		"04b81d02": "Marisa"
+	}
+}

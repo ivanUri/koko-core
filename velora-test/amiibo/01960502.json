@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Frita",
+		"name": "Frita",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04d00001-01960502.png",
+		"tail": "01960502"
+	},
+	"next": "00f30502.html",
+	"prev": "02460502.html",
+	"list": {
+		"00ef0502": "Agnes",
+		"012b0502": "Canberra",
+		"018c0502": "Broffina",
+		"02810e02": "Yoshi - Horse Racing",
+		"02870e02": "Waluigi - Soccer",
+		"02ad0e02": "Baby Luigi - Golf",
+		"02f10502": "Boris",
+		"03ae0502": "Celeste",
+		"04a50902": "Tulin",
+		"04e11d02": "M. Bison"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Maggie",
+		"name": "Maggie",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04820001-02fd0502.png",
+		"tail": "02fd0502"
+	},
+	"next": "03791502.html",
+	"prev": "034f0902.html",
+	"list": {
+		"00350102": "Luigi",
+		"00a50502": "Roald",
+		"00d10502": "Peck",
+		"024b0502": "Isabelle - Summer Outfit",
+		"028a0e02": "Waluigi - Golf",
+		"03550902": "Guardian",
+		"03750d02": "Detective Pikachu",
+		"03a60102": "Mario - Cat",
+		"04be1d02": "A.K.I",
+		"04d91d02": "JP"
+	}
+}

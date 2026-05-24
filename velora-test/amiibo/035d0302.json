@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Yoshi's Woolly World",
+		"character": "Poochy",
+		"name": "Poochy",
+		"gameSeries": "Yoshi's Woolly World",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_00800102-035d0302.png",
+		"tail": "035d0302"
+	},
+	"next": "02890e02.html",
+	"prev": "009a0502.html",
+	"list": {
+		"00580502": "Portia",
+		"00950502": "Goose",
+		"00bc0502": "Tia",
+		"01030502": "Pango",
+		"014d0502": "Joey",
+		"019c0502": "Naomi",
+		"03ce0502": "Cephalobot",
+		"03d60502": "Roswell",
+		"03d70502": "Faith",
+		"04e31d02": "Elena"
+	}
+}

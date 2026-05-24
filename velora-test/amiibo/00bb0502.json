@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Ozzie",
+		"name": "Ozzie",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03c10001-00bb0502.png",
+		"tail": "00bb0502"
+	},
+	"next": "023b0702.html",
+	"prev": "00a70502.html",
+	"list": {
+		"00090002": "Pikachu",
+		"009a0502": "Bunnie",
+		"00b70502": "Chip",
+		"00fc0502": "Chops",
+		"01240502": "Ken",
+		"023f0502": "Isabelle - Winter Outfit",
+		"02f80502": "Jacob",
+		"03aa0502": "Isabelle",
+		"03b60502": "Kicks",
+		"04251902": "Tatsuhisa “Luke” Kamijō"
+	}
+}

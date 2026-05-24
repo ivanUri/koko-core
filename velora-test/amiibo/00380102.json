@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Mario Bros.",
+		"character": "Toad",
+		"name": "Toad",
+		"gameSeries": "Super Mario",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_000a0000-00380102.png",
+		"tail": "00380102"
+	},
+	"next": "006f0502.html",
+	"prev": "02b00e02.html",
+	"list": {
+		"000f0002": "Little Mac",
+		"00660502": "Deli",
+		"00690502": "Patty",
+		"006d0502": "Marcie",
+		"014a0502": "Gaston",
+		"014e0502": "Pippy",
+		"017f0502": "Zipper",
+		"02b60e02": "Rosalina - Tennis",
+		"03a90502": "Timmy \u0026 Tommy",
+		"04ee1d02": "C. Viper"
+	}
+}

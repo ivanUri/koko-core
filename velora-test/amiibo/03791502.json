@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mega Man",
+		"character": "Mega Man",
+		"name": "Mega Man",
+		"gameSeries": "Megaman",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_34800000-03791502.png",
+		"tail": "03791502"
+	},
+	"next": "03ab0502.html",
+	"prev": "02fd0502.html",
+	"list": {
+		"00870502": "Clyde",
+		"00f00502": "Julian",
+		"011b0502": "Franklin",
+		"024c0502": "Rover",
+		"02820e02": "Wario - Soccer",
+		"028d0e02": "Donkey Kong - Baseball",
+		"03c60502": "Raymond",
+		"03ce0502": "Cephalobot",
+		"040e0f02": "Tsukino",
+		"04261902": "Gakuto Sōgetsu"
+	}
+}

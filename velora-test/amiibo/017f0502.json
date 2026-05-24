@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Zipper",
+		"name": "Zipper",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01ac0001-017f0502.png",
+		"tail": "017f0502"
+	},
+	"next": "01930502.html",
+	"prev": "000d0002.html",
+	"list": {
+		"00430302": "Light Blue Yarn Yoshi",
+		"00930502": "Eugene",
+		"00c40502": "Tipper",
+		"00e50502": "Mathilda",
+		"01270502": "Bubbles",
+		"019e0502": "Tammy",
+		"023d0002": "Mewtwo",
+		"040c0f02": "Razewing Ratha",
+		"04a60902": "Yunobo",
+		"04fb0f02": "Ratha V"
+	}
+}

@@ -1,0 +1,23 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Gala",
+		"name": "Gala",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04850001-014c0502.png",
+		"tail": "014c0502"
+	},
+	"next": "01970502.html",
+	"prev": "01390502.html",
+	"list": {
+		"00370102": "Yoshi",
+		"00450502": "Tom Nook",
+		"004d0502": "Pascal",
+		"00ec0502": "Bud",
+		"017a0502": "Lottie - Black Skirt And Bow",
+		"019c0502": "Naomi",
+		"03850002": "Pichu",
+		"04cd1d02": "Luke",
+		"04d51d02": "E. Honda"
+	}
+}

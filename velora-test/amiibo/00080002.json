@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Villager",
+		"name": "Villager",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01800000-00080002.png",
+		"tail": "00080002"
+	},
+	"next": "03af0502.html",
+	"prev": "03190502.html",
+	"list": {
+		"006a0502": "Jitters",
+		"016e0502": "Francine",
+		"019f0502": "Olaf",
+		"01c70502": "Maelle",
+		"030f0502": "Norma",
+		"031c0502": "Chai",
+		"03620002": "Cloud - Player 2",
+		"03651302": "Samus Aran",
+		"04210002": "Sephiroth",
+		"04be1d02": "A.K.I"
+	}
+}

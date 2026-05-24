@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Tom Nook",
+		"name": "Tom Nook - Jacket",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01830101-010e0502.png",
+		"tail": "010e0502"
+	},
+	"next": "00fb0502.html",
+	"prev": "042a1902.html",
+	"list": {
+		"00490502": "Resetti",
+		"00650502": "Kiki",
+		"00700502": "Octavian",
+		"008d0502": "Cobb",
+		"01b40502": "Sylvia",
+		"02ad0e02": "Baby Luigi - Golf",
+		"02b20e02": "Birdo - Golf",
+		"03d30502": "Rio",
+		"041b0402": "Octoling - Blue",
+		"04281902": "Roa Kirishima"
+	}
+}

@@ -1,0 +1,23 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Mario Bros.",
+		"character": "Mario",
+		"name": "Mario",
+		"gameSeries": "Super Mario",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_00000000-00340102.png",
+		"tail": "00340102"
+	},
+	"next": "043f1c02.html",
+	"prev": "00e70502.html",
+	"list": {
+		"000b0002": "Marth",
+		"00490502": "Resetti",
+		"014f0502": "Buck",
+		"017e0502": "Redd - Shirt",
+		"01a90502": "Papi",
+		"02a00e02": "Boo - Soccer",
+		"02a90e02": "Baby Mario - Horse Racing",
+		"02ea0502": "Piper",
+		"03601202": "Alm"
+	}
+}

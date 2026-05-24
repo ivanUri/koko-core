@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Legend Of Zelda",
+		"character": "Link",
+		"name": "Link - Twilight Princess",
+		"gameSeries": "The Legend of Zelda",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01000000-034d0902.png",
+		"tail": "034d0902"
+	},
+	"next": "02fb0502.html",
+	"prev": "01b00502.html",
+	"list": {
+		"00c50502": "Prince",
+		"00cb0502": "Egbert",
+		"01090502": "Agent S",
+		"02910e02": "Diddy Kong - Soccer",
+		"029e0e02": "Bowser Jr. - Golf",
+		"02c00e02": "Pink Gold Peach - Tennis",
+		"02e60f02": "Qurupeco and Dan",
+		"03010502": "Claude",
+		"03a10002": "Joker",
+		"04e41d02": "Sagat"
+	}
+}

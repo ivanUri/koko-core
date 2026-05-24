@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Duck Hunt",
+		"name": "Duck Hunt",
+		"gameSeries": "Classic Nintendo",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_07820000-002f0002.png",
+		"tail": "002f0002"
+	},
+	"next": "03160502.html",
+	"prev": "026f0e02.html",
+	"list": {
+		"006f0502": "Shari",
+		"01350502": "Chevre",
+		"01570502": "Astrid",
+		"01cb0502": "Cranston",
+		"01ce0502": "Cally",
+		"02510002": "Lucas",
+		"03701202": "Tiki",
+		"03750d02": "Detective Pikachu",
+		"043c1302": "Sylux",
+		"04a50902": "Tulin"
+	}
+}

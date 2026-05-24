@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Maple",
+		"name": "Maple",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_027e0001-01690502.png",
+		"tail": "01690502"
+	},
+	"next": "00190002.html",
+	"prev": "03a90502.html",
+	"list": {
+		"00180002": "Ike",
+		"01030502": "Pango",
+		"01450502": "Daisy",
+		"019d0502": "Peewee",
+		"02710e02": "Luigi - Golf",
+		"02960e02": "Bowser - Soccer",
+		"02b20e02": "Birdo - Golf",
+		"035d0302": "Poochy",
+		"04380402": "Pearl - Side Order",
+		"04b01d02": "Chun-Li"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Biskit",
+		"name": "Biskit",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02ed0001-015a0502.png",
+		"tail": "015a0502"
+	},
+	"next": "03890002.html",
+	"prev": "006b0502.html",
+	"list": {
+		"006f0502": "Shari",
+		"00890502": "Biff",
+		"00bf0502": "Harry",
+		"00d90502": "Coco",
+		"01730502": "Phineas",
+		"02730e02": "Peach - Soccer",
+		"02e20f02": "One-Eyed Rathalos and Rider - Female",
+		"03a50002": "Byleth",
+		"04111802": "Palamute",
+		"04f31d02": "Mai"
+	}
+}

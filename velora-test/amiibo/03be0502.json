@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Tom Nook",
+		"name": "Tom Nook - Coat",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01830301-03be0502.png",
+		"tail": "03be0502"
+	},
+	"next": "02930e02.html",
+	"prev": "019d0502.html",
+	"list": {
+		"009c0502": "Diana",
+		"00b20502": "Shrunk",
+		"01130502": "Leif",
+		"01ba0502": "Becky",
+		"02400502": "K. K. Slider",
+		"025e0402": "Marie",
+		"029c0e02": "Bowser Jr. - Baseball",
+		"02b20e02": "Birdo - Golf",
+		"02ee0502": "Tybalt",
+		"04c10102": "Elephant Mario"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Pinky",
+		"name": "Pinky",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02150001-01820502.png",
+		"tail": "01820502"
+	},
+	"next": "03130502.html",
+	"prev": "04281902.html",
+	"list": {
+		"011f0502": "Tabby",
+		"018b0502": "Boone",
+		"019f0502": "Olaf",
+		"024e0502": "Kapp'n",
+		"02eb0502": "Paolo",
+		"03590902": "Urbosa",
+		"03860002": "Incineroar",
+		"040e0f02": "Tsukino",
+		"04b31d02": "Blanka",
+		"04e81d02": "Terry"
+	}
+}

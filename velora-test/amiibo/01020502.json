@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Marcel",
+		"name": "Marcel",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02f90001-01020502.png",
+		"tail": "01020502"
+	},
+	"next": "00a90502.html",
+	"prev": "03bb0502.html",
+	"list": {
+		"00530502": "Lyle",
+		"00c10502": "Coach",
+		"011a0502": "Isabelle - Kimono",
+		"014a0502": "Gaston",
+		"01670502": "Baabara",
+		"03640002": "Bayonetta - Player 2",
+		"03911602": "Loot Goblin",
+		"03c50502": "Judy",
+		"03c70502": "Reneigh",
+		"04150402": "Inkling - Yellow"
+	}
+}

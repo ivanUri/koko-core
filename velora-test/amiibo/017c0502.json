@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Pave",
+		"name": "Pave",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01ab0001-017c0502.png",
+		"tail": "017c0502"
+	},
+	"next": "02820e02.html",
+	"prev": "01060502.html",
+	"list": {
+		"011b0502": "Franklin",
+		"016c0502": "Apollo",
+		"01790502": "Timmy - Suit",
+		"01cf0502": "Simon",
+		"023b0702": "Turbo Charge Donkey Kong",
+		"023d0002": "Mewtwo",
+		"03580902": "Daruk",
+		"037f0002": "Ridley",
+		"03ca0502": "Tiansheng",
+		"04411c02": "Peach - My Mario Wooden Blocks"
+	}
+}

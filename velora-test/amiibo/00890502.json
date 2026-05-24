@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Biff",
+		"name": "Biff",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03940001-00890502.png",
+		"tail": "00890502"
+	},
+	"next": "000f0002.html",
+	"prev": "036a0402.html",
+	"list": {
+		"00190002": "Dr. Mario",
+		"003e0402": "Inkling Girl",
+		"00ad0502": "Booker",
+		"00fc0502": "Chops",
+		"011c0502": "Jingle",
+		"01240502": "Ken",
+		"01550502": "Flora",
+		"02970e02": "Bowser - Baseball",
+		"035f1102": "Pikmin",
+		"03c70502": "Reneigh"
+	}
+}

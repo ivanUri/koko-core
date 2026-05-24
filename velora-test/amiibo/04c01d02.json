@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Street Fighter 6",
+		"character": "Akuma",
+		"name": "Akuma",
+		"gameSeries": "Street Fighter",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_34d50001-04c01d02.png",
+		"tail": "04c01d02"
+	},
+	"next": "04e11d02.html",
+	"prev": "04bf1d02.html",
+	"list": {
+		"000d0002": "Diddy Kong",
+		"006f0502": "Shari",
+		"01ce0502": "Cally",
+		"02400502": "K. K. Slider",
+		"02600402": "Inkling Boy - Purple",
+		"02a80e02": "Baby Mario - Golf",
+		"037e0002": "Wolf",
+		"03d20502": "Ace",
+		"04180902": "Link - Tears of the Kingdom",
+		"04df1d02": "Ed"
+	}
+}

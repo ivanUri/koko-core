@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Power Pros",
+		"character": "Daijobu",
+		"name": "Daijobu",
+		"gameSeries": "Power Pros",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_38050001-03981702.png",
+		"tail": "03981702"
+	},
+	"next": "01c80502.html",
+	"prev": "02a50e02.html",
+	"list": {
+		"009c0502": "Diana",
+		"00ce0502": "Blaire",
+		"00f70502": "Pecan",
+		"014b0502": "Marshal",
+		"01740502": "Celeste",
+		"01800502": "Goldie",
+		"01d80502": "K. K. Slider - Pikopuri",
+		"02ac0e02": "Baby Luigi - Tennis",
+		"02fe0502": "Murphy",
+		"03190502": "Rilla"
+	}
+}

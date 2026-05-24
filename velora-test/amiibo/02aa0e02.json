@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Baby Luigi",
+		"name": "Baby Luigi - Soccer",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09cd0101-02aa0e02.png",
+		"tail": "02aa0e02"
+	},
+	"next": "00770502.html",
+	"prev": "01c20502.html",
+	"list": {
+		"00f90502": "Alice",
+		"01660502": "Sparro",
+		"01c20502": "Hippeux",
+		"02640102": "Donkey Kong",
+		"034f0902": "8-Bit Link",
+		"03601202": "Alm",
+		"03651302": "Samus Aran",
+		"03a0ff02": "Toad - Power Up Band",
+		"03b80502": "Harvey",
+		"04200002": "Kazuya"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Splatoon",
+		"character": "Inkling",
+		"name": "Inkling Girl",
+		"gameSeries": "Splatoon",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_08000100-003e0402.png",
+		"tail": "003e0402"
+	},
+	"next": "01c10502.html",
+	"prev": "039cff02.html",
+	"list": {
+		"00210002": "Mii Brawler",
+		"00320002": "Pac-Man",
+		"00400402": "Inkling Squid",
+		"00410302": "Green Yarn Yoshi",
+		"01210502": "Miranda",
+		"01610502": "Cube",
+		"01660502": "Sparro",
+		"03cf0502": "Quinn",
+		"04d21d02": "Juri",
+		"04dc1d02": "Cammy"
+	}
+}

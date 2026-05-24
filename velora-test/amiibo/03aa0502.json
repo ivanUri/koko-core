@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Isabelle",
+		"name": "Isabelle",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01810401-03aa0502.png",
+		"tail": "03aa0502"
+	},
+	"next": "04200002.html",
+	"prev": "04111802.html",
+	"list": {
+		"00550502": "Bob",
+		"00660502": "Deli",
+		"00850502": "Gruff",
+		"00870502": "Clyde",
+		"00d10502": "Peck",
+		"02750e02": "Peach - Tennis",
+		"037c0002": "Young Link",
+		"03ba0502": "Wisp",
+		"03cd0502": "Petri",
+		"04230002": "Alex"
+	}
+}

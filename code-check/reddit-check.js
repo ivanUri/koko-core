@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// Check that a page loads through Velora CDP and exposes basic page content.
+// Benchmark Wikipedia pages through Velora CDP and expose basic page content.
 // Usage:
-//   node code-check/example-com-check.js
-//   node code-check/example-com-check.js --url https://example.com/
+//   node code-check/reddit-check.js
+//   node code-check/reddit-check.js --url https://en.wikipedia.org/wiki/JavaScript
+//   node code-check/reddit-check.js --count 100 --concurrency 10
 
 const { spawn } = require("node:child_process");
 const { appendFileSync, existsSync, mkdirSync, writeFileSync } = require("node:fs");
@@ -15,18 +16,36 @@ const tmpDir = resolve(repoRoot, "code-check/tmp");
 const outputDir = resolve(tmpDir, "output");
 const logDir = resolve(tmpDir, "logs");
 
+const wikipediaPages = [
+    "Main_Page", "Vietnam", "Ho_Chi_Minh_City", "Hanoi", "Da_Nang", "Southeast_Asia", "Asia", "Earth", "Moon", "Sun",
+    "Solar_System", "Milky_Way", "Universe", "Physics", "Chemistry", "Biology", "Mathematics", "Computer_science", "Software", "Internet",
+    "World_Wide_Web", "JavaScript", "HTML", "CSS", "Node.js", "Zig_(programming_language)", "C_(programming_language)", "Python_(programming_language)", "Rust_(programming_language)", "Go_(programming_language)",
+    "Artificial_intelligence", "Machine_learning", "Deep_learning", "Natural_language_processing", "Computer_vision", "Database", "PostgreSQL", "Redis", "Linux", "Unix",
+    "macOS", "Google_Chrome", "WebSocket", "Hypertext_Transfer_Protocol", "Transport_Layer_Security", "Domain_Name_System", "URL", "Unicode", "UTF-8", "JSON",
+    "Wikipedia", "Wikimedia_Foundation", "Open-source_software", "Free_software", "Git", "GitHub", "Docker_(software)", "Kubernetes", "Cloud_computing", "Amazon_Web_Services",
+    "Google_Cloud_Platform", "Microsoft_Azure", "Algorithm", "Data_structure", "Binary_tree", "Hash_table", "Sorting_algorithm", "Search_algorithm", "Graph_theory", "Compiler",
+    "Interpreter_(computing)", "Operating_system", "Process_(computing)", "Thread_(computing)", "Concurrency_(computer_science)", "Parallel_computing", "Memory_management", "Garbage_collection_(computer_science)", "Pointer_(computer_programming)", "Application_programming_interface",
+    "Representational_state_transfer", "Microservices", "Web_browser", "Document_Object_Model", "Cascading_Style_Sheets", "ECMAScript", "TypeScript", "React_(software)", "Vue.js", "Svelte",
+    "History_of_Vietnam", "Nguyen_dynasty", "French_Indochina", "Vietnam_War", "Mekong", "Red_River_(Asia)", "Pho", "Coffee", "Tea", "Rice",
+];
+
+const defaultWikipediaUrls = wikipediaPages.map((page) => `https://en.wikipedia.org/wiki/${page}`);
+
 const exportConfig = {
     removeScripts: true,
     rewriteRenderResourceUrls: true,
     waitStrategy: "auto",
-    minWaitMs: 20000,
+    minWaitMs: 0,
     quietWindowMs: 500,
     maxAutoWaitMs: 5000,
     pollIntervalMs: 150,
 };
 
 const defaults = {
-    url: "https://abrahamjuliot.github.io/creepjs/",
+    url: "https://www.wikipedia.org/",
+    batch: true,
+    count: 100,
+    concurrency: 10,
     host: "127.0.0.1",
     waitMs: null,
     minWaitMs: exportConfig.minWaitMs,
@@ -36,19 +55,22 @@ const defaults = {
     serverTimeoutMs: 15000,
     commandTimeoutMs: 15000,
     navigationTimeoutMs: 20000,
-    output: resolve(outputDir, "example-com-check.html"),
-    report: resolve(outputDir, "example-com-check.report.json"),
-    log: resolve(logDir, "example-com-check.log"),
+    output: resolve(outputDir, "wikipedia-batch"),
+    report: resolve(outputDir, "wikipedia-batch.report.json"),
+    log: resolve(logDir, "wikipedia-batch.log"),
     httpTimeoutMs: 30000,
     logLevel: "debug",
     logFormat: "pretty",
 };
 
 function usage() {
-    return `Usage: node code-check/example-com-check.js [options]
+    return `Usage: node code-check/reddit-check.js [options]
 
 Options:
   --url <url>          URL to open (default: ${defaults.url})
+  --single             Run one URL only; default runs 100 Wikipedia URLs
+  --count <n>          Number of Wikipedia URLs for batch mode (default: ${defaults.count})
+  --concurrency <n>    Parallel page sessions in batch mode (default: ${defaults.concurrency})
   --wait-ms <ms>       Fixed wait after navigation; disables auto wait (default: auto)
   --min-wait-ms <ms>   Minimum auto wait after navigation (default: ${defaults.minWaitMs})
   --quiet-ms <ms>      DOM/content must stay stable for this long (default: ${defaults.quietWindowMs})
@@ -76,6 +98,16 @@ function parseArgs(argv) {
         switch (arg) {
             case "--url":
                 options.url = next();
+                options.batch = false;
+                break;
+            case "--single":
+                options.batch = false;
+                break;
+            case "--count":
+                options.count = Number(next());
+                break;
+            case "--concurrency":
+                options.concurrency = Number(next());
                 break;
             case "--wait-ms":
                 options.waitMs = Number(next());
@@ -116,11 +148,13 @@ function parseArgs(argv) {
         }
     }
 
-    for (const key of ["serverTimeoutMs", "commandTimeoutMs", "navigationTimeoutMs", "httpTimeoutMs", "minWaitMs", "quietWindowMs", "maxAutoWaitMs", "pollIntervalMs"]) {
+    for (const key of ["serverTimeoutMs", "commandTimeoutMs", "navigationTimeoutMs", "httpTimeoutMs", "minWaitMs", "quietWindowMs", "maxAutoWaitMs", "pollIntervalMs", "count", "concurrency"]) {
         if (!Number.isFinite(options[key]) || options[key] < 0) {
             throw new Error(`Invalid numeric option ${key}: ${options[key]}`);
         }
     }
+    if (options.batch && options.concurrency < 1) throw new Error("--concurrency must be at least 1");
+    if (options.batch && options.count < 1) throw new Error("--count must be at least 1");
     if (options.waitMs != null && (!Number.isFinite(options.waitMs) || options.waitMs < 0)) {
         throw new Error(`Invalid numeric option waitMs: ${options.waitMs}`);
     }
@@ -510,23 +544,40 @@ function validatePage(report) {
     };
 }
 
-async function main() {
-    const options = parseArgs(process.argv.slice(2));
-    if (options.help) {
-        console.log(usage());
-        return;
+function percentile(values, p) {
+    if (!values.length) return null;
+    const sorted = [...values].sort((a, b) => a - b);
+    const index = Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1);
+    return sorted[index];
+}
+
+function getTargetUrls(options) {
+    if (!options.batch) return [options.url];
+    const urls = [];
+    for (let i = 0; i < options.count; i += 1) {
+        urls.push(defaultWikipediaUrls[i % defaultWikipediaUrls.length]);
+    }
+    return urls;
+}
+
+async function runWithConcurrency(items, concurrency, worker) {
+    const results = new Array(items.length);
+    let nextIndex = 0;
+
+    async function runWorker() {
+        while (nextIndex < items.length) {
+            const index = nextIndex;
+            nextIndex += 1;
+            results[index] = await worker(items[index], index);
+        }
     }
 
-    for (const dir of [tmpDir, outputDir, logDir, resolve(options.output, ".."), resolve(options.report, ".."), resolve(options.log, "..")]) {
-        if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    }
+    const workers = Array.from({ length: Math.min(concurrency, items.length) }, runWorker);
+    await Promise.all(workers);
+    return results;
+}
 
-    const port = await getFreePort(options.host);
-    const endpoint = `http://${options.host}:${port}`;
-    // TikTok (and many other origins) block requests whose User-Agent
-    // is "Velora/1.0", returning HTTP 403 before any page content is
-    // delivered. Override it with a stock Chrome UA so the bot-detection
-    // path is bypassed for this end-to-end check.
+function startVelora(options, port) {
     const userAgent = options.userAgent
         || "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
     const proc = spawn(veloraBin, [
@@ -547,26 +598,57 @@ async function main() {
     proc.stdout.on("data", (chunk) => stdoutChunks.push(chunk));
     proc.stderr.on("data", (chunk) => stderrChunks.push(chunk));
 
-    let cdp;
+    return { proc, stdoutChunks, stderrChunks };
+}
+
+async function stopVelora(worker) {
+    const procExited = worker.proc.exitCode != null || worker.proc.signalCode != null
+        ? Promise.resolve()
+        : new Promise((resolvePromise) => worker.proc.once("exit", resolvePromise));
+    if (worker.proc.exitCode == null && !worker.proc.killed) worker.proc.kill("SIGTERM");
+    await procExited;
+}
+
+function workerLogPath(logPath, workerIndex) {
+    if (workerIndex === 0) return logPath;
+    return logPath.replace(/(\.[^./]+)?$/, `.worker-${workerIndex + 1}$1`);
+}
+
+async function writeWorkerLog(worker, options) {
+    const logPath = workerLogPath(options.log, worker.index);
+    const stdout = Buffer.concat(worker.stdoutChunks).toString();
+    const stderr = Buffer.concat(worker.stderrChunks).toString();
+    writeFileSync(logPath, "");
+    appendSection(logPath, "VELORA STDOUT", stdout);
+    appendSection(logPath, "VELORA STDERR", stderr);
+    console.log(`saved log: ${logPath}`);
+}
+
+async function createWorker(options, index) {
+    const port = await getFreePort(options.host);
+    const endpoint = `http://${options.host}:${port}`;
+    const worker = { index, port, endpoint, cdp: null, ...startVelora(options, port) };
+    await waitForServer(`${endpoint}/json/version`, options.serverTimeoutMs);
+    worker.cdp = await connectCDP(endpoint, options);
+    return worker;
+}
+
+async function runPageCheck(cdp, options, url, index) {
     let targetId;
     let sessionId;
+    const startedAt = Date.now();
     try {
-        await waitForServer(`${endpoint}/json/version`, options.serverTimeoutMs);
-        cdp = await connectCDP(endpoint, options);
         ({ targetId, sessionId } = await createPageSession(cdp));
-
         await cdp.send("Runtime.enable", {}, sessionId);
         await cdp.send("Page.enable", {}, sessionId);
         await cdp.send("Network.enable", {}, sessionId).catch(() => undefined);
 
-        const startedAt = Date.now();
-        console.log(`[navigate:cdp] ${options.url}`);
+        console.log(`[${index + 1}] navigate ${url}`);
         const navigationStartedAt = Date.now();
-        await navigate(cdp, sessionId, options.url, options.navigationTimeoutMs);
+        await navigate(cdp, sessionId, url, options.navigationTimeoutMs);
         const navigationMs = Date.now() - navigationStartedAt;
         const settle = await waitForPageStable(cdp, sessionId, options);
 
-        console.log("[inspect] collecting page report");
         const pageReport = await evaluate(cdp, sessionId, `(() => {
             ${createPageTestRecorder.toString()}
             ${testPage.toString()}
@@ -574,6 +656,8 @@ async function main() {
             return inspectPage();
         })()`, options.commandTimeoutMs);
         const result = validatePage(pageReport);
+        result.url = url;
+        result.index = index;
         result.timing = {
             navigationMs,
             settleWaitMs: settle.waitMs,
@@ -581,38 +665,161 @@ async function main() {
             settledReason: settle.reason,
             waitStrategy: settle.strategy,
         };
-        const html = await getPageContent(cdp, sessionId, options.commandTimeoutMs, pageReport.url || options.url);
 
-        writeFileSync(options.output, html);
-        writeFileSync(options.report, `${JSON.stringify(result, null, 2)}\n`);
+        if (!options.batch) {
+            const html = await getPageContent(cdp, sessionId, options.commandTimeoutMs, pageReport.url || url);
+            writeFileSync(options.output, html);
+            result.output = options.output;
+        } else {
+            result.output = null;
+        }
 
-        console.log(JSON.stringify(result, null, 2));
-        console.log(`saved html: ${options.output}`);
+        console.log(`[${index + 1}] ${result.passed ? "PASS" : "FAIL"} ${url} total=${result.timing.totalMs}ms nav=${navigationMs}ms`);
+        return result;
+    } catch (err) {
+        const result = {
+            url,
+            index,
+            passed: false,
+            error: {
+                name: err?.name || "Error",
+                message: err?.message || String(err),
+                stack: err?.stack || null,
+            },
+            timing: { totalMs: Date.now() - startedAt },
+        };
+        console.warn(`[${index + 1}] ERROR ${url}: ${result.error.message}`);
+        return result;
+    } finally {
+        if (targetId) {
+            await cdp.send("Target.closeTarget", { targetId }, undefined, options.commandTimeoutMs).catch(() => undefined);
+        }
+    }
+}
+
+async function runPageCheckOnWorker(worker, options, item) {
+    return runPageCheck(worker.cdp, options, item.url, item.index);
+}
+
+function distributeItems(items, concurrency) {
+    const workerCount = Math.min(concurrency, items.length);
+    const buckets = Array.from({ length: workerCount }, () => []);
+    for (let i = 0; i < items.length; i += 1) buckets[i % workerCount].push(items[i]);
+    return buckets;
+}
+
+async function runBatchWithWorkers(urls, options) {
+    const items = urls.map((url, index) => ({ url, index }));
+    const buckets = distributeItems(items, options.batch ? options.concurrency : 1);
+    const results = new Array(items.length);
+    const workers = [];
+
+    try {
+        for (let i = 0; i < buckets.length; i += 1) {
+            workers.push(await createWorker(options, i));
+            console.log(`[worker:${i + 1}] started ${workers[i].endpoint} jobs=${buckets[i].length}`);
+        }
+
+        await Promise.all(workers.map(async (worker, workerIndex) => {
+            for (const item of buckets[workerIndex]) {
+                results[item.index] = await runPageCheckOnWorker(worker, options, item);
+            }
+        }));
+
+        return { results, workers };
+    } catch (err) {
+        for (const item of items) {
+            if (!results[item.index]) {
+                results[item.index] = {
+                    url: item.url,
+                    index: item.index,
+                    passed: false,
+                    error: {
+                        name: err?.name || "Error",
+                        message: err?.message || String(err),
+                        stack: err?.stack || null,
+                    },
+                    timing: { totalMs: 0 },
+                };
+            }
+        }
+        return { results, workers };
+    }
+}
+
+function summarizeResults(results, startedAt, options) {
+    const passed = results.filter((item) => item?.passed).length;
+    const failed = results.length - passed;
+    const timings = results.map((item) => item?.timing?.totalMs).filter((value) => Number.isFinite(value));
+    const navigationTimings = results.map((item) => item?.timing?.navigationMs).filter((value) => Number.isFinite(value));
+
+    return {
+        passed: failed === 0,
+        summary: {
+            total: results.length,
+            passed,
+            failed,
+            concurrency: options.batch ? options.concurrency : 1,
+            totalWallMs: Date.now() - startedAt,
+            totalMs: {
+                min: timings.length ? Math.min(...timings) : null,
+                max: timings.length ? Math.max(...timings) : null,
+                avg: timings.length ? Math.round(timings.reduce((sum, value) => sum + value, 0) / timings.length) : null,
+                p50: percentile(timings, 50),
+                p95: percentile(timings, 95),
+            },
+            navigationMs: {
+                min: navigationTimings.length ? Math.min(...navigationTimings) : null,
+                max: navigationTimings.length ? Math.max(...navigationTimings) : null,
+                avg: navigationTimings.length ? Math.round(navigationTimings.reduce((sum, value) => sum + value, 0) / navigationTimings.length) : null,
+                p50: percentile(navigationTimings, 50),
+                p95: percentile(navigationTimings, 95),
+            },
+        },
+        results,
+    };
+}
+
+async function main() {
+    const options = parseArgs(process.argv.slice(2));
+    if (options.help) {
+        console.log(usage());
+        return;
+    }
+
+    for (const dir of [tmpDir, outputDir, logDir, resolve(options.output, ".."), resolve(options.report, ".."), resolve(options.log, "..")]) {
+        if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    }
+
+    let workers = [];
+    try {
+        const startedAt = Date.now();
+        const urls = getTargetUrls(options);
+        console.log(`[benchmark] urls=${urls.length} concurrency=${options.batch ? options.concurrency : 1}`);
+        const run = await runBatchWithWorkers(urls, options);
+        workers = run.workers;
+        const results = run.results;
+        const report = summarizeResults(results, startedAt, options);
+
+        writeFileSync(options.report, `${JSON.stringify(report, null, 2)}\n`);
+
+        console.log(JSON.stringify(report.summary, null, 2));
+        if (!options.batch && results[0]?.output) console.log(`saved html: ${results[0].output}`);
         console.log(`saved report: ${options.report}`);
 
-        if (!result.passed) {
-            console.warn("page check did not fully pass; see report for details");
+        if (!report.passed) {
+            console.warn("one or more page checks failed; see report for details");
             process.exitCode = 1;
         }
     } finally {
-        console.log("[cleanup] closing CDP and Velora");
-        if (cdp && targetId) {
-            await cdp.send("Target.closeTarget", { targetId }, undefined, options.commandTimeoutMs).catch(() => undefined);
+        console.log("[cleanup] closing CDP and Velora workers");
+        for (const worker of workers) {
+            if (worker.cdp) worker.cdp.close();
         }
-        if (cdp) cdp.close();
-
-        const procExited = proc.exitCode != null || proc.signalCode != null
-            ? Promise.resolve()
-            : new Promise((resolvePromise) => proc.once("exit", resolvePromise));
-        if (proc.exitCode == null && !proc.killed) proc.kill("SIGTERM");
-        await procExited;
-
-        const stdout = Buffer.concat(stdoutChunks).toString();
-        const stderr = Buffer.concat(stderrChunks).toString();
-        writeFileSync(options.log, "");
-        appendSection(options.log, "VELORA STDOUT", stdout);
-        appendSection(options.log, "VELORA STDERR", stderr);
-        console.log(`saved log: ${options.log}`);
+        for (const worker of workers) {
+            await stopVelora(worker).catch(() => undefined);
+            await writeWorkerLog(worker, options).catch(() => undefined);
+        }
     }
 }
 

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Pecan",
+		"name": "Pecan",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04e00001-00f70502.png",
+		"tail": "00f70502"
+	},
+	"next": "00110002.html",
+	"prev": "00930502.html",
+	"list": {
+		"001f0002": "Palutena",
+		"00430302": "Light Blue Yarn Yoshi",
+		"010e0502": "Tom Nook - Jacket",
+		"01180502": "Digby - Raincoat",
+		"013e0502": "Chester",
+		"03730102": "Bowser - Wedding",
+		"03a60102": "Mario - Cat",
+		"03d30502": "Rio",
+		"04271902": "Romin Kirishima",
+		"04c61e03": "Meta Knight (\u0026 Shadow Star)"
+	}
+}

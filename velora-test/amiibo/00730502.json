@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Sterling",
+		"name": "Sterling",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04520001-00730502.png",
+		"tail": "00730502"
+	},
+	"next": "01d40502.html",
+	"prev": "023b0702.html",
+	"list": {
+		"00040002": "Link",
+		"00830502": "Pudge",
+		"01ca0502": "Gayle",
+		"036b0402": "Inkling Squid - Neon Purple",
+		"03750d02": "Detective Pikachu",
+		"039fff02": "Yoshi - Power Up Band",
+		"03c50502": "Judy",
+		"04a30902": "Riju",
+		"04ac1d02": "Jamie",
+		"04c91e03": "Bandana Waddle Dee (\u0026 Winged Star)"
+	}
+}

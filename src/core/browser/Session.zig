@@ -67,6 +67,20 @@ _active: ?*Page = null,
 // In-flight root navigation
 _pending: ?*Page = null,
 
+// True when a pending root navigation's headers arrived inside a
+// reentrant HttpClient.perform (e.g. JS on the active page called fetch();
+// libcurl drained the pending navigation's response while we are still
+// nested inside Fetch.init). Committing immediately would destroy the
+// active page's V8 context while JS is on its stack and would also abort
+// the JS-initiated transfer we are currently submitting, producing a UAF
+// (frame_id is shared between active and pending pages — abortFrame in
+// Frame.deinit kills the in-flight fetch and its shutdown_callback then
+// dereferences a freed Execution). When set, commitPendingPage and the
+// associated protect_from_abort flip + frame_navigated dispatch are
+// postponed until drainDeferredCommit runs at a safe point (top of CDP
+// tick or before a new root navigation discards the pending page).
+_deferred_commit_pending: bool = false,
+
 // IDs. Kept at Session level so IDs can remain unique across Page replacements.
 frame_id_gen: u32 = 0,
 loader_id_gen: u32 = 0,
@@ -475,6 +489,12 @@ fn replaceRootImmediate(self: *Session, frame_id: u32, qn: *QueuedNavigation) !v
 // trip — Runtime.evaluate, DOM.*, etc. continue to operate on the OLD page
 // until commitPendingPage swaps the pointer when response headers arrive.
 pub fn initiateRootNavigation(self: *Session, frame_id: u32, url: [:0]const u8, opts: Frame.NavigateOpts) !void {
+    // If a previous pending page is sitting on a deferred commit, finish it
+    // before discardPendingPage tears it down. drainDeferredCommit is a no-op
+    // if the active page is still mid-evaluate, in which case discardPendingPage
+    // below will (correctly) abandon the deferred pending — the new navigation
+    // supersedes it.
+    self.drainDeferredCommit();
     self.discardPendingPage();
 
     const page = try self.allocatePage(frame_id);
@@ -583,7 +603,36 @@ pub fn discardPendingPage(self: *Session) void {
     self.browser.http_client.abortFrame(page.frame._frame_id, .{ .scope = .full });
 
     self._pending = null;
+    // A discarded pending page invalidates any deferred commit targeting it.
+    self._deferred_commit_pending = false;
     self.destroyPage(page);
+}
+
+// True iff the currently active Page has JS on the V8 stack (a script is
+// synchronously executing, or a JS-initiated HTTP request is being submitted
+// inside HttpClient.request). Callers use this to detect re-entrancy paths
+// where tearing down the active Page would invalidate live references the
+// V8 callers hold (Execution*, isolate context, frame_id-bound transfers).
+pub fn activeIsEvaluating(self: *const Session) bool {
+    const active = self._active orelse return false;
+    return active.frame._script_manager.base.is_evaluating;
+}
+
+// Commit any deferred pending root navigation when it is safe to do so.
+// No-op if the active page is still mid-evaluate (caller will be re-invoked
+// from a safer drain point), if there is no pending page (it was discarded),
+// or if nothing was deferred. See `_deferred_commit_pending` for background.
+pub fn drainDeferredCommit(self: *Session) void {
+    if (!self._deferred_commit_pending) return;
+    if (self.activeIsEvaluating()) return;
+    const pending = self._pending orelse {
+        self._deferred_commit_pending = false;
+        return;
+    };
+    self._deferred_commit_pending = false;
+    pending.frame.finalizePendingRootCommit() catch |err| {
+        log.err(.browser, "drain deferred commit", .{ .err = err });
+    };
 }
 
 pub fn nextFrameId(self: *Session) u32 {

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Margie",
+		"name": "Margie",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03270001-01c30502.png",
+		"tail": "01c30502"
+	},
+	"next": "01840502.html",
+	"prev": "01000502.html",
+	"list": {
+		"00490502": "Resetti",
+		"00e40502": "Teddy",
+		"01100502": "Phyllis",
+		"01860502": "Katt",
+		"01ae0502": "Celia",
+		"02a10e02": "Boo - Baseball",
+		"02f00502": "Sylvana",
+		"031e0502": "Toby",
+		"03611202": "Celica",
+		"040e0f02": "Tsukino"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Chadder",
+		"name": "Chadder",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_041e0001-015f0502.png",
+		"tail": "015f0502"
+	},
+	"next": "03690402.html",
+	"prev": "01440502.html",
+	"list": {
+		"00f90502": "Alice",
+		"01320502": "Ricky",
+		"01710502": "Brewster",
+		"01790502": "Timmy - Suit",
+		"01b10502": "Ribbot",
+		"01b40502": "Sylvia",
+		"01c40502": "Lucky",
+		"03911602": "Loot Goblin",
+		"04281902": "Roa Kirishima",
+		"0430ff02": "Golden - Power Up Band"
+	}
+}

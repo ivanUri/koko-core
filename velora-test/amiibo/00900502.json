@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Cherry",
+		"name": "Cherry",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02fb0001-00900502.png",
+		"tail": "00900502"
+	},
+	"next": "024c0502.html",
+	"prev": "0431ff02.html",
+	"list": {
+		"01280502": "Cousteau",
+		"01700502": "Isabelle - Dress",
+		"01a10502": "Elmer",
+		"01b00502": "Peggy",
+		"01cf0502": "Simon",
+		"02be0e02": "Pink Gold Peach - Soccer",
+		"03070502": "Ellie",
+		"03d60502": "Roswell",
+		"042a1902": "Asana Mutsuba",
+		"04a30902": "Riju"
+	}
+}

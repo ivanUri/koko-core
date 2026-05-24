@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Quinn",
+		"name": "Quinn",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_0a180001-03cf0502.png",
+		"tail": "03cf0502"
+	},
+	"next": "004c0502.html",
+	"prev": "028b0e02.html",
+	"list": {
+		"002a0002": "Robin",
+		"00f80502": "Drake",
+		"012c0502": "Colton",
+		"01930502": "Pierce",
+		"02550c02": "Meta Knight",
+		"03720102": "Peach - Wedding",
+		"03ad0502": "Blathers",
+		"04101802": "Palico",
+		"04d61d02": "Dee Jay",
+		"04e11d02": "M. Bison"
+	}
+}

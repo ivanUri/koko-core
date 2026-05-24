@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Diddy Kong",
+		"name": "Diddy Kong",
+		"gameSeries": "Super Mario",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_00090000-000d0002.png",
+		"tail": "000d0002"
+	},
+	"next": "017f0502.html",
+	"prev": "003a0202.html",
+	"list": {
+		"01330502": "Deirdre",
+		"01650502": "Caroline",
+		"01a10502": "Elmer",
+		"01bb0502": "Rizzo",
+		"02890e02": "Waluigi - Tennis",
+		"02f60502": "Stu",
+		"036e0a02": "King Knight",
+		"03760402": "Pearl",
+		"039eff02": "Daisy - Power Up Band",
+		"03c90502": "Ione"
+	}
+}

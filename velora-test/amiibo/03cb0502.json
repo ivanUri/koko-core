@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Shino",
+		"name": "Shino",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_0a140001-03cb0502.png",
+		"tail": "03cb0502"
+	},
+	"next": "034c0902.html",
+	"prev": "04380402.html",
+	"list": {
+		"00510502": "Luna",
+		"007f0502": "Samson",
+		"008f0502": "Jeremiah",
+		"00f80502": "Drake",
+		"00fb0502": "Anicotti",
+		"01070502": "Freya",
+		"01840502": "Mallary",
+		"023e0302": "Mega Yarn Yoshi",
+		"03cc0502": "Marlo",
+		"04350402": "Big Man"
+	}
+}

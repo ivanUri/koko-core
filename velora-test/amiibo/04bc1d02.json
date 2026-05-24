@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Street Fighter 6",
+		"character": "Cammy",
+		"name": "Cammy",
+		"gameSeries": "Street Fighter",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_34d10001-04bc1d02.png",
+		"tail": "04bc1d02"
+	},
+	"next": "04a81d02.html",
+	"prev": "04b61d02.html",
+	"list": {
+		"00130002": "Rosalina \u0026 Luma",
+		"00410302": "Green Yarn Yoshi",
+		"006a0502": "Jitters",
+		"00be0502": "Fuchsia",
+		"00e30502": "Pekoe",
+		"01220502": "Del",
+		"01240502": "Ken",
+		"02780e02": "Daisy - Soccer",
+		"03b20502": "K.K. Slider",
+		"04c30102": "Poplin \u0026 Prince Florian"
+	}
+}

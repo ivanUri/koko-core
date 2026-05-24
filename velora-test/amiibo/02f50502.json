@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Rex",
+		"name": "Rex",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03e80001-02f50502.png",
+		"tail": "02f50502"
+	},
+	"next": "00ea0502.html",
+	"prev": "038d0002.html",
+	"list": {
+		"00040002": "Link",
+		"00490502": "Resetti",
+		"00650502": "Kiki",
+		"010f0502": "Pelly",
+		"01360502": "Drago",
+		"015b0502": "Victoria",
+		"028f0e02": "Donkey Kong - Golf",
+		"029d0e02": "Bowser Jr. - Tennis",
+		"04a81d02": "Ryu",
+		"04db1d02": "Lily"
+	}
+}

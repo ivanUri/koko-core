@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Flora",
+		"name": "Flora",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_043f0001-01550502.png",
+		"tail": "01550502"
+	},
+	"next": "00a30502.html",
+	"prev": "02740e02.html",
+	"list": {
+		"00910502": "Roscoe",
+		"00e70502": "Bianca",
+		"012b0502": "Canberra",
+		"015a0502": "Biskit",
+		"01a30502": "Rory",
+		"02510002": "Lucas",
+		"02eb0502": "Paolo",
+		"03770402": "Marina",
+		"03c40502": "Cyd",
+		"03c80502": "Sasha"
+	}
+}

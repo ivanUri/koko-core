@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Boo",
+		"name": "Boo - Golf",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09cb0401-02a30e02.png",
+		"tail": "02a30e02"
+	},
+	"next": "00f40502.html",
+	"prev": "02b60e02.html",
+	"list": {
+		"00170002": "Sheik",
+		"002d0002": "Mr. Game \u0026 Watch",
+		"00490502": "Resetti",
+		"00850502": "Gruff",
+		"00f70502": "Pecan",
+		"012c0502": "Colton",
+		"01af0502": "Zucker",
+		"028e0e02": "Donkey Kong - Tennis",
+		"03680102": "Koopa Troopa",
+		"04180902": "Link - Tears of the Kingdom"
+	}
+}

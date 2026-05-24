@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Street Fighter 6",
+		"character": "Ken",
+		"name": "Ken",
+		"gameSeries": "Street Fighter",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_34c10001-04a91d02.png",
+		"tail": "04a91d02"
+	},
+	"next": "04b01d02.html",
+	"prev": "04b11d02.html",
+	"list": {
+		"004d0502": "Pascal",
+		"00800502": "Tutu",
+		"01010502": "Vesta",
+		"01d30502": "Robin",
+		"02780e02": "Daisy - Soccer",
+		"02820e02": "Wario - Soccer",
+		"02e40f02": "Rathian and Cheval",
+		"038e0402": "Octoling Girl",
+		"040f1802": "Magnamalo",
+		"04220002": "Steve"
+	}
+}

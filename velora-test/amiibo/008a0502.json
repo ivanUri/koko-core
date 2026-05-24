@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Yuka",
+		"name": "Yuka",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03bc0001-008a0502.png",
+		"tail": "008a0502"
+	},
+	"next": "02420502.html",
+	"prev": "00bc0502.html",
+	"list": {
+		"00230002": "Mii Gunner",
+		"00390102": "Bowser",
+		"01100502": "Phyllis",
+		"013a0502": "Wart Jr.",
+		"01980502": "Melba",
+		"023a0702": "Hammer Slam Bowser",
+		"040e0f02": "Tsukino",
+		"04401c02": "Luigi - My Mario Wooden Blocks",
+		"04b21d02": "Juri",
+		"04f31d02": "Mai"
+	}
+}

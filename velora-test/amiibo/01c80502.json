@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Bruce",
+		"name": "Bruce",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02d90001-01c80502.png",
+		"tail": "01c80502"
+	},
+	"next": "01500502.html",
+	"prev": "03981702.html",
+	"list": {
+		"00020002": "Yoshi",
+		"00560502": "Fauna",
+		"019a0502": "Anabelle",
+		"01b80502": "Pompom",
+		"02940e02": "Diddy Kong - Golf",
+		"02a90e02": "Baby Mario - Horse Racing",
+		"02ef0502": "Huck",
+		"03b70502": "Saharah",
+		"03bf0502": "Isabelle - Sweater",
+		"04390402": "Marina - Side Order"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Pikmin",
+		"character": "Pikmin",
+		"name": "Pikmin",
+		"gameSeries": "Pikmin",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_06420000-035f1102.png",
+		"tail": "035f1102"
+	},
+	"next": "014f0502.html",
+	"prev": "00a90502.html",
+	"list": {
+		"00d40502": "Carmen",
+		"00e00502": "Moose",
+		"00e50502": "Mathilda",
+		"01290502": "Velma",
+		"013c0502": "Beardo",
+		"01540502": "Moe",
+		"017d0502": "Gulliver",
+		"01860502": "Katt",
+		"01a10502": "Elmer",
+		"02b90e02": "Metal Mario - Soccer"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Rod",
+		"name": "Rod",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04110001-01ab0502.png",
+		"tail": "01ab0502"
+	},
+	"next": "02fc0502.html",
+	"prev": "01ad0502.html",
+	"list": {
+		"00080002": "Villager",
+		"00190002": "Dr. Mario",
+		"008b0502": "Lionel",
+		"009d0502": "Axel",
+		"00d00502": "Nana",
+		"02530002": "Ryu",
+		"02580002": "Mega Man - Gold Edition",
+		"02f70502": "Ursala",
+		"03a10002": "Joker",
+		"03ce0502": "Cephalobot"
+	}
+}

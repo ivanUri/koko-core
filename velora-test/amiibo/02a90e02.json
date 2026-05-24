@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Mario Sports Superstars",
+		"character": "Baby Mario",
+		"name": "Baby Mario - Horse Racing",
+		"gameSeries": "Mario Sports Superstars",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_09cc0501-02a90e02.png",
+		"tail": "02a90e02"
+	},
+	"next": "02ac0e02.html",
+	"prev": "00190002.html",
+	"list": {
+		"00190002": "Dr. Mario",
+		"00420302": "Pink Yarn Yoshi",
+		"00d20502": "Olivia",
+		"01040502": "Keaton",
+		"01230502": "Paula",
+		"01610502": "Cube",
+		"02ec0502": "Hornsby",
+		"03770402": "Marina",
+		"040d0f02": "Ena",
+		"04ce1d02": "Jamie"
+	}
+}

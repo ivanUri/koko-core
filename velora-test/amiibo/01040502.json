@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Keaton",
+		"name": "Keaton",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04530001-01040502.png",
+		"tail": "01040502"
+	},
+	"next": "00f50502.html",
+	"prev": "03b00502.html",
+	"list": {
+		"00ec0502": "Bud",
+		"00ed0502": "Ruby",
+		"010c0502": "Rover",
+		"01a70502": "Pietro",
+		"01b80502": "Pompom",
+		"01d20502": "Twiggy",
+		"031e0502": "Toby",
+		"040f1802": "Magnamalo",
+		"04a50902": "Tulin",
+		"04eb1d02": "M. Bison"
+	}
+}

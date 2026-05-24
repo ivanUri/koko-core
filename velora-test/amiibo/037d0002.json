@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Isabelle",
+		"name": "Isabelle",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01810000-037d0002.png",
+		"tail": "037d0002"
+	},
+	"next": "02530002.html",
+	"prev": "028e0e02.html",
+	"list": {
+		"00a80502": "K.K. Slider",
+		"00b10502": "Leila",
+		"00d10502": "Peck",
+		"01690502": "Maple",
+		"01710502": "Brewster",
+		"02820e02": "Wario - Soccer",
+		"02b10e02": "Birdo - Tennis",
+		"04b41d02": "Dhalsim",
+		"04c30102": "Poplin \u0026 Prince Florian",
+		"04ee1d02": "C. Viper"
+	}
+}

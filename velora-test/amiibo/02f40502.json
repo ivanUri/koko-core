@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Ketchup",
+		"name": "Ketchup",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03140001-02f40502.png",
+		"tail": "02f40502"
+	},
+	"next": "024f0902.html",
+	"prev": "004b0502.html",
+	"list": {
+		"000e0002": "Zelda",
+		"00260002": "Jigglypuff",
+		"006e0502": "Puck",
+		"011b0502": "Franklin",
+		"01580502": "Monty",
+		"01a80502": "Aurora",
+		"01af0502": "Zucker",
+		"01ce0502": "Cally",
+		"03a20002": "Hero",
+		"0430ff02": "Golden - Power Up Band"
+	}
+}

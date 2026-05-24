@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Stitches",
+		"name": "Stitches",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02820001-01810502.png",
+		"tail": "01810502"
+	},
+	"next": "01a80502.html",
+	"prev": "007b0502.html",
+	"list": {
+		"001e0002": "Olimar",
+		"00220002": "Mii Swordfighter",
+		"002c0002": "Ness",
+		"00870502": "Clyde",
+		"00af0502": "Tommy - Uniform",
+		"00e90502": "Kitty",
+		"01760502": "Gracie",
+		"01b40502": "Sylvia",
+		"024b0502": "Isabelle - Summer Outfit",
+		"0432ff02": "Diddy Kong - Power Up Band"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Bowser Jr.",
+		"name": "Bowser Jr.",
+		"gameSeries": "Super Mario",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_00060000-00150002.png",
+		"tail": "00150002"
+	},
+	"next": "002b0002.html",
+	"prev": "00630502.html",
+	"list": {
+		"000c0002": "Luigi",
+		"012a0502": "Elvis",
+		"014f0502": "Buck",
+		"01c20502": "Hippeux",
+		"026b0e02": "Mario - Tennis",
+		"03020502": "Raddle",
+		"03c50502": "Judy",
+		"04251902": "Tatsuhisa “Luke” Kamijō",
+		"043e1b02": "Mio",
+		"04f21d02": "Mai"
+	}
+}

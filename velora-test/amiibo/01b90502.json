@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Tank",
+		"name": "Tank",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04b20001-01b90502.png",
+		"tail": "01b90502"
+	},
+	"next": "03bb0502.html",
+	"prev": "00770502.html",
+	"list": {
+		"000e0002": "Zelda",
+		"00860502": "Flurry",
+		"01210502": "Miranda",
+		"01430502": "Diva",
+		"024d0502": "Timmy \u0026 Tommy",
+		"026f0e02": "Luigi - Baseball",
+		"02b20e02": "Birdo - Golf",
+		"03090502": "Weber",
+		"042f1a02": "Donkey Kong \u0026 Pauline",
+		"04a81d02": "Ryu"
+	}
+}

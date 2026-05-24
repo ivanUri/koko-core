@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Cole",
+		"name": "Cole",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_04a60001-00a30502.png",
+		"tail": "00a30502"
+	},
+	"next": "00700502.html",
+	"prev": "01550502.html",
+	"list": {
+		"00300002": "Sonic",
+		"01150502": "Cyrus",
+		"025b0002": "Bayonetta",
+		"02830e02": "Wario - Baseball",
+		"034b0902": "Link - Ocarina of Time",
+		"036d0a02": "Specter Knight",
+		"03d00502": "Chabwick",
+		"04a91d02": "Ken",
+		"04bc1d02": "Cammy",
+		"04ce1d02": "Jamie"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Canberra",
+		"name": "Canberra",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03c40001-012b0502.png",
+		"tail": "012b0502"
+	},
+	"next": "02c10e02.html",
+	"prev": "0432ff02.html",
+	"list": {
+		"00cc0502": "Cookie",
+		"00dc0502": "Alfonso",
+		"01240502": "Ken",
+		"01780502": "Resetti - Without Hat",
+		"01a60502": "Mira",
+		"01a90502": "Papi",
+		"029e0e02": "Bowser Jr. - Golf",
+		"03120502": "Snooty",
+		"043f1c02": "Mario - My Mario Wooden Blocks",
+		"04b41d02": "Dhalsim"
+	}
+}

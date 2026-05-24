@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Saharah",
+		"name": "Saharah",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01a60001-00500502.png",
+		"tail": "00500502"
+	},
+	"next": "01a50502.html",
+	"prev": "007f0502.html",
+	"list": {
+		"00140002": "Bowser",
+		"00550502": "Bob",
+		"00af0502": "Tommy - Uniform",
+		"00c90502": "Kidd",
+		"01770502": "Leilani",
+		"01b10502": "Ribbot",
+		"01bf0502": "Kevin",
+		"023d0002": "Mewtwo",
+		"02630102": "Wario",
+		"03620002": "Cloud - Player 2"
+	}
+}

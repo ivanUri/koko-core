@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Link",
+		"name": "Toon Link",
+		"gameSeries": "The Legend of Zelda",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_01000100-00160002.png",
+		"tail": "00160002"
+	},
+	"next": "01030502.html",
+	"prev": "00590502.html",
+	"list": {
+		"00750502": "Punchy",
+		"00b70502": "Chip",
+		"00ee0502": "Benedict",
+		"019d0502": "Peewee",
+		"02500a02": "Shovel Knight",
+		"027a0e02": "Daisy - Tennis",
+		"029c0e02": "Bowser Jr. - Baseball",
+		"030b0502": "Leopold",
+		"04d01d02": "Chun-Li",
+		"04d21d02": "Juri"
+	}
+}

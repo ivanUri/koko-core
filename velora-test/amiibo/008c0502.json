@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Flo",
+		"name": "Flo",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_046c0001-008c0502.png",
+		"tail": "008c0502"
+	},
+	"next": "00720502.html",
+	"prev": "00760502.html",
+	"list": {
+		"00770502": "Poppy",
+		"00920502": "Truffles",
+		"00bf0502": "Harry",
+		"00c80502": "Savannah",
+		"01020502": "Marcel",
+		"01790502": "Timmy - Suit",
+		"02b30e02": "Birdo - Horse Racing",
+		"02b40e02": "Rosalina - Soccer",
+		"04281902": "Roa Kirishima",
+		"04ce1d02": "Jamie"
+	}
+}

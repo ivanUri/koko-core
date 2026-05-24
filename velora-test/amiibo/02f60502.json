@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Stu",
+		"name": "Stu",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_024d0001-02f60502.png",
+		"tail": "02f60502"
+	},
+	"next": "00910502.html",
+	"prev": "02770e02.html",
+	"list": {
+		"001e0002": "Olimar",
+		"005d0502": "Renée",
+		"00940502": "Eunice",
+		"010b0502": "Rocket",
+		"019e0502": "Tammy",
+		"02530002": "Ryu",
+		"03bf0502": "Isabelle - Sweater",
+		"03d00502": "Chabwick",
+		"04401c02": "Luigi - My Mario Wooden Blocks",
+		"index": "Sandy"
+	}
+}

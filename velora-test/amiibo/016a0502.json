@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Antonio",
+		"name": "Antonio",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_02010001-016a0502.png",
+		"tail": "016a0502"
+	},
+	"next": "02fe0502.html",
+	"prev": "02f10502.html",
+	"list": {
+		"013b0502": "Hazel",
+		"01590502": "Dora",
+		"015b0502": "Victoria",
+		"01b20502": "Annalise",
+		"02610402": "Inkling Squid - Orange",
+		"02a10e02": "Boo - Baseball",
+		"02b60e02": "Rosalina - Tennis",
+		"03cb0502": "Shino",
+		"04131302": "E.M.M.I.",
+		"04ed1d02": "Sagat"
+	}
+}

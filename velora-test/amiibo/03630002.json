@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Super Smash Bros.",
+		"character": "Corrin",
+		"name": "Corrin - Player 2",
+		"gameSeries": "Fire Emblem",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_21050100-03630002.png",
+		"tail": "03630002"
+	},
+	"next": "01d10502.html",
+	"prev": "005b0502.html",
+	"list": {
+		"006a0502": "Jitters",
+		"00930502": "Eugene",
+		"01610502": "Cube",
+		"01740502": "Celeste",
+		"02600402": "Inkling Boy - Purple",
+		"02980e02": "Bowser - Tennis",
+		"03ba0502": "Wisp",
+		"03bb0502": "Lottie - Island",
+		"042e0002": "Sora",
+		"04e51d02": "C. Viper"
+	}
+}

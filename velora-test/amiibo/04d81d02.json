@@ -1,0 +1,23 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Street Fighter 6",
+		"character": "Marisa",
+		"name": "Marisa",
+		"gameSeries": "Street Fighter",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_34cd0001-04d81d02.png",
+		"tail": "04d81d02"
+	},
+	"next": "04db1d02.html",
+	"prev": "04cf1d02.html",
+	"list": {
+		"00390102": "Bowser",
+		"00bf0502": "Harry",
+		"00ee0502": "Benedict",
+		"01340502": "Hans",
+		"01370502": "Tangy",
+		"02940e02": "Diddy Kong - Golf",
+		"02a10e02": "Boo - Baseball",
+		"035a0902": "Mipha",
+		"04281902": "Roa Kirishima"
+	}
+}

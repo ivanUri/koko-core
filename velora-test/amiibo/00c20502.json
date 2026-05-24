@@ -1,0 +1,24 @@
+{
+	"amiibo": {
+		"amiiboSeries": "Animal Crossing",
+		"character": "Kitt",
+		"name": "Kitt",
+		"gameSeries": "Animal Crossing",
+		"image": "https://raw.githubusercontent.com/8bitDream/AmiiboAPI/master/images/icon_03d10001-00c20502.png",
+		"tail": "00c20502"
+	},
+	"next": "00c50502.html",
+	"prev": "02a80e02.html",
+	"list": {
+		"000c0002": "Luigi",
+		"00c00502": "Gwen",
+		"00ed0502": "Ruby",
+		"02400502": "K. K. Slider",
+		"02550c02": "Meta Knight",
+		"02640102": "Donkey Kong",
+		"02bc0e02": "Metal Mario - Golf",
+		"039bff02": "Mario - Power Up Band",
+		"03d30502": "Rio",
+		"042a1902": "Asana Mutsuba"
+	}
+}
