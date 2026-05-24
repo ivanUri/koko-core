@@ -1,4 +1,4 @@
-import { TimeoutError } from "../cdp/errors.js";
+import { ProtocolError, TimeoutError } from "../cdp/errors.js";
 import { delay, withTimeout } from "../utils/timeout.js";
 export class PageWaiter {
     session;
@@ -11,15 +11,18 @@ export class PageWaiter {
         const waitUntil = options.waitUntil ?? "load";
         if (waitUntil === "none" || waitUntil === "commit")
             return;
+        const timeout = options.timeout ?? 30_000;
         if (waitUntil === "domcontentloaded") {
-            await this.session.waitFor("Page.domContentEventFired", { timeout: options.timeout });
+            await this.session.waitFor("Page.domContentEventFired", { timeout });
             return;
         }
         if (waitUntil === "load") {
-            await this.session.waitFor("Page.loadEventFired", { timeout: options.timeout });
+            await this.session.waitFor("Page.loadEventFired", { timeout });
             return;
         }
-        await this.network.waitForIdle({ idleMs: options.networkIdleMs, timeout: options.timeout });
+        // networkidle: still wait for at least the load event before measuring idle.
+        await this.session.waitFor("Page.loadEventFired", { timeout }).catch(() => undefined);
+        await this.network.waitForIdle({ idleMs: options.networkIdleMs, timeout });
     }
     async waitForSelector(selector, options = {}) {
         const expression = `(() => {
@@ -47,8 +50,11 @@ export class PageWaiter {
                     returnByValue: true,
                     awaitPromise: true,
                 });
-                if (result.exceptionDetails)
-                    throw new TimeoutError(`${label} failed`, { payload: result.exceptionDetails });
+                if (result.exceptionDetails) {
+                    const ex = result.exceptionDetails;
+                    const desc = ex?.exception?.description ?? ex?.text ?? `${label} failed`;
+                    throw new ProtocolError(desc, { payload: result.exceptionDetails });
+                }
                 if (result.result?.value)
                     return;
                 if (Date.now() - started > timeout)

@@ -8,8 +8,15 @@ export interface WaitForEventOptions<T> {
 export declare class CDPClient {
     readonly transport: WebSocketTransport;
     readonly sessions: Map<string, CDPSession>;
+    private targetTrackingStarted;
     private constructor();
     static connect(endpoint: string, options?: WebSocketTransportOptions): Promise<CDPClient>;
+    private bindLifecycle;
+    /** Enable global Target.* tracking (discover + auto-attach flatten). Call once after connect. */
+    enableTargetTracking(options?: {
+        autoAttach?: boolean;
+        discover?: boolean;
+    }): Promise<void>;
     send<T = unknown>(method: string, params?: unknown, sessionId?: string, timeout?: number): Promise<T>;
     on<T = unknown>(event: string, handler: EventHandler<T>): () => void;
     once<T = unknown>(event: string, handler: EventHandler<T>): () => void;

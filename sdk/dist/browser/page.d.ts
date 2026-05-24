@@ -10,6 +10,7 @@ export declare class Page {
     readonly network: NetworkTracker;
     readonly waiter: PageWaiter;
     private initialized;
+    private mainFrameId?;
     constructor(session: CDPSession);
     init(): Promise<void>;
     goto(url: string, options?: GotoWaitOptions): Promise<void>;
@@ -24,5 +25,7 @@ export declare class Page {
         pollingMs?: number;
     }): Promise<void>;
     close(): Promise<void>;
+    /** Returns the main-frame id (after first navigation/init). */
+    get frameId(): string | undefined;
     private contentFromDOM;
 }

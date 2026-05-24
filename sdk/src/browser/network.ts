@@ -1,5 +1,7 @@
 import type { CDPSession } from "../cdp/session.js";
-import { delay, withTimeout } from "../utils/timeout.js";
+import { withTimeout } from "../utils/timeout.js";
+
+type IdleListener = () => void;
 
 export interface NetworkRequest {
   requestId: string;
@@ -22,8 +24,13 @@ export class NetworkTracker {
   readonly requests = new Map<string, NetworkRequest>();
   readonly inflight = new Set<string>();
   private cleanup: Array<() => void> = [];
+  private readonly listeners = new Set<IdleListener>();
 
   constructor(private readonly session: CDPSession) {}
+
+  private notify(): void {
+    for (const listener of this.listeners) listener();
+  }
 
   async enable(): Promise<void> {
     this.cleanup.push(
@@ -43,19 +50,25 @@ export class NetworkTracker {
 
   waitForIdle(options: { idleMs?: number; timeout?: number } = {}): Promise<void> {
     const idleMs = options.idleMs ?? 500;
-    const poll = async () => {
-      let idleStarted: number | undefined;
-      while (true) {
+    const promise = new Promise<void>((resolve) => {
+      let timer: NodeJS.Timeout | undefined;
+      const finish = () => {
+        this.listeners.delete(listener);
+        if (timer) clearTimeout(timer);
+        resolve();
+      };
+      const listener: IdleListener = () => {
         if (this.inflight.size === 0) {
-          idleStarted ??= Date.now();
-          if (Date.now() - idleStarted >= idleMs) return;
-        } else {
-          idleStarted = undefined;
+          if (!timer) timer = setTimeout(finish, idleMs);
+        } else if (timer) {
+          clearTimeout(timer);
+          timer = undefined;
         }
-        await delay(50);
-      }
-    };
-    return withTimeout(poll(), { timeout: options.timeout, label: "Waiting for network idle" });
+      };
+      this.listeners.add(listener);
+      listener();
+    });
+    return withTimeout(promise, { timeout: options.timeout, label: "Waiting for network idle" });
   }
 
   private onRequest(event: any): void {
@@ -69,6 +82,7 @@ export class NetworkTracker {
       redirectChain,
     });
     this.inflight.add(event.requestId);
+    this.notify();
   }
 
   private onResponse(event: any): void {
@@ -84,11 +98,13 @@ export class NetworkTracker {
 
   private onDone(requestId: string): void {
     this.inflight.delete(requestId);
+    this.notify();
   }
 
   private onFailed(event: any): void {
     const request = this.requests.get(event.requestId);
     if (request) request.failureText = event.errorText;
     this.inflight.delete(event.requestId);
+    this.notify();
   }
 }

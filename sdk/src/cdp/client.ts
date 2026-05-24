@@ -1,5 +1,6 @@
 import { WebSocketTransport, type CDPMessage, type WebSocketTransportOptions } from "../transport/websocket.js";
 import { withTimeout } from "../utils/timeout.js";
+import { TargetClosedError, WebSocketClosedError } from "./errors.js";
 import type { EventHandler, WildcardEventHandler } from "./events.js";
 import { CDPSession } from "./session.js";
 
@@ -10,11 +11,48 @@ export interface WaitForEventOptions<T> {
 
 export class CDPClient {
   readonly sessions = new Map<string, CDPSession>();
+  private targetTrackingStarted = false;
 
-  private constructor(readonly transport: WebSocketTransport) {}
+  private constructor(readonly transport: WebSocketTransport) {
+    this.bindLifecycle();
+  }
 
   static async connect(endpoint: string, options: WebSocketTransportOptions = {}): Promise<CDPClient> {
     return new CDPClient(await WebSocketTransport.connect(endpoint, options));
+  }
+
+  private bindLifecycle(): void {
+    this.transport.on<CDPMessage>("Target.attachedToTarget", (message) => {
+      const params = (message.params ?? {}) as { sessionId?: string; targetInfo?: { targetId?: string } };
+      if (!params.sessionId) return;
+      if (!this.sessions.has(params.sessionId)) {
+        this.sessions.set(params.sessionId, new CDPSession(this, params.sessionId, params.targetInfo?.targetId));
+      }
+    });
+    this.transport.on<CDPMessage>("Target.detachedFromTarget", (message) => {
+      const params = (message.params ?? {}) as { sessionId?: string };
+      if (!params.sessionId) return;
+      const session = this.sessions.get(params.sessionId);
+      if (session) session.markClosed(new TargetClosedError("Target detached", { sessionId: params.sessionId }));
+      this.sessions.delete(params.sessionId);
+    });
+    this.transport.on("__close", () => {
+      const error = new WebSocketClosedError("Transport closed");
+      for (const session of this.sessions.values()) session.markClosed(error);
+      this.sessions.clear();
+    });
+  }
+
+  /** Enable global Target.* tracking (discover + auto-attach flatten). Call once after connect. */
+  async enableTargetTracking(options: { autoAttach?: boolean; discover?: boolean } = {}): Promise<void> {
+    if (this.targetTrackingStarted) return;
+    this.targetTrackingStarted = true;
+    if (options.discover ?? true) {
+      await this.send("Target.setDiscoverTargets", { discover: true }).catch(() => undefined);
+    }
+    if (options.autoAttach ?? true) {
+      await this.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }).catch(() => undefined);
+    }
   }
 
   send<T = unknown>(method: string, params?: unknown, sessionId?: string, timeout?: number): Promise<T> {
@@ -77,8 +115,11 @@ export class CDPClient {
 
   async attachToTarget(targetId: string): Promise<CDPSession> {
     const result = await this.send<{ sessionId: string }>("Target.attachToTarget", { targetId, flatten: true });
-    const session = new CDPSession(this, result.sessionId, targetId);
-    this.sessions.set(result.sessionId, session);
+    let session = this.sessions.get(result.sessionId);
+    if (!session) {
+      session = new CDPSession(this, result.sessionId, targetId);
+      this.sessions.set(result.sessionId, session);
+    }
     return session;
   }
 
@@ -88,8 +129,13 @@ export class CDPClient {
   }
 
   async detachSession(sessionId: string): Promise<void> {
-    await this.send("Target.detachFromTarget", { sessionId });
-    this.sessions.delete(sessionId);
+    try {
+      await this.send("Target.detachFromTarget", { sessionId });
+    } finally {
+      const session = this.sessions.get(sessionId);
+      if (session) session.markClosed(new TargetClosedError("Session detached", { sessionId }));
+      this.sessions.delete(sessionId);
+    }
   }
 
   async closeTarget(targetId: string): Promise<void> {
@@ -97,7 +143,9 @@ export class CDPClient {
   }
 
   close(): void {
-    this.transport.close();
+    const error = new WebSocketClosedError("Client closed");
+    for (const session of this.sessions.values()) session.markClosed(error);
     this.sessions.clear();
+    this.transport.close();
   }
 }

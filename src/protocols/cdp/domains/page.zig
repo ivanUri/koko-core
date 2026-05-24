@@ -403,6 +403,18 @@ pub fn frameNavigate(bc: *CDP.BrowserContext, event: *const Notification.FrameNa
 }
 
 pub fn frameRemove(bc: *CDP.BrowserContext) void {
+    // Drop any Fetch.requestPaused entries still parked for this Page. The
+    // active Page is about to be destroyed, which will release its per-frame
+    // arena back to the pool and abort its in-flight transfers; both kinds
+    // of `intercept_state.Pending` payloads (`.request` storing a Request
+    // value with arena-allocated params, `.transfer` pointing at a soon-to-
+    // be-killed Transfer) become dangling immediately after this hook
+    // returns. Without this clear, a CDP client that replies later with
+    // continueRequest / fulfillRequest / failRequest / continueWithAuth
+    // would dereference freed memory and crash velora. See the regression
+    // test in code-check/repro-fetch-frame-race.js.
+    bc.intercept_state.clear();
+
     // Clear all remote object mappings to prevent stale objectIds from being used
     // after the context is destroy
     bc.inspector_session.inspector.resetContextGroup();

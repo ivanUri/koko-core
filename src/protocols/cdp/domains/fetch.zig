@@ -82,6 +82,20 @@ pub const InterceptState = struct {
         return entry.value;
     }
 
+    // Drop every pending entry. Called from page.zig's frameRemove hook
+    // when the active Page is being torn down: the per-frame arena that
+    // backs `Pending.request.params.{arena, url, headers, body}` is about
+    // to be released back to the pool, and the in-flight `Pending.transfer`
+    // for this frame will be killed by HttpClient.abortFrame in
+    // Frame.deinit. Holding on to either kind of entry across the teardown
+    // turns into a dangling pointer that the next continueRequest /
+    // fulfillRequest / failRequest / continueWithAuth would dereference
+    // (UAF segfault). The CDP client receives a clean RequestNotFound
+    // error if it replies after the page is gone.
+    pub fn clear(self: *InterceptState) void {
+        self.waiting.clearRetainingCapacity();
+    }
+
     pub fn deinit(self: *InterceptState) void {
         self.waiting.deinit(self.allocator);
     }

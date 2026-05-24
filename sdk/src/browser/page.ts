@@ -1,5 +1,5 @@
 import type { CDPSession } from "../cdp/session.js";
-import { NavigationError } from "../cdp/errors.js";
+import { NavigationError, ProtocolError, TargetClosedError } from "../cdp/errors.js";
 import type { GotoWaitOptions } from "./waiter.js";
 import { PageWaiter } from "./waiter.js";
 import { NetworkTracker } from "./network.js";
@@ -12,6 +12,7 @@ export class Page {
   readonly network: NetworkTracker;
   readonly waiter: PageWaiter;
   private initialized = false;
+  private mainFrameId?: string;
 
   constructor(readonly session: CDPSession) {
     this.network = new NetworkTracker(session);
@@ -20,17 +21,34 @@ export class Page {
 
   async init(): Promise<void> {
     if (this.initialized) return;
+    this.initialized = true;
+
+    this.session.on<any>("Page.frameNavigated", (event) => {
+      const frame = event?.frame;
+      if (frame && !frame.parentId) this.mainFrameId = frame.id;
+    });
+    this.session.on<any>("Inspector.detached", (event) => {
+      this.session.markClosed(new TargetClosedError(event?.reason ?? "Inspector detached", { sessionId: this.session.sessionId }));
+    });
+
     await this.session.send("Page.enable").catch(() => undefined);
     await this.session.send("Runtime.enable").catch(() => undefined);
     await this.network.enable();
-    this.initialized = true;
+
+    const tree = await this.session.send<any>("Page.getFrameTree").catch(() => undefined);
+    this.mainFrameId = tree?.frameTree?.frame?.id ?? this.mainFrameId;
   }
 
   async goto(url: string, options: GotoWaitOptions = {}): Promise<void> {
     await this.init();
     const waitPromise = this.waiter.waitForNavigation(options);
+    // Catch the wait promise eagerly so a navigation failure doesn't surface as unhandled rejection.
+    waitPromise.catch(() => undefined);
     const result = await this.session.send<any>("Page.navigate", { url }, options.timeout);
-    if (result.errorText) throw new NavigationError(result.errorText, { method: "Page.navigate", sessionId: this.session.sessionId, payload: result });
+    if (result.errorText) {
+      throw new NavigationError(result.errorText, { method: "Page.navigate", sessionId: this.session.sessionId, payload: result });
+    }
+    if (result.frameId) this.mainFrameId = result.frameId;
     await waitPromise;
   }
 
@@ -45,10 +63,12 @@ export class Page {
       awaitPromise: true,
     }, options.timeout);
     if (result.exceptionDetails) {
-      throw new NavigationError("Runtime.evaluate failed", {
+      const ex = result.exceptionDetails;
+      const desc = ex?.exception?.description ?? ex?.exception?.value ?? ex?.text ?? "Runtime.evaluate failed";
+      throw new ProtocolError(typeof desc === "string" ? desc : JSON.stringify(desc), {
         method: "Runtime.evaluate",
         sessionId: this.session.sessionId,
-        payload: result.exceptionDetails,
+        payload: ex,
       });
     }
     return result.result?.value as T;
@@ -78,12 +98,19 @@ export class Page {
     await this.session.detach().catch(() => undefined);
   }
 
+  /** Returns the main-frame id (after first navigation/init). */
+  get frameId(): string | undefined {
+    return this.mainFrameId;
+  }
+
   private async contentFromDOM(): Promise<string | undefined> {
-    const { root } = await this.session.send<any>("DOM.getDocument", { depth: 0 });
+    const doc = await this.session.send<any>("DOM.getDocument", { depth: 0, pierce: false });
+    const root = doc?.root;
     if (!root?.nodeId) return undefined;
     const result = await this.session.send<any>("DOM.getOuterHTML", { nodeId: root.nodeId });
     const html = result.outerHTML as string | undefined;
     if (!html) return undefined;
+    if (/^\s*<!doctype/i.test(html)) return html;
     const doctype = await this.evaluate<string>("document.doctype ? new XMLSerializer().serializeToString(document.doctype) : ''").catch(() => "");
     return withDoctype(html, doctype);
   }

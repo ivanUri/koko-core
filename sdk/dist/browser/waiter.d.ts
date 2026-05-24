@@ -6,11 +6,17 @@ export interface GotoWaitOptions {
     timeout?: number;
     networkIdleMs?: number;
 }
+export interface InternalWaitOptions extends GotoWaitOptions {
+    /** loaderId returned by Page.navigate; used to disambiguate concurrent navigations. */
+    loaderId?: string;
+    /** frameId returned by Page.navigate (main frame). */
+    frameId?: string;
+}
 export declare class PageWaiter {
     private readonly session;
     private readonly network;
     constructor(session: CDPSession, network: NetworkTracker);
-    waitForNavigation(options?: GotoWaitOptions): Promise<void>;
+    waitForNavigation(options?: InternalWaitOptions): Promise<void>;
     waitForSelector(selector: string, options?: {
         timeout?: number;
         visible?: boolean;

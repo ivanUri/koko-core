@@ -1,11 +1,16 @@
-import { delay, withTimeout } from "../utils/timeout.js";
+import { withTimeout } from "../utils/timeout.js";
 export class NetworkTracker {
     session;
     requests = new Map();
     inflight = new Set();
     cleanup = [];
+    listeners = new Set();
     constructor(session) {
         this.session = session;
+    }
+    notify() {
+        for (const listener of this.listeners)
+            listener();
     }
     async enable() {
         this.cleanup.push(this.session.on("Network.requestWillBeSent", (event) => this.onRequest(event)), this.session.on("Network.responseReceived", (event) => this.onResponse(event)), this.session.on("Network.loadingFinished", (event) => this.onDone(event.requestId)), this.session.on("Network.loadingFailed", (event) => this.onFailed(event)));
@@ -19,21 +24,28 @@ export class NetworkTracker {
     }
     waitForIdle(options = {}) {
         const idleMs = options.idleMs ?? 500;
-        const poll = async () => {
-            let idleStarted;
-            while (true) {
+        const promise = new Promise((resolve) => {
+            let timer;
+            const finish = () => {
+                this.listeners.delete(listener);
+                if (timer)
+                    clearTimeout(timer);
+                resolve();
+            };
+            const listener = () => {
                 if (this.inflight.size === 0) {
-                    idleStarted ??= Date.now();
-                    if (Date.now() - idleStarted >= idleMs)
-                        return;
+                    if (!timer)
+                        timer = setTimeout(finish, idleMs);
                 }
-                else {
-                    idleStarted = undefined;
+                else if (timer) {
+                    clearTimeout(timer);
+                    timer = undefined;
                 }
-                await delay(50);
-            }
-        };
-        return withTimeout(poll(), { timeout: options.timeout, label: "Waiting for network idle" });
+            };
+            this.listeners.add(listener);
+            listener();
+        });
+        return withTimeout(promise, { timeout: options.timeout, label: "Waiting for network idle" });
     }
     onRequest(event) {
         const previous = this.requests.get(event.requestId);
@@ -46,6 +58,7 @@ export class NetworkTracker {
             redirectChain,
         });
         this.inflight.add(event.requestId);
+        this.notify();
     }
     onResponse(event) {
         const request = this.requests.get(event.requestId);
@@ -60,12 +73,14 @@ export class NetworkTracker {
     }
     onDone(requestId) {
         this.inflight.delete(requestId);
+        this.notify();
     }
     onFailed(event) {
         const request = this.requests.get(event.requestId);
         if (request)
             request.failureText = event.errorText;
         this.inflight.delete(event.requestId);
+        this.notify();
     }
 }
 //# sourceMappingURL=network.js.map

@@ -1,5 +1,5 @@
 import type { CDPSession } from "../cdp/session.js";
-import { TimeoutError } from "../cdp/errors.js";
+import { ProtocolError, TimeoutError } from "../cdp/errors.js";
 import { delay, withTimeout } from "../utils/timeout.js";
 import type { NetworkTracker } from "./network.js";
 
@@ -11,21 +11,32 @@ export interface GotoWaitOptions {
   networkIdleMs?: number;
 }
 
+export interface InternalWaitOptions extends GotoWaitOptions {
+  /** loaderId returned by Page.navigate; used to disambiguate concurrent navigations. */
+  loaderId?: string;
+  /** frameId returned by Page.navigate (main frame). */
+  frameId?: string;
+}
+
 export class PageWaiter {
   constructor(private readonly session: CDPSession, private readonly network: NetworkTracker) {}
 
-  async waitForNavigation(options: GotoWaitOptions = {}): Promise<void> {
+  async waitForNavigation(options: InternalWaitOptions = {}): Promise<void> {
     const waitUntil = options.waitUntil ?? "load";
     if (waitUntil === "none" || waitUntil === "commit") return;
+    const timeout = options.timeout ?? 30_000;
+
     if (waitUntil === "domcontentloaded") {
-      await this.session.waitFor("Page.domContentEventFired", { timeout: options.timeout });
+      await this.session.waitFor("Page.domContentEventFired", { timeout });
       return;
     }
     if (waitUntil === "load") {
-      await this.session.waitFor("Page.loadEventFired", { timeout: options.timeout });
+      await this.session.waitFor("Page.loadEventFired", { timeout });
       return;
     }
-    await this.network.waitForIdle({ idleMs: options.networkIdleMs, timeout: options.timeout });
+    // networkidle: still wait for at least the load event before measuring idle.
+    await this.session.waitFor("Page.loadEventFired", { timeout }).catch(() => undefined);
+    await this.network.waitForIdle({ idleMs: options.networkIdleMs, timeout });
   }
 
   async waitForSelector(selector: string, options: { timeout?: number; visible?: boolean } = {}): Promise<void> {
@@ -56,7 +67,11 @@ export class PageWaiter {
           returnByValue: true,
           awaitPromise: true,
         });
-        if (result.exceptionDetails) throw new TimeoutError(`${label} failed`, { payload: result.exceptionDetails });
+        if (result.exceptionDetails) {
+          const ex = result.exceptionDetails as any;
+          const desc = ex?.exception?.description ?? ex?.text ?? `${label} failed`;
+          throw new ProtocolError(desc, { payload: result.exceptionDetails });
+        }
         if (result.result?.value) return;
         if (Date.now() - started > timeout) throw new TimeoutError(label, { timeout });
         await delay(pollingMs);

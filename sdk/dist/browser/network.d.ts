@@ -19,7 +19,9 @@ export declare class NetworkTracker {
     readonly requests: Map<string, NetworkRequest>;
     readonly inflight: Set<string>;
     private cleanup;
+    private readonly listeners;
     constructor(session: CDPSession);
+    private notify;
     enable(): Promise<void>;
     dispose(): void;
     waitForIdle(options?: {
