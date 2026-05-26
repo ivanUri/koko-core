@@ -15,6 +15,7 @@
 const std = @import("std");
 const js = @import("../../js/js.zig");
 const EventTarget = @import("../EventTarget.zig");
+const MediaQueryEval = @import("MediaQueryEval.zig");
 
 const MediaQueryList = @This();
 
@@ -33,6 +34,21 @@ pub fn getMedia(self: *const MediaQueryList) []const u8 {
     return self._media;
 }
 
+pub fn getMatches(self: *const MediaQueryList) bool {
+    // Velora reports a fixed 1920x1080 viewport at 1dppx (see Window.zig and
+    // Screen.zig). Evaluate the stored query against that. Anything we don't
+    // understand falls through to false, matching CSS conformance behavior
+    // for unknown media features.
+    const vp: MediaQueryEval.Viewport = .{
+        .width_px = 1920,
+        .height_px = 1080,
+        .device_width_px = 1920,
+        .device_height_px = 1080,
+        .device_pixel_ratio = 1.0,
+    };
+    return MediaQueryEval.matches(self._media, vp);
+}
+
 pub fn addListener(_: *const MediaQueryList, _: js.Function) void {}
 pub fn removeListener(_: *const MediaQueryList, _: js.Function) void {}
 
@@ -46,7 +62,7 @@ pub const JsApi = struct {
     };
 
     pub const media = bridge.accessor(MediaQueryList.getMedia, null, .{});
-    pub const matches = bridge.property(false, .{ .template = false, .readonly = true });
+    pub const matches = bridge.accessor(MediaQueryList.getMatches, null, .{});
     pub const addListener = bridge.function(MediaQueryList.addListener, .{ .noop = true });
     pub const removeListener = bridge.function(MediaQueryList.removeListener, .{ .noop = true });
 };

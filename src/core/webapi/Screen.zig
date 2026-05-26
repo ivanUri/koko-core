@@ -49,12 +49,12 @@ pub const JsApi = struct {
         pub var class_id: bridge.ClassId = undefined;
     };
 
-    pub const width = bridge.property(1920, .{ .template = false });
-    pub const height = bridge.property(1080, .{ .template = false });
-    pub const availWidth = bridge.property(1920, .{ .template = false });
-    pub const availHeight = bridge.property(1040, .{ .template = false });
-    pub const colorDepth = bridge.property(24, .{ .template = false });
-    pub const pixelDepth = bridge.property(24, .{ .template = false });
+    pub const width = bridge.attribute(@as(u32, 1920), .{});
+    pub const height = bridge.attribute(@as(u32, 1080), .{});
+    pub const availWidth = bridge.attribute(@as(u32, 1920), .{});
+    pub const availHeight = bridge.attribute(@as(u32, 1040), .{});
+    pub const colorDepth = bridge.attribute(@as(u32, 24), .{});
+    pub const pixelDepth = bridge.attribute(@as(u32, 24), .{});
     pub const orientation = bridge.accessor(Screen.getOrientation, null, .{});
 };
 

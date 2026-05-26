@@ -909,13 +909,13 @@ pub const JsApi = struct {
     // (webcam, geolocation, clipboard, etc.)
     // This is safer and could help avoid processing errors by hinting at
     // sites not to try to access those features
-    pub const isSecureContext = bridge.property(false, .{ .template = false });
+    pub const isSecureContext = bridge.attribute(false, .{});
 
-    pub const innerWidth = bridge.property(1920, .{ .template = false });
-    pub const innerHeight = bridge.property(1080, .{ .template = false });
-    pub const outerWidth = bridge.property(1920, .{ .template = false });
-    pub const outerHeight = bridge.property(1080, .{ .template = false });
-    pub const devicePixelRatio = bridge.property(1, .{ .template = false });
+    pub const innerWidth = bridge.attribute(@as(u32, 1920), .{});
+    pub const innerHeight = bridge.attribute(@as(u32, 1080), .{});
+    pub const outerWidth = bridge.attribute(@as(u32, 1920), .{});
+    pub const outerHeight = bridge.attribute(@as(u32, 1080), .{});
+    pub const devicePixelRatio = bridge.attribute(@as(f64, 1.0), .{});
 
     pub const opener = bridge.accessor(Window.getOpener, null, .{});
     pub const closed = bridge.accessor(Window.getClosed, null, .{});

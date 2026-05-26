@@ -78,6 +78,73 @@ pub fn Builder(comptime T: type) type {
             @compileError("Property for " ++ @typeName(@TypeOf(value)) ++ " hasn't been defined yet");
         }
 
+        // WebIDL attributes (e.g. Navigator.userAgent, Screen.width) MUST be
+        // exposed as accessor properties on the interface prototype, not as
+        // data properties. This means
+        //   Object.getOwnPropertyDescriptor(Navigator.prototype, "userAgent")
+        // returns {get: <native fn>, set: undefined, configurable: true,
+        //          enumerable: true} — not {value: ..., writable: ...}.
+        //
+        // `attribute(value, ...)` is a shorthand for declaring a read-only
+        // attribute whose value is a compile-time constant: it synthesizes a
+        // tiny getter that returns `value` and routes through `accessor(...)`.
+        // Use `accessor(getter, setter, ...)` directly when the value depends
+        // on instance state.
+        //
+        // Use `property(...)` only for WebIDL constants (e.g. Node.ELEMENT_NODE)
+        // which the spec defines as data properties.
+        pub fn attribute(comptime value: anytype, comptime opts: Caller.Function.Opts) Accessor {
+            const V = @TypeOf(value);
+            const Closure = switch (@typeInfo(V)) {
+                .bool => struct {
+                    fn get(_: *const T) bool {
+                        return value;
+                    }
+                },
+                .comptime_int => struct {
+                    fn get(_: *const T) i64 {
+                        return value;
+                    }
+                },
+                .int => struct {
+                    fn get(_: *const T) V {
+                        return value;
+                    }
+                },
+                .comptime_float => struct {
+                    fn get(_: *const T) f64 {
+                        return value;
+                    }
+                },
+                .float => struct {
+                    fn get(_: *const T) V {
+                        return value;
+                    }
+                },
+                .null => struct {
+                    fn get(_: *const T) ?bool {
+                        return null;
+                    }
+                },
+                .pointer => |ptr| switch (ptr.size) {
+                    .one => blk: {
+                        const child = @typeInfo(ptr.child);
+                        if (child == .array and child.array.child == u8) {
+                            break :blk struct {
+                                fn get(_: *const T) []const u8 {
+                                    return value;
+                                }
+                            };
+                        }
+                        @compileError("bridge.attribute: unsupported pointer type " ++ @typeName(V));
+                    },
+                    else => @compileError("bridge.attribute: unsupported pointer size for " ++ @typeName(V)),
+                },
+                else => @compileError("bridge.attribute: unsupported type " ++ @typeName(V)),
+            };
+            return Accessor.init(T, Closure.get, null, opts);
+        }
+
         const PrototypeChainEntry = @import("../js/TaggedOpaque.zig").PrototypeChainEntry;
         pub fn prototypeChain() [prototypeChainLength(T)]PrototypeChainEntry {
             var entries: [prototypeChainLength(T)]PrototypeChainEntry = undefined;
@@ -928,6 +995,7 @@ pub const PageJsApis = flattenTypes(&.{
     @import("../webapi/navigation/NavigationActivation.zig"),
     @import("../webapi/canvas/CanvasGradient.zig"),
     @import("../webapi/canvas/CanvasRenderingContext2D.zig"),
+    @import("../webapi/canvas/TextMetrics.zig"),
     @import("../webapi/canvas/WebGLRenderingContext.zig"),
     @import("../webapi/canvas/OffscreenCanvas.zig"),
     @import("../webapi/canvas/OffscreenCanvasRenderingContext2D.zig"),
@@ -970,6 +1038,7 @@ pub const WorkerJsApis = flattenTypes(&.{
     @import("../webapi/AbortController.zig"),
     @import("../webapi/URL.zig"),
     @import("../webapi/canvas/CanvasGradient.zig"),
+    @import("../webapi/canvas/TextMetrics.zig"),
     @import("../webapi/canvas/OffscreenCanvas.zig"),
     @import("../webapi/canvas/OffscreenCanvasRenderingContext2D.zig"),
     @import("../webapi/net/XMLHttpRequest.zig"),

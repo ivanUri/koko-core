@@ -21,6 +21,7 @@ const Frame = @import("../../browser/Frame.zig");
 const Canvas = @import("../element/html/Canvas.zig");
 const CanvasGradient = @import("CanvasGradient.zig");
 const ImageData = @import("../ImageData.zig");
+const TextMetrics = @import("TextMetrics.zig");
 
 /// This class doesn't implement a `constructor`.
 /// It can be obtained with a call to `HTMLCanvasElement#getContext`.
@@ -32,6 +33,10 @@ _canvas: *Canvas,
 /// Fill color.
 /// TODO: Add support for `CanvasGradient` and `CanvasPattern`.
 _fill_style: color.RGBA = color.RGBA.Named.black,
+/// Current font (CSS font shorthand). Per spec the default is
+/// "10px sans-serif". The string is stored in the page arena so it outlives
+/// the call that set it.
+_font: []const u8 = "10px sans-serif",
 
 pub fn getCanvas(self: *const CanvasRenderingContext2D) *Canvas {
     return self._canvas;
@@ -49,6 +54,19 @@ pub fn setFillStyle(
 ) !void {
     // Prefer the same fill_style if fails.
     self._fill_style = color.RGBA.parse(value) catch self._fill_style;
+}
+
+pub fn getFont(self: *const CanvasRenderingContext2D) []const u8 {
+    return self._font;
+}
+
+pub fn setFont(self: *CanvasRenderingContext2D, value: []const u8, frame: *Frame) !void {
+    // Velora has no real text shaping pipeline, so we do no validation here
+    // beyond round-tripping the string. This matches the spec's "if the new
+    // value is unparseable, leave the attribute unchanged" only insofar as
+    // pathological values won't crash; a future text engine will need to
+    // parse and reject invalid CSS font shorthands.
+    self._font = try frame.dupeString(value);
 }
 
 const WidthOrImageData = union(enum) {
@@ -127,6 +145,13 @@ pub fn stroke(_: *CanvasRenderingContext2D) void {}
 pub fn clip(_: *CanvasRenderingContext2D) void {}
 pub fn fillText(_: *CanvasRenderingContext2D, _: []const u8, _: f64, _: f64, _: ?f64) void {}
 pub fn strokeText(_: *CanvasRenderingContext2D, _: []const u8, _: f64, _: f64, _: ?f64) void {}
+pub fn measureText(_: *CanvasRenderingContext2D, _: []const u8, frame: *Frame) !*TextMetrics {
+    // Velora is headless and has no font system, so all metrics are 0.
+    // Returning a real TextMetrics object (with all spec-defined attributes
+    // present) is still required so that callers don't trip on a missing
+    // method.
+    return TextMetrics.init(frame);
+}
 pub fn createLinearGradient(
     _: *CanvasRenderingContext2D,
     x0: f64,
@@ -172,7 +197,7 @@ pub const JsApi = struct {
     };
 
     pub const canvas = bridge.accessor(CanvasRenderingContext2D.getCanvas, null, .{});
-    pub const font = bridge.property("10px sans-serif", .{ .template = false, .readonly = false });
+    pub const font = bridge.accessor(CanvasRenderingContext2D.getFont, CanvasRenderingContext2D.setFont, .{});
     pub const globalAlpha = bridge.property(1.0, .{ .template = false, .readonly = false });
     pub const globalCompositeOperation = bridge.property("source-over", .{ .template = false, .readonly = false });
     pub const strokeStyle = bridge.property("#000000", .{ .template = false, .readonly = false });
@@ -213,6 +238,7 @@ pub const JsApi = struct {
     pub const clip = bridge.function(CanvasRenderingContext2D.clip, .{ .noop = true });
     pub const fillText = bridge.function(CanvasRenderingContext2D.fillText, .{ .noop = true });
     pub const strokeText = bridge.function(CanvasRenderingContext2D.strokeText, .{ .noop = true });
+    pub const measureText = bridge.function(CanvasRenderingContext2D.measureText, .{});
     pub const createLinearGradient = bridge.function(CanvasRenderingContext2D.createLinearGradient, .{});
     pub const createRadialGradient = bridge.function(CanvasRenderingContext2D.createRadialGradient, .{ .dom_exception = true });
     pub const createConicGradient = bridge.function(CanvasRenderingContext2D.createConicGradient, .{});

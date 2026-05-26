@@ -13,14 +13,18 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const js = @import("../js/js.zig");
+const Frame = @import("../browser/Frame.zig");
+const GenericIterator = @import("collections/iterator.zig").Entry;
 
 pub fn registerTypes() []const type {
-    return &.{ PluginArray, Plugin };
+    return &.{ PluginArray, Plugin, ValueIterator };
 }
 
 const PluginArray = @This();
 
 _pad: bool = false,
+
+pub const ValueIterator = GenericIterator(Iterator, null);
 
 pub fn refresh(_: *const PluginArray) void {}
 pub fn getAtIndex(_: *const PluginArray, index: usize) ?*Plugin {
@@ -32,6 +36,21 @@ pub fn getByName(_: *const PluginArray, name: []const u8) ?*Plugin {
     _ = name;
     return null;
 }
+
+pub fn values(self: *PluginArray, frame: *Frame) !*ValueIterator {
+    return .init(.{ .list = self }, frame);
+}
+
+const Iterator = struct {
+    index: u32 = 0,
+    list: *PluginArray,
+
+    pub fn next(self: *Iterator, _: *Frame) !?*Plugin {
+        const plugin = self.list.getAtIndex(self.index) orelse return null;
+        self.index += 1;
+        return plugin;
+    }
+};
 
 // Cannot be constructed, and we currently never return any, so no reason to
 // implement anything on it (for now)
@@ -57,7 +76,7 @@ pub const JsApi = struct {
         pub const empty_with_no_proto = true;
     };
 
-    pub const length = bridge.property(0, .{ .template = false });
+    pub const length = bridge.attribute(@as(u32, 0), .{});
     pub const refresh = bridge.function(PluginArray.refresh, .{});
     pub const @"[int]" = bridge.indexed(PluginArray.getAtIndex, null, .{ .null_as_undefined = true });
     pub const @"[str]" = bridge.namedIndexed(PluginArray.getByName, null, null, .{ .null_as_undefined = true });
@@ -69,4 +88,6 @@ pub const JsApi = struct {
         return self.getAtIndex(@intCast(index));
     }
     pub const namedItem = bridge.function(PluginArray.getByName, .{});
+    // Per WebIDL: PluginArray is iterable<Plugin> via its indexed properties.
+    pub const symbol_iterator = bridge.iterator(PluginArray.values, .{});
 };

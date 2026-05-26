@@ -412,7 +412,23 @@ pub const WaitUntil = enum {
 /// Pre-formatted HTTP headers for reuse across Http and Client.
 /// Must be initialized with an allocator that outlives all HTTP connections.
 pub const HttpHeaders = struct {
-    const user_agent_base: [:0]const u8 = "Velora/1.0";
+    // The base UA includes the host OS family in parentheses, mirroring the
+    // long-standing convention used by every shipping browser (and by curl,
+    // wget, python-requests, etc). Sites use the OS hint for layout (e.g.
+    // serving WebP/AVIF on Linux/macOS) and fingerprint libraries cross-check
+    // it against `navigator.platform`; reporting only "Velora/1.0" makes us
+    // look inconsistent with our own platform string. The brand portion is
+    // still our honest identity — we don't pretend to be Chrome/Firefox.
+    const user_agent_base: [:0]const u8 = blk: {
+        const os_part: [:0]const u8 = switch (@import("builtin").os.tag) {
+            .macos => "Macintosh; Intel Mac OS X 10_15_7",
+            .windows => "Windows NT 10.0; Win64; x64",
+            .linux => "X11; Linux x86_64",
+            .freebsd => "X11; FreeBSD amd64",
+            else => "Unknown",
+        };
+        break :blk "Velora/1.0 (" ++ os_part ++ ")";
+    };
 
     const Brand = struct {
         brand: [:0]const u8,

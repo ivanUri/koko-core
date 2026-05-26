@@ -168,23 +168,23 @@ pub const JsApi = struct {
 
     // Read-only properties
     pub const userAgent = bridge.accessor(Navigator.getUserAgent, null, .{});
-    pub const appName = bridge.property("Netscape", .{ .template = false });
-    pub const appCodeName = bridge.property("Netscape", .{ .template = false });
-    pub const appVersion = bridge.property("1.0", .{ .template = false });
+    pub const appName = bridge.attribute("Netscape", .{});
+    pub const appCodeName = bridge.attribute("Netscape", .{});
+    pub const appVersion = bridge.attribute("1.0", .{});
     pub const platform = bridge.accessor(Navigator.getPlatform, null, .{});
-    pub const language = bridge.property("en-US", .{ .template = false });
+    pub const language = bridge.attribute("en-US", .{});
     pub const languages = bridge.accessor(Navigator.getLanguages, null, .{});
-    pub const onLine = bridge.property(true, .{ .template = false });
-    pub const cookieEnabled = bridge.property(true, .{ .template = false });
-    pub const hardwareConcurrency = bridge.property(4, .{ .template = false });
-    pub const deviceMemory = bridge.property(@as(f64, 8.0), .{ .template = false });
-    pub const maxTouchPoints = bridge.property(0, .{ .template = false });
-    pub const vendor = bridge.property("", .{ .template = false });
-    pub const product = bridge.property("Gecko", .{ .template = false });
-    pub const webdriver = bridge.property(false, .{ .template = false });
+    pub const onLine = bridge.attribute(true, .{});
+    pub const cookieEnabled = bridge.attribute(true, .{});
+    pub const hardwareConcurrency = bridge.attribute(@as(u32, 4), .{});
+    pub const deviceMemory = bridge.attribute(@as(f64, 8.0), .{});
+    pub const maxTouchPoints = bridge.attribute(@as(u32, 0), .{});
+    pub const vendor = bridge.attribute("", .{});
+    pub const product = bridge.attribute("Gecko", .{});
+    pub const webdriver = bridge.attribute(false, .{});
     pub const plugins = bridge.accessor(Navigator.getPlugins, null, .{});
-    pub const doNotTrack = bridge.property(null, .{ .template = false });
-    pub const globalPrivacyControl = bridge.property(true, .{ .template = false });
+    pub const doNotTrack = bridge.attribute(null, .{});
+    pub const globalPrivacyControl = bridge.attribute(true, .{});
     pub const registerProtocolHandler = bridge.function(Navigator.registerProtocolHandler, .{ .dom_exception = true });
     pub const unregisterProtocolHandler = bridge.function(Navigator.unregisterProtocolHandler, .{ .dom_exception = true });
 

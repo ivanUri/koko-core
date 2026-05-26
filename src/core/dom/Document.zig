@@ -1228,7 +1228,7 @@ pub const JsApi = struct {
         const doc_frame = self._frame orelse return "UTF-8";
         return doc_frame.charset;
     }
-    pub const referrer = bridge.property("", .{ .template = false });
+    pub const referrer = bridge.attribute("", .{});
     pub const title = bridge.accessor(Document.getTitle, Document.setTitle, .{});
 };
 

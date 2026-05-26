@@ -80,14 +80,14 @@ pub const JsApi = struct {
 
     pub const constructor = bridge.constructor(FontFace.init, .{});
     pub const family = bridge.accessor(FontFace.getFamily, null, .{});
-    pub const status = bridge.property("loaded", .{ .template = false, .readonly = true });
-    pub const style = bridge.property("normal", .{ .template = false, .readonly = true });
-    pub const weight = bridge.property("normal", .{ .template = false, .readonly = true });
-    pub const stretch = bridge.property("normal", .{ .template = false, .readonly = true });
-    pub const unicodeRange = bridge.property("U+0-10FFFF", .{ .template = false, .readonly = true });
-    pub const variant = bridge.property("normal", .{ .template = false, .readonly = true });
-    pub const featureSettings = bridge.property("normal", .{ .template = false, .readonly = true });
-    pub const display = bridge.property("auto", .{ .template = false, .readonly = true });
+    pub const status = bridge.attribute("loaded", .{});
+    pub const style = bridge.attribute("normal", .{});
+    pub const weight = bridge.attribute("normal", .{});
+    pub const stretch = bridge.attribute("normal", .{});
+    pub const unicodeRange = bridge.attribute("U+0-10FFFF", .{});
+    pub const variant = bridge.attribute("normal", .{});
+    pub const featureSettings = bridge.attribute("normal", .{});
+    pub const display = bridge.attribute("auto", .{});
     pub const loaded = bridge.accessor(FontFace.getLoaded, null, .{});
     pub const load = bridge.function(FontFace.load, .{});
 };
