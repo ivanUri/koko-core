@@ -65,8 +65,8 @@ _event_queue: *RtcEventQueue,
 
 _ctx: *ssl_c.SSL_CTX,
 _ssl: *ssl_c.SSL,
-_read_bio: *ssl_c.BIO,   // network → SSL
-_write_bio: *ssl_c.BIO,  // SSL → network
+_read_bio: *ssl_c.BIO, // network → SSL
+_write_bio: *ssl_c.BIO, // SSL → network
 
 _state: State,
 _role: Role,

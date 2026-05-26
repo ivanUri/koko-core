@@ -208,6 +208,22 @@ pub fn get(self: *FsCache, arena: std.mem.Allocator, req: CacheRequest) ?CachedR
     };
 }
 
+pub fn evict(self: *FsCache, url: []const u8) void {
+    const hashed_key = hashKey(url);
+    const cache_p = cachePath(&hashed_key);
+
+    const lock = self.getLockPtr(&hashed_key);
+    lock.lock();
+    defer lock.unlock();
+
+    self.dir.deleteFile(&cache_p) catch |e| switch (e) {
+        error.FileNotFound => {},
+        else => log.warn(.cache, "evict failed", .{ .url = url, .file = &cache_p, .err = e }),
+    };
+
+    log.debug(.cache, "evict", .{ .url = url, .hash = &hashed_key });
+}
+
 pub fn put(self: *FsCache, meta: CachedMetadata, body: []const u8) !void {
     const hashed_key = hashKey(meta.url);
     const cache_p = cachePath(&hashed_key);

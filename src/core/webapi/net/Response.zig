@@ -32,6 +32,7 @@ const Response = @This();
 pub const Type = enum {
     basic,
     cors,
+    default,
     @"error",
     @"opaque",
     opaqueredirect,
@@ -42,6 +43,7 @@ _status: u16,
 _arena: Allocator,
 _headers: *Headers,
 _body: Body = .empty,
+_body_used: bool = false,
 _type: Type,
 _status_text: []const u8,
 _url: [:0]const u8,
@@ -60,9 +62,15 @@ const InitOpts = struct {
     statusText: ?[]const u8 = null,
 };
 
-/// Body can be: null, string ([]const u8), ReadableStream, Blob, ArrayBuffer
+/// Body discriminant: tracks whether body came from a string (has default Content-Type)
+/// or a buffer source (no default Content-Type per Fetch spec §2.2.1).
 pub const BodyInit = union(enum) {
     stream: *ReadableStream,
+    /// Plain string — gets Content-Type: text/plain;charset=UTF-8
+    string: []const u8,
+    /// Raw bytes / TypedArray / ArrayBuffer — NO default Content-Type
+    buffer: []const u8,
+    /// Legacy alias kept for fetch() internal path (treated as string)
     bytes: []const u8,
     js_val: js.Value,
 };
@@ -75,15 +83,33 @@ pub fn init(body_: ?BodyInit, opts_: ?InitOpts, exec: *const Execution) !*Respon
     const opts = opts_ orelse InitOpts{};
     const status_text = if (opts.statusText) |st| try arena.dupe(u8, st) else "";
 
-    // Parse body from the union
+    // Build headers first so we can conditionally set Content-Type from body.
+    const headers = try Headers.init(opts.headers, exec);
+
+    // Parse body from the union, tracking whether Content-Type must be inferred.
     const body: Body = blk: {
         const b = body_ orelse break :blk .empty;
         switch (b) {
+            .string => |s| {
+                // String body → Content-Type: text/plain;charset=UTF-8 (if not already set).
+                if (try headers.get("content-type", exec) == null) {
+                    try headers.set("content-type", "text/plain;charset=UTF-8", exec);
+                }
+                break :blk .{ .bytes = try arena.dupe(u8, s) };
+            },
+            .buffer => |buf| {
+                // Buffer/TypedArray/ArrayBuffer → NO default Content-Type per spec.
+                break :blk .{ .bytes = try arena.dupe(u8, buf) };
+            },
             .bytes => |body_bytes| break :blk .{ .bytes = try arena.dupe(u8, body_bytes) },
             .stream => |stream| break :blk .{ .stream = stream },
             .js_val => |js_val| {
                 if (js_val.isNullOrUndefined()) {
                     break :blk .empty;
+                }
+                // Treat js_val as string body for Content-Type purposes.
+                if (try headers.get("content-type", exec) == null) {
+                    try headers.set("content-type", "text/plain;charset=UTF-8", exec);
                 }
                 break :blk .{ .bytes = try arena.dupe(u8, try js_val.toStringSmart()) };
             },
@@ -92,15 +118,17 @@ pub fn init(body_: ?BodyInit, opts_: ?InitOpts, exec: *const Execution) !*Respon
     };
 
     const self = try arena.create(Response);
+    // Programmatically constructed Response has type "default" per Fetch spec §2.2.
+    // Only fetch()-returned responses get "basic", "cors", or "opaque".
     self.* = .{
         ._arena = arena,
         ._status = opts.status,
         ._status_text = status_text,
         ._url = "",
         ._body = body,
-        ._type = .basic,
+        ._type = .default,
         ._is_redirected = false,
-        ._headers = try Headers.init(opts.headers, exec),
+        ._headers = headers,
     };
     return self;
 }
@@ -164,23 +192,53 @@ pub fn isOK(self: *const Response) bool {
     return self._status >= 200 and self._status <= 299;
 }
 
-pub fn getText(self: *const Response, exec: *const Execution) !js.Promise {
+pub fn getBodyUsed(self: *const Response) bool {
+    // bodyless response is never "used" per spec
+    return switch (self._body) {
+        .empty => false,
+        else => self._body_used,
+    };
+}
+
+fn stripBom(data: []const u8) []const u8 {
+    // Strip UTF-8 BOM (U+FEFF = EF BB BF) per Fetch spec body text decode
+    if (data.len >= 3 and data[0] == 0xEF and data[1] == 0xBB and data[2] == 0xBF) {
+        return data[3..];
+    }
+    return data;
+}
+
+pub fn getText(self: *Response, exec: *const Execution) !js.Promise {
     const local = exec.context.local.?;
+    if (self._body_used) {
+        return local.rejectPromise(.{ .type_error = "body has already been consumed" });
+    }
     const body = switch (self._body) {
         .bytes => |b| b,
-        .empty => "",
+        .empty => {
+            // null body: bodyUsed stays false, return empty string
+            return local.resolvePromise(@as([]const u8, ""));
+        },
         .stream => return local.rejectPromise(.{ .type_error = "Cannot read text from stream body" }),
     };
-    return local.resolvePromise(body);
+    self._body_used = true;
+    return local.resolvePromise(stripBom(body));
 }
 
 pub fn getJson(self: *Response, exec: *const Execution) !js.Promise {
     const local = exec.context.local.?;
+    if (self._body_used) {
+        return local.rejectPromise(.{ .type_error = "body has already been consumed" });
+    }
     const body = switch (self._body) {
         .bytes => |b| b,
-        .empty => "",
+        .empty => {
+            self._body_used = false;
+            return local.rejectPromise(.{ .syntax_error = "failed to parse" });
+        },
         .stream => return local.rejectPromise(.{ .type_error = "Cannot read JSON from stream body" }),
     };
+    self._body_used = true;
     const value = local.parseJSON(body) catch {
         return local.rejectPromise(.{ .syntax_error = "failed to parse" });
     };
@@ -189,8 +247,14 @@ pub fn getJson(self: *Response, exec: *const Execution) !js.Promise {
 
 pub fn arrayBuffer(self: *Response, exec: *const Execution) !js.Promise {
     const local = exec.context.local.?;
+    if (self._body_used) {
+        return local.rejectPromise(.{ .type_error = "body has already been consumed" });
+    }
     return switch (self._body) {
-        .bytes => |body| local.resolvePromise(js.ArrayBuffer{ .values = body }),
+        .bytes => |body| blk: {
+            self._body_used = true;
+            break :blk local.resolvePromise(js.ArrayBuffer{ .values = body });
+        },
         .empty => local.resolvePromise(js.ArrayBuffer{ .values = "" }),
         .stream => |stream| StreamConsumer.start(stream, exec),
     };
@@ -309,22 +373,36 @@ const StreamConsumer = struct {
     }
 };
 
-pub fn blob(self: *const Response, exec: *const Execution) !js.Promise {
+pub fn blob(self: *Response, exec: *const Execution) !js.Promise {
     const local = exec.context.local.?;
+    if (self._body_used) {
+        return local.rejectPromise(.{ .type_error = "body has already been consumed" });
+    }
     const body = switch (self._body) {
         .bytes => |b| b,
-        .empty => "",
+        .empty => {
+            const content_type = try self._headers.get("content-type", exec) orelse "";
+            const b = try Blob.initFromBytes("", content_type, true, exec.context.page);
+            return local.resolvePromise(b);
+        },
         .stream => return local.rejectPromise(.{ .type_error = "Cannot read blob from stream body" }),
     };
+    self._body_used = true;
     const content_type = try self._headers.get("content-type", exec) orelse "";
     const b = try Blob.initFromBytes(body, content_type, true, exec.context.page);
     return local.resolvePromise(b);
 }
 
-pub fn bytes(self: *const Response, exec: *const Execution) !js.Promise {
+pub fn bytes(self: *Response, exec: *const Execution) !js.Promise {
     const local = exec.context.local.?;
+    if (self._body_used) {
+        return local.rejectPromise(.{ .type_error = "body has already been consumed" });
+    }
     const body = switch (self._body) {
-        .bytes => |b| b,
+        .bytes => |b| blk: {
+            self._body_used = true;
+            break :blk b;
+        },
         .empty => "",
         .stream => return local.rejectPromise(.{ .type_error = "Cannot read bytes from stream body" }),
     };
@@ -378,6 +456,7 @@ pub const JsApi = struct {
     pub const status = bridge.accessor(Response.getStatus, null, .{});
     pub const statusText = bridge.accessor(Response.getStatusText, null, .{});
     pub const @"type" = bridge.accessor(Response.getType, null, .{});
+    pub const bodyUsed = bridge.accessor(Response.getBodyUsed, null, .{});
     pub const text = bridge.function(Response.getText, .{});
     pub const json = bridge.function(Response.getJson, .{});
     pub const headers = bridge.accessor(Response.getHeaders, null, .{});

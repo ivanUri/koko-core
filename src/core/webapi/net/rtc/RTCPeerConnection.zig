@@ -81,11 +81,22 @@ pub const SignalingState = enum {
 pub const IceGatheringState = enum { new, gathering, complete };
 
 pub const IceConnectionState = enum {
-    new, checking, connected, completed, failed, disconnected, closed,
+    new,
+    checking,
+    connected,
+    completed,
+    failed,
+    disconnected,
+    closed,
 };
 
 pub const PeerConnectionState = enum {
-    new, connecting, connected, failed, disconnected, closed,
+    new,
+    connecting,
+    connected,
+    failed,
+    disconnected,
+    closed,
 };
 
 // ---------------------------------------------------------------------------

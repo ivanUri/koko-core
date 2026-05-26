@@ -284,34 +284,41 @@ pub fn openChannel(
     var buf: [512]u8 = undefined;
     var pos: usize = 0;
 
-    buf[pos] = DC_OPEN_MSG_TYPE; pos += 1;
+    buf[pos] = DC_OPEN_MSG_TYPE;
+    pos += 1;
 
     // Channel type
     const chan_type: u8 = if (ordered)
-        if (max_retransmits != null) 0x01 else 0x00  // reliable=0, partial_reliable_rexmit=1
-    else
-        if (max_retransmits != null) 0x81 else 0x80; // unordered reliable=0x80
-    buf[pos] = chan_type; pos += 1;
+        if (max_retransmits != null) 0x01 else 0x00 // reliable=0, partial_reliable_rexmit=1
+    else if (max_retransmits != null) 0x81 else 0x80; // unordered reliable=0x80
+    buf[pos] = chan_type;
+    pos += 1;
 
     // Priority (0 = best-effort)
-    std.mem.writeInt(u16, buf[pos..][0..2], 0, .big); pos += 2;
+    std.mem.writeInt(u16, buf[pos..][0..2], 0, .big);
+    pos += 2;
 
     // Reliability param
-    std.mem.writeInt(u32, buf[pos..][0..4], max_retransmits orelse 0, .big); pos += 4;
+    std.mem.writeInt(u32, buf[pos..][0..4], max_retransmits orelse 0, .big);
+    pos += 4;
 
     // Label length
     const label_capped = label[0..@min(label.len, 255)];
-    std.mem.writeInt(u16, buf[pos..][0..2], @intCast(label_capped.len), .big); pos += 2;
+    std.mem.writeInt(u16, buf[pos..][0..2], @intCast(label_capped.len), .big);
+    pos += 2;
 
     // Protocol length
     const proto_capped = protocol[0..@min(protocol.len, 255)];
-    std.mem.writeInt(u16, buf[pos..][0..2], @intCast(proto_capped.len), .big); pos += 2;
+    std.mem.writeInt(u16, buf[pos..][0..2], @intCast(proto_capped.len), .big);
+    pos += 2;
 
     // Label
-    @memcpy(buf[pos..][0..label_capped.len], label_capped); pos += label_capped.len;
+    @memcpy(buf[pos..][0..label_capped.len], label_capped);
+    pos += label_capped.len;
 
     // Protocol
-    @memcpy(buf[pos..][0..proto_capped.len], proto_capped); pos += proto_capped.len;
+    @memcpy(buf[pos..][0..proto_capped.len], proto_capped);
+    pos += proto_capped.len;
 
     try self.sendData(stream_id, DC_PPID_CONTROL, true, null, buf[0..pos]);
 }

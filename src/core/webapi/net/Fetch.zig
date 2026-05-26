@@ -174,23 +174,35 @@ fn httpHeaderDoneCallback(response: HttpClient.Response) !bool {
     res._url = try arena.dupeZ(u8, response.url());
     res._is_redirected = response.redirectCount().? > 0;
 
-    // Determine response type based on origin comparison
+    // Determine response type per Fetch spec §4.3:
+    //   - same-origin → .basic
+    //   - cross-origin + ACAO header present → .cors
+    //   - cross-origin + no ACAO header → .opaque (no-cors mode)
     const exec = self._exec;
     const requesting_origin = URL.getOrigin(arena, exec.url.*) catch null;
     const response_origin = URL.getOrigin(arena, res._url) catch null;
 
-    if (requesting_origin) |fo| {
-        if (response_origin) |ro| {
-            if (std.mem.eql(u8, fo, ro)) {
-                res._type = .basic; // Same-origin
-            } else {
-                res._type = .cors; // Cross-origin (for simplicity, assume CORS passed)
-            }
-        } else {
-            res._type = .basic;
-        }
-    } else {
+    const is_same_origin = blk: {
+        const fo = requesting_origin orelse break :blk true;
+        const ro = response_origin orelse break :blk true;
+        break :blk std.mem.eql(u8, fo, ro);
+    };
+
+    if (is_same_origin) {
         res._type = .basic;
+    } else {
+        // Cross-origin: check for CORS headers to distinguish cors vs opaque.
+        // A CORS response must have Access-Control-Allow-Origin present.
+        // We iterate headers since HttpClient.Response only exposes headerIterator().
+        var has_acao = false;
+        var hdr_it = response.headerIterator();
+        while (hdr_it.next()) |hdr| {
+            if (std.ascii.eqlIgnoreCase(hdr.name, "access-control-allow-origin")) {
+                has_acao = true;
+                break;
+            }
+        }
+        res._type = if (has_acao) .cors else .@"opaque";
     }
 
     var it = response.headerIterator();

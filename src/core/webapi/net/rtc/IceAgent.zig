@@ -431,8 +431,8 @@ fn sendStunBindingRequest(self: *IceAgent) !void {
     const len = try StunClient.buildBindingRequest(
         &buf,
         self._stun_tid,
-        null,  // no USERNAME for server reflexive STUN
-        null,  // no MESSAGE-INTEGRITY
+        null, // no USERNAME for server reflexive STUN
+        null, // no MESSAGE-INTEGRITY
         null,
         false,
         null,

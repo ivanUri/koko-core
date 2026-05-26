@@ -44,6 +44,13 @@ pub fn put(self: *Cache, metadata: CachedMetadata, body: []const u8) !void {
     };
 }
 
+/// Remove a cached entry for `url`. No-ops if the entry doesn't exist.
+pub fn evict(self: *Cache, url: []const u8) void {
+    return switch (self.kind) {
+        inline else => |*c| c.evict(url),
+    };
+}
+
 pub const CacheControl = struct {
     max_age: u64,
 
