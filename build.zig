@@ -83,6 +83,7 @@ pub fn build(b: *Build) !void {
         try linkV8(b, mod, enable_asan, enable_tsan, prebuilt_v8_path);
         try linkCurl(b, mod, enable_tsan);
         try linkHtml5Ever(b, mod);
+        try linkWebRtc(b, mod, enable_tsan);
 
         break :blk mod;
     };
@@ -1036,6 +1037,70 @@ fn resolveVersion(b: *std.Build) std.SemanticVersion {
         .pre = b.fmt("{s}.{s}", .{ version.pre.?, commit_count }),
         .build = commit_hash,
     };
+}
+
+/// Build usrsctp as a static library and link it into the velora module.
+/// Also exposes the BoringSSL ssl+crypto libs to velora for DTLS.
+fn linkWebRtc(b: *Build, mod: *Build.Module, is_tsan: bool) !void {
+    const target = mod.resolved_target.?;
+    const optimize = mod.optimize.?;
+
+    // ── usrsctp ──────────────────────────────────────────────────────────────
+    const usrsctp_dep = b.dependency("usrsctp", .{});
+
+    const usrsctp_mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .sanitize_thread = is_tsan,
+    });
+    usrsctp_mod.addIncludePath(usrsctp_dep.path("usrsctplib"));
+
+    const usrsctp = b.addLibrary(.{ .name = "usrsctp", .root_module = usrsctp_mod });
+    usrsctp.installHeadersDirectory(usrsctp_dep.path("usrsctplib"), "usrsctp", .{});
+
+    usrsctp.addCSourceFiles(.{
+        .root = usrsctp_dep.path("usrsctplib"),
+        .flags = &.{
+            "-D__Userspace__",
+            "-DSCTP_PROCESS_LEVEL_LOCKS",
+            "-DSCTP_SIMPLE_ALLOCATOR",
+            "-DUSE_SCTP_SHA1",
+            "-w", // usrsctp has many warnings, suppress them
+        },
+        .files = &.{
+            "netinet/sctp_asconf.c",
+            "netinet/sctp_auth.c",
+            "netinet/sctp_bsd_addr.c",
+            "netinet/sctp_callout.c",
+            "netinet/sctp_cc_functions.c",
+            "netinet/sctp_crc32.c",
+            "netinet/sctp_indata.c",
+            "netinet/sctp_input.c",
+            "netinet/sctp_output.c",
+            "netinet/sctp_pcb.c",
+            "netinet/sctp_peeloff.c",
+            "netinet/sctp_sha1.c",
+            "netinet/sctp_ss_functions.c",
+            "netinet/sctp_sysctl.c",
+            "netinet/sctp_timer.c",
+            "netinet/sctp_userspace.c",
+            "netinet/sctp_usrreq.c",
+            "netinet/sctputil.c",
+            "netinet6/sctp6_usrreq.c",
+            "user_environment.c",
+            "user_mbuf.c",
+            "user_recv_thread.c",
+            "user_socket.c",
+        },
+    });
+
+    mod.linkLibrary(usrsctp);
+
+    // ── BoringSSL (ssl + crypto) for DTLS ────────────────────────────────────
+    // Already built via buildBoringSsl() for curl — reuse the same artifacts.
+    const boringssl = buildBoringSsl(b, target, optimize);
+    for (boringssl) |lib| mod.linkLibrary(lib);
 }
 
 fn linkStbImageWrite(b: *Build, mod: *Build.Module) void {

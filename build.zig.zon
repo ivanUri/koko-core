@@ -38,6 +38,10 @@
             .url = "https://ftp.gnu.org/gnu/libidn/libidn2-2.3.8.tar.gz",
             .hash = "N-V-__8AABGOuAC_dhAN07kfoP4dycCFi8Bka4O-tuhriNH8",
         },
+        .usrsctp = .{
+            .url = "https://github.com/sctplab/usrsctp/archive/refs/heads/master.tar.gz",
+            .hash = "N-V-__8AAH8JWAAnLo1IhGB_xM7Gds4eXGoF64rFChCefjNr",
+        },
     },
     .paths = .{""},
 }
