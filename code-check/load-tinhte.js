@@ -1,12 +1,10 @@
 #!/usr/bin/env node
-// Run a CreepJS fingerprint check (https://abrahamjuliot.github.io/creepjs/)
-// against the local Velora build via CDP.
-//
-// Configuration is hard-coded in the CONFIG block below — no CLI args.
-// Outputs (always written, each in its own file):
-//   <OUT_DIR>/creepjs.html   full document.documentElement.outerHTML
-//   <OUT_DIR>/creepjs.log    velora stderr captured during the run
-//   <OUT_DIR>/creepjs.json   parsed summary + last DOM probe
+// Minimal Velora page loader — no probes, no injection.
+// Spawns Velora, navigates to TARGET_URL, waits for `Page.loadEventFired`
+// (plus a short settle delay so late XHRs/scripts can land in the DOM),
+// then saves:
+//   <OUT_DIR>/page.html   document.documentElement.outerHTML
+//   <OUT_DIR>/page.log    velora stderr captured during the run
 
 const { spawn } = require("node:child_process");
 const net = require("node:net");
@@ -21,12 +19,14 @@ const veloraBin = resolve(repoRoot, "zig-out/bin/velora");
 // ---------------------------------------------------------------------------
 const CONFIG = {
     url: "https://tinhte.vn/",
-    outDir: resolve(repoRoot, "code-check/tmp/creepjs"),
-    htmlFile: "creepjs.html",
-    logFile: "creepjs.log",
-    jsonFile: "creepjs.json",
-    // Overall budget for the fingerprint to settle (CreepJS spins for ~5–20s).
-    settleTimeoutMs: 60000,
+    outDir: resolve(repoRoot, "code-check/tmp/load-tinhte"),
+    htmlFile: "page.html",
+    logFile: "page.log",
+    // How long to wait for `Page.loadEventFired` after navigating.
+    loadTimeoutMs: 30000,
+    // Extra idle time after `load` before we snapshot the DOM, so
+    // post-load scripts/XHRs that mutate the document can settle.
+    settleAfterLoadMs: 3000,
     // Per-CDP-call timeout / velora http-timeout.
     timeoutMs: 30000,
     logLevel: "info",
@@ -129,85 +129,16 @@ async function pageEval(client, sessionId, expression, timeoutMs = 15000) {
     return r?.result?.value;
 }
 
-// CreepJS is fully client-side: it spins for several seconds computing the
-// fingerprint, then renders #fingerprint-data + #fuzzy-fingerprint .unblurred.
-// The .trust-score-container widget depends on a backend POST that often
-// never resolves under Velora, so we poll for the local fingerprint sections
-// instead — that is enough to know "compute is done".
-const READY_PROBE = `(async () => {
-  const grab = (sel) => {
-    const el = document.querySelector(sel);
-    return el ? el.textContent.trim() : null;
-  };
-  const fpData = document.querySelector("#fingerprint-data");
-  const fpDataLen = fpData ? fpData.textContent.trim().length : 0;
-  const fuzzyText = grab("#fuzzy-fingerprint .unblurred");
-  const trustText =
-    grab(".trust-score-container") ||
-    grab(".unblurred .trust-score-container") ||
-    grab("[id*=trust-score]");
-  const fpIdText =
-    grab("#fingerprint-data .fingerprint .visitor-id") ||
-    grab(".fingerprint .visitor-id") ||
-    grab("#creep-fingerprint .visitor-id") ||
-    grab(".visitor-id");
-  const creepIdText =
-    grab(".creep-id") ||
-    grab(".creep .visitor-id");
-  // Ready = local compute finished. Trust score widget is best-effort only.
-  const ready = fpDataLen > 200 && !!fuzzyText && /[0-9a-f]{8,}/i.test(fuzzyText);
-  return { ready, fpDataLen, fuzzyText, trustText, fpIdText, creepIdText };
-})()`;
-
-const SUMMARY_PROBE = `(() => {
-  const text = (sel) => {
-    const el = document.querySelector(sel);
-    return el ? el.textContent.replace(/\\s+/g, ' ').trim() : null;
-  };
-  const all = (sel) => Array.from(document.querySelectorAll(sel))
-    .map((el) => el.textContent.replace(/\\s+/g, ' ').trim());
-  const pickNum = (s) => {
-    if (!s) return null;
-    const m = s.match(/(-?\\d+(?:\\.\\d+)?)/);
-    return m ? Number(m[1]) : null;
-  };
-  const trust = text(".trust-score-container");
-  const lies = all(".lies-len, .lies, .lies-list").join(" | ");
-  const bot = all(".bot-detection, .bot, [class*=headless]").join(" | ");
-  return {
-    url: location.href,
-    title: document.title,
-    trustScoreText: trust,
-    trustScorePct: pickNum(trust),
-    fingerprintId:
-      text("#fingerprint-data .fingerprint .visitor-id") ||
-      text(".fingerprint .visitor-id") ||
-      text(".visitor-id"),
-    creepId: text(".creep-id") || text(".creep .visitor-id"),
-    liesSummary: lies || null,
-    botSummary: bot || null,
-    userAgent: navigator.userAgent,
-    webdriver: navigator.webdriver === true,
-    languages: navigator.languages,
-    platform: navigator.platform,
-    hardwareConcurrency: navigator.hardwareConcurrency,
-    deviceMemory: navigator.deviceMemory ?? null,
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-    screen: { w: screen.width, h: screen.height, dpr: devicePixelRatio },
-  };
-})()`;
-
 async function main() {
     if (!existsSync(veloraBin)) {
         console.error(`velora binary not found: ${veloraBin}`);
-        console.error("build first: zig build -Doptimize=ReleaseFast -Dsnapshot_path=../../snapshot.bin");
+        console.error("build first: zig build -Doptimize=ReleaseFast");
         process.exit(1);
     }
     if (!existsSync(CONFIG.outDir)) mkdirSync(CONFIG.outDir, { recursive: true });
 
     const htmlPath = resolve(CONFIG.outDir, CONFIG.htmlFile);
     const logPath = resolve(CONFIG.outDir, CONFIG.logFile);
-    const jsonPath = resolve(CONFIG.outDir, CONFIG.jsonFile);
 
     const port = await getFreePort();
     const veloraArgs = [
@@ -271,83 +202,42 @@ async function main() {
             const off = client.onEvent("Page.loadEventFired", sessionId, () => { off(); res(); });
         });
 
-        console.log(`[creepjs] navigating…`);
+        console.log(`[load] navigating to ${CONFIG.url}`);
         const t0 = Date.now();
         const nav = await client.send("Page.navigate", { url: CONFIG.url }, sessionId, CONFIG.timeoutMs);
         if (nav.errorText) throw new Error(`navigate error: ${nav.errorText}`);
-        await Promise.race([loadOnce, delay(Math.min(CONFIG.timeoutMs, 15000))]);
-        console.log(`[creepjs] page load fired in ${Date.now() - t0}ms; waiting for fingerprint to settle…`);
 
-        const pollDeadline = Date.now() + CONFIG.settleTimeoutMs;
-        let lastProbe = null;
-        let ready = false;
-        while (Date.now() < pollDeadline) {
-            try {
-                lastProbe = await pageEval(client, sessionId, READY_PROBE, 10000);
-                if (lastProbe && lastProbe.ready) { ready = true; break; }
-            } catch (e) {
-                console.log(`  poll error: ${e.message}`);
-            }
-            await delay(500);
-        }
-        const settleMs = Date.now() - t0;
-        if (!ready) {
-            console.log(`[creepjs] WARNING: fingerprint did not settle within ${CONFIG.settleTimeoutMs}ms`);
-            console.log(`[creepjs] last probe: ${JSON.stringify(lastProbe)}`);
-        } else {
-            console.log(`[creepjs] fingerprint settled in ${settleMs}ms`);
-        }
+        await Promise.race([
+            loadOnce,
+            delay(CONFIG.loadTimeoutMs).then(() => console.log(`[load] WARNING: load event did not fire within ${CONFIG.loadTimeoutMs}ms`)),
+        ]);
+        console.log(`[load] load fired in ${Date.now() - t0}ms; settling for ${CONFIG.settleAfterLoadMs}ms…`);
+        await delay(CONFIG.settleAfterLoadMs);
 
-        await delay(1000);
-
-        let summary = null;
-        try {
-            summary = await pageEval(client, sessionId, SUMMARY_PROBE, 15000);
-        } catch (e) {
-            console.log(`[creepjs] summary probe failed: ${e.message}`);
-        }
         let html = "";
         try {
             const v = await pageEval(client, sessionId,
                 "document.documentElement && document.documentElement.outerHTML", 15000);
             if (typeof v === "string") html = v;
         } catch (e) {
-            console.log(`[creepjs] html extraction failed: ${e.message}`);
+            console.log(`[load] html extraction failed: ${e.message}`);
         }
 
         writeFileSync(htmlPath, html);
-        writeFileSync(jsonPath, JSON.stringify({
-            generated_at: new Date().toISOString(),
-            engine: "velora",
-            velora_bin: veloraBin,
-            url: CONFIG.url,
-            settled: ready,
-            settle_ms: settleMs,
-            settle_timeout_ms: CONFIG.settleTimeoutMs,
-            html_bytes: html.length,
-            html_file: htmlPath,
-            log_file: logPath,
-            summary,
-            last_probe: lastProbe,
-        }, null, 2));
 
-        console.log("\n=== creepjs summary ===");
-        console.log(`url:           ${summary?.url ?? CONFIG.url}`);
-        console.log(`title:         ${summary?.title ?? "(none)"}`);
-        console.log(`trust score:   ${summary?.trustScoreText ?? "(none)"} (parsed: ${summary?.trustScorePct ?? "n/a"})`);
-        console.log(`fingerprint:   ${summary?.fingerprintId ?? "(none)"}`);
-        console.log(`creep id:      ${summary?.creepId ?? "(none)"}`);
-        console.log(`webdriver:     ${summary?.webdriver}`);
-        console.log(`user-agent:    ${summary?.userAgent ?? "(none)"}`);
-        console.log(`platform:      ${summary?.platform ?? "(none)"}`);
-        console.log(`languages:     ${JSON.stringify(summary?.languages)}`);
-        console.log(`timezone:      ${summary?.timezone ?? "(none)"}`);
-        console.log(`screen:        ${JSON.stringify(summary?.screen)}`);
-        console.log(`html saved:    ${htmlPath} (${html.length} bytes)`);
-        console.log(`log saved:    ${logPath}`);
-        console.log(`json saved:    ${jsonPath}`);
+        let title = null;
+        try {
+            title = await pageEval(client, sessionId, "document.title", 5000);
+        } catch (_) {}
+
+        console.log("\n=== load summary ===");
+        console.log(`url:        ${CONFIG.url}`);
+        console.log(`title:      ${title ?? "(none)"}`);
+        console.log(`html bytes: ${html.length}`);
+        console.log(`html saved: ${htmlPath}`);
+        console.log(`log saved:  ${logPath}`);
     } catch (err) {
-        console.error("[creepjs] error:", err.message);
+        console.error("[load] error:", err.message);
         process.exitCode = 1;
     } finally {
         try { ws && ws.close(); } catch (_) {}

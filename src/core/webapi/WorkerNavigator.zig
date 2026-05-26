@@ -17,7 +17,7 @@ const builtin = @import("builtin");
 const js = @import("../js/js.zig");
 
 const NavigatorUAData = @import("NavigatorUAData.zig");
-const WorkerGlobalScope = @import("WorkerGlobalScope.zig");
+const Page = @import("../browser/Page.zig");
 
 /// WorkerNavigator is the worker-context counterpart of Navigator. The HTML
 /// spec defines it as a distinct interface that exposes only the subset of
@@ -36,8 +36,12 @@ _pad: bool = false,
 
 pub const init: WorkerNavigator = .{};
 
-pub fn getUserAgent(_: *const WorkerNavigator, worker: *WorkerGlobalScope) []const u8 {
-    return worker._session.browser.http_client.getUserAgent();
+pub fn getUserAgent(_: *const WorkerNavigator, page: *Page) []const u8 {
+    // The Page is reachable from any execution context (frame OR worker)
+    // via Context.page, and it is the source of truth for the HTTP client
+    // (and thus the UA). Using *Page here means the same code path works
+    // whether `navigator.userAgent` is read from window or worker.
+    return page.session.browser.http_client.getUserAgent();
 }
 
 pub fn getLanguages(_: *const WorkerNavigator) [2][]const u8 {

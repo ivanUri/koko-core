@@ -17,7 +17,6 @@ const builtin = @import("builtin");
 
 const Config = @import("../../runtime/Config.zig");
 const js = @import("../js/js.zig");
-const Frame = @import("../browser/Frame.zig");
 
 const NavigatorUAData = @This();
 
@@ -52,14 +51,18 @@ pub fn toJSON(_: *const NavigatorUAData) struct {
     };
 }
 
-pub fn getHighEntropyValues(_: *const NavigatorUAData, hints: []const []const u8, frame: *Frame) !js.Promise {
+pub fn getHighEntropyValues(_: *const NavigatorUAData, hints: []const []const u8, exec: *js.Execution) !js.Promise {
     // This should always return `brands` + `mobile` + `platform` and then whatever
     // "hints" field is requested (assuming the browser has permission), but it's
     // also valid to just return everything.
+    //
+    // Uses *Execution rather than *Frame so the same path works in both
+    // Window and Worker contexts. `context.local` is the local of whichever
+    // realm we're currently dispatched in.
 
     _ = hints;
 
-    return frame.js.local.?.resolvePromise(.{
+    return exec.context.local.?.resolvePromise(.{
         .brands = brandList(),
         .mobile = false,
         .platform = uaPlatform(),

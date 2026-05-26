@@ -469,9 +469,18 @@ fn isExecution(comptime T: type) bool {
 
 fn getGlobalArg(comptime T: type, ctx: *Context) T {
     if (comptime isFrame(T)) {
+        // Worker globals don't have their own Frame, but they do hold a
+        // pointer to the parent frame that spawned the worker (kept on
+        // WorkerGlobalScope._worker._frame, where it backs origin/referer/
+        // headers per spec). Returning that parent frame here is what makes
+        // worker-exposed APIs that only need a Frame-shaped allocator/
+        // factory (OffscreenCanvas2D, ImageData, CanvasGradient, etc.) work
+        // from a worker without crashing. APIs that genuinely need
+        // frame-local state (DOM, layout) must instead take *Page or
+        // *Execution and not rely on this fallback.
         return switch (ctx.global) {
             .frame => |frame| frame,
-            .worker => unreachable,
+            .worker => |worker| worker._worker._frame,
         };
     }
 

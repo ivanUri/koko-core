@@ -9,11 +9,13 @@ P1 = phổ biến ở mảng app cụ thể, P2 = chuyên biệt / hiếm). Khô
 
 ## Trạng thái hiện tại (cập nhật)
 
-- **totalLies**: 26 → **4** (chỉ còn worker errors, xem P1 Workers).
-- **Tests passing**: window, html element, computed style, css media, screen, math,
-  console errors, timezone, media, fonts, intl, rects, svg, resistance, canvas 2d,
-  navigator, headless, features, loose fingerprint, stable fingerprint.
-- **Tests still failing**: audio (P2), webgl (P1), speech (P2).
+- **totalLies**: 26 → **5** (intrinsic: V8/UA mismatch trong worker, plugins-in-worker
+  theo spec — không thể fix mà không spoof).
+- **Tests passing** (21): window, html element, computed style, css media, screen,
+  math, console errors, timezone, media, fonts, intl, rects, svg, resistance,
+  canvas 2d, **dedicated worker**, navigator, headless, features, loose fingerprint,
+  stable fingerprint.
+- **Tests still failing** (3): audio, webgl, speech — cần API impls đầy đủ.
 - **Đã fix** (P0):
   - IDL accessor descriptors cho `Navigator.*`, `Screen.*`, `Document.referrer`,
     `FontFace.status` (chuyển từ `bridge.property` sang `bridge.attribute`/`bridge.accessor`).
@@ -27,6 +29,14 @@ P1 = phổ biến ở mảng app cụ thể, P2 = chuyên biệt / hiếm). Khô
     accessor có instance state thật.
   - User-Agent bao gồm OS family (giữ brand "Velora/1.0" trung thực, sửa được lie
     "Apple platform and Other user agent do not match").
+- **Đã fix** (Worker context):
+  - `WorkerNavigator.userAgent` chuyển từ `*WorkerGlobalScope` sang `*Page` để js.Caller
+    có thể inject được — giải phóng worker context chạy script đầy đủ.
+  - `Caller.getGlobalArg(*Frame)` trong worker context fallback về parent frame
+    (`worker._worker._frame`) thay vì `unreachable` — cho phép worker-exposed APIs
+    (OffscreenCanvas2D, ImageData, CanvasGradient, …) dùng `*Frame` mà không crash.
+  - `NavigatorUAData.getHighEntropyValues` chuyển từ `*Frame` sang `*js.Execution` để
+    truy cập đúng local context của realm hiện tại (worker hay frame).
 
 Mỗi entry có dạng:
 

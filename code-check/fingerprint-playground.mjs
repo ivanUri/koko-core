@@ -28,7 +28,7 @@ const __dirname = dirname(__filename);
 const repoRoot = resolve(__dirname, "..");
 const veloraBin = resolve(repoRoot, "zig-out/bin/velora");
 
-const TARGET_URL = "https://abrahamjuliot.github.io/creepjs/";
+const TARGET_URL = "https://tinhte.vn/";
 
 function parseArgs(argv) {
     const out = {
