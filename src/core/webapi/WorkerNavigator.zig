@@ -17,6 +17,7 @@ const builtin = @import("builtin");
 const js = @import("../js/js.zig");
 
 const NavigatorUAData = @import("NavigatorUAData.zig");
+const PluginArray = @import("PluginArray.zig");
 const Page = @import("../browser/Page.zig");
 
 /// WorkerNavigator is the worker-context counterpart of Navigator. The HTML
@@ -33,6 +34,8 @@ const Page = @import("../browser/Page.zig");
 const WorkerNavigator = @This();
 
 _pad: bool = false,
+_plugins: PluginArray = .{},
+_mime_types: PluginArray.MimeTypeArray = .{},
 
 pub const init: WorkerNavigator = .{};
 
@@ -62,6 +65,14 @@ pub fn getUserAgentData(_: *const WorkerNavigator) NavigatorUAData {
     return .{};
 }
 
+pub fn getPlugins(self: *WorkerNavigator) *PluginArray {
+    return &self._plugins;
+}
+
+pub fn getMimeTypes(self: *WorkerNavigator) *PluginArray.MimeTypeArray {
+    return &self._mime_types;
+}
+
 pub const JsApi = struct {
     pub const bridge = js.Bridge(WorkerNavigator);
 
@@ -82,9 +93,12 @@ pub const JsApi = struct {
     pub const onLine = bridge.attribute(true, .{});
     pub const hardwareConcurrency = bridge.attribute(@as(u32, 4), .{});
     pub const deviceMemory = bridge.attribute(@as(f64, 8.0), .{});
+    pub const maxTouchPoints = bridge.attribute(@as(u32, 0), .{});
     pub const vendor = bridge.attribute("", .{});
     pub const product = bridge.attribute("Gecko", .{});
     pub const webdriver = bridge.attribute(false, .{});
+    pub const plugins = bridge.accessor(WorkerNavigator.getPlugins, null, .{});
+    pub const mimeTypes = bridge.accessor(WorkerNavigator.getMimeTypes, null, .{});
     pub const doNotTrack = bridge.attribute(null, .{});
     pub const globalPrivacyControl = bridge.attribute(true, .{});
     pub const userAgentData = bridge.accessor(WorkerNavigator.getUserAgentData, null, .{});

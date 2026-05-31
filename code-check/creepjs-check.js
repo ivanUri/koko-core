@@ -20,7 +20,7 @@ const veloraBin = resolve(repoRoot, "zig-out/bin/velora");
 // CONFIG — edit here, no CLI flags.
 // ---------------------------------------------------------------------------
 const CONFIG = {
-    url: "https://tinhte.vn/",
+    url: "https://abrahamjuliot.github.io/creepjs/",
     outDir: resolve(repoRoot, "code-check/tmp/creepjs"),
     htmlFile: "creepjs.html",
     logFile: "creepjs.log",

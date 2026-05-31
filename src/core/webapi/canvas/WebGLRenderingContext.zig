@@ -23,10 +23,36 @@ pub fn registerTypes() []const type {
         // to revisit this.
         Extension.Type.WEBGL_debug_renderer_info,
         Extension.Type.WEBGL_lose_context,
+        WebGLBuffer,
+        WebGLShader,
+        WebGLProgram,
+        WebGLTexture,
+        WebGLFramebuffer,
+        WebGLRenderbuffer,
+        WebGLUniformLocation,
     };
 }
 
 const WebGLRenderingContext = @This();
+
+pub const ARRAY_BUFFER: u64 = 0x8892;
+pub const ELEMENT_ARRAY_BUFFER: u64 = 0x8893;
+pub const STATIC_DRAW: u64 = 0x88E4;
+pub const FLOAT: u64 = 0x1406;
+pub const TRIANGLES: u64 = 0x0004;
+pub const POINTS: u64 = 0x0000;
+pub const LINES: u64 = 0x0001;
+pub const COLOR_BUFFER_BIT: u64 = 0x4000;
+pub const DEPTH_BUFFER_BIT: u64 = 0x0100;
+pub const STENCIL_BUFFER_BIT: u64 = 0x0400;
+pub const VERTEX_SHADER: u64 = 0x8B31;
+pub const FRAGMENT_SHADER: u64 = 0x8B30;
+pub const COMPILE_STATUS: u64 = 0x8B81;
+pub const LINK_STATUS: u64 = 0x8B82;
+pub const VERSION: u64 = 0x1F02;
+pub const VENDOR: u64 = 0x1F00;
+pub const RENDERER: u64 = 0x1F01;
+pub const SHADING_LANGUAGE_VERSION: u64 = 0x8B8C;
 
 /// On Chrome and Safari, a call to `getSupportedExtensions` returns total of 39.
 /// The reference for it lists lesser number of extensions:
@@ -158,9 +184,74 @@ pub const Extension = union(enum) {
 /// Return value also depends on what's being passed as `pname`; we don't really
 /// support any though.
 pub fn getParameter(_: *const WebGLRenderingContext, pname: u32) []const u8 {
-    _ = pname;
+    return switch (pname) {
+        VERSION => "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
+        VENDOR => "WebKit",
+        RENDERER => "WebKit WebGL",
+        SHADING_LANGUAGE_VERSION => "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)",
+        Extension.Type.WEBGL_debug_renderer_info.UNMASKED_VENDOR_WEBGL => "Google Inc. (Apple)",
+        Extension.Type.WEBGL_debug_renderer_info.UNMASKED_RENDERER_WEBGL => "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)",
+        else => "",
+    };
+}
+
+pub fn getContextAttributes(_: *const WebGLRenderingContext) ContextAttributes {
+    return .{};
+}
+
+pub fn isContextLost(_: *const WebGLRenderingContext) bool {
+    return false;
+}
+
+pub fn getShaderParameter(_: *const WebGLRenderingContext, _: *const WebGLShader, pname: u32) bool {
+    return pname == COMPILE_STATUS;
+}
+
+pub fn getProgramParameter(_: *const WebGLRenderingContext, _: *const WebGLProgram, pname: u32) bool {
+    return pname == LINK_STATUS;
+}
+
+pub fn getShaderInfoLog(_: *const WebGLRenderingContext, _: *const WebGLShader) []const u8 {
     return "";
 }
+
+pub fn getProgramInfoLog(_: *const WebGLRenderingContext, _: *const WebGLProgram) []const u8 {
+    return "";
+}
+
+pub fn getError(_: *const WebGLRenderingContext) u32 {
+    return 0;
+}
+
+pub fn createBuffer(_: *const WebGLRenderingContext, frame: *Frame) !*WebGLBuffer {
+    return frame._factory.create(WebGLBuffer{});
+}
+
+pub fn createShader(_: *const WebGLRenderingContext, _: u32, frame: *Frame) !*WebGLShader {
+    return frame._factory.create(WebGLShader{});
+}
+
+pub fn createProgram(_: *const WebGLRenderingContext, frame: *Frame) !*WebGLProgram {
+    return frame._factory.create(WebGLProgram{});
+}
+
+pub fn createTexture(_: *const WebGLRenderingContext, frame: *Frame) !*WebGLTexture {
+    return frame._factory.create(WebGLTexture{});
+}
+
+pub fn createFramebuffer(_: *const WebGLRenderingContext, frame: *Frame) !*WebGLFramebuffer {
+    return frame._factory.create(WebGLFramebuffer{});
+}
+
+pub fn createRenderbuffer(_: *const WebGLRenderingContext, frame: *Frame) !*WebGLRenderbuffer {
+    return frame._factory.create(WebGLRenderbuffer{});
+}
+
+pub fn getUniformLocation(_: *const WebGLRenderingContext, _: *const WebGLProgram, _: []const u8, frame: *Frame) !*WebGLUniformLocation {
+    return frame._factory.create(WebGLUniformLocation{});
+}
+
+pub fn noop(_: *const WebGLRenderingContext) void {}
 
 /// Enables a WebGL extension.
 pub fn getExtension(_: *const WebGLRenderingContext, name: []const u8, frame: *Frame) !?Extension {
@@ -195,9 +286,95 @@ pub const JsApi = struct {
     };
 
     pub const getParameter = bridge.function(WebGLRenderingContext.getParameter, .{});
+    pub const getContextAttributes = bridge.function(WebGLRenderingContext.getContextAttributes, .{});
+    pub const isContextLost = bridge.function(WebGLRenderingContext.isContextLost, .{});
+    pub const getShaderParameter = bridge.function(WebGLRenderingContext.getShaderParameter, .{});
+    pub const getProgramParameter = bridge.function(WebGLRenderingContext.getProgramParameter, .{});
+    pub const getShaderInfoLog = bridge.function(WebGLRenderingContext.getShaderInfoLog, .{});
+    pub const getProgramInfoLog = bridge.function(WebGLRenderingContext.getProgramInfoLog, .{});
+    pub const getError = bridge.function(WebGLRenderingContext.getError, .{});
+    pub const createBuffer = bridge.function(WebGLRenderingContext.createBuffer, .{});
+    pub const createShader = bridge.function(WebGLRenderingContext.createShader, .{});
+    pub const createProgram = bridge.function(WebGLRenderingContext.createProgram, .{});
+    pub const createTexture = bridge.function(WebGLRenderingContext.createTexture, .{});
+    pub const createFramebuffer = bridge.function(WebGLRenderingContext.createFramebuffer, .{});
+    pub const createRenderbuffer = bridge.function(WebGLRenderingContext.createRenderbuffer, .{});
+    pub const getUniformLocation = bridge.function(WebGLRenderingContext.getUniformLocation, .{});
+    pub const bindBuffer = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
+    pub const bufferData = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
+    pub const shaderSource = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
+    pub const compileShader = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
+    pub const attachShader = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
+    pub const linkProgram = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
+    pub const useProgram = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
+    pub const viewport = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
+    pub const clearColor = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
+    pub const clear = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
+    pub const enableVertexAttribArray = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
+    pub const vertexAttribPointer = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
+    pub const drawArrays = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
+    pub const drawElements = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
     pub const getExtension = bridge.function(WebGLRenderingContext.getExtension, .{});
     pub const getSupportedExtensions = bridge.function(WebGLRenderingContext.getSupportedExtensions, .{});
+
+    pub const ARRAY_BUFFER = bridge.property(WebGLRenderingContext.ARRAY_BUFFER, .{ .template = false, .readonly = true });
+    pub const ELEMENT_ARRAY_BUFFER = bridge.property(WebGLRenderingContext.ELEMENT_ARRAY_BUFFER, .{ .template = false, .readonly = true });
+    pub const STATIC_DRAW = bridge.property(WebGLRenderingContext.STATIC_DRAW, .{ .template = false, .readonly = true });
+    pub const FLOAT = bridge.property(WebGLRenderingContext.FLOAT, .{ .template = false, .readonly = true });
+    pub const TRIANGLES = bridge.property(WebGLRenderingContext.TRIANGLES, .{ .template = false, .readonly = true });
+    pub const POINTS = bridge.property(WebGLRenderingContext.POINTS, .{ .template = false, .readonly = true });
+    pub const LINES = bridge.property(WebGLRenderingContext.LINES, .{ .template = false, .readonly = true });
+    pub const COLOR_BUFFER_BIT = bridge.property(WebGLRenderingContext.COLOR_BUFFER_BIT, .{ .template = false, .readonly = true });
+    pub const DEPTH_BUFFER_BIT = bridge.property(WebGLRenderingContext.DEPTH_BUFFER_BIT, .{ .template = false, .readonly = true });
+    pub const STENCIL_BUFFER_BIT = bridge.property(WebGLRenderingContext.STENCIL_BUFFER_BIT, .{ .template = false, .readonly = true });
+    pub const VERTEX_SHADER = bridge.property(WebGLRenderingContext.VERTEX_SHADER, .{ .template = false, .readonly = true });
+    pub const FRAGMENT_SHADER = bridge.property(WebGLRenderingContext.FRAGMENT_SHADER, .{ .template = false, .readonly = true });
+    pub const COMPILE_STATUS = bridge.property(WebGLRenderingContext.COMPILE_STATUS, .{ .template = false, .readonly = true });
+    pub const LINK_STATUS = bridge.property(WebGLRenderingContext.LINK_STATUS, .{ .template = false, .readonly = true });
+    pub const VERSION = bridge.property(WebGLRenderingContext.VERSION, .{ .template = false, .readonly = true });
+    pub const VENDOR = bridge.property(WebGLRenderingContext.VENDOR, .{ .template = false, .readonly = true });
+    pub const RENDERER = bridge.property(WebGLRenderingContext.RENDERER, .{ .template = false, .readonly = true });
+    pub const SHADING_LANGUAGE_VERSION = bridge.property(WebGLRenderingContext.SHADING_LANGUAGE_VERSION, .{ .template = false, .readonly = true });
 };
+
+const ContextAttributes = struct {
+    alpha: bool = true,
+    antialias: bool = true,
+    depth: bool = true,
+    desynchronized: bool = false,
+    failIfMajorPerformanceCaveat: bool = false,
+    powerPreference: []const u8 = "default",
+    premultipliedAlpha: bool = true,
+    preserveDrawingBuffer: bool = false,
+    stencil: bool = false,
+    xrCompatible: bool = false,
+};
+
+const WebGLBuffer = opaqueResource("WebGLBuffer");
+const WebGLShader = opaqueResource("WebGLShader");
+const WebGLProgram = opaqueResource("WebGLProgram");
+const WebGLTexture = opaqueResource("WebGLTexture");
+const WebGLFramebuffer = opaqueResource("WebGLFramebuffer");
+const WebGLRenderbuffer = opaqueResource("WebGLRenderbuffer");
+const WebGLUniformLocation = opaqueResource("WebGLUniformLocation");
+
+fn opaqueResource(comptime type_name: []const u8) type {
+    return struct {
+        const Self = @This();
+
+        _: u8 = 0,
+
+        pub const JsApi = struct {
+            pub const bridge = js.Bridge(Self);
+
+            pub const Meta = struct {
+                pub const name = type_name;
+                pub const prototype_chain = bridge.prototypeChain();
+                pub var class_id: bridge.ClassId = undefined;
+            };
+        };
+    };
+}
 
 // getContext('web-gl') currently returns null, so this cannot be tested
 // const testing = @import("../../../testing/testing.zig");

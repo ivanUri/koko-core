@@ -31,6 +31,93 @@ const log = @import("../../support/log.zig");
 const String = @import("../../support/string.zig").String;
 const Allocator = std.mem.Allocator;
 const IS_DEBUG = builtin.mode == .Debug;
+const JS_CALL_LOG_ENV = "VELORA_JS_CALL_LOG";
+
+fn jsCallLogEnabled() bool {
+    const value = std.posix.getenv(JS_CALL_LOG_ENV) orelse return false;
+    return value.len > 0 and !std.mem.eql(u8, value, "0") and !std.mem.eql(u8, value, "false");
+}
+
+fn appendJsStringLiteral(list: *std.ArrayList(u8), arena: Allocator, value: []const u8) !void {
+    try list.append(arena, '"');
+    for (value) |c| {
+        switch (c) {
+            '\\' => try list.appendSlice(arena, "\\\\"),
+            '"' => try list.appendSlice(arena, "\\\""),
+            '\n' => try list.appendSlice(arena, "\\n"),
+            '\r' => try list.appendSlice(arena, "\\r"),
+            '\t' => try list.appendSlice(arena, "\\t"),
+            else => try list.append(arena, c),
+        }
+    }
+    try list.append(arena, '"');
+}
+
+fn instrumentClassicScript(arena: Allocator, src: []const u8, script_url: []const u8) ![]const u8 {
+    const hook =
+        \\(function(){
+        \\  if (globalThis.__veloraJsCallLogHooked) return;
+        \\  Object.defineProperty(globalThis, "__veloraJsCallLogHooked", { value: true, configurable: true });
+        \\  const scriptUrl = 
+    ;
+    const hook_tail =
+        \\;
+        \\  const log = (kind, fn) => { try {
+        \\    const raw = String((new Error()).stack || "").split("\n").slice(2, 9);
+        \\    const frame = raw.find(line => line.includes(scriptUrl)) || raw[0] || "";
+        \\    console.log("[velora-js-call] file=" + scriptUrl + " kind=" + kind + " fn=" + ((fn && (fn.name || fn.displayName)) || "<anonymous>") + " at=" + frame.trim());
+        \\  } catch (_) {} };
+        \\  const seen = new WeakMap();
+        \\  const wrap = (kind, fn) => {
+        \\    if (typeof fn !== "function") return fn;
+        \\    const old = seen.get(fn); if (old) return old;
+        \\    const wrapped = function(...args) { log(kind, fn); return Reflect.apply(fn, this, args); };
+        \\    try { Object.defineProperty(wrapped, "name", { value: fn.name || "veloraWrapped", configurable: true }); } catch (_) {}
+        \\    seen.set(fn, wrapped);
+        \\    return wrapped;
+        \\  };
+        \\  for (const name of ["setTimeout", "setInterval"]) {
+        \\    const original = globalThis[name];
+        \\    if (typeof original === "function") globalThis[name] = function(fn, ...args) { return Reflect.apply(original, this, [wrap(name, fn), ...args]); };
+        \\  }
+        \\  if (typeof globalThis.queueMicrotask === "function") {
+        \\    const original = globalThis.queueMicrotask;
+        \\    globalThis.queueMicrotask = function(fn) { return Reflect.apply(original, this, [wrap("queueMicrotask", fn)]); };
+        \\  }
+        \\  const et = globalThis.EventTarget && globalThis.EventTarget.prototype;
+        \\  if (et && typeof et.addEventListener === "function") {
+        \\    const original = et.addEventListener;
+        \\    et.addEventListener = function(type, fn, opts) { return Reflect.apply(original, this, [type, wrap("event:" + type, fn), opts]); };
+        \\  }
+        \\  const pp = globalThis.Promise && globalThis.Promise.prototype;
+        \\  if (pp) for (const name of ["then", "catch", "finally"]) {
+        \\    const original = pp[name];
+        \\    if (typeof original === "function") pp[name] = function(...callbacks) { return Reflect.apply(original, this, callbacks.map(fn => wrap("promise." + name, fn))); };
+        \\  }
+        \\  for (const target of [globalThis.navigator, globalThis.document, globalThis.screen, globalThis.performance]) {
+        \\    if (!target) continue;
+        \\    let proto = Object.getPrototypeOf(target);
+        \\    while (proto && proto !== Object.prototype) {
+        \\      for (const key of Object.getOwnPropertyNames(proto)) { try {
+        \\        if (key === "constructor") continue;
+        \\        const desc = Object.getOwnPropertyDescriptor(proto, key);
+        \\        if (!desc || desc.configurable === false || typeof desc.value !== "function") continue;
+        \\        Object.defineProperty(proto, key, { ...desc, value: wrap("api:" + key, desc.value) });
+        \\      } catch (_) {} }
+        \\      proto = Object.getPrototypeOf(proto);
+        \\    }
+        \\  }
+        \\})();
+        \\
+    ;
+    var out: std.ArrayList(u8) = .empty;
+    try out.appendSlice(arena, hook);
+    try appendJsStringLiteral(&out, arena, script_url);
+    try out.appendSlice(arena, hook_tail);
+    try out.append(arena, '\n');
+    try out.appendSlice(arena, src);
+    return out.items;
+}
 
 const ScriptManagerBase = @This();
 
@@ -742,8 +829,17 @@ pub const Script = struct {
 
         const success = blk: {
             const content = self.source.content();
+            if (jsCallLogEnabled()) {
+                log.info(.js, "script call log source", .{ .src = url, .kind = fe.kind });
+            }
             switch (fe.kind) {
-                .javascript => _ = local.eval(content, url) catch break :blk false,
+                .javascript => {
+                    const eval_content = if (jsCallLogEnabled())
+                        instrumentClassicScript(frame.call_arena, content, url) catch break :blk false
+                    else
+                        content;
+                    _ = local.eval(eval_content, url) catch break :blk false;
+                },
                 .module => {
                     // We don't care about waiting for the evaluation here.
                     const module_url = if (cacheable)

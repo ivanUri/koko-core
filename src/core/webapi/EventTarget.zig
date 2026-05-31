@@ -45,6 +45,12 @@ pub const Type = union(enum) {
     font_face_set: *@import("css/FontFaceSet.zig"),
     websocket: *@import("net/WebSocket.zig"),
     battery_manager: *@import("BatteryManager.zig"),
+    audio_context: *@import("audio/audio.zig").AudioContext,
+    broadcast_channel: *@import("broadcast_channel.zig").BroadcastChannel,
+    dom_notification: *@import("dom_notification.zig").DomNotification,
+    rtc_peer_connection: *@import("rtc_bindings.zig").RTCPeerConnectionJs,
+    rtc_data_channel: *@import("rtc_bindings.zig").RTCDataChannelJs,
+    shared_worker: *@import("shared_worker.zig").SharedWorker,
 };
 
 pub fn init(page: *Page) !*EventTarget {
@@ -156,6 +162,12 @@ pub fn format(self: *EventTarget, writer: *std.Io.Writer) !void {
         .font_face_set => writer.writeAll("<FontFaceSet>"),
         .websocket => writer.writeAll("<WebSocket>"),
         .battery_manager => writer.writeAll("<BatteryManager>"),
+        .audio_context => writer.writeAll("<AudioContext>"),
+        .broadcast_channel => writer.writeAll("<BroadcastChannel>"),
+        .dom_notification => writer.writeAll("<Notification>"),
+        .rtc_peer_connection => writer.writeAll("<RTCPeerConnection>"),
+        .rtc_data_channel => writer.writeAll("<RTCDataChannel>"),
+        .shared_worker => writer.writeAll("<SharedWorker>"),
     };
 }
 
@@ -179,6 +191,12 @@ pub fn toString(self: *EventTarget) []const u8 {
         .font_face_set => return "[object FontFaceSet]",
         .websocket => return "[object WebSocket]",
         .battery_manager => return "[object BatteryManager]",
+        .audio_context => return "[object AudioContext]",
+        .broadcast_channel => return "[object BroadcastChannel]",
+        .dom_notification => return "[object Notification]",
+        .rtc_peer_connection => return "[object RTCPeerConnection]",
+        .rtc_data_channel => return "[object RTCDataChannel]",
+        .shared_worker => return "[object SharedWorker]",
     };
 }
 

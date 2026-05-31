@@ -101,6 +101,8 @@ fn uaPlatform() []const u8 {
 }
 
 fn uaArchitecture() []const u8 {
+    if (builtin.os.tag == .macos) return "x86";
+
     return switch (builtin.cpu.arch) {
         .x86, .x86_64 => "x86",
         .aarch64, .aarch64_be, .arm, .armeb => "arm",

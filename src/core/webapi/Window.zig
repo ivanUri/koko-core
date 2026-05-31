@@ -41,6 +41,10 @@ const CustomElementRegistry = @import("CustomElementRegistry.zig");
 const Selection = @import("Selection.zig");
 const Timers = @import("Timers.zig");
 const Notification = @import("../../runtime/Notification.zig");
+const IDBFactory = @import("idb.zig").IDBFactory;
+const CacheStorage = @import("cache_storage.zig").CacheStorage;
+const SpeechSynthesis = @import("speech/SpeechSynthesis.zig").SpeechSynthesis;
+const TrustedTypePolicyFactory = @import("trusted_types.zig").TrustedTypePolicyFactory;
 
 const log = @import("../../support/log.zig");
 const IS_DEBUG = builtin.mode == .Debug;
@@ -75,6 +79,10 @@ _current_event: ?*Event = null,
 _location: *Location,
 _timers: Timers = .{},
 _custom_elements: CustomElementRegistry = .{},
+_indexed_db: IDBFactory = .{},
+_caches: CacheStorage = .{},
+_speech_synthesis: SpeechSynthesis = .{},
+_trusted_types: TrustedTypePolicyFactory = .{},
 _scroll_pos: struct {
     x: u32,
     y: u32,
@@ -219,6 +227,22 @@ pub fn getNavigation(_: *Window, frame: *Frame) *Navigation {
 
 pub fn getCustomElements(self: *Window) *CustomElementRegistry {
     return &self._custom_elements;
+}
+
+pub fn getIndexedDB(self: *Window) *IDBFactory {
+    return &self._indexed_db;
+}
+
+pub fn getCaches(self: *Window) *CacheStorage {
+    return &self._caches;
+}
+
+pub fn getSpeechSynthesis(self: *Window) *SpeechSynthesis {
+    return &self._speech_synthesis;
+}
+
+pub fn getTrustedTypes(self: *Window) *TrustedTypePolicyFactory {
+    return &self._trusted_types;
 }
 
 pub fn getOnLoad(self: *const Window) ?js.Function.Global {
@@ -865,6 +889,10 @@ pub const JsApi = struct {
     pub const crypto = bridge.accessor(Window.getCrypto, null, .{});
     pub const CSS = bridge.accessor(Window.getCSS, null, .{});
     pub const customElements = bridge.accessor(Window.getCustomElements, null, .{});
+    pub const indexedDB = bridge.accessor(Window.getIndexedDB, null, .{});
+    pub const caches = bridge.accessor(Window.getCaches, null, .{});
+    pub const speechSynthesis = bridge.accessor(Window.getSpeechSynthesis, null, .{});
+    pub const trustedTypes = bridge.accessor(Window.getTrustedTypes, null, .{});
     pub const onload = bridge.accessor(Window.getOnLoad, Window.setOnLoad, .{});
     pub const onpageshow = bridge.accessor(Window.getOnPageShow, Window.setOnPageShow, .{});
     pub const onpopstate = bridge.accessor(Window.getOnPopState, Window.setOnPopState, .{});

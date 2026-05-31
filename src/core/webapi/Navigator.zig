@@ -24,15 +24,30 @@ const NavigatorUAData = @import("NavigatorUAData.zig");
 const BatteryManager = @import("BatteryManager.zig");
 const NetworkInformation = @import("NetworkInformation.zig");
 const MediaCapabilities = @import("MediaCapabilities.zig");
+const navigator_extras = @import("navigator_extras.zig");
 
 const log = @import("../../support/log.zig");
 
 const Navigator = @This();
 _pad: bool = false,
 _plugins: PluginArray = .{},
+_mime_types: PluginArray.MimeTypeArray = .{},
 _permissions: Permissions = .{},
 _storage: StorageManager = .{},
 _ua_data: NavigatorUAData = .{},
+_media_devices: navigator_extras.MediaDevices = .{},
+_clipboard: navigator_extras.Clipboard = .{},
+_credentials: navigator_extras.CredentialsContainer = .{},
+_bluetooth: navigator_extras.Bluetooth = .{},
+_gpu: navigator_extras.GPU = .{},
+_usb: navigator_extras.USB = .{},
+_serial: navigator_extras.Serial = .{},
+_hid: navigator_extras.HID = .{},
+_keyboard: navigator_extras.Keyboard = .{},
+_locks: navigator_extras.LockManager = .{},
+_wake_lock: navigator_extras.WakeLock = .{},
+_contacts: navigator_extras.ContactsManager = .{},
+_service_worker: navigator_extras.ServiceWorkerContainer = .{},
 
 pub const init: Navigator = .{};
 
@@ -63,6 +78,10 @@ pub fn getPlugins(self: *Navigator) *PluginArray {
     return &self._plugins;
 }
 
+pub fn getMimeTypes(self: *Navigator) *PluginArray.MimeTypeArray {
+    return &self._mime_types;
+}
+
 pub fn getPermissions(self: *Navigator) *Permissions {
     return &self._permissions;
 }
@@ -81,6 +100,75 @@ pub fn getConnection(_: *const Navigator) NetworkInformation {
 
 pub fn getMediaCapabilities(_: *const Navigator) MediaCapabilities {
     return .{};
+}
+
+pub fn getMediaDevices(self: *Navigator) *navigator_extras.MediaDevices {
+    return &self._media_devices;
+}
+
+pub fn getClipboard(self: *Navigator) *navigator_extras.Clipboard {
+    return &self._clipboard;
+}
+
+pub fn getCredentials(self: *Navigator) *navigator_extras.CredentialsContainer {
+    return &self._credentials;
+}
+
+pub fn getBluetooth(self: *Navigator) *navigator_extras.Bluetooth {
+    return &self._bluetooth;
+}
+
+pub fn getGpu(self: *Navigator) *navigator_extras.GPU {
+    return &self._gpu;
+}
+
+pub fn getUsb(self: *Navigator) *navigator_extras.USB {
+    return &self._usb;
+}
+
+pub fn getSerial(self: *Navigator) *navigator_extras.Serial {
+    return &self._serial;
+}
+
+pub fn getHid(self: *Navigator) *navigator_extras.HID {
+    return &self._hid;
+}
+
+pub fn getKeyboard(self: *Navigator) *navigator_extras.Keyboard {
+    return &self._keyboard;
+}
+
+pub fn getLocks(self: *Navigator) *navigator_extras.LockManager {
+    return &self._locks;
+}
+
+pub fn getWakeLock(self: *Navigator) *navigator_extras.WakeLock {
+    return &self._wake_lock;
+}
+
+pub fn getContacts(self: *Navigator) *navigator_extras.ContactsManager {
+    return &self._contacts;
+}
+
+pub fn getServiceWorker(self: *Navigator) *navigator_extras.ServiceWorkerContainer {
+    return &self._service_worker;
+}
+
+pub fn getPdfViewerEnabled(_: *const Navigator) bool {
+    return true;
+}
+
+pub fn getOscpu(_: *const Navigator) ?[]const u8 {
+    return null;
+}
+
+pub fn share(_: *const Navigator, _: js.Value, frame: *Frame) !js.Promise {
+    const local = frame.js.local orelse return error.NotHandled;
+    return local.rejectPromise(.{ .dom_exception = .{ .err = error.SecurityError } });
+}
+
+pub fn canShare(_: *const Navigator, _: ?js.Value) bool {
+    return false;
 }
 
 pub fn getBattery(_: *const Navigator, frame: *Frame) !js.Promise {
@@ -183,6 +271,7 @@ pub const JsApi = struct {
     pub const product = bridge.attribute("Gecko", .{});
     pub const webdriver = bridge.attribute(false, .{});
     pub const plugins = bridge.accessor(Navigator.getPlugins, null, .{});
+    pub const mimeTypes = bridge.accessor(Navigator.getMimeTypes, null, .{});
     pub const doNotTrack = bridge.attribute(null, .{});
     pub const globalPrivacyControl = bridge.attribute(true, .{});
     pub const registerProtocolHandler = bridge.function(Navigator.registerProtocolHandler, .{ .dom_exception = true });
@@ -196,6 +285,23 @@ pub const JsApi = struct {
     pub const userAgentData = bridge.accessor(Navigator.getUserAgentData, null, .{});
     pub const connection = bridge.accessor(Navigator.getConnection, null, .{});
     pub const mediaCapabilities = bridge.accessor(Navigator.getMediaCapabilities, null, .{});
+    pub const mediaDevices = bridge.accessor(Navigator.getMediaDevices, null, .{});
+    pub const clipboard = bridge.accessor(Navigator.getClipboard, null, .{});
+    pub const credentials = bridge.accessor(Navigator.getCredentials, null, .{});
+    pub const bluetooth = bridge.accessor(Navigator.getBluetooth, null, .{});
+    pub const gpu = bridge.accessor(Navigator.getGpu, null, .{});
+    pub const usb = bridge.accessor(Navigator.getUsb, null, .{});
+    pub const serial = bridge.accessor(Navigator.getSerial, null, .{});
+    pub const hid = bridge.accessor(Navigator.getHid, null, .{});
+    pub const keyboard = bridge.accessor(Navigator.getKeyboard, null, .{});
+    pub const locks = bridge.accessor(Navigator.getLocks, null, .{});
+    pub const wakeLock = bridge.accessor(Navigator.getWakeLock, null, .{});
+    pub const contacts = bridge.accessor(Navigator.getContacts, null, .{});
+    pub const serviceWorker = bridge.accessor(Navigator.getServiceWorker, null, .{});
+    pub const pdfViewerEnabled = bridge.accessor(Navigator.getPdfViewerEnabled, null, .{});
+    pub const oscpu = bridge.accessor(Navigator.getOscpu, null, .{});
+    pub const share = bridge.function(Navigator.share, .{ .dom_exception = true });
+    pub const canShare = bridge.function(Navigator.canShare, .{});
 };
 
 const testing = @import("../../testing/testing.zig");
