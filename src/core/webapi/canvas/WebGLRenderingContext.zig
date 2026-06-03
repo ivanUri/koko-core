@@ -15,6 +15,7 @@ const std = @import("std");
 
 const js = @import("../../js/js.zig");
 const Frame = @import("../../browser/Frame.zig");
+const Canvas = @import("../element/html/Canvas.zig");
 
 pub fn registerTypes() []const type {
     return &.{
@@ -23,6 +24,8 @@ pub fn registerTypes() []const type {
         // to revisit this.
         Extension.Type.WEBGL_debug_renderer_info,
         Extension.Type.WEBGL_lose_context,
+        Extension.Type.EXT_texture_filter_anisotropic,
+        Extension.Type.WEBGL_draw_buffers,
         WebGLBuffer,
         WebGLShader,
         WebGLProgram,
@@ -34,6 +37,10 @@ pub fn registerTypes() []const type {
 }
 
 const WebGLRenderingContext = @This();
+
+/// Reference to the parent canvas element, or null if created from OffscreenCanvas.
+/// https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext/canvas
+_canvas: ?*Canvas = null,
 
 pub const ARRAY_BUFFER: u64 = 0x8892;
 pub const ELEMENT_ARRAY_BUFFER: u64 = 0x8893;
@@ -53,6 +60,36 @@ pub const VERSION: u64 = 0x1F02;
 pub const VENDOR: u64 = 0x1F00;
 pub const RENDERER: u64 = 0x1F01;
 pub const SHADING_LANGUAGE_VERSION: u64 = 0x8B8C;
+pub const MAX_TEXTURE_SIZE: u64 = 0x0D33;
+pub const MAX_CUBE_MAP_TEXTURE_SIZE: u64 = 0x851C;
+pub const MAX_RENDERBUFFER_SIZE: u64 = 0x84E8;
+pub const MAX_VIEWPORT_DIMS: u64 = 0x0D3A;
+pub const MAX_VERTEX_ATTRIBS: u64 = 0x8869;
+pub const MAX_VERTEX_UNIFORM_VECTORS: u64 = 0x8DFB;
+pub const MAX_VARYING_VECTORS: u64 = 0x8DFC;
+pub const MAX_COMBINED_TEXTURE_IMAGE_UNITS: u64 = 0x8B4D;
+pub const MAX_VERTEX_TEXTURE_IMAGE_UNITS: u64 = 0x8B4C;
+pub const MAX_TEXTURE_IMAGE_UNITS: u64 = 0x8872;
+pub const MAX_FRAGMENT_UNIFORM_VECTORS: u64 = 0x8DFD;
+pub const ALIASED_LINE_WIDTH_RANGE: u64 = 0x846E;
+pub const ALIASED_POINT_SIZE_RANGE: u64 = 0x846D;
+pub const RED_BITS: u64 = 0x0D52;
+pub const GREEN_BITS: u64 = 0x0D53;
+pub const BLUE_BITS: u64 = 0x0D54;
+pub const ALPHA_BITS: u64 = 0x0D55;
+pub const DEPTH_BITS: u64 = 0x0D56;
+pub const STENCIL_BITS: u64 = 0x0D57;
+pub const MAX_VERTEX_TEXTURE_IMAGE_UNITS_WEBGL: u64 = MAX_VERTEX_TEXTURE_IMAGE_UNITS;
+pub const HIGH_FLOAT: u64 = 0x8DF2;
+pub const MEDIUM_FLOAT: u64 = 0x8DF1;
+pub const LOW_FLOAT: u64 = 0x8DF0;
+pub const HIGH_INT: u64 = 0x8DF5;
+pub const MEDIUM_INT: u64 = 0x8DF4;
+pub const LOW_INT: u64 = 0x8DF3;
+
+// Pixel format / type constants used in readPixels
+pub const RGBA: u64 = 0x1908;
+pub const UNSIGNED_BYTE: u64 = 0x1401;
 
 /// On Chrome and Safari, a call to `getSupportedExtensions` returns total of 39.
 /// The reference for it lists lesser number of extensions:
@@ -70,7 +107,7 @@ pub const Extension = union(enum) {
     EXT_shader_texture_lod: void,
     EXT_texture_compression_bptc: void,
     EXT_texture_compression_rgtc: void,
-    EXT_texture_filter_anisotropic: void,
+    EXT_texture_filter_anisotropic: *Type.EXT_texture_filter_anisotropic,
     EXT_texture_mirror_clamp_to_edge: void,
     EXT_sRGB: void,
     KHR_parallel_shader_compile: void,
@@ -93,7 +130,7 @@ pub const Extension = union(enum) {
     WEBGL_debug_renderer_info: *Type.WEBGL_debug_renderer_info,
     WEBGL_debug_shaders: void,
     WEBGL_depth_texture: void,
-    WEBGL_draw_buffers: void,
+    WEBGL_draw_buffers: *Type.WEBGL_draw_buffers,
     WEBGL_lose_context: *Type.WEBGL_lose_context,
     WEBGL_multi_draw: void,
     WEBGL_polygon_mode: void,
@@ -177,22 +214,158 @@ pub const Extension = union(enum) {
                 pub const restoreContext = bridge.function(WEBGL_lose_context.restoreContext, .{ .noop = true });
             };
         };
+
+        pub const EXT_texture_filter_anisotropic = struct {
+            _: u8 = 0,
+            /// GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT
+            pub const MAX_TEXTURE_MAX_ANISOTROPY_EXT: u64 = 0x84FF;
+            /// GL_TEXTURE_MAX_ANISOTROPY_EXT
+            pub const TEXTURE_MAX_ANISOTROPY_EXT: u64 = 0x84FE;
+
+            pub const JsApi = struct {
+                pub const bridge = js.Bridge(EXT_texture_filter_anisotropic);
+
+                pub const Meta = struct {
+                    pub const name = "EXT_texture_filter_anisotropic";
+                    pub const prototype_chain = bridge.prototypeChain();
+                    pub var class_id: bridge.ClassId = undefined;
+                };
+
+                pub const MAX_TEXTURE_MAX_ANISOTROPY_EXT = bridge.property(EXT_texture_filter_anisotropic.MAX_TEXTURE_MAX_ANISOTROPY_EXT, .{ .template = false, .readonly = true });
+                pub const TEXTURE_MAX_ANISOTROPY_EXT = bridge.property(EXT_texture_filter_anisotropic.TEXTURE_MAX_ANISOTROPY_EXT, .{ .template = false, .readonly = true });
+            };
+        };
+
+        pub const WEBGL_draw_buffers = struct {
+            _: u8 = 0,
+            /// GL_MAX_DRAW_BUFFERS_WEBGL
+            pub const MAX_DRAW_BUFFERS_WEBGL: u64 = 0x8824;
+            /// GL_DRAW_BUFFER0_WEBGL .. DRAW_BUFFER15_WEBGL
+            pub const DRAW_BUFFER0_WEBGL: u64 = 0x8825;
+            pub const DRAW_BUFFER1_WEBGL: u64 = 0x8826;
+            pub const COLOR_ATTACHMENT0_WEBGL: u64 = 0x8CE0;
+
+            pub const JsApi = struct {
+                pub const bridge = js.Bridge(WEBGL_draw_buffers);
+
+                pub const Meta = struct {
+                    pub const name = "WEBGL_draw_buffers";
+                    pub const prototype_chain = bridge.prototypeChain();
+                    pub var class_id: bridge.ClassId = undefined;
+                };
+
+                pub const MAX_DRAW_BUFFERS_WEBGL = bridge.property(WEBGL_draw_buffers.MAX_DRAW_BUFFERS_WEBGL, .{ .template = false, .readonly = true });
+                pub const DRAW_BUFFER0_WEBGL = bridge.property(WEBGL_draw_buffers.DRAW_BUFFER0_WEBGL, .{ .template = false, .readonly = true });
+                pub const DRAW_BUFFER1_WEBGL = bridge.property(WEBGL_draw_buffers.DRAW_BUFFER1_WEBGL, .{ .template = false, .readonly = true });
+                pub const COLOR_ATTACHMENT0_WEBGL = bridge.property(WEBGL_draw_buffers.COLOR_ATTACHMENT0_WEBGL, .{ .template = false, .readonly = true });
+            };
+        };
     };
 };
+
+/// Returns the canvas element that created this context (null if OffscreenCanvas).
+/// https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext/canvas
+pub fn getCanvas(self: *const WebGLRenderingContext) ?*Canvas {
+    return self._canvas;
+}
+
+/// Returns the drawing buffer width (matches the canvas width attribute, default 300).
+pub fn getDrawingBufferWidth(self: *const WebGLRenderingContext) u32 {
+    return if (self._canvas) |c| c.getWidth() else 300;
+}
+
+/// Returns the drawing buffer height (matches the canvas height attribute, default 150).
+pub fn getDrawingBufferHeight(self: *const WebGLRenderingContext) u32 {
+    return if (self._canvas) |c| c.getHeight() else 150;
+}
 
 /// This actually takes "GLenum" which, in fact, is a fancy way to say number.
 /// Return value also depends on what's being passed as `pname`; we don't really
 /// support any though.
-pub fn getParameter(_: *const WebGLRenderingContext, pname: u32) []const u8 {
-    return switch (pname) {
-        VERSION => "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
-        VENDOR => "WebKit",
-        RENDERER => "WebKit WebGL",
-        SHADING_LANGUAGE_VERSION => "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)",
-        Extension.Type.WEBGL_debug_renderer_info.UNMASKED_VENDOR_WEBGL => "Google Inc. (Apple)",
-        Extension.Type.WEBGL_debug_renderer_info.UNMASKED_RENDERER_WEBGL => "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)",
-        else => "",
+pub fn getParameter(_: *const WebGLRenderingContext, pname: u32, frame: *Frame) !js.Value {
+    const local = frame.js.local orelse return error.NotHandled;
+    switch (pname) {
+        VERSION => return (try local.zigValueToJs("WebGL 1.0 (OpenGL ES 2.0 Chromium)", .{})),
+        VENDOR => return (try local.zigValueToJs("WebKit", .{})),
+        RENDERER => return (try local.zigValueToJs("WebKit WebGL", .{})),
+        SHADING_LANGUAGE_VERSION => return (try local.zigValueToJs("WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)", .{})),
+        Extension.Type.WEBGL_debug_renderer_info.UNMASKED_VENDOR_WEBGL => return (try local.zigValueToJs("Google Inc. (Apple)", .{})),
+        Extension.Type.WEBGL_debug_renderer_info.UNMASKED_RENDERER_WEBGL => return (try local.zigValueToJs("ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)", .{})),
+        MAX_TEXTURE_SIZE, MAX_CUBE_MAP_TEXTURE_SIZE, MAX_RENDERBUFFER_SIZE => return (try local.zigValueToJs(@as(u32, 16384), .{})),
+        MAX_VERTEX_ATTRIBS => return (try local.zigValueToJs(@as(u32, 16), .{})),
+        MAX_VERTEX_UNIFORM_VECTORS => return (try local.zigValueToJs(@as(u32, 4096), .{})),
+        MAX_VARYING_VECTORS => return (try local.zigValueToJs(@as(u32, 31), .{})),
+        MAX_COMBINED_TEXTURE_IMAGE_UNITS => return (try local.zigValueToJs(@as(u32, 32), .{})),
+        MAX_VERTEX_TEXTURE_IMAGE_UNITS => return (try local.zigValueToJs(@as(u32, 16), .{})),
+        MAX_TEXTURE_IMAGE_UNITS => return (try local.zigValueToJs(@as(u32, 16), .{})),
+        MAX_FRAGMENT_UNIFORM_VECTORS => return (try local.zigValueToJs(@as(u32, 1024), .{})),
+        RED_BITS, GREEN_BITS, BLUE_BITS, ALPHA_BITS => return (try local.zigValueToJs(@as(u32, 8), .{})),
+        DEPTH_BITS => return (try local.zigValueToJs(@as(u32, 24), .{})),
+        STENCIL_BITS => return (try local.zigValueToJs(@as(u32, 0), .{})),
+        ALIASED_LINE_WIDTH_RANGE, ALIASED_POINT_SIZE_RANGE => {
+            const arr = local.createTypedArray(.float32, 2);
+            const values = [_]f32{ 1, if (pname == ALIASED_POINT_SIZE_RANGE) 1024 else 1 };
+            fillTypedArray(.float32, arr, values[0..]);
+            return .{ .local = local, .handle = arr.handle };
+        },
+        MAX_VIEWPORT_DIMS => {
+            const arr = local.createTypedArray(.int32, 2);
+            const values = [_]i32{ 16384, 16384 };
+            fillTypedArray(.int32, arr, values[0..]);
+            return .{ .local = local, .handle = arr.handle };
+        },
+        // EXT_texture_filter_anisotropic
+        Extension.Type.EXT_texture_filter_anisotropic.MAX_TEXTURE_MAX_ANISOTROPY_EXT => return (try local.zigValueToJs(@as(u32, 16), .{})),
+        // WEBGL_draw_buffers
+        Extension.Type.WEBGL_draw_buffers.MAX_DRAW_BUFFERS_WEBGL => return (try local.zigValueToJs(@as(u32, 8), .{})),
+        else => return (try local.zigValueToJs(@as(u32, 0), .{})),
+    }
+}
+
+pub fn getShaderPrecisionFormat(_: *const WebGLRenderingContext, _: u32, precision_type: u32, frame: *Frame) !js.Value {
+    const local = frame.js.local orelse return error.NotHandled;
+    const obj = local.newObject();
+    const is_float = precision_type == LOW_FLOAT or precision_type == MEDIUM_FLOAT or precision_type == HIGH_FLOAT;
+    _ = try obj.set("rangeMin", if (is_float) @as(i32, 127) else @as(i32, 31), .{});
+    _ = try obj.set("rangeMax", if (is_float) @as(i32, 127) else @as(i32, 30), .{});
+    _ = try obj.set("precision", if (is_float) @as(i32, 23) else @as(i32, 0), .{});
+    return obj.toValue();
+}
+
+pub fn readPixels(_: *const WebGLRenderingContext, _: i32, _: i32, width: i32, height: i32, _: u32, _: u32, pixels: js.Value, frame: *Frame) !void {
+    _ = frame;
+    if (!pixels.isTypedArray()) return;
+    const count: usize = @intCast(@max(width, 0) * @max(height, 0) * 4);
+    if (pixels.toZig(js.TypedArray(u8))) |arr| {
+        @memset(@constCast(arr.values[0..@min(arr.values.len, count)]), 255);
+    } else |_| {}
+}
+
+fn fillTypedArray(comptime kind: js.ArrayType, arr: js.ArrayBufferRef(kind), values: anytype) void {
+    const v8 = js.v8;
+    const T = switch (kind) {
+        .int8 => i8,
+        .uint8, .uint8_clamped => u8,
+        .int16 => i16,
+        .uint16 => u16,
+        .int32 => i32,
+        .uint32 => u32,
+        .float16 => f16,
+        .float32 => f32,
+        .float64 => f64,
     };
+    const view: *const v8.ArrayBufferView = @ptrCast(arr.handle);
+    const byte_len = v8.v8__ArrayBufferView__ByteLength(view);
+    const byte_offset = v8.v8__ArrayBufferView__ByteOffset(view);
+    const array_buffer = v8.v8__ArrayBufferView__Buffer(view) orelse return;
+    const backing_store_ptr = v8.v8__ArrayBuffer__GetBackingStore(array_buffer);
+    const backing_store_handle = v8.std__shared_ptr__v8__BackingStore__get(&backing_store_ptr) orelse return;
+    const data: [*]T = @ptrCast(@alignCast(v8.v8__BackingStore__Data(backing_store_handle)));
+    const base = data + byte_offset / @sizeOf(T);
+    const n = @min(values.len, byte_len / @sizeOf(T));
+    for (values[0..n], 0..) |value, i| {
+        base[i] = @as(T, value);
+    }
 }
 
 pub fn getContextAttributes(_: *const WebGLRenderingContext) ContextAttributes {
@@ -251,6 +424,13 @@ pub fn getUniformLocation(_: *const WebGLRenderingContext, _: *const WebGLProgra
     return frame._factory.create(WebGLUniformLocation{});
 }
 
+/// Returns the location of an attribute variable in a given WebGLProgram.
+/// Per the WebGL spec, returns -1 if the name does not correspond to an active attribute.
+/// Since rendering is a no-op stub, we always return -1 (no active attributes).
+pub fn getAttribLocation(_: *const WebGLRenderingContext, _: *const WebGLProgram, _: []const u8) i32 {
+    return -1;
+}
+
 pub fn noop(_: *const WebGLRenderingContext) void {}
 
 /// Enables a WebGL extension.
@@ -265,6 +445,14 @@ pub fn getExtension(_: *const WebGLRenderingContext, name: []const u8, frame: *F
         .WEBGL_lose_context => {
             const ctx = try frame._factory.create(Extension.Type.WEBGL_lose_context{});
             return .{ .WEBGL_lose_context = ctx };
+        },
+        .EXT_texture_filter_anisotropic => {
+            const ext = try frame._factory.create(Extension.Type.EXT_texture_filter_anisotropic{});
+            return .{ .EXT_texture_filter_anisotropic = ext };
+        },
+        .WEBGL_draw_buffers => {
+            const ext = try frame._factory.create(Extension.Type.WEBGL_draw_buffers{});
+            return .{ .WEBGL_draw_buffers = ext };
         },
         inline else => |comptime_enum| @unionInit(Extension, @tagName(comptime_enum), {}),
     };
@@ -293,6 +481,8 @@ pub const JsApi = struct {
     pub const getShaderInfoLog = bridge.function(WebGLRenderingContext.getShaderInfoLog, .{});
     pub const getProgramInfoLog = bridge.function(WebGLRenderingContext.getProgramInfoLog, .{});
     pub const getError = bridge.function(WebGLRenderingContext.getError, .{});
+    pub const getShaderPrecisionFormat = bridge.function(WebGLRenderingContext.getShaderPrecisionFormat, .{});
+    pub const readPixels = bridge.function(WebGLRenderingContext.readPixels, .{});
     pub const createBuffer = bridge.function(WebGLRenderingContext.createBuffer, .{});
     pub const createShader = bridge.function(WebGLRenderingContext.createShader, .{});
     pub const createProgram = bridge.function(WebGLRenderingContext.createProgram, .{});
@@ -300,6 +490,7 @@ pub const JsApi = struct {
     pub const createFramebuffer = bridge.function(WebGLRenderingContext.createFramebuffer, .{});
     pub const createRenderbuffer = bridge.function(WebGLRenderingContext.createRenderbuffer, .{});
     pub const getUniformLocation = bridge.function(WebGLRenderingContext.getUniformLocation, .{});
+    pub const getAttribLocation = bridge.function(WebGLRenderingContext.getAttribLocation, .{});
     pub const bindBuffer = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
     pub const bufferData = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
     pub const shaderSource = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
@@ -316,6 +507,10 @@ pub const JsApi = struct {
     pub const drawElements = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
     pub const getExtension = bridge.function(WebGLRenderingContext.getExtension, .{});
     pub const getSupportedExtensions = bridge.function(WebGLRenderingContext.getSupportedExtensions, .{});
+
+    pub const canvas = bridge.accessor(WebGLRenderingContext.getCanvas, null, .{});
+    pub const drawingBufferWidth = bridge.accessor(WebGLRenderingContext.getDrawingBufferWidth, null, .{});
+    pub const drawingBufferHeight = bridge.accessor(WebGLRenderingContext.getDrawingBufferHeight, null, .{});
 
     pub const ARRAY_BUFFER = bridge.property(WebGLRenderingContext.ARRAY_BUFFER, .{ .template = false, .readonly = true });
     pub const ELEMENT_ARRAY_BUFFER = bridge.property(WebGLRenderingContext.ELEMENT_ARRAY_BUFFER, .{ .template = false, .readonly = true });
@@ -335,6 +530,27 @@ pub const JsApi = struct {
     pub const VENDOR = bridge.property(WebGLRenderingContext.VENDOR, .{ .template = false, .readonly = true });
     pub const RENDERER = bridge.property(WebGLRenderingContext.RENDERER, .{ .template = false, .readonly = true });
     pub const SHADING_LANGUAGE_VERSION = bridge.property(WebGLRenderingContext.SHADING_LANGUAGE_VERSION, .{ .template = false, .readonly = true });
+    pub const MAX_TEXTURE_SIZE = bridge.property(WebGLRenderingContext.MAX_TEXTURE_SIZE, .{ .template = false, .readonly = true });
+    pub const MAX_CUBE_MAP_TEXTURE_SIZE = bridge.property(WebGLRenderingContext.MAX_CUBE_MAP_TEXTURE_SIZE, .{ .template = false, .readonly = true });
+    pub const MAX_RENDERBUFFER_SIZE = bridge.property(WebGLRenderingContext.MAX_RENDERBUFFER_SIZE, .{ .template = false, .readonly = true });
+    pub const MAX_VIEWPORT_DIMS = bridge.property(WebGLRenderingContext.MAX_VIEWPORT_DIMS, .{ .template = false, .readonly = true });
+    pub const MAX_VERTEX_ATTRIBS = bridge.property(WebGLRenderingContext.MAX_VERTEX_ATTRIBS, .{ .template = false, .readonly = true });
+    pub const MAX_VERTEX_UNIFORM_VECTORS = bridge.property(WebGLRenderingContext.MAX_VERTEX_UNIFORM_VECTORS, .{ .template = false, .readonly = true });
+    pub const MAX_VARYING_VECTORS = bridge.property(WebGLRenderingContext.MAX_VARYING_VECTORS, .{ .template = false, .readonly = true });
+    pub const MAX_COMBINED_TEXTURE_IMAGE_UNITS = bridge.property(WebGLRenderingContext.MAX_COMBINED_TEXTURE_IMAGE_UNITS, .{ .template = false, .readonly = true });
+    pub const MAX_VERTEX_TEXTURE_IMAGE_UNITS = bridge.property(WebGLRenderingContext.MAX_VERTEX_TEXTURE_IMAGE_UNITS, .{ .template = false, .readonly = true });
+    pub const MAX_TEXTURE_IMAGE_UNITS = bridge.property(WebGLRenderingContext.MAX_TEXTURE_IMAGE_UNITS, .{ .template = false, .readonly = true });
+    pub const MAX_FRAGMENT_UNIFORM_VECTORS = bridge.property(WebGLRenderingContext.MAX_FRAGMENT_UNIFORM_VECTORS, .{ .template = false, .readonly = true });
+    pub const ALIASED_LINE_WIDTH_RANGE = bridge.property(WebGLRenderingContext.ALIASED_LINE_WIDTH_RANGE, .{ .template = false, .readonly = true });
+    pub const ALIASED_POINT_SIZE_RANGE = bridge.property(WebGLRenderingContext.ALIASED_POINT_SIZE_RANGE, .{ .template = false, .readonly = true });
+    pub const HIGH_FLOAT = bridge.property(WebGLRenderingContext.HIGH_FLOAT, .{ .template = false, .readonly = true });
+    pub const MEDIUM_FLOAT = bridge.property(WebGLRenderingContext.MEDIUM_FLOAT, .{ .template = false, .readonly = true });
+    pub const LOW_FLOAT = bridge.property(WebGLRenderingContext.LOW_FLOAT, .{ .template = false, .readonly = true });
+    pub const HIGH_INT = bridge.property(WebGLRenderingContext.HIGH_INT, .{ .template = false, .readonly = true });
+    pub const MEDIUM_INT = bridge.property(WebGLRenderingContext.MEDIUM_INT, .{ .template = false, .readonly = true });
+    pub const LOW_INT = bridge.property(WebGLRenderingContext.LOW_INT, .{ .template = false, .readonly = true });
+    pub const RGBA = bridge.property(WebGLRenderingContext.RGBA, .{ .template = false, .readonly = true });
+    pub const UNSIGNED_BYTE = bridge.property(WebGLRenderingContext.UNSIGNED_BYTE, .{ .template = false, .readonly = true });
 };
 
 const ContextAttributes = struct {

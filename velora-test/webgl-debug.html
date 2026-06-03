@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>WebGL Debug</title>
+</head>
+<body>
+    <h1>WebGL Debug Test</h1>
+    <canvas id="canvas" width="300" height="150"></canvas>
+    <pre id="output"></pre>
+    
+    <script>
+        const output = document.getElementById('output');
+        const log = (msg) => {
+            console.log(msg);
+            output.textContent += msg + '\n';
+        };
+        
+        try {
+            const canvas = document.getElementById('canvas');
+            log('Canvas element: ' + (canvas ? 'OK' : 'NULL'));
+            
+            // Test getContext
+            log('\n=== Testing getContext ===');
+            const gl = canvas.getContext('webgl');
+            log('getContext("webgl"): ' + (gl ? 'OK' : 'NULL'));
+            
+            if (!gl) {
+                log('ERROR: WebGL context is null!');
+                log('Trying experimental-webgl...');
+                const gl2 = canvas.getContext('experimental-webgl');
+                log('getContext("experimental-webgl"): ' + (gl2 ? 'OK' : 'NULL'));
+                
+                if (!gl2) {
+                    log('FATAL: Both webgl and experimental-webgl returned null!');
+                } else {
+                    log('Using experimental-webgl context');
+                }
+            } else {
+                // Test basic properties
+                log('\n=== Testing WebGL Properties ===');
+                log('gl.canvas: ' + (gl.canvas ? 'OK' : 'NULL'));
+                log('gl.drawingBufferWidth: ' + gl.drawingBufferWidth);
+                log('gl.drawingBufferHeight: ' + gl.drawingBufferHeight);
+                
+                // Test constants
+                log('\n=== Testing Constants ===');
+                log('gl.COLOR_BUFFER_BIT: ' + gl.COLOR_BUFFER_BIT);
+                log('gl.DEPTH_BUFFER_BIT: ' + gl.DEPTH_BUFFER_BIT);
+                log('gl.VERTEX_SHADER: ' + gl.VERTEX_SHADER);
+                log('gl.FRAGMENT_SHADER: ' + gl.FRAGMENT_SHADER);
+                
+                // Test getParameter
+                log('\n=== Testing getParameter ===');
+                try {
+                    const vendor = gl.getParameter(gl.VENDOR);
+                    log('VENDOR: ' + vendor);
+                } catch(e) {
+                    log('VENDOR error: ' + e.message);
+                }
+                
+                try {
+                    const renderer = gl.getParameter(gl.RENDERER);
+                    log('RENDERER: ' + renderer);
+                } catch(e) {
+                    log('RENDERER error: ' + e.message);
+                }
+                
+                try {
+                    const version = gl.getParameter(gl.VERSION);
+                    log('VERSION: ' + version);
+                } catch(e) {
+                    log('VERSION error: ' + e.message);
+                }
+                
+                // Test getSupportedExtensions
+                log('\n=== Testing getSupportedExtensions ===');
+                try {
+                    const exts = gl.getSupportedExtensions();
+                    log('Extensions: ' + (exts ? exts.length + ' found' : 'NULL'));
+                    if (exts) {
+                        log('Extensions list: ' + JSON.stringify(exts));
+                    }
+                } catch(e) {
+                    log('getSupportedExtensions error: ' + e.message);
+                }
+                
+                // Test basic rendering
+                log('\n=== Testing Rendering ===');
+                try {
+                    gl.clearColor(1.0, 0.0, 0.0, 1.0);
+                    log('clearColor: OK');
+                } catch(e) {
+                    log('clearColor error: ' + e.message);
+                }
+                
+                try {
+                    gl.clear(gl.COLOR_BUFFER_BIT);
+                    log('clear: OK');
+                } catch(e) {
+                    log('clear error: ' + e.message);
+                }
+                
+                // Test readPixels
+                log('\n=== Testing readPixels ===');
+                try {
+                    const pixels = new Uint8Array(4);
+                    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+                    log('readPixels: OK');
+                    log('Pixel data: [' + Array.from(pixels).join(', ') + ']');
+                } catch(e) {
+                    log('readPixels error: ' + e.message);
+                }
+            }
+            
+        } catch (e) {
+            log('\nFATAL ERROR: ' + e.message);
+            log('Stack: ' + e.stack);
+        }
+    </script>
+</body>
+</html>

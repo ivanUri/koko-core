@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>WebGL Test</title>
+</head>
+<body>
+    <h1>WebGL Implementation Test</h1>
+    <div id="results"></div>
+    
+    <script>
+        const results = [];
+        
+        function test(name, fn) {
+            try {
+                fn();
+                results.push(`✓ ${name}`);
+            } catch (e) {
+                results.push(`✗ ${name}: ${e.message}`);
+            }
+        }
+        
+        // Test 1: Context creation
+        test("getContext('webgl') returns context", () => {
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('webgl');
+            if (!gl) throw new Error("Context is null");
+        });
+        
+        test("getContext('experimental-webgl') returns context", () => {
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('experimental-webgl');
+            if (!gl) throw new Error("Context is null");
+        });
+        
+        test("getContext('webgl2') returns context", () => {
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('webgl2');
+            if (!gl) throw new Error("Context is null");
+        });
+        
+        // Test 2: Constants exist
+        test("Texture constants defined", () => {
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('webgl');
+            if (typeof gl.TEXTURE_2D !== 'number') throw new Error("TEXTURE_2D not defined");
+            if (typeof gl.RGBA !== 'number') throw new Error("RGBA not defined");
+            if (typeof gl.UNSIGNED_BYTE !== 'number') throw new Error("UNSIGNED_BYTE not defined");
+        });
+        
+        test("Capability constants defined", () => {
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('webgl');
+            if (typeof gl.BLEND !== 'number') throw new Error("BLEND not defined");
+            if (typeof gl.DEPTH_TEST !== 'number') throw new Error("DEPTH_TEST not defined");
+            if (typeof gl.CULL_FACE !== 'number') throw new Error("CULL_FACE not defined");
+        });
+        
+        test("Draw mode constants defined", () => {
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('webgl');
+            if (typeof gl.TRIANGLES !== 'number') throw new Error("TRIANGLES not defined");
+            if (typeof gl.LINE_STRIP !== 'number') throw new Error("LINE_STRIP not defined");
+            if (typeof gl.TRIANGLE_FAN !== 'number') throw new Error("TRIANGLE_FAN not defined");
+        });
+        
+        // Test 3: Methods callable
+        test("Texture methods callable", () => {
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('webgl');
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, null);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        });
+        
+        test("State methods callable", () => {
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('webgl');
+            gl.enable(gl.BLEND);
+            gl.disable(gl.DEPTH_TEST);
+            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        });
+        
+        test("Uniform methods callable", () => {
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('webgl');
+            gl.uniform1f(null, 1.0);
+            gl.uniform4f(null, 1.0, 0.0, 0.0, 1.0);
+        });
+        
+        // Test 4: clearColor and clear work
+        test("clearColor stores state", () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = 2;
+            canvas.height = 2;
+            const gl = canvas.getContext('webgl');
+            gl.clearColor(1.0, 0.0, 0.0, 1.0);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            // If this doesn't crash, it's working
+        });
+        
+        // Test 5: readPixels works
+        test("readPixels returns Uint8Array", () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = 2;
+            canvas.height = 2;
+            const gl = canvas.getContext('webgl');
+            
+            gl.clearColor(1.0, 0.0, 0.0, 1.0);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            
+            const pixels = new Uint8Array(4 * 4); // 2x2 pixels, 4 bytes each
+            gl.readPixels(0, 0, 2, 2, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+            
+            // Check that we got red color (255, 0, 0, 255)
+            if (pixels[0] !== 255) throw new Error(`Expected red=255, got ${pixels[0]}`);
+            if (pixels[1] !== 0) throw new Error(`Expected green=0, got ${pixels[1]}`);
+            if (pixels[2] !== 0) throw new Error(`Expected blue=0, got ${pixels[2]}`);
+            if (pixels[3] !== 255) throw new Error(`Expected alpha=255, got ${pixels[3]}`);
+        });
+        
+        // Test 6: toDataURL consistency with WebGL
+        test("toDataURL works with WebGL canvas", () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = 10;
+            canvas.height = 10;
+            const gl = canvas.getContext('webgl');
+            
+            gl.clearColor(0.0, 1.0, 0.0, 1.0);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            
+            const dataURL = canvas.toDataURL();
+            if (!dataURL.startsWith('data:image/png;base64,')) {
+                throw new Error("Invalid data URL format");
+            }
+        });
+        
+        // Test 7: Multiple clears work
+        test("Multiple clears update pixel buffer", () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = 2;
+            canvas.height = 2;
+            const gl = canvas.getContext('webgl');
+            
+            // First clear to red
+            gl.clearColor(1.0, 0.0, 0.0, 1.0);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            
+            // Then clear to blue
+            gl.clearColor(0.0, 0.0, 1.0, 1.0);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            
+            const pixels = new Uint8Array(4);
+            gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+            
+            // Should be blue now
+            if (pixels[0] !== 0) throw new Error(`Expected red=0, got ${pixels[0]}`);
+            if (pixels[2] !== 255) throw new Error(`Expected blue=255, got ${pixels[2]}`);
+        });
+        
+        // Test 8: Extensions work
+        test("getSupportedExtensions returns array", () => {
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('webgl');
+            const extensions = gl.getSupportedExtensions();
+            if (!Array.isArray(extensions)) throw new Error("Not an array");
+            if (extensions.length === 0) throw new Error("No extensions");
+        });
+        
+        test("getExtension works for known extension", () => {
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('webgl');
+            const ext = gl.getExtension('WEBGL_debug_renderer_info');
+            if (!ext) throw new Error("Extension not returned");
+            if (typeof ext.UNMASKED_VENDOR_WEBGL !== 'number') {
+                throw new Error("Extension constant not defined");
+            }
+        });
+        
+        // Test 9: Object creation methods work
+        test("createBuffer returns object", () => {
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('webgl');
+            const buffer = gl.createBuffer();
+            if (!buffer) throw new Error("Buffer is null");
+        });
+        
+        test("createTexture returns object", () => {
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('webgl');
+            const texture = gl.createTexture();
+            if (!texture) throw new Error("Texture is null");
+        });
+        
+        test("createProgram and createShader return objects", () => {
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('webgl');
+            const program = gl.createProgram();
+            const shader = gl.createShader(gl.VERTEX_SHADER);
+            if (!program) throw new Error("Program is null");
+            if (!shader) throw new Error("Shader is null");
+        });
+        
+        // Test 10: getParameter works
+        test("getParameter returns version strings", () => {
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('webgl');
+            const version = gl.getParameter(gl.VERSION);
+            const vendor = gl.getParameter(gl.VENDOR);
+            if (typeof version !== 'string') throw new Error("VERSION not a string");
+            if (typeof vendor !== 'string') throw new Error("VENDOR not a string");
+        });
+        
+        // Display results
+        document.getElementById('results').innerHTML = 
+            '<pre>' + results.join('\n') + '</pre>' +
+            '<p><strong>Total: ' + results.filter(r => r.startsWith('✓')).length + 
+            '/' + results.length + ' passed</strong></p>';
+    </script>
+</body>
+</html>

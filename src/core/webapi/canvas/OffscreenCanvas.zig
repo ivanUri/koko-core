@@ -17,6 +17,7 @@ const js = @import("../../js/js.zig");
 
 const Blob = @import("../Blob.zig");
 const OffscreenCanvasRenderingContext2D = @import("OffscreenCanvasRenderingContext2D.zig");
+const WebGLRenderingContext = @import("WebGLRenderingContext.zig");
 
 const Execution = js.Execution;
 
@@ -25,14 +26,17 @@ const OffscreenCanvas = @This();
 
 pub const _prototype_root = true;
 
-_width: u32,
-_height: u32,
-
 /// Since there's no base class rendering contexts inherit from,
 /// we're using tagged union.
 const DrawingContext = union(enum) {
     @"2d": *OffscreenCanvasRenderingContext2D,
+    webgl: *WebGLRenderingContext,
+    webgl2: *WebGLRenderingContext,
 };
+
+_width: u32,
+_height: u32,
+_cached: ?DrawingContext = null,
 
 pub fn constructor(width: u32, height: u32, exec: *Execution) !*OffscreenCanvas {
     return exec._factory.create(OffscreenCanvas{
@@ -57,13 +61,35 @@ pub fn setHeight(self: *OffscreenCanvas, value: u32) void {
     self._height = value;
 }
 
-pub fn getContext(_: *OffscreenCanvas, context_type: []const u8, exec: *Execution) !?DrawingContext {
-    if (std.mem.eql(u8, context_type, "2d")) {
-        const ctx = try exec._factory.create(OffscreenCanvasRenderingContext2D{});
-        return .{ .@"2d" = ctx };
+pub fn getContext(self: *OffscreenCanvas, context_type: []const u8, exec: *Execution) !?DrawingContext {
+    // Per spec: once a context type is bound, return the same object or null for mismatched type.
+    if (self._cached) |cached| {
+        const matches = switch (cached) {
+            .@"2d" => std.mem.eql(u8, context_type, "2d"),
+            .webgl => std.mem.eql(u8, context_type, "webgl") or std.mem.eql(u8, context_type, "experimental-webgl"),
+            .webgl2 => std.mem.eql(u8, context_type, "webgl2"),
+        };
+        return if (matches) cached else null;
     }
 
-    return null;
+    const drawing_context: DrawingContext = blk: {
+        if (std.mem.eql(u8, context_type, "2d")) {
+            const ctx = try exec._factory.create(OffscreenCanvasRenderingContext2D{});
+            break :blk .{ .@"2d" = ctx };
+        }
+        if (std.mem.eql(u8, context_type, "webgl") or std.mem.eql(u8, context_type, "experimental-webgl")) {
+            const ctx = try exec._factory.create(WebGLRenderingContext{});
+            break :blk .{ .webgl = ctx };
+        }
+        if (std.mem.eql(u8, context_type, "webgl2")) {
+            const ctx = try exec._factory.create(WebGLRenderingContext{});
+            break :blk .{ .webgl2 = ctx };
+        }
+        return null;
+    };
+
+    self._cached = drawing_context;
+    return drawing_context;
 }
 
 /// Returns a Promise that resolves to a Blob containing the image.
