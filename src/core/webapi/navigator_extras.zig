@@ -5,6 +5,7 @@
 
 const js = @import("../js/js.zig");
 const Frame = @import("../browser/Frame.zig");
+const Execution = js.Execution;
 
 pub fn registerTypes() []const type {
     return &.{
@@ -13,6 +14,7 @@ pub fn registerTypes() []const type {
         CredentialsContainer,
         Bluetooth,
         GPU,
+        GPUAdapter,
         USB,
         Serial,
         HID,
@@ -41,7 +43,64 @@ fn emptyInterface(comptime interface_name: []const u8) type {
 }
 
 pub const Bluetooth = emptyInterface("Bluetooth");
-pub const GPU = emptyInterface("GPU");
+pub const GPU = struct {
+    _pad: bool = false,
+
+    pub fn requestAdapter(self: *const GPU, exec: *Execution) !js.Promise {
+        _ = self;
+        const local = exec.context.local orelse return error.NotHandled;
+        const adapter = try exec._factory.create(GPUAdapter{});
+        return local.resolvePromise(adapter);
+    }
+
+    pub const JsApi = struct {
+        pub const bridge = js.Bridge(GPU);
+        pub const Meta = struct {
+            pub const name = "GPU";
+            pub const prototype_chain = bridge.prototypeChain();
+            pub var class_id: bridge.ClassId = undefined;
+            pub const empty_with_no_proto = true;
+        };
+        pub const requestAdapter = bridge.function(GPU.requestAdapter, .{});
+    };
+};
+
+pub const GPUAdapter = struct {
+    _pad: bool = false,
+
+    pub fn requestAdapterInfo(self: *const GPUAdapter, exec: *Execution) !js.Promise {
+        _ = self;
+        const local = exec.context.local orelse return error.NotHandled;
+        const info = local.newObject();
+        _ = try info.set("vendor", "google", .{});
+        _ = try info.set("architecture", "angle", .{});
+        _ = try info.set("device", "", .{});
+        _ = try info.set("description", "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)", .{});
+        return local.resolvePromise(info);
+    }
+
+    pub fn requestDevice(self: *const GPUAdapter, exec: *Execution) !js.Promise {
+        _ = self;
+        const local = exec.context.local orelse return error.NotHandled;
+        return local.rejectPromise(.{ .dom_exception = .{ .err = error.NotSupported } });
+    }
+
+    pub const JsApi = struct {
+        pub const bridge = js.Bridge(GPUAdapter);
+        pub const Meta = struct {
+            pub const name = "GPUAdapter";
+            pub const prototype_chain = bridge.prototypeChain();
+            pub var class_id: bridge.ClassId = undefined;
+            pub const empty_with_no_proto = true;
+        };
+        pub const name = bridge.attribute("ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)", .{});
+        pub const features = bridge.attribute(null, .{});
+        pub const limits = bridge.attribute(null, .{});
+        pub const isFallbackAdapter = bridge.attribute(false, .{});
+        pub const requestAdapterInfo = bridge.function(GPUAdapter.requestAdapterInfo, .{});
+        pub const requestDevice = bridge.function(GPUAdapter.requestDevice, .{ .dom_exception = true });
+    };
+};
 pub const USB = emptyInterface("USB");
 pub const Serial = emptyInterface("Serial");
 pub const HID = emptyInterface("HID");

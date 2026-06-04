@@ -1052,6 +1052,7 @@ pub const WorkerJsApis = flattenTypes(&.{
     @import("../webapi/canvas/TextMetrics.zig"),
     @import("../webapi/canvas/OffscreenCanvas.zig"),
     @import("../webapi/canvas/OffscreenCanvasRenderingContext2D.zig"),
+    @import("../webapi/canvas/WebGLRenderingContext.zig"),
     @import("../webapi/net/XMLHttpRequest.zig"),
     @import("../webapi/net/XMLHttpRequestEventTarget.zig"),
     @import("../webapi/FileReader.zig"),

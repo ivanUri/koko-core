@@ -14,7 +14,7 @@
 const std = @import("std");
 
 const js = @import("../../js/js.zig");
-const Frame = @import("../../browser/Frame.zig");
+const Execution = js.Execution;
 const Canvas = @import("../element/html/Canvas.zig");
 
 pub fn registerTypes() []const type {
@@ -282,8 +282,8 @@ pub fn getDrawingBufferHeight(self: *const WebGLRenderingContext) u32 {
 /// This actually takes "GLenum" which, in fact, is a fancy way to say number.
 /// Return value also depends on what's being passed as `pname`; we don't really
 /// support any though.
-pub fn getParameter(_: *const WebGLRenderingContext, pname: u32, frame: *Frame) !js.Value {
-    const local = frame.js.local orelse return error.NotHandled;
+pub fn getParameter(_: *const WebGLRenderingContext, pname: u32, exec: *Execution) !js.Value {
+    const local = exec.context.local orelse return error.NotHandled;
     switch (pname) {
         VERSION => return (try local.zigValueToJs("WebGL 1.0 (OpenGL ES 2.0 Chromium)", .{})),
         VENDOR => return (try local.zigValueToJs("WebKit", .{})),
@@ -322,8 +322,8 @@ pub fn getParameter(_: *const WebGLRenderingContext, pname: u32, frame: *Frame) 
     }
 }
 
-pub fn getShaderPrecisionFormat(_: *const WebGLRenderingContext, _: u32, precision_type: u32, frame: *Frame) !js.Value {
-    const local = frame.js.local orelse return error.NotHandled;
+pub fn getShaderPrecisionFormat(_: *const WebGLRenderingContext, _: u32, precision_type: u32, exec: *Execution) !js.Value {
+    const local = exec.context.local orelse return error.NotHandled;
     const obj = local.newObject();
     const is_float = precision_type == LOW_FLOAT or precision_type == MEDIUM_FLOAT or precision_type == HIGH_FLOAT;
     _ = try obj.set("rangeMin", if (is_float) @as(i32, 127) else @as(i32, 31), .{});
@@ -332,12 +332,23 @@ pub fn getShaderPrecisionFormat(_: *const WebGLRenderingContext, _: u32, precisi
     return obj.toValue();
 }
 
-pub fn readPixels(_: *const WebGLRenderingContext, _: i32, _: i32, width: i32, height: i32, _: u32, _: u32, pixels: js.Value, frame: *Frame) !void {
-    _ = frame;
+pub fn readPixels(_: *const WebGLRenderingContext, x: i32, y: i32, width: i32, height: i32, _: u32, _: u32, pixels: js.Value, exec: *Execution) !void {
+    _ = exec;
     if (!pixels.isTypedArray()) return;
-    const count: usize = @intCast(@max(width, 0) * @max(height, 0) * 4);
+    const safe_width: usize = @intCast(@max(width, 0));
+    const safe_height: usize = @intCast(@max(height, 0));
+    const count = safe_width * safe_height * 4;
     if (pixels.toZig(js.TypedArray(u8))) |arr| {
-        @memset(@constCast(arr.values[0..@min(arr.values.len, count)]), 255);
+        const out = @constCast(arr.values[0..@min(arr.values.len, count)]);
+        for (0..out.len / 4) |i| {
+            const px = i % safe_width;
+            const py = i / safe_width;
+            const base = i * 4;
+            out[base + 0] = @intCast((px * 31 + @as(usize, @intCast(@max(x, 0))) * 17 + 41) & 0xff);
+            out[base + 1] = @intCast((py * 47 + @as(usize, @intCast(@max(y, 0))) * 13 + 73) & 0xff);
+            out[base + 2] = @intCast(((px ^ py) * 19 + 109) & 0xff);
+            out[base + 3] = 255;
+        }
     } else |_| {}
 }
 
@@ -396,32 +407,32 @@ pub fn getError(_: *const WebGLRenderingContext) u32 {
     return 0;
 }
 
-pub fn createBuffer(_: *const WebGLRenderingContext, frame: *Frame) !*WebGLBuffer {
-    return frame._factory.create(WebGLBuffer{});
+pub fn createBuffer(_: *const WebGLRenderingContext, exec: *Execution) !*WebGLBuffer {
+    return exec._factory.create(WebGLBuffer{});
 }
 
-pub fn createShader(_: *const WebGLRenderingContext, _: u32, frame: *Frame) !*WebGLShader {
-    return frame._factory.create(WebGLShader{});
+pub fn createShader(_: *const WebGLRenderingContext, _: u32, exec: *Execution) !*WebGLShader {
+    return exec._factory.create(WebGLShader{});
 }
 
-pub fn createProgram(_: *const WebGLRenderingContext, frame: *Frame) !*WebGLProgram {
-    return frame._factory.create(WebGLProgram{});
+pub fn createProgram(_: *const WebGLRenderingContext, exec: *Execution) !*WebGLProgram {
+    return exec._factory.create(WebGLProgram{});
 }
 
-pub fn createTexture(_: *const WebGLRenderingContext, frame: *Frame) !*WebGLTexture {
-    return frame._factory.create(WebGLTexture{});
+pub fn createTexture(_: *const WebGLRenderingContext, exec: *Execution) !*WebGLTexture {
+    return exec._factory.create(WebGLTexture{});
 }
 
-pub fn createFramebuffer(_: *const WebGLRenderingContext, frame: *Frame) !*WebGLFramebuffer {
-    return frame._factory.create(WebGLFramebuffer{});
+pub fn createFramebuffer(_: *const WebGLRenderingContext, exec: *Execution) !*WebGLFramebuffer {
+    return exec._factory.create(WebGLFramebuffer{});
 }
 
-pub fn createRenderbuffer(_: *const WebGLRenderingContext, frame: *Frame) !*WebGLRenderbuffer {
-    return frame._factory.create(WebGLRenderbuffer{});
+pub fn createRenderbuffer(_: *const WebGLRenderingContext, exec: *Execution) !*WebGLRenderbuffer {
+    return exec._factory.create(WebGLRenderbuffer{});
 }
 
-pub fn getUniformLocation(_: *const WebGLRenderingContext, _: *const WebGLProgram, _: []const u8, frame: *Frame) !*WebGLUniformLocation {
-    return frame._factory.create(WebGLUniformLocation{});
+pub fn getUniformLocation(_: *const WebGLRenderingContext, _: *const WebGLProgram, _: []const u8, exec: *Execution) !*WebGLUniformLocation {
+    return exec._factory.create(WebGLUniformLocation{});
 }
 
 /// Returns the location of an attribute variable in a given WebGLProgram.
@@ -434,24 +445,24 @@ pub fn getAttribLocation(_: *const WebGLRenderingContext, _: *const WebGLProgram
 pub fn noop(_: *const WebGLRenderingContext) void {}
 
 /// Enables a WebGL extension.
-pub fn getExtension(_: *const WebGLRenderingContext, name: []const u8, frame: *Frame) !?Extension {
+pub fn getExtension(_: *const WebGLRenderingContext, name: []const u8, exec: *Execution) !?Extension {
     const tag = Extension.find(name) orelse return null;
 
     return switch (tag) {
         .WEBGL_debug_renderer_info => {
-            const info = try frame._factory.create(Extension.Type.WEBGL_debug_renderer_info{});
+            const info = try exec._factory.create(Extension.Type.WEBGL_debug_renderer_info{});
             return .{ .WEBGL_debug_renderer_info = info };
         },
         .WEBGL_lose_context => {
-            const ctx = try frame._factory.create(Extension.Type.WEBGL_lose_context{});
+            const ctx = try exec._factory.create(Extension.Type.WEBGL_lose_context{});
             return .{ .WEBGL_lose_context = ctx };
         },
         .EXT_texture_filter_anisotropic => {
-            const ext = try frame._factory.create(Extension.Type.EXT_texture_filter_anisotropic{});
+            const ext = try exec._factory.create(Extension.Type.EXT_texture_filter_anisotropic{});
             return .{ .EXT_texture_filter_anisotropic = ext };
         },
         .WEBGL_draw_buffers => {
-            const ext = try frame._factory.create(Extension.Type.WEBGL_draw_buffers{});
+            const ext = try exec._factory.create(Extension.Type.WEBGL_draw_buffers{});
             return .{ .WEBGL_draw_buffers = ext };
         },
         inline else => |comptime_enum| @unionInit(Extension, @tagName(comptime_enum), {}),
@@ -520,6 +531,10 @@ pub const JsApi = struct {
     pub const viewport = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
     pub const clearColor = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
     pub const clear = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
+    pub const bindTexture = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
+    pub const texImage2D = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
+    pub const texParameteri = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
+    pub const activeTexture = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
     pub const enableVertexAttribArray = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
     pub const vertexAttribPointer = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });
     pub const drawArrays = bridge.function(WebGLRenderingContext.noop, .{ .noop = true });

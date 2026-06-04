@@ -19,6 +19,7 @@ const js = @import("../js/js.zig");
 const NavigatorUAData = @import("NavigatorUAData.zig");
 const PluginArray = @import("PluginArray.zig");
 const Page = @import("../browser/Page.zig");
+const navigator_extras = @import("navigator_extras.zig");
 
 /// WorkerNavigator is the worker-context counterpart of Navigator. The HTML
 /// spec defines it as a distinct interface that exposes only the subset of
@@ -36,6 +37,7 @@ const WorkerNavigator = @This();
 _pad: bool = false,
 _plugins: PluginArray = .{},
 _mime_types: PluginArray.MimeTypeArray = .{},
+_gpu: navigator_extras.GPU = .{},
 
 pub const init: WorkerNavigator = .{};
 
@@ -73,6 +75,10 @@ pub fn getMimeTypes(self: *WorkerNavigator) *PluginArray.MimeTypeArray {
     return &self._mime_types;
 }
 
+pub fn getGpu(self: *WorkerNavigator) *navigator_extras.GPU {
+    return &self._gpu;
+}
+
 pub const JsApi = struct {
     pub const bridge = js.Bridge(WorkerNavigator);
 
@@ -102,4 +108,5 @@ pub const JsApi = struct {
     pub const doNotTrack = bridge.attribute(null, .{});
     pub const globalPrivacyControl = bridge.attribute(true, .{});
     pub const userAgentData = bridge.accessor(WorkerNavigator.getUserAgentData, null, .{});
+    pub const gpu = bridge.accessor(WorkerNavigator.getGpu, null, .{});
 };
