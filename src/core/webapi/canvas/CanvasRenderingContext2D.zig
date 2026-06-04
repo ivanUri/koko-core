@@ -145,12 +145,9 @@ pub fn stroke(_: *CanvasRenderingContext2D) void {}
 pub fn clip(_: *CanvasRenderingContext2D) void {}
 pub fn fillText(_: *CanvasRenderingContext2D, _: []const u8, _: f64, _: f64, _: ?f64) void {}
 pub fn strokeText(_: *CanvasRenderingContext2D, _: []const u8, _: f64, _: f64, _: ?f64) void {}
-pub fn measureText(_: *CanvasRenderingContext2D, _: []const u8, frame: *Frame) !*TextMetrics {
-    // Velora is headless and has no font system, so all metrics are 0.
-    // Returning a real TextMetrics object (with all spec-defined attributes
-    // present) is still required so that callers don't trip on a missing
-    // method.
-    return TextMetrics.init(frame);
+pub fn measureText(self: *CanvasRenderingContext2D, text: []const u8, frame: *Frame) !*TextMetrics {
+    // Use heuristic measurement based on character counting and font size
+    return TextMetrics.init(text, self._font, frame);
 }
 pub fn createLinearGradient(
     _: *CanvasRenderingContext2D,

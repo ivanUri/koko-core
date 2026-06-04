@@ -120,8 +120,9 @@ pub fn stroke(_: *OffscreenCanvasRenderingContext2D) void {}
 pub fn clip(_: *OffscreenCanvasRenderingContext2D) void {}
 pub fn fillText(_: *OffscreenCanvasRenderingContext2D, _: []const u8, _: f64, _: f64, _: ?f64) void {}
 pub fn strokeText(_: *OffscreenCanvasRenderingContext2D, _: []const u8, _: f64, _: f64, _: ?f64) void {}
-pub fn measureText(_: *OffscreenCanvasRenderingContext2D, _: []const u8, frame: *Frame) !*TextMetrics {
-    return TextMetrics.init(frame);
+pub fn measureText(self: *OffscreenCanvasRenderingContext2D, text: []const u8, frame: *Frame) !*TextMetrics {
+    // Use heuristic measurement based on character counting and font size
+    return TextMetrics.init(text, self._font, frame);
 }
 
 pub fn createLinearGradient(

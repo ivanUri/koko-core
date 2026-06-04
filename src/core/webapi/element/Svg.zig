@@ -11,6 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+const std = @import("std");
 const js = @import("../../js/js.zig");
 
 const Frame = @import("../../browser/Frame.zig");
@@ -56,37 +57,79 @@ pub fn asNode(self: *Svg) *Node {
 // SVGGraphicsElement / SVGTextContentElement geometry surface
 // ---------------------------------------------------------------------------
 //
-// Velora is headless and does not perform SVG layout, so any geometry query
-// returns zero-sized values. The methods still need to exist (and return the
-// correct types) because spec-driven and fingerprinting code probes them and
-// crashes when the methods are missing rather than returning a degenerate
-// rect. The single `Svg` class hosts the full union of methods today; once
-// the SVG hierarchy is split into proper interfaces these can move down to
-// SVGGraphicsElement / SVGTextContentElement without changing the JS surface.
+// Velora is headless and does not perform SVG layout, so geometry queries
+// return heuristic estimates based on text content and character counting.
+// This provides deterministic values for fingerprinting and basic layout code
+// without requiring a full SVG rendering engine.
+
+/// Estimate text width based on character count
+fn estimateSvgTextWidth(self: *Svg, frame: *Frame) f64 {
+    const text_content = self.asNode().getTextContentAlloc(frame.call_arena) catch return 0.0;
+    if (text_content.len == 0) return 0.0;
+
+    // Default SVG font size is typically 16px
+    const default_font_size: f64 = 16.0;
+    const avg_char_width = default_font_size * 0.55;
+
+    return @as(f64, @floatFromInt(text_content.len)) * avg_char_width;
+}
+
+/// Estimate text height based on font size
+fn estimateSvgTextHeight(_: *Svg) f64 {
+    // Default SVG font size is typically 16px
+    return 16.0;
+}
 
 /// https://svgwg.org/svg2-draft/coords.html#__svg__SVGGraphicsElement__getBBox
-pub fn getBBox(_: *Svg, frame: *Frame) !*DOMRect {
-    return DOMRect.init(0, 0, 0, 0, frame);
+pub fn getBBox(self: *Svg, frame: *Frame) !*DOMRect {
+    const width = self.estimateSvgTextWidth(frame);
+    const height = self.estimateSvgTextHeight();
+    return DOMRect.init(0, 0, width, height, frame);
 }
 
 /// https://svgwg.org/svg2-draft/text.html#__svg__SVGTextContentElement__getComputedTextLength
-pub fn getComputedTextLength(_: *Svg) f64 {
-    return 0;
+pub fn getComputedTextLength(self: *Svg, frame: *Frame) f64 {
+    return self.estimateSvgTextWidth(frame);
 }
 
 /// https://svgwg.org/svg2-draft/text.html#__svg__SVGTextContentElement__getSubStringLength
-pub fn getSubStringLength(_: *Svg, _: u32, _: u32) f64 {
-    return 0;
+pub fn getSubStringLength(self: *Svg, char_num: u32, n_chars: u32, frame: *Frame) f64 {
+    const text_content = self.asNode().getTextContentAlloc(frame.call_arena) catch return 0.0;
+    const start = @min(char_num, @as(u32, @intCast(text_content.len)));
+    const end = @min(start + n_chars, @as(u32, @intCast(text_content.len)));
+    const length = end - start;
+
+    const default_font_size: f64 = 16.0;
+    const avg_char_width = default_font_size * 0.55;
+    return @as(f64, @floatFromInt(length)) * avg_char_width;
 }
 
 /// https://svgwg.org/svg2-draft/text.html#__svg__SVGTextContentElement__getNumberOfChars
-pub fn getNumberOfChars(_: *Svg) i32 {
-    return 0;
+pub fn getNumberOfChars(self: *Svg, frame: *Frame) i32 {
+    const text_content = self.asNode().getTextContentAlloc(frame.call_arena) catch return 0;
+    return @intCast(text_content.len);
 }
 
 /// https://svgwg.org/svg2-draft/text.html#__svg__SVGTextContentElement__getExtentOfChar
-pub fn getExtentOfChar(_: *Svg, _: u32, frame: *Frame) !*DOMRect {
-    return DOMRect.init(0, 0, 0, 0, frame);
+pub fn getExtentOfChar(self: *Svg, char_num: u32, frame: *Frame) !*DOMRect {
+    const text_content = self.asNode().getTextContentAlloc(frame.call_arena) catch {
+        return DOMRect.init(0, 0, 0, 0, frame);
+    };
+
+    if (char_num >= text_content.len) {
+        return DOMRect.init(0, 0, 0, 0, frame);
+    }
+
+    const default_font_size: f64 = 16.0;
+    const avg_char_width = default_font_size * 0.55;
+
+    // X position is based on character index
+    const x = @as(f64, @floatFromInt(char_num)) * avg_char_width;
+    const y: f64 = 0;
+    const width = avg_char_width;
+    const height = default_font_size;
+
+    return DOMRect.init(x, y, width, height, frame);
 }
 
 /// https://svgwg.org/svg2-draft/text.html#__svg__SVGTextContentElement__getStartPositionOfChar
