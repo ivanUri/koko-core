@@ -12,8 +12,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
-const builtin = @import("builtin");
 
+const FingerprintProfile = @import("../fingerprint/Profile.zig");
 const js = @import("../js/js.zig");
 
 const NavigatorUAData = @import("NavigatorUAData.zig");
@@ -41,6 +41,10 @@ _gpu: navigator_extras.GPU = .{},
 
 pub const init: WorkerNavigator = .{};
 
+fn identityProfile() *const FingerprintProfile.IdentityProfile {
+    return FingerprintProfile.defaultIdentity();
+}
+
 pub fn getUserAgent(_: *const WorkerNavigator, page: *Page) []const u8 {
     // The Page is reachable from any execution context (frame OR worker)
     // via Context.page, and it is the source of truth for the HTTP client
@@ -50,21 +54,36 @@ pub fn getUserAgent(_: *const WorkerNavigator, page: *Page) []const u8 {
 }
 
 pub fn getLanguages(_: *const WorkerNavigator) [2][]const u8 {
-    return .{ "en-US", "en" };
+    const profile = identityProfile();
+    return .{ profile.languages[0], profile.languages[1] };
 }
 
 pub fn getPlatform(_: *const WorkerNavigator) []const u8 {
-    return switch (builtin.os.tag) {
-        .macos => "MacIntel",
-        .windows => "Win32",
-        .linux => "Linux x86_64",
-        .freebsd => "FreeBSD",
-        else => "Unknown",
-    };
+    return identityProfile().navigator_platform;
 }
 
 pub fn getUserAgentData(_: *const WorkerNavigator) NavigatorUAData {
     return .{};
+}
+
+pub fn getHardwareConcurrency(_: *const WorkerNavigator) u32 {
+    return identityProfile().hardware_concurrency;
+}
+
+pub fn getDeviceMemory(_: *const WorkerNavigator) f64 {
+    return identityProfile().device_memory;
+}
+
+pub fn getMaxTouchPoints(_: *const WorkerNavigator) u32 {
+    return identityProfile().max_touch_points;
+}
+
+pub fn getVendor(_: *const WorkerNavigator) []const u8 {
+    return identityProfile().vendor;
+}
+
+pub fn getGlobalPrivacyControl(_: *const WorkerNavigator) bool {
+    return identityProfile().global_privacy_control;
 }
 
 pub fn getPlugins(self: *WorkerNavigator) *PluginArray {
@@ -97,16 +116,16 @@ pub const JsApi = struct {
     pub const language = bridge.attribute("en-US", .{});
     pub const languages = bridge.accessor(WorkerNavigator.getLanguages, null, .{});
     pub const onLine = bridge.attribute(true, .{});
-    pub const hardwareConcurrency = bridge.attribute(@as(u32, 4), .{});
-    pub const deviceMemory = bridge.attribute(@as(f64, 8.0), .{});
-    pub const maxTouchPoints = bridge.attribute(@as(u32, 0), .{});
-    pub const vendor = bridge.attribute("", .{});
+    pub const hardwareConcurrency = bridge.accessor(WorkerNavigator.getHardwareConcurrency, null, .{});
+    pub const deviceMemory = bridge.accessor(WorkerNavigator.getDeviceMemory, null, .{});
+    pub const maxTouchPoints = bridge.accessor(WorkerNavigator.getMaxTouchPoints, null, .{});
+    pub const vendor = bridge.accessor(WorkerNavigator.getVendor, null, .{});
     pub const product = bridge.attribute("Gecko", .{});
     pub const webdriver = bridge.attribute(false, .{});
     pub const plugins = bridge.accessor(WorkerNavigator.getPlugins, null, .{});
     pub const mimeTypes = bridge.accessor(WorkerNavigator.getMimeTypes, null, .{});
     pub const doNotTrack = bridge.attribute(null, .{});
-    pub const globalPrivacyControl = bridge.attribute(true, .{});
+    pub const globalPrivacyControl = bridge.accessor(WorkerNavigator.getGlobalPrivacyControl, null, .{});
     pub const userAgentData = bridge.accessor(WorkerNavigator.getUserAgentData, null, .{});
     pub const gpu = bridge.accessor(WorkerNavigator.getGpu, null, .{});
 };

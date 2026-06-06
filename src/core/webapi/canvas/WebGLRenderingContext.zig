@@ -13,6 +13,7 @@
 
 const std = @import("std");
 
+const FingerprintProfile = @import("../../fingerprint/Profile.zig");
 const js = @import("../../js/js.zig");
 const Execution = js.Execution;
 const Canvas = @import("../element/html/Canvas.zig");
@@ -37,6 +38,10 @@ pub fn registerTypes() []const type {
 }
 
 const WebGLRenderingContext = @This();
+
+fn identityProfile() *const FingerprintProfile.IdentityProfile {
+    return FingerprintProfile.defaultIdentity();
+}
 
 /// Reference to the parent canvas element, or null if created from OffscreenCanvas.
 /// https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext/canvas
@@ -284,40 +289,44 @@ pub fn getDrawingBufferHeight(self: *const WebGLRenderingContext) u32 {
 /// support any though.
 pub fn getParameter(_: *const WebGLRenderingContext, pname: u32, exec: *Execution) !js.Value {
     const local = exec.context.local orelse return error.NotHandled;
+    const profile = identityProfile().webgl;
     switch (pname) {
-        VERSION => return (try local.zigValueToJs("WebGL 1.0 (OpenGL ES 2.0 Chromium)", .{})),
-        VENDOR => return (try local.zigValueToJs("WebKit", .{})),
-        RENDERER => return (try local.zigValueToJs("WebKit WebGL", .{})),
-        SHADING_LANGUAGE_VERSION => return (try local.zigValueToJs("WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)", .{})),
-        Extension.Type.WEBGL_debug_renderer_info.UNMASKED_VENDOR_WEBGL => return (try local.zigValueToJs("Google Inc. (Apple)", .{})),
-        Extension.Type.WEBGL_debug_renderer_info.UNMASKED_RENDERER_WEBGL => return (try local.zigValueToJs("ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)", .{})),
-        MAX_TEXTURE_SIZE, MAX_CUBE_MAP_TEXTURE_SIZE, MAX_RENDERBUFFER_SIZE => return (try local.zigValueToJs(@as(u32, 16384), .{})),
-        MAX_VERTEX_ATTRIBS => return (try local.zigValueToJs(@as(u32, 16), .{})),
-        MAX_VERTEX_UNIFORM_VECTORS => return (try local.zigValueToJs(@as(u32, 4096), .{})),
-        MAX_VARYING_VECTORS => return (try local.zigValueToJs(@as(u32, 31), .{})),
-        MAX_COMBINED_TEXTURE_IMAGE_UNITS => return (try local.zigValueToJs(@as(u32, 32), .{})),
-        MAX_VERTEX_TEXTURE_IMAGE_UNITS => return (try local.zigValueToJs(@as(u32, 16), .{})),
-        MAX_TEXTURE_IMAGE_UNITS => return (try local.zigValueToJs(@as(u32, 16), .{})),
-        MAX_FRAGMENT_UNIFORM_VECTORS => return (try local.zigValueToJs(@as(u32, 1024), .{})),
+        VERSION => return (try local.zigValueToJs(profile.version, .{})),
+        VENDOR => return (try local.zigValueToJs(profile.vendor, .{})),
+        RENDERER => return (try local.zigValueToJs(profile.renderer, .{})),
+        SHADING_LANGUAGE_VERSION => return (try local.zigValueToJs(profile.shading_language_version, .{})),
+        Extension.Type.WEBGL_debug_renderer_info.UNMASKED_VENDOR_WEBGL => return (try local.zigValueToJs(profile.unmasked_vendor, .{})),
+        Extension.Type.WEBGL_debug_renderer_info.UNMASKED_RENDERER_WEBGL => return (try local.zigValueToJs(profile.unmasked_renderer, .{})),
+        MAX_TEXTURE_SIZE => return (try local.zigValueToJs(profile.max_texture_size, .{})),
+        MAX_CUBE_MAP_TEXTURE_SIZE => return (try local.zigValueToJs(profile.max_cube_map_texture_size, .{})),
+        MAX_RENDERBUFFER_SIZE => return (try local.zigValueToJs(profile.max_renderbuffer_size, .{})),
+        MAX_VERTEX_ATTRIBS => return (try local.zigValueToJs(profile.max_vertex_attribs, .{})),
+        MAX_VERTEX_UNIFORM_VECTORS => return (try local.zigValueToJs(profile.max_vertex_uniform_vectors, .{})),
+        MAX_VARYING_VECTORS => return (try local.zigValueToJs(profile.max_varying_vectors, .{})),
+        MAX_COMBINED_TEXTURE_IMAGE_UNITS => return (try local.zigValueToJs(profile.max_combined_texture_image_units, .{})),
+        MAX_VERTEX_TEXTURE_IMAGE_UNITS => return (try local.zigValueToJs(profile.max_vertex_texture_image_units, .{})),
+        MAX_TEXTURE_IMAGE_UNITS => return (try local.zigValueToJs(profile.max_texture_image_units, .{})),
+        MAX_FRAGMENT_UNIFORM_VECTORS => return (try local.zigValueToJs(profile.max_fragment_uniform_vectors, .{})),
         RED_BITS, GREEN_BITS, BLUE_BITS, ALPHA_BITS => return (try local.zigValueToJs(@as(u32, 8), .{})),
         DEPTH_BITS => return (try local.zigValueToJs(@as(u32, 24), .{})),
         STENCIL_BITS => return (try local.zigValueToJs(@as(u32, 0), .{})),
-        ALIASED_LINE_WIDTH_RANGE, ALIASED_POINT_SIZE_RANGE => {
+        ALIASED_LINE_WIDTH_RANGE => {
             const arr = local.createTypedArray(.float32, 2);
-            const values = [_]f32{ 1, if (pname == ALIASED_POINT_SIZE_RANGE) 1024 else 1 };
-            fillTypedArray(.float32, arr, values[0..]);
+            fillTypedArray(.float32, arr, profile.aliased_line_width_range[0..]);
+            return .{ .local = local, .handle = arr.handle };
+        },
+        ALIASED_POINT_SIZE_RANGE => {
+            const arr = local.createTypedArray(.float32, 2);
+            fillTypedArray(.float32, arr, profile.aliased_point_size_range[0..]);
             return .{ .local = local, .handle = arr.handle };
         },
         MAX_VIEWPORT_DIMS => {
             const arr = local.createTypedArray(.int32, 2);
-            const values = [_]i32{ 16384, 16384 };
-            fillTypedArray(.int32, arr, values[0..]);
+            fillTypedArray(.int32, arr, profile.max_viewport_dims[0..]);
             return .{ .local = local, .handle = arr.handle };
         },
-        // EXT_texture_filter_anisotropic
-        Extension.Type.EXT_texture_filter_anisotropic.MAX_TEXTURE_MAX_ANISOTROPY_EXT => return (try local.zigValueToJs(@as(u32, 16), .{})),
-        // WEBGL_draw_buffers
-        Extension.Type.WEBGL_draw_buffers.MAX_DRAW_BUFFERS_WEBGL => return (try local.zigValueToJs(@as(u32, 8), .{})),
+        Extension.Type.EXT_texture_filter_anisotropic.MAX_TEXTURE_MAX_ANISOTROPY_EXT => return (try local.zigValueToJs(profile.max_texture_max_anisotropy, .{})),
+        Extension.Type.WEBGL_draw_buffers.MAX_DRAW_BUFFERS_WEBGL => return (try local.zigValueToJs(profile.max_draw_buffers, .{})),
         else => return (try local.zigValueToJs(@as(u32, 0), .{})),
     }
 }
@@ -471,7 +480,7 @@ pub fn getExtension(_: *const WebGLRenderingContext, name: []const u8, exec: *Ex
 
 /// Returns a list of all the supported WebGL extensions.
 pub fn getSupportedExtensions(_: *const WebGLRenderingContext) []const []const u8 {
-    return std.meta.fieldNames(Extension.Kind);
+    return identityProfile().webgl.extensions;
 }
 
 pub const JsApi = struct {

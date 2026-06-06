@@ -27,6 +27,7 @@ const TextMetrics = @import("TextMetrics.zig");
 /// It can be obtained with a call to `HTMLCanvasElement#getContext`.
 /// https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D
 const CanvasRenderingContext2D = @This();
+
 /// Reference to the parent canvas element.
 /// https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D/canvas
 _canvas: *Canvas,
@@ -97,9 +98,9 @@ pub fn createImageData(
 pub fn putImageData(_: *const CanvasRenderingContext2D, _: *ImageData, _: f64, _: f64, _: ?f64, _: ?f64, _: ?f64, _: ?f64) void {}
 
 pub fn getImageData(
-    _: *const CanvasRenderingContext2D,
-    _: i32, // sx
-    _: i32, // sy
+    self: *const CanvasRenderingContext2D,
+    sx: i32,
+    sy: i32,
     sw: i32,
     sh: i32,
     frame: *Frame,
@@ -107,7 +108,55 @@ pub fn getImageData(
     if (sw <= 0 or sh <= 0) {
         return error.IndexSizeError;
     }
-    return ImageData.init(@intCast(sw), @intCast(sh), null, frame);
+
+    // Create ImageData with requested dimensions
+    const image_data = try ImageData.init(@intCast(sw), @intCast(sh), null, frame);
+
+    // If no pixel buffer exists, return empty (transparent) ImageData
+    const buffer = self._canvas._pixel_buffer orelse return image_data;
+
+    // Get access to the ImageData's underlying typed array buffer
+    const local = frame.js.local orelse return image_data;
+    const data_ref = image_data._data.local(local);
+
+    // Access V8 backing store to write pixels
+    const view: *const js.v8.ArrayBufferView = @ptrCast(data_ref.handle);
+    const array_buffer = js.v8.v8__ArrayBufferView__Buffer(view) orelse return image_data;
+    const backing_store_ptr = js.v8.v8__ArrayBuffer__GetBackingStore(array_buffer);
+    const backing_store_handle = js.v8.std__shared_ptr__v8__BackingStore__get(&backing_store_ptr) orelse return image_data;
+    const data_bytes: [*]u8 = @ptrCast(@alignCast(js.v8.v8__BackingStore__Data(backing_store_handle)));
+
+    // Extract pixels from PixelBuffer to ImageData
+    const canvas_width = buffer.width;
+    const canvas_height = buffer.height;
+
+    var dy: i32 = 0;
+    while (dy < sh) : (dy += 1) {
+        var dx: i32 = 0;
+        while (dx < sw) : (dx += 1) {
+            const src_x = sx + dx;
+            const src_y = sy + dy;
+
+            const dst_index: usize = @intCast((dy * sw + dx) * 4);
+
+            // Check if source pixel is within canvas bounds
+            if (src_x >= 0 and src_y >= 0 and
+                src_x < canvas_width and src_y < canvas_height)
+            {
+                // Get pixel from buffer
+                const pixel = buffer.getPixel(@intCast(src_x), @intCast(src_y));
+
+                // Write to ImageData backing store
+                data_bytes[dst_index] = pixel.r;
+                data_bytes[dst_index + 1] = pixel.g;
+                data_bytes[dst_index + 2] = pixel.b;
+                data_bytes[dst_index + 3] = pixel.a;
+            }
+            // else: leave as 0 (transparent) - already initialized by ImageData.init
+        }
+    }
+
+    return image_data;
 }
 
 pub fn save(_: *CanvasRenderingContext2D) void {}
@@ -143,11 +192,140 @@ pub fn rect(_: *CanvasRenderingContext2D, _: f64, _: f64, _: f64, _: f64) void {
 pub fn fill(_: *CanvasRenderingContext2D) void {}
 pub fn stroke(_: *CanvasRenderingContext2D) void {}
 pub fn clip(_: *CanvasRenderingContext2D) void {}
-pub fn fillText(_: *CanvasRenderingContext2D, _: []const u8, _: f64, _: f64, _: ?f64) void {}
-pub fn strokeText(_: *CanvasRenderingContext2D, _: []const u8, _: f64, _: f64, _: ?f64) void {}
+pub fn fillText(self: *CanvasRenderingContext2D, text: []const u8, x: f64, y: f64, max_width: ?f64, frame: *Frame) !void {
+    _ = max_width; // TODO: respect max_width in future
+
+    if (text.len == 0) return;
+
+    const metrics = try TextMetrics.init(text, self._font, frame);
+    const buffer = try self._canvas.getOrCreatePixelBuffer(frame);
+    try rasterizeText(buffer, text, x, y, metrics, self._fill_style);
+}
+
+pub fn strokeText(self: *CanvasRenderingContext2D, text: []const u8, x: f64, y: f64, max_width: ?f64, frame: *Frame) !void {
+    // For now, strokeText behaves same as fillText
+    // In real browser, strokeText draws outline, fillText draws filled
+    // Since we don't have real font rendering, treat them the same
+    return self.fillText(text, x, y, max_width, frame);
+}
 pub fn measureText(self: *CanvasRenderingContext2D, text: []const u8, frame: *Frame) !*TextMetrics {
-    // Use heuristic measurement based on character counting and font size
     return TextMetrics.init(text, self._font, frame);
+}
+
+fn rasterizeText(
+    buffer: anytype,
+    text: []const u8,
+    x: f64,
+    y: f64,
+    metrics: *const TextMetrics,
+    fill_style: color.RGBA,
+) !void {
+    const baseline_y = y - metrics.getActualBoundingBoxAscent();
+    const glyph_height = @max(1.0, metrics._font_size);
+    const glyph_count = countGlyphs(text);
+    if (glyph_count == 0) return;
+
+    const total_width = @max(metrics._width, 1.0);
+    const glyph_width = @max(1.0, total_width / @as(f64, @floatFromInt(glyph_count)));
+
+    var byte_index: usize = 0;
+    var glyph_index: usize = 0;
+    while (byte_index < text.len) {
+        const glyph_len = nextGlyphLength(text, byte_index);
+        const segment = text[byte_index .. byte_index + glyph_len];
+        const segment_hash = hashBytes(segment);
+        const gx = x + glyph_width * @as(f64, @floatFromInt(glyph_index));
+        drawGlyph(buffer, gx, baseline_y, glyph_width, glyph_height, segment_hash, glyphCategory(segment), fill_style);
+        byte_index += glyph_len;
+        glyph_index += 1;
+    }
+}
+
+fn countGlyphs(text: []const u8) usize {
+    var count: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) {
+        i += nextGlyphLength(text, i);
+        count += 1;
+    }
+    return count;
+}
+
+fn nextGlyphLength(text: []const u8, index: usize) usize {
+    if (index >= text.len) return 0;
+    const first = text[index];
+    if (first < 0x80) return 1;
+    if ((first & 0xE0) == 0xC0) return @min(2, text.len - index);
+    if ((first & 0xF0) == 0xE0) return @min(3, text.len - index);
+    return @min(4, text.len - index);
+}
+
+const GlyphCategory = enum {
+    whitespace,
+    narrow,
+    wide,
+    emoji,
+    default,
+};
+
+fn glyphCategory(segment: []const u8) GlyphCategory {
+    if (segment.len == 0) return .default;
+    if (segment.len == 1) {
+        const c = segment[0];
+        if (c == ' ' or c == '\t' or c == '\n' or c == '\r') return .whitespace;
+        if (c == 'i' or c == 'l' or c == 'I' or c == '1' or c == '!' or c == '|') return .narrow;
+        if (c == 'm' or c == 'M' or c == 'w' or c == 'W' or (c >= 'A' and c <= 'Z')) return .wide;
+    }
+    if (segment[0] >= 0xF0) return .emoji;
+    return .default;
+}
+
+fn drawGlyph(
+    buffer: anytype,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    glyph_hash: u32,
+    category: GlyphCategory,
+    fill_style: color.RGBA,
+) void {
+    switch (category) {
+        .whitespace => {},
+        .narrow => {
+            buffer.fillRect(x + width * 0.35, y, width * 0.25, height, fill_style);
+            if ((glyph_hash & 1) == 1) buffer.fillRect(x + width * 0.2, y + height * 0.82, width * 0.45, height * 0.12, fill_style);
+        },
+        .wide => {
+            buffer.fillRect(x, y + height * 0.12, width * 0.18, height * 0.88, fill_style);
+            buffer.fillRect(x + width * 0.82, y + height * 0.12, width * 0.18, height * 0.88, fill_style);
+            buffer.fillRect(x + width * 0.2, y + height * 0.35, width * 0.6, height * 0.16, fill_style);
+            if ((glyph_hash & 2) == 2) buffer.fillRect(x + width * 0.25, y + height * 0.62, width * 0.5, height * 0.14, fill_style);
+        },
+        .emoji => {
+            buffer.fillRect(x + width * 0.12, y + height * 0.12, width * 0.76, height * 0.76, fill_style);
+            buffer.clearRect(x + width * 0.22, y + height * 0.28, width * 0.1, height * 0.1);
+            buffer.clearRect(x + width * 0.58, y + height * 0.28, width * 0.1, height * 0.1);
+            buffer.clearRect(x + width * 0.28, y + height * 0.58, width * 0.38, height * 0.08);
+        },
+        .default => {
+            buffer.fillRect(x + width * 0.06, y + height * 0.14, width * 0.76, height * 0.14, fill_style);
+            buffer.fillRect(x + width * 0.06, y + height * 0.44, width * 0.76, height * 0.14, fill_style);
+            buffer.fillRect(x + width * 0.06, y + height * 0.74, width * 0.76, height * 0.14, fill_style);
+            buffer.fillRect(x + width * 0.06, y + height * 0.14, width * 0.12, height * 0.74, fill_style);
+            if ((glyph_hash & 1) == 1) buffer.fillRect(x + width * 0.7, y + height * 0.18, width * 0.12, height * 0.28, fill_style);
+            if ((glyph_hash & 2) == 2) buffer.fillRect(x + width * 0.56, y + height * 0.48, width * 0.18, height * 0.12, fill_style);
+        },
+    }
+}
+
+fn hashBytes(bytes: []const u8) u32 {
+    var hash: u32 = 2166136261;
+    for (bytes) |byte| {
+        hash ^= byte;
+        hash *%= 16777619;
+    }
+    return hash;
 }
 pub fn createLinearGradient(
     _: *CanvasRenderingContext2D,
@@ -233,8 +411,8 @@ pub const JsApi = struct {
     pub const fill = bridge.function(CanvasRenderingContext2D.fill, .{ .noop = true });
     pub const stroke = bridge.function(CanvasRenderingContext2D.stroke, .{ .noop = true });
     pub const clip = bridge.function(CanvasRenderingContext2D.clip, .{ .noop = true });
-    pub const fillText = bridge.function(CanvasRenderingContext2D.fillText, .{ .noop = true });
-    pub const strokeText = bridge.function(CanvasRenderingContext2D.strokeText, .{ .noop = true });
+    pub const fillText = bridge.function(CanvasRenderingContext2D.fillText, .{});
+    pub const strokeText = bridge.function(CanvasRenderingContext2D.strokeText, .{});
     pub const measureText = bridge.function(CanvasRenderingContext2D.measureText, .{});
     pub const createLinearGradient = bridge.function(CanvasRenderingContext2D.createLinearGradient, .{});
     pub const createRadialGradient = bridge.function(CanvasRenderingContext2D.createRadialGradient, .{ .dom_exception = true });

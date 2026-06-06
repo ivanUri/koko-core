@@ -85,6 +85,27 @@ pub const GPUAdapter = struct {
         return local.rejectPromise(.{ .dom_exception = .{ .err = error.NotSupported } });
     }
 
+    pub fn getFeatures(self: *const GPUAdapter, exec: *Execution) !js.Value {
+        _ = self;
+        const local = exec.context.local orelse return error.NotHandled;
+        return local.exec("({ values() { return ['depth-clip-control', 'texture-compression-bc', 'timestamp-query'].values(); }, [Symbol.iterator]() { return this.values(); } })", "gpu-features");
+    }
+
+    pub fn getLimits(self: *const GPUAdapter, exec: *Execution) !js.Value {
+        _ = self;
+        const local = exec.context.local orelse return error.NotHandled;
+        const limits = local.newObject();
+        _ = try limits.set("maxTextureDimension1D", @as(u32, 8192), .{});
+        _ = try limits.set("maxTextureDimension2D", @as(u32, 8192), .{});
+        _ = try limits.set("maxTextureDimension3D", @as(u32, 2048), .{});
+        _ = try limits.set("maxTextureArrayLayers", @as(u32, 256), .{});
+        _ = try limits.set("maxBindGroups", @as(u32, 4), .{});
+        _ = try limits.set("maxBindingsPerBindGroup", @as(u32, 1000), .{});
+        _ = try limits.set("maxUniformBuffersPerShaderStage", @as(u32, 12), .{});
+        _ = try limits.set("maxStorageBuffersPerShaderStage", @as(u32, 8), .{});
+        return limits.toValue();
+    }
+
     pub const JsApi = struct {
         pub const bridge = js.Bridge(GPUAdapter);
         pub const Meta = struct {
@@ -94,8 +115,8 @@ pub const GPUAdapter = struct {
             pub const empty_with_no_proto = true;
         };
         pub const name = bridge.attribute("ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)", .{});
-        pub const features = bridge.attribute(null, .{});
-        pub const limits = bridge.attribute(null, .{});
+        pub const features = bridge.accessor(GPUAdapter.getFeatures, null, .{});
+        pub const limits = bridge.accessor(GPUAdapter.getLimits, null, .{});
         pub const isFallbackAdapter = bridge.attribute(false, .{});
         pub const requestAdapterInfo = bridge.function(GPUAdapter.requestAdapterInfo, .{});
         pub const requestDevice = bridge.function(GPUAdapter.requestDevice, .{ .dom_exception = true });
@@ -108,10 +129,70 @@ pub const Keyboard = emptyInterface("Keyboard");
 pub const MediaDevices = struct {
     _pad: bool = false,
 
+    const MediaDeviceInfo = struct {
+        _device_id: []const u8,
+        _group_id: []const u8,
+        _kind: []const u8,
+        _label: []const u8,
+
+        pub fn getDeviceId(self: *const MediaDeviceInfo) []const u8 {
+            return self._device_id;
+        }
+
+        pub fn getGroupId(self: *const MediaDeviceInfo) []const u8 {
+            return self._group_id;
+        }
+
+        pub fn getKind(self: *const MediaDeviceInfo) []const u8 {
+            return self._kind;
+        }
+
+        pub fn getLabel(self: *const MediaDeviceInfo) []const u8 {
+            return self._label;
+        }
+
+        pub const JsApi = struct {
+            pub const bridge = js.Bridge(MediaDeviceInfo);
+            pub const Meta = struct {
+                pub const name = "MediaDeviceInfo";
+                pub const prototype_chain = bridge.prototypeChain();
+                pub var class_id: bridge.ClassId = undefined;
+                pub const empty_with_no_proto = true;
+            };
+            pub const deviceId = bridge.accessor(MediaDeviceInfo.getDeviceId, null, .{});
+            pub const groupId = bridge.accessor(MediaDeviceInfo.getGroupId, null, .{});
+            pub const kind = bridge.accessor(MediaDeviceInfo.getKind, null, .{});
+            pub const label = bridge.accessor(MediaDeviceInfo.getLabel, null, .{});
+        };
+    };
+
     pub fn enumerateDevices(self: *const MediaDevices, frame: *Frame) !js.Promise {
         _ = self;
         const local = frame.js.local orelse return error.NotHandled;
-        return local.resolvePromise(local.newArray(0));
+
+        const mic = local.newObject();
+        _ = try mic.set("deviceId", "default-audio-input", .{});
+        _ = try mic.set("groupId", "default-av-group", .{});
+        _ = try mic.set("kind", "audioinput", .{});
+        _ = try mic.set("label", "Default Microphone", .{});
+
+        const speaker = local.newObject();
+        _ = try speaker.set("deviceId", "default-audio-output", .{});
+        _ = try speaker.set("groupId", "default-av-group", .{});
+        _ = try speaker.set("kind", "audiooutput", .{});
+        _ = try speaker.set("label", "Default Speakers", .{});
+
+        const webcam = local.newObject();
+        _ = try webcam.set("deviceId", "default-video-input", .{});
+        _ = try webcam.set("groupId", "default-av-group", .{});
+        _ = try webcam.set("kind", "videoinput", .{});
+        _ = try webcam.set("label", "FaceTime HD Camera", .{});
+
+        const arr = local.newArray(3);
+        _ = try arr.set(0, mic.toValue(), .{});
+        _ = try arr.set(1, speaker.toValue(), .{});
+        _ = try arr.set(2, webcam.toValue(), .{});
+        return local.resolvePromise(arr);
     }
 
     pub fn getUserMedia(self: *const MediaDevices, _: js.Value, frame: *Frame) !js.Promise {

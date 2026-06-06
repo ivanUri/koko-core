@@ -12,6 +12,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
+const FingerprintProfile = @import("../../fingerprint/Profile.zig");
 const js = @import("../../js/js.zig");
 const Frame = @import("../../browser/Frame.zig");
 
@@ -23,19 +24,41 @@ const Frame = @import("../../browser/Frame.zig");
 /// for fingerprinting and basic layout code without requiring a full font engine.
 const TextMetrics = @This();
 
+fn identityProfile() *const FingerprintProfile.IdentityProfile {
+    return FingerprintProfile.defaultIdentity();
+}
+
 _width: f64 = 0.0,
 _font_size: f64 = 10.0,
 _text_length: usize = 0,
+_text_hash: u32 = 0,
+_font_hash: u32 = 0,
 
 pub fn init(text: []const u8, font: []const u8, frame: *Frame) !*TextMetrics {
     const font_size = parseFontSize(font);
-    const width = estimateTextWidth(text, font_size);
+    const width = estimateTextWidth(text, font, font_size);
+
+    // Generate hashes for deterministic variations
+    const text_hash = simpleHash(text);
+    const font_hash = simpleHash(font);
 
     return frame._factory.create(TextMetrics{
         ._width = width,
         ._font_size = font_size,
         ._text_length = text.len,
+        ._text_hash = text_hash,
+        ._font_hash = font_hash,
     });
+}
+
+/// Simple hash function for deterministic variations
+fn simpleHash(bytes: []const u8) u32 {
+    var hash: u32 = 2166136261; // FNV offset basis
+    for (bytes) |byte| {
+        hash ^= byte;
+        hash *%= 16777619; // FNV prime
+    }
+    return hash;
 }
 
 /// Parse font size from CSS font shorthand (e.g., "10px sans-serif" -> 10.0)
@@ -66,13 +89,12 @@ fn parseFontSize(font: []const u8) f64 {
 }
 
 /// Estimate text width using simple heuristics
-fn estimateTextWidth(text: []const u8, font_size: f64) f64 {
+fn estimateTextWidth(text: []const u8, font: []const u8, font_size: f64) f64 {
     if (text.len == 0) return 0.0;
 
-    // Average character width as a proportion of font size
-    // Real proportional fonts: ~0.5-0.6 of font size
-    // We use 0.55 as a reasonable middle ground
-    const avg_char_width = font_size * 0.55;
+    const font_family = extractPrimaryFontFamily(font);
+    const font_scale = fontFamilyScale(font_family);
+    const avg_char_width = font_size * 0.52 * font_scale;
 
     var width: f64 = 0.0;
     var i: usize = 0;
@@ -80,24 +102,23 @@ fn estimateTextWidth(text: []const u8, font_size: f64) f64 {
     while (i < text.len) {
         const c = text[i];
 
-        // Adjust width based on character type
         const char_width = if (c == ' ')
-            // Space is narrower
-            avg_char_width * 0.3
+            avg_char_width * 0.32
+        else if (c == '\n' or c == '\r' or c == '\t')
+            avg_char_width * 0.25
         else if (c >= 'A' and c <= 'Z')
-            // Uppercase slightly wider
-            avg_char_width * 1.1
+            avg_char_width * 1.08
         else if (c == 'i' or c == 'l' or c == 'I' or c == '1' or c == '!' or c == '|')
-            // Narrow characters
-            avg_char_width * 0.4
+            avg_char_width * 0.52
         else if (c == 'm' or c == 'M' or c == 'w' or c == 'W')
-            // Wide characters
-            avg_char_width * 1.3
+            avg_char_width * 1.28
         else if (c >= '0' and c <= '9')
-            // Digits are typically monospaced
-            avg_char_width * 0.9
+            avg_char_width * 0.88
+        else if (c >= 0xF0)
+            avg_char_width * 1.9
+        else if (c >= 0xE0)
+            avg_char_width * 1.45
         else
-            // Default width
             avg_char_width;
 
         width += char_width;
@@ -107,64 +128,152 @@ fn estimateTextWidth(text: []const u8, font_size: f64) f64 {
     return width;
 }
 
+fn extractPrimaryFontFamily(font: []const u8) []const u8 {
+    var i: usize = font.len;
+    while (i > 0) {
+        i -= 1;
+        if (font[i] == ',') {
+            return trimFontFamily(font[i + 1 ..]);
+        }
+    }
+    return trimFontFamily(font);
+}
+
+fn trimFontFamily(font: []const u8) []const u8 {
+    var start: usize = 0;
+    var end: usize = font.len;
+
+    while (start < end and (font[start] == ' ' or font[start] == '\t')) : (start += 1) {}
+    while (end > start and (font[end - 1] == ' ' or font[end - 1] == '\t')) : (end -= 1) {}
+
+    var family = font[start..end];
+    if (family.len >= 2 and ((family[0] == '\'' and family[family.len - 1] == '\'') or (family[0] == '"' and family[family.len - 1] == '"'))) {
+        family = family[1 .. family.len - 1];
+    }
+    return family;
+}
+
+fn fontFamilyScale(family: []const u8) f64 {
+    if (std.ascii.eqlIgnoreCase(family, "Menlo") or
+        std.ascii.eqlIgnoreCase(family, "Monaco") or
+        std.ascii.eqlIgnoreCase(family, "Courier") or
+        std.ascii.eqlIgnoreCase(family, "Courier New") or
+        std.ascii.eqlIgnoreCase(family, "Source Code Pro") or
+        std.ascii.eqlIgnoreCase(family, "Cousine") or
+        std.ascii.eqlIgnoreCase(family, "Liberation Mono") or
+        std.ascii.eqlIgnoreCase(family, "monospace"))
+    {
+        return 0.96;
+    }
+    if (std.ascii.eqlIgnoreCase(family, "Times") or
+        std.ascii.eqlIgnoreCase(family, "Times New Roman") or
+        std.ascii.eqlIgnoreCase(family, "Palatino") or
+        std.ascii.eqlIgnoreCase(family, "American Typewriter") or
+        std.ascii.eqlIgnoreCase(family, "serif"))
+    {
+        return 1.01;
+    }
+    if (std.ascii.eqlIgnoreCase(family, "Apple Color Emoji") or
+        std.ascii.eqlIgnoreCase(family, "Segoe UI Emoji") or
+        std.ascii.eqlIgnoreCase(family, "Noto Color Emoji"))
+    {
+        return 1.12;
+    }
+    if (std.ascii.eqlIgnoreCase(family, "Helvetica") or
+        std.ascii.eqlIgnoreCase(family, "Helvetica Neue") or
+        std.ascii.eqlIgnoreCase(family, "Arial") or
+        std.ascii.eqlIgnoreCase(family, "Geneva") or
+        std.ascii.eqlIgnoreCase(family, "system-ui") or
+        std.ascii.eqlIgnoreCase(family, "-apple-system") or
+        std.ascii.eqlIgnoreCase(family, "BlinkMacSystemFont") or
+        std.ascii.eqlIgnoreCase(family, ".AppleSystemUIFont"))
+    {
+        return 0.985;
+    }
+
+    for (identityProfile().fonts) |available| {
+        if (std.ascii.eqlIgnoreCase(family, available)) return 1.0;
+    }
+
+    return 1.18;
+}
+
+/// Add tiny variation based on hash (±0.001 to ±0.002)
+fn addVariation(base: f64, hash: u32) f64 {
+    const normalized = @as(f64, @floatFromInt(hash % 256)) / 255.0;
+    const variation = (normalized - 0.5) * 0.0008;
+    return base + variation;
+}
+
 pub fn getWidth(self: *const TextMetrics) f64 {
-    return self._width;
+    // Add micro-variation based on combined hash
+    const combined_hash = self._text_hash ^ self._font_hash;
+    return addVariation(self._width, combined_hash);
 }
 
 fn getActualBoundingBoxLeft(self: *const TextMetrics) f64 {
     // For LTR text, left edge is typically at 0
-    _ = self;
-    return 0.0;
+    // Tiny variation to avoid perfect 0
+    return addVariation(0.0, self._text_hash);
 }
 
 fn getActualBoundingBoxRight(self: *const TextMetrics) f64 {
     // Right edge is approximately the width
-    return self._width;
+    return addVariation(self._width, self._text_hash +% 1);
 }
 
-fn getActualBoundingBoxAscent(self: *const TextMetrics) f64 {
+pub fn getActualBoundingBoxAscent(self: *const TextMetrics) f64 {
     // Typical ascent is about 0.75 of font size
-    return self._font_size * 0.75;
+    const base = self._font_size * 0.75;
+    return addVariation(base, self._font_hash);
 }
 
-fn getActualBoundingBoxDescent(self: *const TextMetrics) f64 {
+pub fn getActualBoundingBoxDescent(self: *const TextMetrics) f64 {
     // Typical descent is about 0.25 of font size
-    return self._font_size * 0.25;
+    const base = self._font_size * 0.25;
+    return addVariation(base, self._font_hash +% 1);
 }
 
 fn getFontBoundingBoxAscent(self: *const TextMetrics) f64 {
     // Font box ascent is typically 0.8 of font size
-    return self._font_size * 0.8;
+    const base = self._font_size * 0.8;
+    return addVariation(base, self._font_hash +% 2);
 }
 
 fn getFontBoundingBoxDescent(self: *const TextMetrics) f64 {
     // Font box descent is typically 0.2 of font size
-    return self._font_size * 0.2;
+    const base = self._font_size * 0.2;
+    return addVariation(base, self._font_hash +% 3);
 }
 
 fn getEmHeightAscent(self: *const TextMetrics) f64 {
     // Em height ascent is typically 0.75 of font size
-    return self._font_size * 0.75;
+    const base = self._font_size * 0.75;
+    return addVariation(base, self._font_hash +% 4);
 }
 
 fn getEmHeightDescent(self: *const TextMetrics) f64 {
     // Em height descent is typically 0.25 of font size
-    return self._font_size * 0.25;
+    const base = self._font_size * 0.25;
+    return addVariation(base, self._font_hash +% 5);
 }
 
 fn getHangingBaseline(self: *const TextMetrics) f64 {
     // Hanging baseline is typically 0.7 of ascent
-    return self._font_size * 0.75 * 0.7;
+    const base = self._font_size * 0.75 * 0.7;
+    return addVariation(base, self._font_hash +% 6);
 }
 
-fn getAlphabeticBaseline(_: *const TextMetrics) f64 {
+fn getAlphabeticBaseline(self: *const TextMetrics) f64 {
     // Alphabetic baseline is at 0 (the reference point)
-    return 0.0;
+    // Keep near zero but add tiny variation
+    return addVariation(0.0, self._font_hash +% 7);
 }
 
 fn getIdeographicBaseline(self: *const TextMetrics) f64 {
     // Ideographic baseline is at the descent
-    return -self._font_size * 0.25;
+    const base = -self._font_size * 0.25;
+    return addVariation(base, self._font_hash +% 8);
 }
 
 pub const JsApi = struct {

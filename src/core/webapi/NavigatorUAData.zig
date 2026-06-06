@@ -13,12 +13,16 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
-const builtin = @import("builtin");
 
+const FingerprintProfile = @import("../fingerprint/Profile.zig");
 const Config = @import("../../runtime/Config.zig");
 const js = @import("../js/js.zig");
 
 const NavigatorUAData = @This();
+
+fn identityProfile() *const FingerprintProfile.IdentityProfile {
+    return FingerprintProfile.defaultIdentity();
+}
 
 _pad: bool = false,
 
@@ -36,7 +40,7 @@ pub fn getMobile(_: *const NavigatorUAData) bool {
 }
 
 pub fn getPlatform(_: *const NavigatorUAData) []const u8 {
-    return uaPlatform();
+    return identityProfile().ua_data_platform;
 }
 
 pub fn toJSON(_: *const NavigatorUAData) struct {
@@ -47,7 +51,7 @@ pub fn toJSON(_: *const NavigatorUAData) struct {
     return .{
         .mobile = false,
         .brands = brandList(),
-        .platform = uaPlatform(),
+        .platform = identityProfile().ua_data_platform,
     };
 }
 
@@ -65,9 +69,9 @@ pub fn getHighEntropyValues(_: *const NavigatorUAData, hints: []const []const u8
     return exec.context.local.?.resolvePromise(.{
         .brands = brandList(),
         .mobile = false,
-        .platform = uaPlatform(),
-        .architecture = uaArchitecture(),
-        .bitness = uaBitness(),
+        .platform = identityProfile().ua_data_platform,
+        .architecture = identityProfile().ua_architecture,
+        .bitness = identityProfile().ua_bitness,
         .model = "",
         .platformVersion = "",
         .uaFullVersion = "1.0.0.0",
@@ -88,33 +92,6 @@ fn brandList() []const Brand {
         break :blk final;
     };
     return &out;
-}
-
-fn uaPlatform() []const u8 {
-    return switch (builtin.os.tag) {
-        .macos => "macOS",
-        .windows => "Windows",
-        .linux => "Linux",
-        .freebsd => "FreeBSD",
-        else => "Unknown",
-    };
-}
-
-fn uaArchitecture() []const u8 {
-    if (builtin.os.tag == .macos) return "x86";
-
-    return switch (builtin.cpu.arch) {
-        .x86, .x86_64 => "x86",
-        .aarch64, .aarch64_be, .arm, .armeb => "arm",
-        else => "",
-    };
-}
-
-fn uaBitness() []const u8 {
-    return switch (builtin.cpu.arch) {
-        .x86_64, .aarch64, .aarch64_be, .powerpc64, .powerpc64le, .riscv64 => "64",
-        else => "32",
-    };
 }
 
 pub const JsApi = struct {

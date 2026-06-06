@@ -28,6 +28,47 @@ pub fn init(element: ?*Element, is_computed: bool, frame: *Frame) !*CSSStyleProp
     });
 }
 
+pub fn length(self: *const CSSStyleProperties) u32 {
+    return self._proto.length();
+}
+
+pub fn item(self: *const CSSStyleProperties, index: i32) []const u8 {
+    if (index < 0) return "";
+    return self._proto.item(@intCast(index));
+}
+
+pub fn getCssText(self: *const CSSStyleProperties, frame: *Frame) ![]const u8 {
+    return self._proto.getCssText(frame);
+}
+
+pub fn setCssText(self: *CSSStyleProperties, text: []const u8, frame: *Frame) !void {
+    return self._proto.setCssText(text, frame);
+}
+
+pub fn getPropertyValue(self: *const CSSStyleProperties, property_name: []const u8, frame: *Frame) []const u8 {
+    return self._proto.getPropertyValue(property_name, frame);
+}
+
+pub fn getPropertyPriority(self: *const CSSStyleProperties, property_name: []const u8, frame: *Frame) []const u8 {
+    return self._proto.getPropertyPriority(property_name, frame);
+}
+
+pub fn setProperty(self: *CSSStyleProperties, property_name: []const u8, value: []const u8, priority_: ?[]const u8, frame: *Frame) !void {
+    return self._proto.setProperty(property_name, value, priority_, frame);
+}
+
+pub fn removeProperty(self: *CSSStyleProperties, property_name: []const u8, frame: *Frame) ![]const u8 {
+    return self._proto.removeProperty(property_name, frame);
+}
+
+pub fn getFloat(self: *const CSSStyleProperties, frame: *Frame) []const u8 {
+    return self._proto.getFloat(frame);
+}
+
+pub fn setFloat(self: *CSSStyleProperties, value_: ?[]const u8, frame: *Frame) !void {
+    return self._proto.setFloat(value_, frame);
+}
+
 pub fn asCSSStyleDeclaration(self: *CSSStyleProperties) *CSSStyleDeclaration {
     return self._proto;
 }
@@ -170,6 +211,8 @@ fn isKnownCSSProperty(dash_case: []const u8) bool {
         // Sizing
         .{ "width", {} },
         .{ "height", {} },
+        .{ "block-size", {} },
+        .{ "inline-size", {} },
         .{ "min-width", {} },
         .{ "min-height", {} },
         .{ "max-width", {} },
@@ -392,5 +435,13 @@ pub const JsApi = struct {
         pub var class_id: bridge.ClassId = undefined;
     };
 
+    pub const cssText = bridge.accessor(CSSStyleProperties.getCssText, CSSStyleProperties.setCssText, .{});
+    pub const length = bridge.accessor(CSSStyleProperties.length, null, .{});
+    pub const item = bridge.function(CSSStyleProperties.item, .{});
+    pub const getPropertyValue = bridge.function(CSSStyleProperties.getPropertyValue, .{});
+    pub const getPropertyPriority = bridge.function(CSSStyleProperties.getPropertyPriority, .{});
+    pub const setProperty = bridge.function(CSSStyleProperties.setProperty, .{});
+    pub const removeProperty = bridge.function(CSSStyleProperties.removeProperty, .{});
+    pub const cssFloat = bridge.accessor(CSSStyleProperties.getFloat, CSSStyleProperties.setFloat, .{});
     pub const @"[]" = bridge.namedIndexed(CSSStyleProperties.getNamed, CSSStyleProperties.setNamed, null, .{});
 };

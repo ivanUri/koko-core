@@ -22,8 +22,13 @@ const Element = @import("../../dom/Element.zig");
 const log = @import("../../../support/log.zig");
 const String = @import("../../../support/string.zig").String;
 const Allocator = std.mem.Allocator;
+const FingerprintProfile = @import("../../fingerprint/Profile.zig");
 
 const CSSStyleDeclaration = @This();
+
+fn identityProfile() *const FingerprintProfile.IdentityProfile {
+    return FingerprintProfile.defaultIdentity();
+}
 
 _element: ?*Element = null,
 _properties: std.DoublyLinkedList = .{},
@@ -88,13 +93,23 @@ pub fn getPropertyValue(self: *const CSSStyleDeclaration, property_name: []const
     }
 
     const prop = self.findProperty(wrapped) orelse {
-        // Only return default values for computed styles
         if (self._is_computed) {
-            return getDefaultPropertyValue(self, wrapped);
+            return getComputedPropertyValue(self, wrapped, frame);
         }
         return "";
     };
     return prop._value.str();
+}
+
+fn getComputedPropertyValue(self: *const CSSStyleDeclaration, name: String, frame: *Frame) []const u8 {
+    if (self._element) |element| {
+        if (name.eql(comptime .wrap("display"))) {
+            if (frame._style_manager.hasDisplayNone(element)) return "none";
+        } else if (name.eql(comptime .wrap("visibility"))) {
+            if (frame._style_manager.hasVisibilityHiddenInherited(element)) return "hidden";
+        }
+    }
+    return getDefaultPropertyValue(self, name);
 }
 
 pub fn getPropertyPriority(self: *const CSSStyleDeclaration, property_name: []const u8, frame: *Frame) []const u8 {
@@ -679,10 +694,51 @@ fn isLengthProperty(name: []const u8) bool {
 }
 
 fn getDefaultPropertyValue(self: *const CSSStyleDeclaration, name: String) []const u8 {
+    const element = self._element orelse return "";
+
+    if (name.eql(comptime .wrap("font-family"))) {
+        return getDefaultFontFamily(element);
+    }
+    if (name.eql(comptime .wrap("font-size"))) {
+        return getDefaultFontSize(element);
+    }
+    if (name.eql(comptime .wrap("font-style"))) {
+        return "normal";
+    }
+    if (name.eql(comptime .wrap("font-weight"))) {
+        return getDefaultFontWeight(element);
+    }
+    if (name.eql(comptime .wrap("font-variant"))) {
+        return "normal";
+    }
+    if (std.mem.eql(u8, name.str(), "line-height")) {
+        return "normal";
+    }
+    if (std.mem.eql(u8, name.str(), "letter-spacing")) {
+        return "normal";
+    }
+    if (std.mem.eql(u8, name.str(), "word-spacing")) {
+        return "0px";
+    }
+    if (name.eql(comptime .wrap("text-align"))) {
+        return "start";
+    }
+    if (name.eql(comptime .wrap("text-indent"))) {
+        return "0px";
+    }
+    if (name.eql(comptime .wrap("white-space"))) {
+        return "normal";
+    }
+    if (name.eql(comptime .wrap("block-size"))) {
+        return getDefaultBlockSize(element);
+    }
+    if (name.eql(comptime .wrap("inline-size"))) {
+        return getDefaultInlineSize(element);
+    }
+
     switch (name.len) {
         5 => {
             if (name.eql(comptime .wrap("color"))) {
-                const element = self._element orelse return "";
                 return getDefaultColor(element);
             }
         },
@@ -691,7 +747,6 @@ fn getDefaultPropertyValue(self: *const CSSStyleDeclaration, name: String) []con
                 return "1";
             }
             if (name.eql(comptime .wrap("display"))) {
-                const element = self._element orelse return "";
                 return getDefaultDisplay(element);
             }
         },
@@ -728,6 +783,44 @@ fn getDefaultDisplay(element: *const Element) []const u8 {
     }
 }
 
+fn getDefaultFontFamily(element: *const Element) []const u8 {
+    _ = element;
+    return "Helvetica Neue";
+}
+
+fn getDefaultFontSize(element: *const Element) []const u8 {
+    _ = element;
+    return "16px";
+}
+
+fn getDefaultFontWeight(element: *const Element) []const u8 {
+    switch (element._type) {
+        .html => |html| {
+            return switch (html._type) {
+                .heading, .button => "700",
+                else => "400",
+            };
+        },
+        .svg => return "400",
+    }
+}
+
+fn getDefaultBlockSize(element: *const Element) []const u8 {
+    const display = getDefaultDisplay(element);
+    if (std.mem.eql(u8, display, "inline")) {
+        return "auto";
+    }
+    return "auto";
+}
+
+fn getDefaultInlineSize(element: *const Element) []const u8 {
+    const display = getDefaultDisplay(element);
+    if (std.mem.eql(u8, display, "inline")) {
+        return "auto";
+    }
+    return "auto";
+}
+
 fn isInlineTag(tag_name: []const u8) bool {
     const inline_tags = [_][]const u8{
         "abbr",  "b",    "bdi",    "bdo",  "cite", "code", "dfn",
@@ -754,6 +847,66 @@ fn getDefaultColor(element: *const Element) []const u8 {
         },
         .svg => return "rgb(0, 0, 0)",
     }
+}
+
+/// Resolve CSS system colors to realistic macOS light mode values
+/// https://www.w3.org/TR/css-color-4/#css-system-colors
+pub fn resolveSystemColor(color_name: []const u8) ?[]const u8 {
+    // System colors (case-insensitive)
+    const SystemColorEntry = struct { name: []const u8, value: []const u8 };
+    const system_colors = [_]SystemColorEntry{
+        // CSS Color Level 4 system colors
+        .{ .name = "Canvas", .value = "rgb(255, 255, 255)" }, // Page background (white)
+        .{ .name = "CanvasText", .value = "rgb(0, 0, 0)" }, // Text on canvas (black)
+        .{ .name = "LinkText", .value = "rgb(0, 0, 238)" }, // Hyperlinks (blue)
+        .{ .name = "VisitedText", .value = "rgb(85, 26, 139)" }, // Visited links (purple)
+        .{ .name = "ActiveText", .value = "rgb(255, 0, 0)" }, // Active links (red)
+        .{ .name = "ButtonFace", .value = "rgb(240, 240, 240)" }, // Button background
+        .{ .name = "ButtonText", .value = "rgb(0, 0, 0)" }, // Button text
+        .{ .name = "ButtonBorder", .value = "rgb(118, 118, 118)" }, // Button border
+        .{ .name = "Field", .value = "rgb(255, 255, 255)" }, // Input field background
+        .{ .name = "FieldText", .value = "rgb(0, 0, 0)" }, // Input field text
+        .{ .name = "Highlight", .value = "rgb(181, 213, 255)" }, // Selection background
+        .{ .name = "HighlightText", .value = "rgb(0, 0, 0)" }, // Selection text
+        .{ .name = "SelectedItem", .value = "rgb(0, 99, 220)" }, // Selected item (macOS blue)
+        .{ .name = "SelectedItemText", .value = "rgb(255, 255, 255)" }, // Selected item text
+        .{ .name = "Mark", .value = "rgb(255, 255, 0)" }, // <mark> element background
+        .{ .name = "MarkText", .value = "rgb(0, 0, 0)" }, // <mark> element text
+        .{ .name = "GrayText", .value = "rgb(128, 128, 128)" }, // Disabled text
+
+        // Legacy system colors (deprecated but still used)
+        .{ .name = "ActiveBorder", .value = "rgb(220, 220, 220)" },
+        .{ .name = "ActiveCaption", .value = "rgb(0, 99, 220)" },
+        .{ .name = "AppWorkspace", .value = "rgb(255, 255, 255)" },
+        .{ .name = "Background", .value = "rgb(255, 255, 255)" },
+        .{ .name = "ButtonHighlight", .value = "rgb(255, 255, 255)" },
+        .{ .name = "ButtonShadow", .value = "rgb(180, 180, 180)" },
+        .{ .name = "CaptionText", .value = "rgb(0, 0, 0)" },
+        .{ .name = "InactiveBorder", .value = "rgb(220, 220, 220)" },
+        .{ .name = "InactiveCaption", .value = "rgb(240, 240, 240)" },
+        .{ .name = "InactiveCaptionText", .value = "rgb(128, 128, 128)" },
+        .{ .name = "InfoBackground", .value = "rgb(255, 255, 225)" },
+        .{ .name = "InfoText", .value = "rgb(0, 0, 0)" },
+        .{ .name = "Menu", .value = "rgb(240, 240, 240)" },
+        .{ .name = "MenuText", .value = "rgb(0, 0, 0)" },
+        .{ .name = "Scrollbar", .value = "rgb(240, 240, 240)" },
+        .{ .name = "ThreeDDarkShadow", .value = "rgb(105, 105, 105)" },
+        .{ .name = "ThreeDFace", .value = "rgb(240, 240, 240)" },
+        .{ .name = "ThreeDHighlight", .value = "rgb(255, 255, 255)" },
+        .{ .name = "ThreeDLightShadow", .value = "rgb(227, 227, 227)" },
+        .{ .name = "ThreeDShadow", .value = "rgb(160, 160, 160)" },
+        .{ .name = "Window", .value = "rgb(255, 255, 255)" },
+        .{ .name = "WindowFrame", .value = "rgb(100, 100, 100)" },
+        .{ .name = "WindowText", .value = "rgb(0, 0, 0)" },
+    };
+
+    for (system_colors) |entry| {
+        if (std.ascii.eqlIgnoreCase(color_name, entry.name)) {
+            return entry.value;
+        }
+    }
+
+    return null;
 }
 
 pub const Property = struct {

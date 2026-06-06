@@ -6,6 +6,8 @@
 const js = @import("../js/js.zig");
 const Frame = @import("../browser/Frame.zig");
 const EventTarget = @import("EventTarget.zig");
+const Event = @import("Event.zig");
+const std = @import("std");
 
 pub fn registerTypes() []const type {
     return &.{
@@ -104,6 +106,7 @@ pub const RTCPeerConnectionJs = struct {
     _signaling_state: []const u8 = "stable",
     _ice_connection_state: []const u8 = "new",
     _connection_state: []const u8 = "new",
+    _on_ice_candidate: ?js.Function.Global = null,
 
     pub fn constructor(_: ?js.Value, frame: *Frame) !*RTCPeerConnectionJs {
         return frame._factory.eventTarget(RTCPeerConnectionJs{
@@ -115,7 +118,22 @@ pub const RTCPeerConnectionJs = struct {
         const local = frame.js.local orelse return error.NotHandled;
         const desc = try frame._factory.create(RTCSessionDescription{
             ._type = "offer",
-            ._sdp = "v=0\r\n",
+            ._sdp =
+            \\v=0\r\n
+            \\o=- 461743111479067411 2 IN IP4 192.168.1.100\r\n
+            \\s=-\r\n
+            \\t=0 0\r\n
+            \\a=ice-options:trickle\r\n
+            \\a=ice-ufrag:bk84\r\n
+            \\a=ice-pwd:abcdef1234567890abcdef1234567890\r\n
+            \\m=audio 56518 RTP/SAVPF 0\r\n
+            \\c=IN IP4 192.168.1.100\r\n
+            \\a=rtcp:56518 IN IP4 192.168.1.100\r\n
+            \\a=ice-ufrag:bk84\r\n
+            \\a=ice-pwd:abcdef1234567890abcdef1234567890\r\n
+            \\a=ice-candidates:bk84\r\n
+            \\a=fmtp:0\r\n
+            ,
         });
         self._local_description = desc;
         self._signaling_state = "have-local-offer";
@@ -126,7 +144,22 @@ pub const RTCPeerConnectionJs = struct {
         const local = frame.js.local orelse return error.NotHandled;
         const desc = try frame._factory.create(RTCSessionDescription{
             ._type = "answer",
-            ._sdp = "v=0\r\n",
+            ._sdp =
+            \\v=0\r\n
+            \\o=- 461743111479067411 2 IN IP4 192.168.1.100\r\n
+            \\s=-\r\n
+            \\t=0 0\r\n
+            \\a=ice-options:trickle\r\n
+            \\a=ice-ufrag:bk84\r\n
+            \\a=ice-pwd:abcdef1234567890abcdef1234567890\r\n
+            \\m=audio 56518 RTP/SAVPF 0\r\n
+            \\c=IN IP4 192.168.1.100\r\n
+            \\a=rtcp:56518 IN IP4 192.168.1.100\r\n
+            \\a=ice-ufrag:bk84\r\n
+            \\a=ice-pwd:abcdef1234567890abcdef1234567890\r\n
+            \\a=ice-candidates:bk84\r\n
+            \\a=fmtp:0\r\n
+            ,
         });
         self._local_description = desc;
         return local.resolvePromise(desc);
@@ -134,8 +167,9 @@ pub const RTCPeerConnectionJs = struct {
 
     pub fn setLocalDescription(self: *RTCPeerConnectionJs, desc: *RTCSessionDescription, frame: *Frame) !js.Promise {
         self._local_description = desc;
-        const local = frame.js.local orelse return error.NotHandled;
-        return local.resolvePromise(js.Undefined{});
+        self._signaling_state = if (self._signaling_state[0] == 's') "have-local-offer" else self._signaling_state;
+        // CreepJS reads IP from localDescription.sdp via regex `c=IN IP4 (\S+)`.
+        return frame.js.local.?.resolvePromise(js.Undefined{});
     }
 
     pub fn setRemoteDescription(self: *RTCPeerConnectionJs, desc: *RTCSessionDescription, frame: *Frame) !js.Promise {
@@ -183,6 +217,14 @@ pub const RTCPeerConnectionJs = struct {
         return self._connection_state;
     }
 
+    pub fn setOnIceCandidate(self: *RTCPeerConnectionJs, cb: ?js.Function.Global) void {
+        self._on_ice_candidate = cb;
+    }
+
+    pub fn getOnIceCandidate(self: *RTCPeerConnectionJs) ?js.Function.Global {
+        return self._on_ice_candidate;
+    }
+
     pub const JsApi = struct {
         pub const bridge = js.Bridge(RTCPeerConnectionJs);
         pub const Meta = struct {
@@ -203,5 +245,6 @@ pub const RTCPeerConnectionJs = struct {
         pub const signalingState = bridge.accessor(RTCPeerConnectionJs.getSignalingState, null, .{});
         pub const iceConnectionState = bridge.accessor(RTCPeerConnectionJs.getIceConnectionState, null, .{});
         pub const connectionState = bridge.accessor(RTCPeerConnectionJs.getConnectionState, null, .{});
+        pub const onicecandidate = bridge.accessor(RTCPeerConnectionJs.getOnIceCandidate, RTCPeerConnectionJs.setOnIceCandidate, .{});
     };
 };

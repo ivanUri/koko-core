@@ -19,6 +19,8 @@ const veloraBin = resolve(repoRoot, "zig-out/bin/velora");
 // ---------------------------------------------------------------------------
 // CONFIG — edit here, no CLI flags.
 // ---------------------------------------------------------------------------
+
+//importain URL_JS_CHECK:https://abrahamjuliot.github.io/creepjs/creep.js 
 const CONFIG = {
     url: "https://abrahamjuliot.github.io/creepjs/",
     outDir: resolve(repoRoot, "code-check/tmp/creepjs"),
@@ -314,6 +316,12 @@ async function main() {
         } catch (e) {
             console.log(`[creepjs] html extraction failed: ${e.message}`);
         }
+
+        // Fix relative CSS path to absolute CDN URL for offline viewing
+        html = html.replace(
+            /href="style\.min\.css"/g,
+            'href="https://abrahamjuliot.github.io/creepjs/style.min.css"'
+        );
 
         writeFileSync(htmlPath, html);
         writeFileSync(jsonPath, JSON.stringify({
