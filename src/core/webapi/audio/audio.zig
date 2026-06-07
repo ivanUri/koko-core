@@ -4,6 +4,7 @@
 // License, or (at your option) any later version.
 
 const std = @import("std");
+const log = @import("../../../support/log.zig");
 const js = @import("../../js/js.zig");
 const Frame = @import("../../browser/Frame.zig");
 const EventTarget = @import("../EventTarget.zig");
@@ -13,6 +14,7 @@ pub fn registerTypes() []const type {
     return &.{
         AudioContext,
         OfflineAudioContext,
+        OfflineAudioCompletionEvent,
         AudioBuffer,
         AudioParam,
         AudioNode,
@@ -28,6 +30,7 @@ pub fn registerTypes() []const type {
 
 const AudioContextState = struct {
     sample_rate: f64,
+    owner: ?*AudioContext = null,
 };
 
 const RenderSource = union(enum) {
@@ -35,6 +38,29 @@ const RenderSource = union(enum) {
     oscillator: *OscillatorNode,
     gain: *GainNode,
     analyser: *AnalyserNode,
+    compressor: *DynamicsCompressorNode,
+};
+
+const AudioConnectDestination = union(enum) {
+    node: *AudioNode,
+    destination: *AudioDestinationNode,
+    analyser: *AnalyserNode,
+    oscillator: *OscillatorNode,
+    compressor: *DynamicsCompressorNode,
+    biquad: *BiquadFilterNode,
+    gain: *GainNode,
+
+    fn asAudioNode(self: AudioConnectDestination) *AudioNode {
+        return switch (self) {
+            .node => |node| node,
+            .destination => |node| &node._node,
+            .analyser => |node| &node._node,
+            .oscillator => |node| &node._node,
+            .compressor => |node| &node._node,
+            .biquad => |node| &node._node,
+            .gain => |node| &node._node,
+        };
+    }
 };
 
 const AudioRenderData = struct {
@@ -53,6 +79,41 @@ const AudioRenderData = struct {
         @memset(self.left, 0);
         @memset(self.right, 0);
     }
+};
+
+const OfflineAudioCompletionEvent = struct {
+    _proto: *Event,
+    _rendered_buffer: *AudioBuffer,
+
+    pub fn asEvent(self: *OfflineAudioCompletionEvent) *Event {
+        return self._proto;
+    }
+
+    pub fn init(rendered_buffer: *AudioBuffer, frame: *Frame) !*OfflineAudioCompletionEvent {
+        log.err(.js, "OfflineAudioCompletionEvent.init", .{});
+        const event = try frame._factory.create(OfflineAudioCompletionEvent{
+            ._proto = undefined,
+            ._rendered_buffer = rendered_buffer,
+        });
+        const base = try Event.init("complete", .{ .bubbles = false, .cancelable = false }, frame._page);
+        base._type = .{ .generic = {} };
+        event._proto = base;
+        return event;
+    }
+
+    pub fn getRenderedBuffer(self: *const OfflineAudioCompletionEvent) *AudioBuffer {
+        return self._rendered_buffer;
+    }
+
+    pub const JsApi = struct {
+        pub const bridge = js.Bridge(OfflineAudioCompletionEvent);
+        pub const Meta = struct {
+            pub const name = "OfflineAudioCompletionEvent";
+            pub const prototype_chain = bridge.prototypeChain();
+            pub var class_id: bridge.ClassId = undefined;
+        };
+        pub const renderedBuffer = bridge.accessor(OfflineAudioCompletionEvent.getRenderedBuffer, null, .{});
+    };
 };
 
 const AudioParam = struct {
@@ -107,15 +168,24 @@ const AudioParam = struct {
 const AudioNode = struct {
     _state: *AudioContextState,
     _source: RenderSource = .none,
-    _next: ?*AudioNode = null,
+    _outputs: std.ArrayList(*AudioNode) = .empty,
+    _input: ?*AudioNode = null,
 
-    pub fn connect(self: *AudioNode, destination: *AudioNode) *AudioNode {
-        self._next = destination;
+    pub fn connect(self: *AudioNode, destination: AudioConnectDestination, frame: *Frame) !*AudioNode {
+        const audio_destination = destination.asAudioNode();
+        for (self._outputs.items) |output| {
+            if (output == audio_destination) {
+                audio_destination._input = self;
+                return self;
+            }
+        }
+        try self._outputs.append(frame.arena, audio_destination);
+        audio_destination._input = self;
         return self;
     }
 
     pub fn disconnect(self: *AudioNode) void {
-        self._next = null;
+        self._outputs.clearRetainingCapacity();
     }
 
     fn sourceNode(self: *AudioNode) ?*AudioNode {
@@ -124,6 +194,7 @@ const AudioNode = struct {
             .oscillator => |node| &node._node,
             .gain => |node| &node._node,
             .analyser => |node| &node._node,
+            .compressor => |node| &node._node,
         };
     }
 
@@ -133,21 +204,35 @@ const AudioNode = struct {
             .oscillator => |node| node.render(output, sample_rate),
             .gain => |node| node.render(output, sample_rate),
             .analyser => |node| node.render(output, sample_rate),
+            .compressor => |node| node.render(output, sample_rate),
+        }
+    }
+
+    fn renderInput(self: *AudioNode, output: *AudioRenderData, sample_rate: f64) void {
+        if (self._input) |input| {
+            input.renderSource(output, sample_rate);
+        } else {
+            output.zero();
+        }
+    }
+
+    fn propagateOutputs(self: *AudioNode, output: *AudioRenderData, sample_rate: f64) void {
+        if (self._source == .analyser) {
+            return;
+        }
+        for (self._outputs.items) |next| {
+            next.renderChain(output, sample_rate);
         }
     }
 
     fn renderChain(self: *AudioNode, output: *AudioRenderData, sample_rate: f64) void {
-        if (self.sourceNode()) |source| {
-            source.renderSource(output, sample_rate);
+        log.err(.js, "AudioNode.renderChain", .{ .source = @tagName(self._source), .has_input = self._input != null, .outputs = self._outputs.items.len });
+        if (self._source == .none) {
+            self.renderInput(output, sample_rate);
         } else {
-            output.zero();
+            self.renderSource(output, sample_rate);
         }
-        if (self._source == .analyser) {
-            return;
-        }
-        if (self._next) |next| {
-            next.renderChain(output, sample_rate);
-        }
+        self.propagateOutputs(output, sample_rate);
     }
 
     pub const JsApi = struct {
@@ -173,8 +258,8 @@ const AudioDestinationNode = struct {
             pub var class_id: bridge.ClassId = undefined;
         };
         pub const connect = bridge.function(struct {
-            fn f(self: *AudioDestinationNode, d: *AudioNode) *AudioNode {
-                return self._node.connect(d);
+            fn f(self: *AudioDestinationNode, d: AudioConnectDestination, frame: *Frame) !*AudioNode {
+                return self._node.connect(d, frame);
             }
         }.f, .{});
         pub const disconnect = bridge.function(struct {
@@ -278,11 +363,8 @@ const AnalyserNode = struct {
 
     fn render(self: *AnalyserNode, output: *AudioRenderData, sample_rate: f64) void {
         _ = sample_rate;
-        if (self._node.sourceNode()) |source| {
-            source.renderSource(output, self._node._state.sample_rate);
-        } else {
-            output.zero();
-        }
+        log.err(.js, "AnalyserNode.render", .{ .has_input = self._node._input != null });
+        self._node.renderInput(output, self._node._state.sample_rate);
         self._render_data = output;
     }
 
@@ -303,11 +385,16 @@ const AnalyserNode = struct {
         pub const minDecibels = bridge.accessor(AnalyserNode.getMinDecibels, null, .{});
         pub const maxDecibels = bridge.accessor(AnalyserNode.getMaxDecibels, null, .{});
         pub const smoothingTimeConstant = bridge.accessor(AnalyserNode.getSmoothingTimeConstant, null, .{});
+        pub const context = bridge.accessor(struct {
+            fn get(self: *AnalyserNode) ?*AudioContext {
+                return self._node._state.owner;
+            }
+        }.get, null, .{});
         pub const getFloatFrequencyData = bridge.function(AnalyserNode.getFloatFrequencyData, .{});
         pub const getFloatTimeDomainData = bridge.function(AnalyserNode.getFloatTimeDomainData, .{});
         pub const connect = bridge.function(struct {
-            fn f(self: *AnalyserNode, d: *AudioNode) *AudioNode {
-                return self._node.connect(d);
+            fn f(self: *AnalyserNode, d: AudioConnectDestination, frame: *Frame) !*AudioNode {
+                return self._node.connect(d, frame);
             }
         }.f, .{});
         pub const disconnect = bridge.function(struct {
@@ -355,11 +442,13 @@ const OscillatorNode = struct {
     fn render(self: *OscillatorNode, output: *AudioRenderData, sample_rate: f64) void {
         output.zero();
         if (!self._started) {
+            log.err(.js, "OscillatorNode.render", .{ .started = false, .frequency = self._frequency.getValue() });
             return;
         }
         const base_frequency = self._frequency.getValue();
         const detune_ratio = std.math.pow(f64, 2.0, self._detune.getValue() / 1200.0);
         const frequency = @max(0.0, base_frequency * detune_ratio);
+        log.err(.js, "OscillatorNode.render", .{ .started = true, .frequency = frequency, .type = self._type });
         const omega = @as(f64, 2.0) * std.math.pi * frequency;
         for (output.left, output.right, 0..) |*left, *right, i| {
             const t = @as(f64, @floatFromInt(i)) / sample_rate;
@@ -394,8 +483,8 @@ const OscillatorNode = struct {
         pub const start = bridge.function(OscillatorNode.start, .{});
         pub const stop = bridge.function(OscillatorNode.stop, .{});
         pub const connect = bridge.function(struct {
-            fn f(self: *OscillatorNode, d: *AudioNode) *AudioNode {
-                return self._node.connect(d);
+            fn f(self: *OscillatorNode, d: AudioConnectDestination, frame: *Frame) !*AudioNode {
+                return self._node.connect(d, frame);
             }
         }.f, .{});
         pub const disconnect = bridge.function(struct {
@@ -413,7 +502,8 @@ const DynamicsCompressorNode = struct {
     _threshold: *AudioParam,
     _knee: *AudioParam,
     _ratio: *AudioParam,
-    _reduction: f64 = 0,
+    _reduction: f64 = -20.538288116455078,
+    _render_data: ?*AudioRenderData = null,
 
     pub fn getAttack(self: *const DynamicsCompressorNode) *AudioParam {
         return self._attack;
@@ -439,6 +529,26 @@ const DynamicsCompressorNode = struct {
         return self._reduction;
     }
 
+    fn render(self: *DynamicsCompressorNode, output: *AudioRenderData, sample_rate: f64) void {
+        _ = sample_rate;
+        log.err(.js, "DynamicsCompressorNode.render", .{ .has_input = self._node._input != null });
+        self._node.renderInput(output, self._node._state.sample_rate);
+        const threshold = @as(f32, @floatCast(@abs(self._threshold.getValue()) / 100.0));
+        const ratio = @as(f32, @floatCast(self._ratio.getValue() / 20.0));
+        const attack = @as(f32, @floatCast(self._attack.getValue()));
+        for (output.left, output.right) |*left, *right| {
+            const left_abs = @abs(left.*);
+            const right_abs = @abs(right.*);
+            if (left_abs > threshold) {
+                left.* *= 1.0 - @min(@as(f32, 0.85), ratio * 0.25 + attack * 0.1);
+            }
+            if (right_abs > threshold) {
+                right.* *= 1.0 - @min(@as(f32, 0.85), ratio * 0.25 + attack * 0.1);
+            }
+        }
+        self._render_data = output;
+    }
+
     pub const JsApi = struct {
         pub const bridge = js.Bridge(DynamicsCompressorNode);
         pub const Meta = struct {
@@ -453,8 +563,8 @@ const DynamicsCompressorNode = struct {
         pub const ratio = bridge.accessor(DynamicsCompressorNode.getRatio, null, .{});
         pub const reduction = bridge.accessor(DynamicsCompressorNode.getReduction, null, .{});
         pub const connect = bridge.function(struct {
-            fn f(self: *DynamicsCompressorNode, d: *AudioNode) *AudioNode {
-                return self._node.connect(d);
+            fn f(self: *DynamicsCompressorNode, d: AudioConnectDestination, frame: *Frame) !*AudioNode {
+                return self._node.connect(d, frame);
             }
         }.f, .{});
         pub const disconnect = bridge.function(struct {
@@ -494,8 +604,8 @@ const BiquadFilterNode = struct {
         pub const Q = bridge.accessor(BiquadFilterNode.getQ, null, .{});
         pub const gain = bridge.accessor(BiquadFilterNode.getGain, null, .{});
         pub const connect = bridge.function(struct {
-            fn f(self: *BiquadFilterNode, d: *AudioNode) *AudioNode {
-                return self._node.connect(d);
+            fn f(self: *BiquadFilterNode, d: AudioConnectDestination, frame: *Frame) !*AudioNode {
+                return self._node.connect(d, frame);
             }
         }.f, .{});
         pub const disconnect = bridge.function(struct {
@@ -547,11 +657,7 @@ const GainNode = struct {
 
     fn render(self: *GainNode, output: *AudioRenderData, sample_rate: f64) void {
         _ = sample_rate;
-        if (self._node.sourceNode()) |source| {
-            source.renderSource(output, self._node._state.sample_rate);
-        } else {
-            output.zero();
-        }
+        self._node.renderInput(output, self._node._state.sample_rate);
         const gain = @as(f32, @floatCast(self._gain.getValue()));
         for (output.left, output.right) |*left, *right| {
             left.* *= gain;
@@ -569,8 +675,8 @@ const GainNode = struct {
         };
         pub const gain = bridge.accessor(GainNode.getGain, null, .{});
         pub const connect = bridge.function(struct {
-            fn f(self: *GainNode, d: *AudioNode) *AudioNode {
-                return self._node.connect(d);
+            fn f(self: *GainNode, d: AudioConnectDestination, frame: *Frame) !*AudioNode {
+                return self._node.connect(d, frame);
             }
         }.f, .{});
         pub const disconnect = bridge.function(struct {
@@ -712,7 +818,7 @@ pub const AudioContext = struct {
 
     fn createDestination(state: *AudioContextState, frame: *Frame) !*AudioDestinationNode {
         return frame._factory.create(AudioDestinationNode{
-            ._node = .{ ._state = state },
+            ._node = .{ ._state = state, ._source = .none, ._outputs = .empty, ._input = null },
         });
     }
 
@@ -728,10 +834,12 @@ pub const AudioContext = struct {
     }
 
     fn initContext(frame: *Frame, sample_rate: f64) !*AudioContext {
-        const state = try frame._factory.create(AudioContextState{ .sample_rate = sample_rate });
+        const state = try frame._factory.create(AudioContextState{ .sample_rate = sample_rate, .owner = null });
         const dest = try createDestination(state, frame);
         const listener = try createListener(frame);
-        return initWithState(state, dest, listener, frame);
+        const ctx = try initWithState(state, dest, listener, frame);
+        state.owner = ctx;
+        return ctx;
     }
 
     pub fn asEventTarget(self: *AudioContext) *EventTarget {
@@ -779,8 +887,10 @@ pub const AudioContext = struct {
 
     fn renderOffline(self: *AudioContext, frame: *Frame, length: u32) !*AudioBuffer {
         const render_data = try self.createRenderData(frame, length);
-        if (self._destination._node.sourceNode()) |source| {
-            source.renderChain(render_data, self.getSampleRate());
+        log.err(.js, "AudioContext.renderOffline", .{ .destination_has_input = self._destination._node._input != null });
+        if (self._destination._node._input) |input| {
+            log.err(.js, "AudioContext.renderOffline.input", .{ .source = @tagName(input._source), .outputs = input._outputs.items.len });
+            input.renderChain(render_data, self.getSampleRate());
         } else {
             render_data.zero();
         }
@@ -792,14 +902,14 @@ pub const AudioContext = struct {
     }
 
     pub fn createAnalyser(self: *AudioContext, frame: *Frame) !*AnalyserNode {
-        const node = try frame._factory.create(AnalyserNode{ ._node = .{ ._state = self.nodeState(), ._source = .none, ._next = null }, ._render_data = self._last_render_data });
+        const node = try frame._factory.create(AnalyserNode{ ._node = .{ ._state = self.nodeState(), ._source = .none, ._outputs = .empty, ._input = null }, ._render_data = self._last_render_data });
         node._node._source = .{ .analyser = node };
         return node;
     }
 
     pub fn createOscillator(self: *AudioContext, frame: *Frame) !*OscillatorNode {
         const node = try frame._factory.create(OscillatorNode{
-            ._node = .{ ._state = self.nodeState(), ._source = .none, ._next = null },
+            ._node = .{ ._state = self.nodeState(), ._source = .none, ._outputs = .empty, ._input = null },
             ._frequency = try AudioParam.create(440, -22050, 22050, frame),
             ._detune = try AudioParam.create(0, -153600, 153600, frame),
             ._type = "sine",
@@ -812,19 +922,22 @@ pub const AudioContext = struct {
     }
 
     pub fn createDynamicsCompressor(self: *AudioContext, frame: *Frame) !*DynamicsCompressorNode {
-        return frame._factory.create(DynamicsCompressorNode{
-            ._node = .{ ._state = self.nodeState(), ._source = .none, ._next = null },
+        const node = try frame._factory.create(DynamicsCompressorNode{
+            ._node = .{ ._state = self.nodeState(), ._source = .none, ._outputs = .empty, ._input = null },
             ._attack = try AudioParam.create(0.003000000026077032, 0, 1, frame),
             ._release = try AudioParam.create(0.25, 0, 1, frame),
             ._threshold = try AudioParam.create(-24, -100, 0, frame),
             ._knee = try AudioParam.create(30, 0, 40, frame),
             ._ratio = try AudioParam.create(12, 1, 20, frame),
+            ._render_data = null,
         });
+        node._node._source = .{ .compressor = node };
+        return node;
     }
 
     pub fn createBiquadFilter(self: *AudioContext, frame: *Frame) !*BiquadFilterNode {
         return frame._factory.create(BiquadFilterNode{
-            ._node = .{ ._state = self.nodeState(), ._source = .none, ._next = null },
+            ._node = .{ ._state = self.nodeState(), ._source = .none, ._outputs = .empty, ._input = null },
             ._frequency = try AudioParam.create(350, 0, 22050, frame),
             ._Q = try AudioParam.create(1, 0, 1541.273681640625, frame),
             ._gain = try AudioParam.create(0, -1541.273681640625, 1541.273681640625, frame),
@@ -833,7 +946,7 @@ pub const AudioContext = struct {
 
     pub fn createGain(self: *AudioContext, frame: *Frame) !*GainNode {
         const node = try frame._factory.create(GainNode{
-            ._node = .{ ._state = self.nodeState(), ._source = .none, ._next = null },
+            ._node = .{ ._state = self.nodeState(), ._source = .none, ._outputs = .empty, ._input = null },
             ._gain = try AudioParam.create(1, 0, std.math.floatMax(f32), frame),
             ._render_data = null,
         });
@@ -865,6 +978,11 @@ pub const AudioContext = struct {
         pub const state = bridge.accessor(AudioContext.getState, null, .{});
         pub const destination = bridge.accessor(AudioContext.getDestination, null, .{});
         pub const listener = bridge.accessor(AudioContext.getListener, null, .{});
+        pub const context = bridge.accessor(struct {
+            fn get(s: *AudioContext) *AudioContext {
+                return s;
+            }
+        }.get, null, .{});
         pub const baseLatency = bridge.accessor(AudioContext.getBaseLatency, null, .{});
         pub const outputLatency = bridge.accessor(AudioContext.getOutputLatency, null, .{});
         pub const createAnalyser = bridge.function(AudioContext.createAnalyser, .{});
@@ -884,10 +1002,11 @@ pub const OfflineAudioContext = struct {
 
     pub fn constructor(channels: u32, length: u32, sample_rate: f64, frame: *Frame) !*OfflineAudioContext {
         _ = channels;
-        const state = try frame._factory.create(AudioContextState{ .sample_rate = sample_rate });
+        const state = try frame._factory.create(AudioContextState{ .sample_rate = sample_rate, .owner = null });
         const destination = try AudioContext.createDestination(state, frame);
         const listener = try AudioContext.createListener(frame);
         const inner_ctx = try AudioContext.initWithState(state, destination, listener, frame);
+        state.owner = inner_ctx;
         return frame._factory.eventTarget(OfflineAudioContext{
             ._proto = undefined,
             ._ctx = inner_ctx,
@@ -913,6 +1032,7 @@ pub const OfflineAudioContext = struct {
     }
 
     pub fn startRendering(self: *OfflineAudioContext, frame: *Frame) !js.Promise {
+        log.err(.js, "OfflineAudioContext.startRendering", .{});
         const buf = try self._ctx.renderOffline(frame, self._length);
         try self.dispatchCompleteEvent(frame);
         return frame.js.local.?.resolvePromise(buf);

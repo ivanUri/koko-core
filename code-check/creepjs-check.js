@@ -156,47 +156,450 @@ const READY_PROBE = `(async () => {
   const creepIdText =
     grab(".creep-id") ||
     grab(".creep .visitor-id");
+  const fuzzyContainerText = grab("#fuzzy-fingerprint");
+  const computingText = grab("#fingerprint-data .fingerprint-header");
+  const timeText = grab("#fingerprint-data .time");
+  const hiddenSections = document.querySelectorAll(".hidden").length;
   // Ready = local compute finished. Trust score widget is best-effort only.
   const ready = fpDataLen > 200 && !!fuzzyText && /[0-9a-f]{8,}/i.test(fuzzyText);
-  return { ready, fpDataLen, fuzzyText, trustText, fpIdText, creepIdText };
+  return {
+    ready,
+    fpDataLen,
+    fuzzyText,
+    trustText,
+    fpIdText,
+    creepIdText,
+    fuzzyContainerText,
+    computingText,
+    timeText,
+    hiddenSections,
+  };
+})()`;
+
+const PRELOAD_INSTRUMENTATION_EVAL = `(() => {
+  const global = window;
+  if (global.__veloraPreloadInstalled) {
+    return;
+  }
+
+  const state = {
+    installedAt: Date.now(),
+    errors: [],
+    rejections: [],
+    console: [],
+    apiCalls: [],
+    listeners: [],
+    timeouts: [],
+    marks: [],
+  };
+
+  const safeString = (value) => {
+    try {
+      if (typeof value === 'string') return value;
+      if (value && value.message) return String(value.message);
+      if (value && value.name && value.constructor && value.constructor !== Object) {
+        return \`\${value.name}: \${value.message || ''}\`.trim();
+      }
+      return String(value);
+    } catch {
+      return '[unstringifiable]';
+    }
+  };
+
+  const safeStack = (value) => {
+    try {
+      return value && value.stack ? String(value.stack) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const push = (bucket, payload) => {
+    state[bucket].push({ ts: Date.now(), ...payload });
+  };
+
+  const mark = (name, extra = {}) => push('marks', { name, ...extra });
+
+  const wrapMethod = (host, key, label) => {
+    if (!host || typeof host[key] !== 'function' || host[key].__veloraWrapped) return false;
+    const original = host[key];
+    const wrapped = function (...args) {
+      push('apiCalls', { name: label, phase: 'call', args: args.map(safeString) });
+      try {
+        const result = original.apply(this, args);
+        if (result && typeof result.then === 'function') {
+          const started = performance.now();
+          return result.then((value) => {
+            push('apiCalls', { name: label, phase: 'resolve', elapsedMs: Math.round(performance.now() - started), value: safeString(value) });
+            return value;
+          }, (error) => {
+            push('apiCalls', { name: label, phase: 'reject', elapsedMs: Math.round(performance.now() - started), error: safeString(error), stack: safeStack(error) });
+            throw error;
+          });
+        }
+        push('apiCalls', { name: label, phase: 'return', value: safeString(result) });
+        return result;
+      } catch (error) {
+        push('apiCalls', { name: label, phase: 'throw', error: safeString(error), stack: safeStack(error) });
+        throw error;
+      }
+    };
+    wrapped.__veloraWrapped = true;
+    host[key] = wrapped;
+    return true;
+  };
+
+  global.__veloraPreloadInstalled = true;
+  global.__veloraPreloadState = state;
+  global.__veloraGetPreloadState = () => JSON.parse(JSON.stringify(state));
+
+  mark('preload-installed');
+
+  global.addEventListener('error', (event) => {
+    push('errors', {
+      message: event.message || null,
+      source: event.filename || null,
+      line: event.lineno || null,
+      column: event.colno || null,
+      stack: safeStack(event.error),
+    });
+  }, true);
+
+  global.addEventListener('unhandledrejection', (event) => {
+    push('rejections', {
+      reason: safeString(event.reason),
+      stack: safeStack(event.reason),
+    });
+  });
+
+  const origConsoleError = console.error.bind(console);
+  console.error = (...args) => {
+    push('console', { type: 'error', args: args.map(safeString) });
+    return origConsoleError(...args);
+  };
+
+  const origConsoleWarn = console.warn.bind(console);
+  console.warn = (...args) => {
+    push('console', { type: 'warn', args: args.map(safeString) });
+    return origConsoleWarn(...args);
+  };
+
+  const origAddEventListener = EventTarget.prototype.addEventListener;
+  EventTarget.prototype.addEventListener = function (type, listener, options) {
+    const ctor = this && this.constructor ? this.constructor.name : typeof this;
+    if (type === 'complete' || type === 'message' || type === 'error' || type === 'unhandledrejection') {
+      push('listeners', { target: ctor, type, hasListener: !!listener });
+    }
+    return origAddEventListener.call(this, type, listener, options);
+  };
+
+  const origSetTimeout = global.setTimeout.bind(global);
+  global.setTimeout = (fn, delay, ...rest) => {
+    const numericDelay = Number(delay) || 0;
+    const id = origSetTimeout(function (...cbArgs) {
+      if (numericDelay >= 2500) {
+        push('timeouts', { phase: 'fire', delay: numericDelay });
+      }
+      return typeof fn === 'function' ? fn.apply(this, cbArgs) : fn;
+    }, delay, ...rest);
+    if (numericDelay >= 2500) {
+      push('timeouts', { phase: 'schedule', delay: numericDelay });
+    }
+    return id;
+  };
+
+  wrapMethod(navigator.serviceWorker || {}, 'register', 'serviceWorker.register');
+  wrapMethod(navigator.serviceWorker || {}, 'getRegistration', 'serviceWorker.getRegistration');
+  wrapMethod(OfflineAudioContext?.prototype || {}, 'startRendering', 'OfflineAudioContext.startRendering');
+
+  if (typeof Worker === 'function') {
+    const OrigWorker = Worker;
+    const WrappedWorker = function (...args) {
+      push('apiCalls', { name: 'Worker.constructor', phase: 'call', args: args.map(safeString) });
+      return Reflect.construct(OrigWorker, args, new.target || WrappedWorker);
+    };
+    WrappedWorker.prototype = OrigWorker.prototype;
+    Object.setPrototypeOf(WrappedWorker, OrigWorker);
+    global.Worker = WrappedWorker;
+  }
+
+  if (typeof SharedWorker === 'function') {
+    const OrigSharedWorker = SharedWorker;
+    const WrappedSharedWorker = function (...args) {
+      push('apiCalls', { name: 'SharedWorker.constructor', phase: 'call', args: args.map(safeString) });
+      return Reflect.construct(OrigSharedWorker, args, new.target || WrappedSharedWorker);
+    };
+    WrappedSharedWorker.prototype = OrigSharedWorker.prototype;
+    Object.setPrototypeOf(WrappedSharedWorker, OrigSharedWorker);
+    global.SharedWorker = WrappedSharedWorker;
+  }
+
+  mark('preload-ready');
+})()`;
+
+const PRELOAD_STATE_EVAL = `(() => window.__veloraGetPreloadState?.() || null)()`;
+
+const INSTRUMENTATION_EVAL = `(() => {
+  if (window.__veloraInstrumentationInstalled) {
+    return { installed: true, reused: true };
+  }
+
+  const state = {
+    installedAt: Date.now(),
+    errors: [],
+    rejections: [],
+    phaseEvents: [],
+    promiseEvents: [],
+    consoleErrors: [],
+  };
+
+  const safeStack = (value) => {
+    try {
+      return value && value.stack ? String(value.stack) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const safeString = (value) => {
+    try {
+      if (typeof value === 'string') return value;
+      if (value && value.message) return String(value.message);
+      return String(value);
+    } catch {
+      return '[unstringifiable]';
+    }
+  };
+
+  const pushPhase = (kind, name, extra = {}) => {
+    state.phaseEvents.push({
+      ts: Date.now(),
+      kind,
+      name,
+      ...extra,
+    });
+  };
+
+  window.addEventListener('error', (event) => {
+    state.errors.push({
+      ts: Date.now(),
+      message: event.message || null,
+      source: event.filename || null,
+      line: event.lineno || null,
+      column: event.colno || null,
+      stack: safeStack(event.error),
+    });
+  });
+
+  window.addEventListener('unhandledrejection', (event) => {
+    const reason = event.reason;
+    state.rejections.push({
+      ts: Date.now(),
+      reason: safeString(reason),
+      stack: safeStack(reason),
+    });
+  });
+
+  const origConsoleError = console.error.bind(console);
+  console.error = (...args) => {
+    state.consoleErrors.push({
+      ts: Date.now(),
+      args: args.map((arg) => safeString(arg)),
+    });
+    return origConsoleError(...args);
+  };
+
+  const wrapAsyncFn = (label) => {
+    const original = window[label];
+    if (typeof original !== 'function' || original.__veloraWrapped) {
+      return false;
+    }
+    const wrapped = async function (...args) {
+      const started = performance.now();
+      pushPhase('start', label);
+      const timeoutId = setTimeout(() => {
+        state.promiseEvents.push({
+          ts: Date.now(),
+          type: 'timeout',
+          name: label,
+          elapsedMs: Math.round(performance.now() - started),
+        });
+      }, 8000);
+      try {
+        const result = await original.apply(this, args);
+        clearTimeout(timeoutId);
+        pushPhase('end', label, { elapsedMs: Math.round(performance.now() - started) });
+        state.promiseEvents.push({
+          ts: Date.now(),
+          type: 'resolved',
+          name: label,
+          elapsedMs: Math.round(performance.now() - started),
+        });
+        return result;
+      } catch (error) {
+        clearTimeout(timeoutId);
+        pushPhase('error', label, {
+          elapsedMs: Math.round(performance.now() - started),
+          message: safeString(error),
+          stack: safeStack(error),
+        });
+        state.promiseEvents.push({
+          ts: Date.now(),
+          type: 'rejected',
+          name: label,
+          elapsedMs: Math.round(performance.now() - started),
+          message: safeString(error),
+        });
+        throw error;
+      }
+    };
+    wrapped.__veloraWrapped = true;
+    window[label] = wrapped;
+    return true;
+  };
+
+  const labels = [
+    'getBestWorkerScope',
+    'getOfflineAudioContext',
+    'getCanvasWebgl',
+    'getCanvas2d',
+    'getFonts',
+    'getIntl',
+    'getNavigator',
+    'getMedia',
+    'getResistance',
+    'getSVG',
+    'getVoices',
+    'getWindowFeatures',
+    'getHTMLElementVersion',
+    'getCSS',
+    'getCSSMedia',
+    'getScreen',
+    'getMaths',
+    'getConsoleErrors',
+    'getTimezone',
+    'getClientRects',
+    'getHeadlessFeatures',
+    'getEngineFeatures',
+    'getLies',
+    'getTrash',
+    'getCapturedErrors',
+  ];
+
+  const wrapped = labels.filter(wrapAsyncFn);
+
+  window.__veloraInstrumentationInstalled = true;
+  window.__veloraInstrumentationState = state;
+  window.__veloraGetInstrumentationState = () => JSON.parse(JSON.stringify(state));
+
+  pushPhase('installed', 'instrumentation', { wrapped });
+  return { installed: true, reused: false, wrapped };
+})()`;
+
+const INSTRUMENTATION_STATE_EVAL = `(() => {
+  const state = window.__veloraGetInstrumentationState?.() || null;
+  const ready = document.querySelector('#fingerprint-data')?.textContent || '';
+  return {
+    state,
+    documentReadySnippet: ready.replace(/\s+/g, ' ').trim().slice(0, 300),
+  };
 })()`;
 
 const SUMMARY_PROBE = `(() => {
   const text = (sel) => {
     const el = document.querySelector(sel);
-    return el ? el.textContent.replace(/\\s+/g, ' ').trim() : null;
+    return el ? el.textContent.replace(/\s+/g, ' ').trim() : null;
   };
   const all = (sel) => Array.from(document.querySelectorAll(sel))
-    .map((el) => el.textContent.replace(/\\s+/g, ' ').trim());
+    .map((el) => el.textContent.replace(/\s+/g, ' ').trim());
   const pickNum = (s) => {
     if (!s) return null;
-    const m = s.match(/(-?\\d+(?:\\.\\d+)?)/);
+    const m = s.match(/(-?\d+(?:\.\d+)?)/);
     return m ? Number(m[1]) : null;
   };
   const trust = text(".trust-score-container");
   const lies = all(".lies-len, .lies, .lies-list").join(" | ");
   const bot = all(".bot-detection, .bot, [class*=headless]").join(" | ");
   return {
-    url: location.href,
-    title: document.title,
-    trustScoreText: trust,
-    trustScorePct: pickNum(trust),
-    fingerprintId:
-      text("#fingerprint-data .fingerprint .visitor-id") ||
-      text(".fingerprint .visitor-id") ||
-      text(".visitor-id"),
-    creepId: text(".creep-id") || text(".creep .visitor-id"),
-    liesSummary: lies || null,
-    botSummary: bot || null,
-    userAgent: navigator.userAgent,
-    webdriver: navigator.webdriver === true,
-    languages: navigator.languages,
-    platform: navigator.platform,
-    hardwareConcurrency: navigator.hardwareConcurrency,
-    deviceMemory: navigator.deviceMemory ?? null,
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-    screen: { w: screen.width, h: screen.height, dpr: devicePixelRatio },
+   url: location.href,
+   title: document.title,
+   trustScoreText: trust,
+   trustScorePct: pickNum(trust),
+   fingerprintId:
+     text("#fingerprint-data .fingerprint .visitor-id") ||
+     text(".fingerprint .visitor-id") ||
+     text(".visitor-id"),
+   creepId: text(".creep-id") || text(".creep .visitor-id"),
+   liesSummary: lies || null,
+   botSummary: bot || null,
+   userAgent: navigator.userAgent,
+   webdriver: navigator.webdriver === true,
+   languages: navigator.languages,
+   platform: navigator.platform,
+   hardwareConcurrency: navigator.hardwareConcurrency,
+   deviceMemory: navigator.deviceMemory ?? null,
+   timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+   screen: { w: screen.width, h: screen.height, dpr: devicePixelRatio },
   };
+})()`;
+
+const AUDIO_REPRO_EVAL = `(async () => {
+  const lines = [];
+  const push = (...parts) => {
+    const line = parts.map((part) => String(part)).join(' ');
+    lines.push(line);
+    console.log(line);
+  };
+
+    try {
+      const ctx = new OfflineAudioContext(1, 5000, 44100);
+      push('audio created context');
+      const osc = ctx.createOscillator();
+      push('audio created oscillator');
+      const comp = ctx.createDynamicsCompressor();
+      push('audio created compressor');
+      const analyser = ctx.createAnalyser();
+      push('audio created analyser');
+
+      osc.connect(comp);
+      push('audio connected osc->comp');
+      comp.connect(analyser);
+      push('audio connected comp->analyser');
+      comp.connect(ctx.destination);
+      push('audio connected comp->destination');
+
+      osc.start();
+      push('audio started oscillator');
+
+      ctx.addEventListener('complete', (event) => {
+      push('audio complete ctor:', event.constructor?.name);
+      push('audio complete keys:', Object.keys(event || {}).join(',') || '(none)');
+      push('audio complete has renderedBuffer:', !!event.renderedBuffer);
+      push('audio complete renderedBuffer typeof:', typeof event.renderedBuffer);
+      push('audio complete target ctor:', event.target?.constructor?.name);
+      push('audio complete currentTarget ctor:', event.currentTarget?.constructor?.name);
+      try {
+        const bins = new Float32Array(analyser.frequencyBinCount);
+        analyser.getFloatFrequencyData?.(bins);
+        push('audio analyser unique bins:', new Set(bins).size);
+        push('audio analyser first bins:', Array.from(bins.slice(0, 8)).join(','));
+      } catch (err) {
+        push('audio analyser error:', err && (err.stack || err.message || String(err)));
+      }
+    });
+
+    const result = await ctx.startRendering();
+    push('audio startRendering resolved ctor:', result?.constructor?.name);
+    try {
+      push('audio startRendering channel0 length:', result?.getChannelData?.(0)?.length ?? 'n/a');
+    } catch (err) {
+      push('audio channelData error:', err && (err.stack || err.message || String(err)));
+    }
+    return { ok: true, lines };
+  } catch (err) {
+    push('audio top-level error:', err && (err.stack || err.message || String(err)));
+    return { ok: false, lines };
+  }
 })()`;
 
 async function main() {
@@ -268,6 +671,38 @@ async function main() {
         const { sessionId } = await client.send("Target.attachToTarget", { targetId, flatten: true });
         await client.send("Page.enable", {}, sessionId);
         await client.send("Runtime.enable", {}, sessionId);
+        await client.send("Page.addScriptToEvaluateOnNewDocument", {
+            source: PRELOAD_INSTRUMENTATION_EVAL,
+        }, sessionId);
+
+        const runtimeConsoleMessages = [];
+        client.onEvent("Runtime.consoleAPICalled", sessionId, (params) => {
+            if (params.type !== "error") return;
+            const parts = (params.args || []).map((arg) => {
+                if (typeof arg.value !== "undefined") return String(arg.value);
+                if (arg.description) return String(arg.description);
+                return arg.type || "unknown";
+            });
+            runtimeConsoleMessages.push({
+                ts: params.timestamp || null,
+                type: params.type,
+                parts,
+                stack: params.stackTrace || null,
+            });
+            console.log(`[runtime.console.error] ${parts.join(" | ")}`);
+        });
+
+        client.onEvent("Runtime.exceptionThrown", sessionId, (params) => {
+            const details = params.exceptionDetails || {};
+            const text = details.text || details.exception?.description || JSON.stringify(details);
+            runtimeConsoleMessages.push({
+                ts: params.timestamp || null,
+                type: "exception",
+                parts: [String(text)],
+                stack: details.stackTrace || null,
+            });
+            console.log(`[runtime.exception] ${text}`);
+        });
 
         const loadOnce = new Promise((res) => {
             const off = client.onEvent("Page.loadEventFired", sessionId, () => { off(); res(); });
@@ -278,33 +713,76 @@ async function main() {
         const nav = await client.send("Page.navigate", { url: CONFIG.url }, sessionId, CONFIG.timeoutMs);
         if (nav.errorText) throw new Error(`navigate error: ${nav.errorText}`);
         await Promise.race([loadOnce, delay(Math.min(CONFIG.timeoutMs, 15000))]);
-        console.log(`[creepjs] page load fired in ${Date.now() - t0}ms; waiting for fingerprint to settle…`);
+        console.log(`[creepjs] page load fired in ${Date.now() - t0}ms; installing instrumentation…`);
+        try {
+            const installResult = await pageEval(client, sessionId, INSTRUMENTATION_EVAL, 3000);
+            console.log(`[creepjs] instrumentation: ${JSON.stringify(installResult)}`);
+        } catch (e) {
+            console.log(`[creepjs] instrumentation install failed: ${e.message}`);
+        }
+        console.log(`[creepjs] waiting for fingerprint to settle…`);
 
         const pollDeadline = Date.now() + CONFIG.settleTimeoutMs;
         let lastProbe = null;
         let ready = false;
+        let pollCount = 0;
+        let lastLoggedProbeKey = null;
         while (Date.now() < pollDeadline) {
             try {
                 lastProbe = await pageEval(client, sessionId, READY_PROBE, 10000);
+                pollCount += 1;
+                const probeKey = JSON.stringify(lastProbe);
+                if (probeKey !== lastLoggedProbeKey) {
+                    console.log(`[creepjs] probe #${pollCount}: ${probeKey}`);
+                    lastLoggedProbeKey = probeKey;
+                }
                 if (lastProbe && lastProbe.ready) { ready = true; break; }
             } catch (e) {
-                console.log(`  poll error: ${e.message}`);
+                pollCount += 1;
+                console.log(`[creepjs] poll #${pollCount} error: ${e.message}`);
             }
             await delay(500);
         }
         const settleMs = Date.now() - t0;
         if (!ready) {
-            console.log(`[creepjs] WARNING: fingerprint did not settle within ${CONFIG.settleTimeoutMs}ms`);
+            console.log(`[creepjs] WARNING: fingerprint did not settle within ${CONFIG.settleTimeoutMs}ms after ${pollCount} polls`);
             console.log(`[creepjs] last probe: ${JSON.stringify(lastProbe)}`);
         } else {
-            console.log(`[creepjs] fingerprint settled in ${settleMs}ms`);
+            console.log(`[creepjs] fingerprint settled in ${settleMs}ms after ${pollCount} polls`);
         }
 
         await delay(1000);
 
+        let audioRepro = null;
+        try {
+            console.log(`[creepjs] running embedded offline audio repro…`);
+            audioRepro = await pageEval(client, sessionId, AUDIO_REPRO_EVAL, 2000);
+            if (audioRepro?.lines?.length) {
+                for (const line of audioRepro.lines) {
+                    console.log(`[audio-repro] ${line}`);
+                }
+            }
+        } catch (e) {
+            console.log(`[creepjs] audio repro failed: ${e.message}`);
+        }
+
+        let preloadState = null;
+        try {
+            preloadState = await pageEval(client, sessionId, PRELOAD_STATE_EVAL, 1500);
+        } catch (e) {
+            console.log(`[creepjs] preload state probe failed: ${e.message}`);
+        }
+
+        let instrumentationState = null;
+        try {
+            instrumentationState = await pageEval(client, sessionId, INSTRUMENTATION_STATE_EVAL, 1500);
+        } catch (e) {
+            console.log(`[creepjs] instrumentation state probe failed: ${e.message}`);
+        }
+
         let summary = null;
         try {
-            summary = await pageEval(client, sessionId, SUMMARY_PROBE, 15000);
+            summary = await pageEval(client, sessionId, SUMMARY_PROBE, 1500);
         } catch (e) {
             console.log(`[creepjs] summary probe failed: ${e.message}`);
         }
@@ -336,7 +814,11 @@ async function main() {
             html_file: htmlPath,
             log_file: logPath,
             summary,
+            audio_repro: audioRepro,
             last_probe: lastProbe,
+            preload: preloadState,
+            instrumentation: instrumentationState,
+            runtime_console: runtimeConsoleMessages,
         }, null, 2));
 
         console.log("\n=== creepjs summary ===");
