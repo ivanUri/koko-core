@@ -226,7 +226,6 @@ const AudioNode = struct {
     }
 
     fn renderChain(self: *AudioNode, output: *AudioRenderData, sample_rate: f64) void {
-        log.err(.js, "AudioNode.renderChain", .{ .source = @tagName(self._source), .has_input = self._input != null, .outputs = self._outputs.items.len });
         if (self._source == .none) {
             self.renderInput(output, sample_rate);
         } else {
@@ -363,7 +362,6 @@ const AnalyserNode = struct {
 
     fn render(self: *AnalyserNode, output: *AudioRenderData, sample_rate: f64) void {
         _ = sample_rate;
-        log.err(.js, "AnalyserNode.render", .{ .has_input = self._node._input != null });
         self._node.renderInput(output, self._node._state.sample_rate);
         self._render_data = output;
     }
@@ -442,13 +440,11 @@ const OscillatorNode = struct {
     fn render(self: *OscillatorNode, output: *AudioRenderData, sample_rate: f64) void {
         output.zero();
         if (!self._started) {
-            log.err(.js, "OscillatorNode.render", .{ .started = false, .frequency = self._frequency.getValue() });
             return;
         }
         const base_frequency = self._frequency.getValue();
         const detune_ratio = std.math.pow(f64, 2.0, self._detune.getValue() / 1200.0);
         const frequency = @max(0.0, base_frequency * detune_ratio);
-        log.err(.js, "OscillatorNode.render", .{ .started = true, .frequency = frequency, .type = self._type });
         const omega = @as(f64, 2.0) * std.math.pi * frequency;
         for (output.left, output.right, 0..) |*left, *right, i| {
             const t = @as(f64, @floatFromInt(i)) / sample_rate;
@@ -531,7 +527,6 @@ const DynamicsCompressorNode = struct {
 
     fn render(self: *DynamicsCompressorNode, output: *AudioRenderData, sample_rate: f64) void {
         _ = sample_rate;
-        log.err(.js, "DynamicsCompressorNode.render", .{ .has_input = self._node._input != null });
         self._node.renderInput(output, self._node._state.sample_rate);
         const threshold = @as(f32, @floatCast(@abs(self._threshold.getValue()) / 100.0));
         const ratio = @as(f32, @floatCast(self._ratio.getValue() / 20.0));
@@ -887,9 +882,7 @@ pub const AudioContext = struct {
 
     fn renderOffline(self: *AudioContext, frame: *Frame, length: u32) !*AudioBuffer {
         const render_data = try self.createRenderData(frame, length);
-        log.err(.js, "AudioContext.renderOffline", .{ .destination_has_input = self._destination._node._input != null });
         if (self._destination._node._input) |input| {
-            log.err(.js, "AudioContext.renderOffline.input", .{ .source = @tagName(input._source), .outputs = input._outputs.items.len });
             input.renderChain(render_data, self.getSampleRate());
         } else {
             render_data.zero();
@@ -1032,7 +1025,6 @@ pub const OfflineAudioContext = struct {
     }
 
     pub fn startRendering(self: *OfflineAudioContext, frame: *Frame) !js.Promise {
-        log.err(.js, "OfflineAudioContext.startRendering", .{});
         const buf = try self._ctx.renderOffline(frame, self._length);
         try self.dispatchCompleteEvent(frame);
         return frame.js.local.?.resolvePromise(buf);
