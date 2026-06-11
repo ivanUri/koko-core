@@ -365,7 +365,14 @@ pub fn runMicrotasks(self: *Env) void {
         for (self.contexts[0..self.context_count]) |ctx| {
             const exec = &ctx.execution;
             if (exec.realmState() == .dead or exec.schedulerSuppressed()) continue;
-            RealmLifecycleKernel.traceMicrotaskCheckpointReentryDeferred(exec.frameId(), exec.realmEpoch(), exec.realmState());
+            RealmLifecycleKernel.traceMicrotaskCheckpointReentryDeferred(
+                exec.frameId(),
+                exec.realmEpoch(),
+                exec.realmState(),
+                0,
+                self.checkpoint_active,
+                self.checkpoint_pending,
+            );
         }
         return;
     }

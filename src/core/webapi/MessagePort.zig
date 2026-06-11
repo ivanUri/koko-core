@@ -55,11 +55,24 @@ pub fn postMessage(self: *MessagePort, message: js.Value.Temp, frame: *Frame) !v
         return;
     }
 
+    if (!other._enabled) {
+        return;
+    }
+
+    const cloned_message = blk: {
+        var ls: js.Local.Scope = undefined;
+        frame.js.localScope(&ls);
+        defer ls.deinit();
+
+        const cloned = message.local(&ls.local).structuredCloneTo(&ls.local) catch return;
+        break :blk try cloned.temp();
+    };
+
     // Create callback to deliver message
     const callback = try frame._factory.create(PostMessageCallback{
         .frame = frame,
         .port = other,
-        .message = message,
+        .message = cloned_message,
     });
 
     try frame.js.scheduler.add(callback, PostMessageCallback.run, 0, .{

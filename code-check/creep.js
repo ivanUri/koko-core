@@ -1984,6 +1984,15 @@
                 }, 4000);
                 if (!ask(() => navigator.serviceWorker.register))
                     return resolve(null);
+                const serviceWorkerDiagnostic = {
+                    scriptSource,
+                    pageURL: location.href,
+                    origin: location.origin,
+                    isSecureContext,
+                    hasServiceWorker: 'serviceWorker' in navigator,
+                    hasRegister: !!ask(() => navigator.serviceWorker.register),
+                };
+                console.log('serviceWorker.register diagnostic', serviceWorkerDiagnostic);
                 return navigator.serviceWorker.register(scriptSource).then((registration) => {
                     if (!hasConstructor(registration, 'ServiceWorkerRegistration'))
                         return resolve(null);
@@ -1997,6 +2006,12 @@
                         };
                     });
                 }).catch((error) => {
+                    console.error('serviceWorker.register failed', {
+                        ...serviceWorkerDiagnostic,
+                        name: error?.name,
+                        message: error?.message,
+                        stack: error?.stack,
+                    });
                     console.error(error);
                     clearTimeout(giveUpOnWorker);
                     return resolve(null);

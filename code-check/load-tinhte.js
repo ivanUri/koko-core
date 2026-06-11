@@ -18,15 +18,15 @@ const veloraBin = resolve(repoRoot, "zig-out/bin/velora");
 // CONFIG — edit here, no CLI flags.
 // ---------------------------------------------------------------------------
 const CONFIG = {
-    url: "https://tinhte.vn/",
-    outDir: resolve(repoRoot, "code-check/tmp/load-tinhte"),
+    url: "https://abrahamjuliot.github.io/creepjs/",
+    outDir: resolve(repoRoot, "code-check/tmp/load-creepjs"),
     htmlFile: "page.html",
     logFile: "page.log",
     // How long to wait for `Page.loadEventFired` after navigating.
     loadTimeoutMs: 30000,
     // Extra idle time after `load` before we snapshot the DOM, so
     // post-load scripts/XHRs that mutate the document can settle.
-    settleAfterLoadMs: 3000,
+    settleAfterLoadMs: 6000,
     // Per-CDP-call timeout / velora http-timeout.
     timeoutMs: 30000,
     logLevel: "info",

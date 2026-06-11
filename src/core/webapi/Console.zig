@@ -13,8 +13,11 @@
 
 const std = @import("std");
 const js = @import("../js/js.zig");
+const builtin = @import("builtin");
 
 const logger = @import("../../support/log.zig");
+const Allocator = std.mem.Allocator;
+const is_debug = builtin.mode == .Debug;
 
 const Console = @This();
 
@@ -57,6 +60,10 @@ pub fn assert(_: *const Console, assertion: js.Value, values: []js.Value) void {
 
 pub fn @"error"(_: *const Console, values: []js.Value, exec: *js.Execution) void {
     logger.warn(.js, "console.error", .{ValueWriter{ .values = values, .stack = exec.context.local.?.stackTrace() catch |err| @errorName(err) orelse "???" }});
+    if (is_debug and values.len >= 1) {
+        const diagnostics = renderConsoleArgs(exec.arena, values) catch return;
+        logger.warn(.js, "console.error.args", .{ .text = diagnostics });
+    }
 }
 
 pub fn table(_: *const Console, data: js.Value, columns: ?js.Value) void {
@@ -134,6 +141,99 @@ pub fn groupEnd(_: *const Console) void {}
 
 fn timestamp() u64 {
     return @import("../../support/datetime.zig").timestamp(.monotonic);
+}
+
+fn renderConsoleArgs(allocator: Allocator, values: []js.Value) ![]const u8 {
+    var list = std.ArrayList(u8).initCapacity(allocator, 0) catch return error.OutOfMemory;
+    errdefer list.deinit(allocator);
+
+    var writer = list.writer(allocator);
+    for (values, 0..) |value, i| {
+        if (i != 0) {
+            try writer.writeAll("\n");
+        }
+        try writer.print("arg({d}): ", .{i + 1});
+        try writeDetailedValue(allocator, writer, value);
+    }
+    return list.toOwnedSlice(allocator);
+}
+
+fn writeDetailedValue(allocator: Allocator, writer: anytype, value: js.Value) !void {
+    if (!value.isObject()) {
+        try writer.print("{f}", .{value});
+        return;
+    }
+
+    const object = value.toObject();
+    var wrote_extra = false;
+
+    inline for ([_][]const u8{ "name", "message", "stack", "cause" }) |key| {
+        if (try writeNamedProperty(writer, object, key, std.mem.eql(u8, key, "stack"))) {
+            wrote_extra = true;
+        }
+    }
+
+    if (value.toJson(allocator)) |json| {
+        if (wrote_extra) {
+            try writer.writeAll("\n  json: ");
+        }
+        try writer.writeAll(json);
+        return;
+    } else |_| {}
+
+    const names = object.getOwnPropertyNames() catch {
+        if (!wrote_extra) {
+            try writer.print("{f}", .{value});
+        }
+        return;
+    };
+
+    const prop_limit = @min(names.len(), 8);
+    for (0..prop_limit) |idx| {
+        const name_value = names.get(@intCast(idx)) catch continue;
+        const name = name_value.toStringSliceWithAlloc(allocator) catch continue;
+        if (std.mem.eql(u8, name, "name") or std.mem.eql(u8, name, "message") or std.mem.eql(u8, name, "stack") or std.mem.eql(u8, name, "cause")) {
+            continue;
+        }
+
+        const prop_value = object.get(name) catch continue;
+        try writer.print("\n  {s}: ", .{name});
+        try writer.print("{f}", .{prop_value});
+        wrote_extra = true;
+    }
+
+    if (!wrote_extra) {
+        try writer.print("{f}", .{value});
+    }
+}
+
+fn writeNamedProperty(writer: anytype, object: js.Object, key: []const u8, multiline: bool) !bool {
+    if (!object.has(key)) {
+        return false;
+    }
+
+    const prop_value = object.get(key) catch return false;
+    if (prop_value.isNullOrUndefined()) {
+        return false;
+    }
+
+    if (multiline) {
+        try writer.print("\n  {s}:\n", .{key});
+        const text = prop_value.toStringSlice() catch {
+            try writer.print("{f}", .{prop_value});
+            return true;
+        };
+
+        var it = std.mem.splitScalar(u8, text, '\n');
+        while (it.next()) |line| {
+            try writer.print("    {s}\n", .{line});
+        }
+        return true;
+    }
+
+    try writer.print("\n  {s}: ", .{key});
+    try writer.print("{f}", .{prop_value});
+    return true;
 }
 
 const ValueWriter = struct {

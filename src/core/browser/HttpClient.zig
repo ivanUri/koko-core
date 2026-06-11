@@ -219,6 +219,11 @@ pub fn deinit(self: *Client) void {
     self.robots_layer.deinit(self.allocator);
 }
 
+pub fn deinitSafe(self: ?*Client) void {
+    const client = self orelse return;
+    client.deinit();
+}
+
 pub fn layer(self: *Client) Layer {
     return .{
         .ptr = self,

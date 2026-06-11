@@ -13,9 +13,9 @@
 
 const std = @import("std");
 
-const FingerprintProfile = @import("../fingerprint/Profile.zig");
 const js = @import("../js/js.zig");
 const Frame = @import("../browser/Frame.zig");
+const NavigatorState = @import("NavigatorState.zig");
 
 const PluginArray = @import("PluginArray.zig");
 const Permissions = @import("Permissions.zig");
@@ -51,21 +51,36 @@ _service_worker: navigator_extras.ServiceWorkerContainer = .{},
 
 pub const init: Navigator = .{};
 
-fn identityProfile() *const FingerprintProfile.IdentityProfile {
-    return FingerprintProfile.defaultIdentity();
+fn state() NavigatorState {
+    return NavigatorState.default();
 }
 
 pub fn getUserAgent(_: *const Navigator, frame: *Frame) []const u8 {
-    return frame._session.browser.http_client.getUserAgent();
+    return state().userAgent(&frame._session.browser.http_client);
 }
 
 pub fn getLanguages(_: *const Navigator) [2][]const u8 {
-    const profile = identityProfile();
-    return .{ profile.languages[0], profile.languages[1] };
+    return state().languages();
+}
+
+pub fn getLanguage(_: *const Navigator) []const u8 {
+    return state().language();
 }
 
 pub fn getPlatform(_: *const Navigator) []const u8 {
-    return identityProfile().navigator_platform;
+    return state().platform();
+}
+
+pub fn getAppName(_: *const Navigator) []const u8 {
+    return state().appName();
+}
+
+pub fn getAppCodeName(_: *const Navigator) []const u8 {
+    return state().appCodeName();
+}
+
+pub fn getAppVersion(_: *const Navigator) []const u8 {
+    return state().appVersion();
 }
 
 /// Returns whether Java is enabled (always false)
@@ -89,28 +104,44 @@ pub fn getStorage(self: *Navigator) *StorageManager {
     return &self._storage;
 }
 
-pub fn getUserAgentData(_: *const Navigator) NavigatorUAData {
-    return .{};
+pub fn getUserAgentData(self: *Navigator) *NavigatorUAData {
+    return &self._ua_data;
 }
 
 pub fn getHardwareConcurrency(_: *const Navigator) u32 {
-    return identityProfile().hardware_concurrency;
+    return state().hardwareConcurrency();
 }
 
 pub fn getDeviceMemory(_: *const Navigator) f64 {
-    return identityProfile().device_memory;
+    return state().deviceMemory();
 }
 
 pub fn getMaxTouchPoints(_: *const Navigator) u32 {
-    return identityProfile().max_touch_points;
+    return state().maxTouchPoints();
 }
 
 pub fn getVendor(_: *const Navigator) []const u8 {
-    return identityProfile().vendor;
+    return state().vendor();
+}
+
+pub fn getProduct(_: *const Navigator) []const u8 {
+    return state().product();
+}
+
+pub fn getWebdriver(_: *const Navigator) bool {
+    return state().webdriver();
+}
+
+pub fn getDoNotTrack(_: *const Navigator) ?[]const u8 {
+    return state().doNotTrack();
 }
 
 pub fn getGlobalPrivacyControl(_: *const Navigator) bool {
-    return identityProfile().global_privacy_control;
+    return state().globalPrivacyControl();
+}
+
+pub fn getOnLine(_: *const Navigator) bool {
+    return state().onLine();
 }
 
 pub fn getConnection(_: *const Navigator) NetworkInformation {
@@ -174,7 +205,7 @@ pub fn getServiceWorker(self: *Navigator) *navigator_extras.ServiceWorkerContain
 }
 
 pub fn getPdfViewerEnabled(_: *const Navigator) bool {
-    return identityProfile().pdf_viewer_enabled;
+    return state().pdfViewerEnabled();
 }
 
 pub fn getOscpu(_: *const Navigator) ?[]const u8 {
@@ -270,28 +301,27 @@ pub const JsApi = struct {
         pub const name = "Navigator";
         pub const prototype_chain = bridge.prototypeChain();
         pub var class_id: bridge.ClassId = undefined;
-        pub const empty_with_no_proto = true;
     };
 
     // Read-only properties
     pub const userAgent = bridge.accessor(Navigator.getUserAgent, null, .{});
-    pub const appName = bridge.attribute("Netscape", .{});
-    pub const appCodeName = bridge.attribute("Netscape", .{});
-    pub const appVersion = bridge.attribute("1.0", .{});
+    pub const appName = bridge.accessor(Navigator.getAppName, null, .{});
+    pub const appCodeName = bridge.accessor(Navigator.getAppCodeName, null, .{});
+    pub const appVersion = bridge.accessor(Navigator.getAppVersion, null, .{});
     pub const platform = bridge.accessor(Navigator.getPlatform, null, .{});
-    pub const language = bridge.attribute("en-US", .{});
+    pub const language = bridge.accessor(Navigator.getLanguage, null, .{});
     pub const languages = bridge.accessor(Navigator.getLanguages, null, .{});
-    pub const onLine = bridge.attribute(true, .{});
+    pub const onLine = bridge.accessor(Navigator.getOnLine, null, .{});
     pub const cookieEnabled = bridge.attribute(true, .{});
     pub const hardwareConcurrency = bridge.accessor(Navigator.getHardwareConcurrency, null, .{});
     pub const deviceMemory = bridge.accessor(Navigator.getDeviceMemory, null, .{});
     pub const maxTouchPoints = bridge.accessor(Navigator.getMaxTouchPoints, null, .{});
     pub const vendor = bridge.accessor(Navigator.getVendor, null, .{});
-    pub const product = bridge.attribute("Gecko", .{});
-    pub const webdriver = bridge.attribute(false, .{});
+    pub const product = bridge.accessor(Navigator.getProduct, null, .{});
+    pub const webdriver = bridge.accessor(Navigator.getWebdriver, null, .{});
     pub const plugins = bridge.accessor(Navigator.getPlugins, null, .{});
     pub const mimeTypes = bridge.accessor(Navigator.getMimeTypes, null, .{});
-    pub const doNotTrack = bridge.attribute(null, .{});
+    pub const doNotTrack = bridge.accessor(Navigator.getDoNotTrack, null, .{});
     pub const globalPrivacyControl = bridge.accessor(Navigator.getGlobalPrivacyControl, null, .{});
     pub const registerProtocolHandler = bridge.function(Navigator.registerProtocolHandler, .{ .dom_exception = true });
     pub const unregisterProtocolHandler = bridge.function(Navigator.unregisterProtocolHandler, .{ .dom_exception = true });

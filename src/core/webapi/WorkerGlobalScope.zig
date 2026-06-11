@@ -100,6 +100,7 @@ _on_rejection_handled: ?JS.Function.Global = null,
 _on_unhandled_rejection: ?JS.Function.Global = null,
 _on_message: ?JS.Function.Global = null,
 _on_messageerror: ?JS.Function.Global = null,
+_debug_next_message_id: u64 = 1,
 
 _timers: Timers = .{},
 
@@ -301,11 +302,18 @@ pub fn setOnMessageError(self: *WorkerGlobalScope, setter: ?FunctionSetter) void
 // Posts a message from the worker back to the frame.
 // The message is cloned via structured clone and dispatched on the Worker object.
 pub fn postMessage(self: *WorkerGlobalScope, data: JS.Value) !void {
-    try self._worker.receiveMessage(data);
+    const message_id = self._debug_nextMessageId();
+    if (comptime IS_DEBUG) {
+        log.info(.browser, "worker postMessage to page", .{
+            .worker_id = self._frame_id,
+            .message_id = message_id,
+        });
+    }
+    try self._worker.receiveMessage(data, message_id);
 }
 
 // Called internally by Worker when it wants to post a message to us
-pub fn receiveMessage(self: *WorkerGlobalScope, data: JS.Value) !void {
+pub fn receiveMessage(self: *WorkerGlobalScope, data: JS.Value, message_id: u64) !void {
     if (self._closed) {
         return;
     }
@@ -331,7 +339,17 @@ pub fn receiveMessage(self: *WorkerGlobalScope, data: JS.Value) !void {
         .data = cloned_data,
         .worker_scope = self,
         .arena = message_arena,
+        .message_id = message_id,
     };
+
+    const queue_len = self._debug_schedulerQueueLen(self.js.scheduler);
+    if (comptime IS_DEBUG) {
+        log.info(.browser, "worker enqueue inbound message", .{
+            .worker_id = self._frame_id,
+            .message_id = message_id,
+            .queue_len = queue_len,
+        });
+    }
 
     try self.js.scheduler.add(callback, ReceiveMessageCallback.run, 0, .{
         .name = "WorkerGlobalScope.receiveMessage",
@@ -383,6 +401,17 @@ pub fn close(self: *WorkerGlobalScope) void {
     // TOOD: we should also stop new tasks from being scheduled
     self.js.scheduler.reset();
     self._closed = true;
+}
+
+fn _debug_nextMessageId(self: *WorkerGlobalScope) u64 {
+    const id = self._debug_next_message_id;
+    self._debug_next_message_id += 1;
+    return id;
+}
+
+fn _debug_schedulerQueueLen(_: *WorkerGlobalScope, scheduler: anytype) usize {
+    _ = scheduler;
+    return 0;
 }
 
 pub fn importScripts(self: *WorkerGlobalScope, urls: []const [:0]const u8) !void {
@@ -544,6 +573,7 @@ const ReceiveMessageCallback = struct {
     data: ?JS.Value.Temp,
     arena: Allocator,
     worker_scope: *WorkerGlobalScope,
+    message_id: u64,
 
     fn cancelled(ctx: *anyopaque) void {
         const self: *ReceiveMessageCallback = @ptrCast(@alignCast(ctx));
@@ -561,6 +591,14 @@ const ReceiveMessageCallback = struct {
 
         const worker_scope = self.worker_scope;
         const target = worker_scope.asEventTarget();
+
+        if (comptime IS_DEBUG) {
+            log.info(.browser, "worker dispatch inbound message", .{
+                .worker_id = worker_scope._frame_id,
+                .message_id = self.message_id,
+                .queue_len = worker_scope._debug_schedulerQueueLen(worker_scope.js.scheduler),
+            });
+        }
 
         // If data is null, structured clone failed - fire messageerror
         if (self.data == null) {

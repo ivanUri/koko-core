@@ -14,14 +14,14 @@
 
 const std = @import("std");
 
-const FingerprintProfile = @import("../fingerprint/Profile.zig");
 const Config = @import("../../runtime/Config.zig");
 const js = @import("../js/js.zig");
+const NavigatorState = @import("NavigatorState.zig");
 
 const NavigatorUAData = @This();
 
-fn identityProfile() *const FingerprintProfile.IdentityProfile {
-    return FingerprintProfile.defaultIdentity();
+fn state() NavigatorState {
+    return NavigatorState.default();
 }
 
 _pad: bool = false,
@@ -40,7 +40,7 @@ pub fn getMobile(_: *const NavigatorUAData) bool {
 }
 
 pub fn getPlatform(_: *const NavigatorUAData) []const u8 {
-    return identityProfile().ua_data_platform;
+    return state().profile.ua_data_platform;
 }
 
 pub fn toJSON(_: *const NavigatorUAData) struct {
@@ -51,7 +51,7 @@ pub fn toJSON(_: *const NavigatorUAData) struct {
     return .{
         .mobile = false,
         .brands = brandList(),
-        .platform = identityProfile().ua_data_platform,
+        .platform = state().profile.ua_data_platform,
     };
 }
 
@@ -69,9 +69,9 @@ pub fn getHighEntropyValues(_: *const NavigatorUAData, hints: []const []const u8
     return exec.context.local.?.resolvePromise(.{
         .brands = brandList(),
         .mobile = false,
-        .platform = identityProfile().ua_data_platform,
-        .architecture = identityProfile().ua_architecture,
-        .bitness = identityProfile().ua_bitness,
+        .platform = state().profile.ua_data_platform,
+        .architecture = state().profile.ua_architecture,
+        .bitness = state().profile.ua_bitness,
         .model = "",
         .platformVersion = "",
         .uaFullVersion = "1.0.0.0",

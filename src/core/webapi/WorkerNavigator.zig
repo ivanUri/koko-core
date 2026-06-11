@@ -13,11 +13,9 @@
 
 const std = @import("std");
 
-const FingerprintProfile = @import("../fingerprint/Profile.zig");
 const js = @import("../js/js.zig");
-
+const NavigatorState = @import("NavigatorState.zig");
 const NavigatorUAData = @import("NavigatorUAData.zig");
-const PluginArray = @import("PluginArray.zig");
 const Page = @import("../browser/Page.zig");
 const navigator_extras = @import("navigator_extras.zig");
 
@@ -35,63 +33,81 @@ const navigator_extras = @import("navigator_extras.zig");
 const WorkerNavigator = @This();
 
 _pad: bool = false,
-_plugins: PluginArray = .{},
-_mime_types: PluginArray.MimeTypeArray = .{},
+_ua_data: NavigatorUAData = .{},
 _gpu: navigator_extras.GPU = .{},
 
 pub const init: WorkerNavigator = .{};
 
-fn identityProfile() *const FingerprintProfile.IdentityProfile {
-    return FingerprintProfile.defaultIdentity();
+fn state() NavigatorState {
+    return NavigatorState.default();
 }
 
 pub fn getUserAgent(_: *const WorkerNavigator, page: *Page) []const u8 {
-    // The Page is reachable from any execution context (frame OR worker)
-    // via Context.page, and it is the source of truth for the HTTP client
-    // (and thus the UA). Using *Page here means the same code path works
-    // whether `navigator.userAgent` is read from window or worker.
-    return page.session.browser.http_client.getUserAgent();
+    return state().userAgent(&page.session.browser.http_client);
 }
 
 pub fn getLanguages(_: *const WorkerNavigator) [2][]const u8 {
-    const profile = identityProfile();
-    return .{ profile.languages[0], profile.languages[1] };
+    return state().languages();
+}
+
+pub fn getLanguage(_: *const WorkerNavigator) []const u8 {
+    return state().language();
 }
 
 pub fn getPlatform(_: *const WorkerNavigator) []const u8 {
-    return identityProfile().navigator_platform;
+    return state().platform();
 }
 
-pub fn getUserAgentData(_: *const WorkerNavigator) NavigatorUAData {
-    return .{};
+pub fn getAppName(_: *const WorkerNavigator) []const u8 {
+    return state().appName();
+}
+
+pub fn getAppCodeName(_: *const WorkerNavigator) []const u8 {
+    return state().appCodeName();
+}
+
+pub fn getAppVersion(_: *const WorkerNavigator) []const u8 {
+    return state().appVersion();
 }
 
 pub fn getHardwareConcurrency(_: *const WorkerNavigator) u32 {
-    return identityProfile().hardware_concurrency;
+    return state().hardwareConcurrency();
+}
+
+pub fn getUserAgentData(self: *WorkerNavigator) *NavigatorUAData {
+    return &self._ua_data;
+}
+
+pub fn getOnLine(_: *const WorkerNavigator) bool {
+    return state().onLine();
+}
+
+pub fn getProduct(_: *const WorkerNavigator) []const u8 {
+    return state().product();
+}
+
+pub fn getWebdriver(_: *const WorkerNavigator) bool {
+    return state().webdriver();
+}
+
+pub fn getDoNotTrack(_: *const WorkerNavigator) ?[]const u8 {
+    return state().doNotTrack();
 }
 
 pub fn getDeviceMemory(_: *const WorkerNavigator) f64 {
-    return identityProfile().device_memory;
+    return state().deviceMemory();
 }
 
 pub fn getMaxTouchPoints(_: *const WorkerNavigator) u32 {
-    return identityProfile().max_touch_points;
+    return state().maxTouchPoints();
 }
 
 pub fn getVendor(_: *const WorkerNavigator) []const u8 {
-    return identityProfile().vendor;
+    return state().vendor();
 }
 
 pub fn getGlobalPrivacyControl(_: *const WorkerNavigator) bool {
-    return identityProfile().global_privacy_control;
-}
-
-pub fn getPlugins(self: *WorkerNavigator) *PluginArray {
-    return &self._plugins;
-}
-
-pub fn getMimeTypes(self: *WorkerNavigator) *PluginArray.MimeTypeArray {
-    return &self._mime_types;
+    return state().globalPrivacyControl();
 }
 
 pub fn getGpu(self: *WorkerNavigator) *navigator_extras.GPU {
@@ -105,26 +121,23 @@ pub const JsApi = struct {
         pub const name = "WorkerNavigator";
         pub const prototype_chain = bridge.prototypeChain();
         pub var class_id: bridge.ClassId = undefined;
-        pub const empty_with_no_proto = true;
     };
 
     pub const userAgent = bridge.accessor(WorkerNavigator.getUserAgent, null, .{});
-    pub const appName = bridge.attribute("Netscape", .{});
-    pub const appCodeName = bridge.attribute("Netscape", .{});
-    pub const appVersion = bridge.attribute("1.0", .{});
+    pub const appName = bridge.accessor(WorkerNavigator.getAppName, null, .{});
+    pub const appCodeName = bridge.accessor(WorkerNavigator.getAppCodeName, null, .{});
+    pub const appVersion = bridge.accessor(WorkerNavigator.getAppVersion, null, .{});
     pub const platform = bridge.accessor(WorkerNavigator.getPlatform, null, .{});
-    pub const language = bridge.attribute("en-US", .{});
+    pub const language = bridge.accessor(WorkerNavigator.getLanguage, null, .{});
     pub const languages = bridge.accessor(WorkerNavigator.getLanguages, null, .{});
-    pub const onLine = bridge.attribute(true, .{});
+    pub const onLine = bridge.accessor(WorkerNavigator.getOnLine, null, .{});
     pub const hardwareConcurrency = bridge.accessor(WorkerNavigator.getHardwareConcurrency, null, .{});
     pub const deviceMemory = bridge.accessor(WorkerNavigator.getDeviceMemory, null, .{});
     pub const maxTouchPoints = bridge.accessor(WorkerNavigator.getMaxTouchPoints, null, .{});
     pub const vendor = bridge.accessor(WorkerNavigator.getVendor, null, .{});
-    pub const product = bridge.attribute("Gecko", .{});
-    pub const webdriver = bridge.attribute(false, .{});
-    pub const plugins = bridge.accessor(WorkerNavigator.getPlugins, null, .{});
-    pub const mimeTypes = bridge.accessor(WorkerNavigator.getMimeTypes, null, .{});
-    pub const doNotTrack = bridge.attribute(null, .{});
+    pub const product = bridge.accessor(WorkerNavigator.getProduct, null, .{});
+    pub const webdriver = bridge.accessor(WorkerNavigator.getWebdriver, null, .{});
+    pub const doNotTrack = bridge.accessor(WorkerNavigator.getDoNotTrack, null, .{});
     pub const globalPrivacyControl = bridge.accessor(WorkerNavigator.getGlobalPrivacyControl, null, .{});
     pub const userAgentData = bridge.accessor(WorkerNavigator.getUserAgentData, null, .{});
     pub const gpu = bridge.accessor(WorkerNavigator.getGpu, null, .{});

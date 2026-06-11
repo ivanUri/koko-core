@@ -199,11 +199,14 @@ pub fn traceMicrotaskRunawayDetected(frame_id: u32, epoch: Epoch, state: State, 
 }
 
 /// Emitted when a nested checkpoint request is deferred until the active pass ends.
-pub fn traceMicrotaskCheckpointReentryDeferred(frame_id: u32, epoch: Epoch, state: State) void {
+pub fn traceMicrotaskCheckpointReentryDeferred(frame_id: u32, epoch: Epoch, state: State, queue_size: usize, checkpoint_active: bool, checkpoint_pending: bool) void {
     log.info(.frame, "microtask.checkpoint.reentry_deferred", .{
         .frame_id = frame_id,
         .current_epoch = epoch,
         .realm_state = @tagName(state),
+        .queue_size = queue_size,
+        .checkpoint_active = checkpoint_active,
+        .checkpoint_pending = checkpoint_pending,
     });
 }
 

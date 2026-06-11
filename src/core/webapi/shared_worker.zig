@@ -5,38 +5,39 @@
 
 const js = @import("../js/js.zig");
 const Frame = @import("../browser/Frame.zig");
+
 const EventTarget = @import("EventTarget.zig");
+const MessagePort = @import("MessagePort.zig");
+
+pub const SharedWorker = @This();
 
 pub fn registerTypes() []const type {
     return &.{SharedWorker};
 }
 
-pub const SharedWorker = struct {
-    _proto: *EventTarget,
-    _port: ?*@import("MessagePort.zig") = null,
+_proto: *EventTarget,
+_port: ?*MessagePort = null,
 
-    pub fn constructor(url: []const u8, _: ?[]const u8, frame: *Frame) !*SharedWorker {
-        _ = url;
-        return frame._factory.eventTarget(SharedWorker{
-            ._proto = undefined,
-        });
-    }
+pub fn constructor(_: []const u8, _: ?[]const u8, frame: *Frame) !*SharedWorker {
+    return frame._factory.eventTarget(SharedWorker{
+        ._proto = undefined,
+    });
+}
 
-    pub fn getPort(self: *SharedWorker, frame: *Frame) !*@import("MessagePort.zig") {
-        if (self._port) |p| return p;
-        const p = try @import("MessagePort.zig").init(frame);
-        self._port = p;
-        return p;
-    }
+pub fn getPort(self: *SharedWorker, frame: *Frame) !*MessagePort {
+    if (self._port) |p| return p;
+    const p = try MessagePort.init(frame);
+    self._port = p;
+    return p;
+}
 
-    pub const JsApi = struct {
-        pub const bridge = js.Bridge(SharedWorker);
-        pub const Meta = struct {
-            pub const name = "SharedWorker";
-            pub const prototype_chain = bridge.prototypeChain();
-            pub var class_id: bridge.ClassId = undefined;
-        };
-        pub const constructor = bridge.constructor(SharedWorker.constructor, .{});
-        pub const port = bridge.accessor(SharedWorker.getPort, null, .{});
+pub const JsApi = struct {
+    pub const bridge = js.Bridge(SharedWorker);
+    pub const Meta = struct {
+        pub const name = "SharedWorker";
+        pub const prototype_chain = bridge.prototypeChain();
+        pub var class_id: bridge.ClassId = undefined;
     };
+    pub const constructor = bridge.constructor(SharedWorker.constructor, .{});
+    pub const port = bridge.accessor(SharedWorker.getPort, null, .{});
 };
