@@ -167,7 +167,7 @@ fn dispatchNode(self: *EventManager, target: *Node, event: *Event, comptime opts
     frame.js.localScope(&ls);
     defer {
         if (was_handled) {
-            ls.local.runMicrotasks();
+            ls.local.ctx.env.runMicrotasks(.event_handler);
         }
         ls.deinit();
     }

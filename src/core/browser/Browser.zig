@@ -89,7 +89,7 @@ pub fn closeSession(self: *Browser) void {
 }
 
 pub fn runMicrotasks(self: *Browser) void {
-    self.env.runMicrotasks();
+    self.env.runMicrotasks(.unknown);
 }
 
 pub fn runMacrotasks(self: *Browser) !void {
@@ -99,7 +99,7 @@ pub fn runMacrotasks(self: *Browser) !void {
     env.pumpMessageLoop();
 
     // either of the above could have queued more microtasks
-    env.runMicrotasks();
+    env.runMicrotasks(.macrotask_loop);
 }
 
 pub fn hasBackgroundTasks(self: *Browser) bool {

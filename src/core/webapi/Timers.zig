@@ -220,7 +220,7 @@ const ScheduleCallback = struct {
                 };
             },
         }
-        ls.local.runMicrotasks();
+        ls.local.ctx.env.runMicrotasks(.timer_callback);
 
         if (self.repeat_ms) |ms| {
             return ms;

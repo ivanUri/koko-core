@@ -12,6 +12,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const js = @import("js.zig");
+const Env = @import("Env.zig");
+const builtin = @import("builtin");
 
 const DOMException = @import("../dom/DOMException.zig");
 
@@ -45,14 +47,23 @@ pub fn resolve(self: PromiseResolver, comptime source: []const u8, value: anytyp
 
 fn _resolve(self: PromiseResolver, value: anytype) !void {
     const local = self.local;
+    const env = local.ctx.env;
+
+    if (builtin.mode == .Debug) {
+        log.info(.browser, "promise.resolve", .{
+            .checkpoint_active = env.checkpoint_active,
+            .checkpoint_pending = env.checkpoint_pending,
+        });
+    }
+
     const js_val = try local.zigValueToJs(value, .{});
 
     var out: v8.MaybeBool = undefined;
-    v8.v8__Promise__Resolver__Resolve(self.handle, self.local.handle, js_val.handle, &out);
+    v8.v8__Promise__Resolver__Resolve(self.handle, local.handle, js_val.handle, &out);
     if (!out.has_value or !out.value) {
         return error.FailedToResolvePromise;
     }
-    local.runMicrotasks();
+    env.runMicrotasks(.promise_resolve);
 }
 
 pub fn reject(self: PromiseResolver, comptime source: []const u8, value: anytype) void {
@@ -100,6 +111,15 @@ pub fn rejectError(
 
 fn _reject(self: PromiseResolver, value: anytype) !void {
     const local = self.local;
+    const env = local.ctx.env;
+
+    if (builtin.mode == .Debug) {
+        log.info(.browser, "promise.reject", .{
+            .checkpoint_active = env.checkpoint_active,
+            .checkpoint_pending = env.checkpoint_pending,
+        });
+    }
+
     const js_val = try local.zigValueToJs(value, .{});
 
     var out: v8.MaybeBool = undefined;
@@ -107,7 +127,7 @@ fn _reject(self: PromiseResolver, value: anytype) !void {
     if (!out.has_value or !out.value) {
         return error.FailedToRejectPromise;
     }
-    local.runMicrotasks();
+    env.runMicrotasks(.promise_reject);
 }
 
 pub fn persist(self: PromiseResolver) !Global {

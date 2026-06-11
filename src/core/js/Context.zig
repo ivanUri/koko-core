@@ -996,7 +996,7 @@ fn dynamicModuleSourceCallback(ctx: *anyopaque, module_source_: anyerror!ScriptM
 }
 
 fn resolveDynamicModule(self: *Context, state: *DynamicModuleResolveState, module_entry: ModuleEntry, local: *const js.Local) void {
-    defer local.runMicrotasks();
+    defer local.ctx.env.runMicrotasks(.module_resolution);
 
     // we can only be here if the module has been evaluated and if
     // we have a resolve loading this asynchronously.
@@ -1034,7 +1034,7 @@ fn resolveDynamicModule(self: *Context, state: *DynamicModuleResolveState, modul
                 return;
             }
             const l = c.local;
-            defer l.runMicrotasks();
+            defer l.ctx.env.runMicrotasks(.module_resolution);
             const namespace = l.toLocal(s.module.?).getModuleNamespace();
             _ = l.toLocal(s.resolver).resolve("resolve namespace", namespace);
         }
@@ -1054,7 +1054,7 @@ fn resolveDynamicModule(self: *Context, state: *DynamicModuleResolveState, modul
                 return;
             }
 
-            defer l.runMicrotasks();
+            defer l.ctx.env.runMicrotasks(.module_resolution);
             _ = l.toLocal(s.resolver).reject("catch callback", js.Value{
                 .local = l,
                 .handle = v8.v8__FunctionCallbackInfo__Data(callback_handle).?,

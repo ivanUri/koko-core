@@ -17,6 +17,8 @@ const FingerprintProfile = @import("../../fingerprint/Profile.zig");
 const js = @import("../../js/js.zig");
 const Execution = js.Execution;
 const Canvas = @import("../element/html/Canvas.zig");
+const OffscreenCanvas = @import("OffscreenCanvas.zig");
+const Frame = @import("../../browser/Frame.zig");
 
 pub fn registerTypes() []const type {
     return &.{
@@ -46,6 +48,9 @@ fn identityProfile() *const FingerprintProfile.IdentityProfile {
 /// Reference to the parent canvas element, or null if created from OffscreenCanvas.
 /// https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext/canvas
 _canvas: ?*Canvas = null,
+/// Reference to the parent OffscreenCanvas element, or null if created from HTMLCanvasElement.
+/// https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext/canvas
+_offscreen_canvas: ?*OffscreenCanvas = null,
 
 pub const ARRAY_BUFFER: u64 = 0x8892;
 pub const ELEMENT_ARRAY_BUFFER: u64 = 0x8893;
@@ -268,20 +273,35 @@ pub const Extension = union(enum) {
     };
 };
 
-/// Returns the canvas element that created this context (null if OffscreenCanvas).
+/// Returns the canvas element (or OffscreenCanvas) that created this context.
+/// Returns null if the context was not created from a canvas.
 /// https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext/canvas
-pub fn getCanvas(self: *const WebGLRenderingContext) ?*Canvas {
-    return self._canvas;
+pub fn getCanvas(self: *const WebGLRenderingContext, frame: *Frame) js.Value {
+    if (self._canvas) |canvas| {
+        return frame.js.local.?.zigValueToJs(canvas, .{}) catch {
+            return .{ .local = frame.js.local.?, .handle = frame.js.local.?.isolate.initUndefined() };
+        };
+    }
+    if (self._offscreen_canvas) |offscreen| {
+        return frame.js.local.?.zigValueToJs(offscreen, .{}) catch {
+            return .{ .local = frame.js.local.?, .handle = frame.js.local.?.isolate.initUndefined() };
+        };
+    }
+    return .{ .local = frame.js.local.?, .handle = frame.js.local.?.isolate.initUndefined() };
 }
 
-/// Returns the drawing buffer width (matches the canvas width attribute, default 300).
+/// Returns the drawing buffer width (matches the canvas width attribute, default 300 or OffscreenCanvas width).
 pub fn getDrawingBufferWidth(self: *const WebGLRenderingContext) u32 {
-    return if (self._canvas) |c| c.getWidth() else 300;
+    if (self._canvas) |c| return c.getWidth();
+    if (self._offscreen_canvas) |c| return c.getWidth();
+    return 300;
 }
 
-/// Returns the drawing buffer height (matches the canvas height attribute, default 150).
+/// Returns the drawing buffer height (matches the canvas height attribute, default 150 or OffscreenCanvas height).
 pub fn getDrawingBufferHeight(self: *const WebGLRenderingContext) u32 {
-    return if (self._canvas) |c| c.getHeight() else 150;
+    if (self._canvas) |c| return c.getHeight();
+    if (self._offscreen_canvas) |c| return c.getHeight();
+    return 150;
 }
 
 /// This actually takes "GLenum" which, in fact, is a fancy way to say number.

@@ -78,11 +78,11 @@ pub fn getContext(self: *OffscreenCanvas, context_type: []const u8, exec: *Execu
             break :blk .{ .@"2d" = ctx };
         }
         if (std.mem.eql(u8, context_type, "webgl") or std.mem.eql(u8, context_type, "experimental-webgl")) {
-            const ctx = try exec._factory.create(WebGLRenderingContext{});
+            const ctx = try exec._factory.create(WebGLRenderingContext{ ._offscreen_canvas = self });
             break :blk .{ .webgl = ctx };
         }
         if (std.mem.eql(u8, context_type, "webgl2")) {
-            const ctx = try exec._factory.create(WebGLRenderingContext{});
+            const ctx = try exec._factory.create(WebGLRenderingContext{ ._offscreen_canvas = self });
             break :blk .{ .webgl2 = ctx };
         }
         return null;

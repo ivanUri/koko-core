@@ -34,6 +34,29 @@ const JsApis = bridge.JsApis;
 const Allocator = std.mem.Allocator;
 const IS_DEBUG = builtin.mode == .Debug;
 
+/// Sources from which runMicrotasks can be called.
+/// Used for debugging microtask checkpoint reentry issues.
+pub const TaskSource = enum {
+    /// Called from Browser.runMacrotasks (main scheduler loop)
+    macrotask_loop,
+    /// Called from Local.runAfterEvaluate (post-script)
+    after_evaluate,
+    /// Called from PromiseResolver.resolve
+    promise_resolve,
+    /// Called from PromiseResolver.reject
+    promise_reject,
+    /// Called from EventManager after event handling
+    event_handler,
+    /// Called from Timers.setTimeout/setInterval callback
+    timer_callback,
+    /// Called from Browser.waitForBackgroundTasks
+    background_tasks,
+    /// Called from Context.zig module resolution
+    module_resolution,
+    /// Unknown source (default)
+    unknown,
+};
+
 const MAX_CHECKPOINT_PASSES_PER_SCHEDULER_TICK = 32;
 
 fn initClassIds() void {
@@ -358,7 +381,7 @@ pub fn destroyContext(self: *Env, context: *Context) void {
     context.deinit();
 }
 
-pub fn runMicrotasks(self: *Env) void {
+pub fn runMicrotasks(self: *Env, source: TaskSource) void {
     if (self.checkpoint_active) {
         if (comptime IS_DEBUG) std.debug.assert(self.checkpoint_active);
         self.checkpoint_pending = true;
@@ -374,12 +397,23 @@ pub fn runMicrotasks(self: *Env) void {
                 self.checkpoint_pending,
             );
         }
+        if (builtin.mode == .Debug) {
+            log.warn(.frame, "microtask.reentry", .{
+                .source = @tagName(source),
+            });
+        }
         return;
     }
 
     const v8_isolate = self.isolate.handle;
     if (v8.v8__Isolate__IsExecutionTerminating(v8_isolate)) {
         return;
+    }
+
+    if (builtin.mode == .Debug) {
+        log.info(.frame, "microtask.checkpoint.begin", .{
+            .source = @tagName(source),
+        });
     }
 
     var checkpoint_passes: usize = 0;
@@ -440,6 +474,13 @@ pub fn runMicrotasks(self: *Env) void {
             checkpoint_passes += 1;
             RealmLifecycleKernel.traceMicrotaskCheckpoint(true, frame_id, epoch, st);
             v8.v8__MicrotaskQueue__PerformCheckpoint(ctx.microtask_queue, v8_isolate);
+            if (builtin.mode == .Debug) {
+                log.info(.frame, "microtask.checkpoint.done", .{
+                    .frame_id = frame_id,
+                    .checkpoint_passes = checkpoint_passes,
+                    .pending_after = self.checkpoint_pending,
+                });
+            }
             RealmLifecycleKernel.traceMicrotaskCheckpoint(false, frame_id, epoch, st);
         }
         if (!self.checkpoint_pending) break;
@@ -502,7 +543,7 @@ pub fn waitForBackgroundTasks(self: *Env) void {
     const platform = self.platform.handle;
     while (v8.v8__Isolate__HasPendingBackgroundTasks(isolate)) {
         _ = v8.v8__Platform__PumpMessageLoop(platform, isolate, true);
-        self.runMicrotasks();
+        self.runMicrotasks(.background_tasks);
     }
 }
 

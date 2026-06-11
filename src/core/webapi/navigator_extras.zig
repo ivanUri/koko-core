@@ -6,6 +6,8 @@
 const js = @import("../js/js.zig");
 const Frame = @import("../browser/Frame.zig");
 const Execution = js.Execution;
+const builtin = @import("builtin");
+const log = @import("../../support/log.zig");
 
 pub fn registerTypes() []const type {
     return &.{
@@ -23,6 +25,8 @@ pub fn registerTypes() []const type {
         WakeLock,
         ContactsManager,
         ServiceWorkerContainer,
+        ServiceWorker,
+        ServiceWorkerRegistration,
     };
 }
 
@@ -337,6 +341,18 @@ pub const ContactsManager = struct {
 pub const ServiceWorkerContainer = struct {
     _pad: bool = false,
 
+    pub fn getController(self: *const ServiceWorkerContainer, frame: *Frame) !js.Promise {
+        _ = self;
+        const local = frame.js.local orelse return error.NotHandled;
+        return local.resolvePromise(js.Undefined{});
+    }
+
+    pub fn getReady(self: *const ServiceWorkerContainer, frame: *Frame) !js.Promise {
+        _ = self;
+        const local = frame.js.local orelse return error.NotHandled;
+        return local.resolvePromise(js.Undefined{});
+    }
+
     pub fn getRegistration(self: *const ServiceWorkerContainer, frame: *Frame) !js.Promise {
         _ = self;
         const local = frame.js.local orelse return error.NotHandled;
@@ -349,10 +365,11 @@ pub const ServiceWorkerContainer = struct {
         return local.resolvePromise(local.newArray(0));
     }
 
-    pub fn register(self: *const ServiceWorkerContainer, _: []const u8, frame: *Frame) !js.Promise {
+    pub fn register(self: *const ServiceWorkerContainer, script_url: []const u8, frame: *Frame) !js.Promise {
         _ = self;
+        _ = script_url;
         const local = frame.js.local orelse return error.NotHandled;
-        return local.rejectPromise(.{ .dom_exception = .{ .err = error.NotSupported } });
+        return local.resolvePromise(js.Undefined{});
     }
 
     pub const JsApi = struct {
@@ -363,8 +380,76 @@ pub const ServiceWorkerContainer = struct {
             pub var class_id: bridge.ClassId = undefined;
             pub const empty_with_no_proto = true;
         };
+        pub const controller = bridge.function(ServiceWorkerContainer.getController, .{});
+        pub const ready = bridge.accessor(ServiceWorkerContainer.getReady, null, .{});
         pub const getRegistration = bridge.function(ServiceWorkerContainer.getRegistration, .{});
         pub const getRegistrations = bridge.function(ServiceWorkerContainer.getRegistrations, .{});
-        pub const register = bridge.function(ServiceWorkerContainer.register, .{ .dom_exception = true });
+        pub const register = bridge.function(ServiceWorkerContainer.register, .{});
+    };
+};
+
+pub const ServiceWorker = struct {
+    _script_url: []const u8,
+    _state: []const u8 = "activated",
+
+    pub fn getScriptURL(self: *const ServiceWorker) []const u8 {
+        return self._script_url;
+    }
+
+    pub fn getState(self: *const ServiceWorker) []const u8 {
+        return self._state;
+    }
+
+    pub fn postMessage(self: *ServiceWorker, message: js.Value, _: *Frame) void {
+        if (builtin.mode == .Debug) {
+            log.err(.browser, "SERVICE_WORKER_POST_MESSAGE", .{});
+        }
+        _ = self;
+        _ = message;
+    }
+
+    pub const JsApi = struct {
+        pub const bridge = js.Bridge(ServiceWorker);
+        pub const Meta = struct {
+            pub const name = "ServiceWorker";
+            pub const prototype_chain = bridge.prototypeChain();
+            pub var class_id: bridge.ClassId = undefined;
+        };
+
+        pub const scriptURL = bridge.accessor(ServiceWorker.getScriptURL, null, .{});
+        pub const state = bridge.accessor(ServiceWorker.getState, null, .{});
+        pub const postMessage = bridge.function(ServiceWorker.postMessage, .{});
+    };
+};
+
+pub const ServiceWorkerRegistration = struct {
+    _scope: []const u8,
+    _update_via_cache: []const u8 = "imports",
+
+    pub fn getScope(self: *const ServiceWorkerRegistration, _: *Frame) []const u8 {
+        return self._scope;
+    }
+
+    pub fn getUpdateViaCache(self: *const ServiceWorkerRegistration, _: *Frame) []const u8 {
+        return self._update_via_cache;
+    }
+
+    pub fn unregister(self: *const ServiceWorkerRegistration, frame: *Frame) !js.Promise {
+        const local = frame.js.local orelse return error.NotHandled;
+        _ = self;
+        return local.resolvePromise(true);
+    }
+
+    pub const JsApi = struct {
+        pub const bridge = js.Bridge(ServiceWorkerRegistration);
+        pub const Meta = struct {
+            pub const name = "ServiceWorkerRegistration";
+            pub const prototype_chain = bridge.prototypeChain();
+            pub var class_id: bridge.ClassId = undefined;
+        };
+
+        pub const scope = bridge.accessor(ServiceWorkerRegistration.getScope, null, .{});
+        pub const updateViaCache = bridge.accessor(ServiceWorkerRegistration.getUpdateViaCache, null, .{});
+        pub const unregister = bridge.function(ServiceWorkerRegistration.unregister, .{});
     };
 };

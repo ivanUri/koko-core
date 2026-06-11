@@ -868,7 +868,7 @@ pub const BrowserContext = struct {
 
     pub fn callInspector(self: *const BrowserContext, msg: []const u8) void {
         self.inspector_session.send(msg);
-        self.session.browser.env.runMicrotasks();
+        self.session.browser.env.runMicrotasks(.unknown);
     }
 
     pub fn onInspectorResponse(ctx: *anyopaque, _: u32, msg: []const u8) void {

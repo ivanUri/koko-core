@@ -229,7 +229,7 @@ pub fn dispatchDirect(
     var ls: js.Local.Scope = undefined;
     ctx.localScope(&ls);
     defer {
-        ls.local.runMicrotasks();
+        ls.local.ctx.env.runMicrotasks(.event_handler);
         ls.deinit();
     }
 
