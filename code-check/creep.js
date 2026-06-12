@@ -44,8 +44,8 @@
             const strictMode = () => {
                 try {
                     window.OfflineAudioContext = (
-                    // @ts-ignore
-                    OfflineAudioContext || webkitOfflineAudioContext);
+                        // @ts-ignore
+                        OfflineAudioContext || webkitOfflineAudioContext);
                 }
                 catch (err) { }
                 if (!window.OfflineAudioContext) {
@@ -136,36 +136,36 @@
     // system
     const getOS = (userAgent) => {
         const os = (
-        // order is important
-        /windows phone/ig.test(userAgent) ? 'Windows Phone' :
-            /win(dows|16|32|64|95|98|nt)|wow64/ig.test(userAgent) ? 'Windows' :
-                /android/ig.test(userAgent) ? 'Android' :
-                    /cros/ig.test(userAgent) ? 'Chrome OS' :
-                        /linux/ig.test(userAgent) ? 'Linux' :
-                            /ipad/ig.test(userAgent) ? 'iPad' :
-                                /iphone/ig.test(userAgent) ? 'iPhone' :
-                                    /ipod/ig.test(userAgent) ? 'iPod' :
-                                        /ios/ig.test(userAgent) ? 'iOS' :
-                                            /mac/ig.test(userAgent) ? 'Mac' :
-                                                'Other');
+            // order is important
+            /windows phone/ig.test(userAgent) ? 'Windows Phone' :
+                /win(dows|16|32|64|95|98|nt)|wow64/ig.test(userAgent) ? 'Windows' :
+                    /android/ig.test(userAgent) ? 'Android' :
+                        /cros/ig.test(userAgent) ? 'Chrome OS' :
+                            /linux/ig.test(userAgent) ? 'Linux' :
+                                /ipad/ig.test(userAgent) ? 'iPad' :
+                                    /iphone/ig.test(userAgent) ? 'iPhone' :
+                                        /ipod/ig.test(userAgent) ? 'iPod' :
+                                            /ios/ig.test(userAgent) ? 'iOS' :
+                                                /mac/ig.test(userAgent) ? 'Mac' :
+                                                    'Other');
         return os;
     };
     function getReportedPlatform(userAgent, platform) {
         // user agent os lie
         const userAgentOS = (
-        // order is important
-        /win(dows|16|32|64|95|98|nt)|wow64/ig.test(userAgent) ? "Windows" /* PlatformClassifier.WINDOWS */ :
-            /android|linux|cros/ig.test(userAgent) ? "Linux" /* PlatformClassifier.LINUX */ :
-                /(i(os|p(ad|hone|od)))|mac/ig.test(userAgent) ? "Apple" /* PlatformClassifier.APPLE */ :
-                    "Other" /* PlatformClassifier.OTHER */);
+            // order is important
+            /win(dows|16|32|64|95|98|nt)|wow64/ig.test(userAgent) ? "Windows" /* PlatformClassifier.WINDOWS */ :
+                /android|linux|cros/ig.test(userAgent) ? "Linux" /* PlatformClassifier.LINUX */ :
+                    /(i(os|p(ad|hone|od)))|mac/ig.test(userAgent) ? "Apple" /* PlatformClassifier.APPLE */ :
+                        "Other" /* PlatformClassifier.OTHER */);
         if (!platform)
             return [userAgentOS];
         const platformOS = (
-        // order is important
-        /win/ig.test(platform) ? "Windows" /* PlatformClassifier.WINDOWS */ :
-            /android|arm|linux/ig.test(platform) ? "Linux" /* PlatformClassifier.LINUX */ :
-                /(i(os|p(ad|hone|od)))|mac/ig.test(platform) ? "Apple" /* PlatformClassifier.APPLE */ :
-                    "Other" /* PlatformClassifier.OTHER */);
+            // order is important
+            /win/ig.test(platform) ? "Windows" /* PlatformClassifier.WINDOWS */ :
+                /android|arm|linux/ig.test(platform) ? "Linux" /* PlatformClassifier.LINUX */ :
+                    /(i(os|p(ad|hone|od)))|mac/ig.test(platform) ? "Apple" /* PlatformClassifier.APPLE */ :
+                        "Other" /* PlatformClassifier.OTHER */);
         return [userAgentOS, platformOS];
     }
     const { userAgent: navUserAgent, platform: navPlatform } = self.navigator || {};
@@ -258,17 +258,17 @@
                     .filter((x) => !(windowsNoise.test(x)))
                     .join(' ')
                     .replace(/\sNT (\d+\.\d+)/, (match, version) => {
-                    return (version == '10.0' ? ' 10' :
-                        version == '6.3' ? ' 8.1' :
-                            version == '6.2' ? ' 8' :
-                                version == '6.1' ? ' 7' :
-                                    version == '6.0' ? ' Vista' :
-                                        version == '5.2' ? ' XP Pro' :
-                                            version == '5.1' ? ' XP' :
-                                                version == '5.0' ? ' 2000' :
-                                                    version == '4.0' ? match :
-                                                        ' ' + version);
-                })
+                        return (version == '10.0' ? ' 10' :
+                            version == '6.3' ? ' 8.1' :
+                                version == '6.2' ? ' 8' :
+                                    version == '6.1' ? ' 7' :
+                                        version == '6.0' ? ' Vista' :
+                                            version == '5.2' ? ' XP Pro' :
+                                                version == '5.1' ? ' XP' :
+                                                    version == '5.0' ? ' 2000' :
+                                                        version == '4.0' ? match :
+                                                            ' ' + version);
+                    })
                     .replace(windows64bitCPU, '(64-bit)')
                     .trim().replace(/\s{2,}/, ' ');
             }
@@ -288,32 +288,32 @@
             else if (isDevice(identifiers, apple)) {
                 return identifiers
                     .map((x) => {
-                    if (appleRelease.test(x)) {
-                        // @ts-ignore
-                        const release = appleRelease.exec(x)[0];
-                        const versionMap = {
-                            '10_7': 'Lion',
-                            '10_8': 'Mountain Lion',
-                            '10_9': 'Mavericks',
-                            '10_10': 'Yosemite',
-                            '10_11': 'El Capitan',
-                            '10_12': 'Sierra',
-                            '10_13': 'High Sierra',
-                            '10_14': 'Mojave',
-                            '10_15': 'Catalina',
-                            '11': 'Big Sur',
-                            '12': 'Monterey',
-                            '13': 'Ventura',
-                        };
-                        const version = ((/(\d{2}(_|\.)\d{1,2}|\d{2,})/.exec(release) || [])[0] ||
-                            '').replace(/\./g, '_');
-                        const isOSX = /^10/.test(version);
-                        const id = isOSX ? version : (/^\d{2,}/.exec(version) || [])[0];
-                        const codeName = versionMap[id];
-                        return codeName ? `macOS ${codeName}` : release;
-                    }
-                    return x;
-                })
+                        if (appleRelease.test(x)) {
+                            // @ts-ignore
+                            const release = appleRelease.exec(x)[0];
+                            const versionMap = {
+                                '10_7': 'Lion',
+                                '10_8': 'Mountain Lion',
+                                '10_9': 'Mavericks',
+                                '10_10': 'Yosemite',
+                                '10_11': 'El Capitan',
+                                '10_12': 'Sierra',
+                                '10_13': 'High Sierra',
+                                '10_14': 'Mojave',
+                                '10_15': 'Catalina',
+                                '11': 'Big Sur',
+                                '12': 'Monterey',
+                                '13': 'Ventura',
+                            };
+                            const version = ((/(\d{2}(_|\.)\d{1,2}|\d{2,})/.exec(release) || [])[0] ||
+                                '').replace(/\./g, '_');
+                            const isOSX = /^10/.test(version);
+                            const id = isOSX ? version : (/^\d{2,}/.exec(version) || [])[0];
+                            const codeName = versionMap[id];
+                            return codeName ? `macOS ${codeName}` : release;
+                        }
+                        return x;
+                    })
                     .filter((x) => !(appleNoise.test(x)))
                     .join(' ')
                     .replace(/\slike mac.+/ig, '')
@@ -954,9 +954,9 @@
                 }
                 const interfaceObject = !!obj.prototype ? obj.prototype : obj;
                 [...new Set([
-                        ...Object.getOwnPropertyNames(interfaceObject),
-                        ...Object.keys(interfaceObject), // backup
-                    ])].sort().forEach((name) => {
+                    ...Object.getOwnPropertyNames(interfaceObject),
+                    ...Object.keys(interfaceObject), // backup
+                ])].sort().forEach((name) => {
                     const skip = (name == 'constructor' ||
                         (target && !new Set(target).has(name)) ||
                         (ignore && new Set(ignore).has(name)));
@@ -964,8 +964,8 @@
                         return;
                     const objectNameString = /\s(.+)\]/;
                     const apiName = `${obj.name ? obj.name :
-                    objectNameString.test(obj) ? objectNameString.exec(obj)?.[1] :
-                        undefined}.${name}`;
+                        objectNameString.test(obj) ? objectNameString.exec(obj)?.[1] :
+                            undefined}.${name}`;
                     propsSearched.push(apiName);
                     try {
                         const proto = obj.prototype ? obj.prototype : obj;
@@ -1387,9 +1387,9 @@
     }
     // start program
     const start = performance.now();
-    const { lieDetector, lieList, lieDetail, 
-    // lieCount,
-    propsSearched, } = getPrototypeLies(PHANTOM_DARKNESS); // execute and destructure the list and detail
+    const { lieDetector, lieList, lieDetail,
+        // lieCount,
+        propsSearched, } = getPrototypeLies(PHANTOM_DARKNESS); // execute and destructure the list and detail
     // disregard Function.prototype.toString lies when determining if the API can be trusted
     const getNonFunctionToStringLies = (x) => !x ? x : x.filter((x) => !/object toString|toString incompatible proxy/.test(x)).length;
     let lieProps;
@@ -1551,8 +1551,8 @@
             .replace(/\s{2,}/g, ' ')
             .trim()
             .replace(/((r|g)(t|)(x|s|\d) |Graphics |GeForce |Radeon (HD |Pro |))(\d+)/i, (...args) => {
-            return `${args[1]}${args[6][0]}${args[6].slice(1).replace(/\d/g, '0')}s`;
-        });
+                return `${args[1]}${args[6][0]}${args[6].slice(1).replace(/\d/g, '0')}s`;
+            });
     }
     const getWebGLRendererParts = (x) => {
         const knownParts = [
@@ -1816,7 +1816,7 @@
             const date = new Date().getDate();
             const month = new Date().getMonth();
             // @ts-ignore
-            const year = Date().split ` `[3]; // current year
+            const year = Date().split` `[3]; // current year
             const format = (n) => ('' + n).length == 1 ? `0${n}` : n;
             const dateString = `${month + 1}/${format(date)}/${year}`;
             const dateStringUTC = `${year}-${format(month + 1)}-${format(date)}`;
@@ -1863,17 +1863,17 @@
             const timezoneLocation = Intl.DateTimeFormat().resolvedOptions().timeZone;
             const locale = getLocale();
             // navigator
-            const { hardwareConcurrency, language, languages, platform, userAgent, 
-            // @ts-expect-error
-            deviceMemory, } = navigator || {};
+            const { hardwareConcurrency, language, languages, platform, userAgent,
+                // @ts-expect-error
+                deviceMemory, } = navigator || {};
             // prototype lies
             await queueEvent(timer);
-            const { 
-            // lieDetector: lieProps,
-            lieList, lieDetail,
-            // lieCount,
-            // propsSearched,
-             } = getWorkerPrototypeLies(self); // execute and destructure the list and detail
+            const {
+                // lieDetector: lieProps,
+                lieList, lieDetail,
+                // lieCount,
+                // propsSearched,
+            } = getWorkerPrototypeLies(self); // execute and destructure the list and detail
             // const prototypeLies = JSON.parse(JSON.stringify(lieDetail))
             const protoLieLen = lieList.length;
             // match engine locale to system locale to determine if locale entropy is trusty
@@ -2171,9 +2171,9 @@
 		</div>`;
         }
         const { workerScope: data } = fp;
-        const { lied, locale, systemCurrencyLocale, engineCurrencyLocale, localeEntropyIsTrusty, localeIntlEntropyIsTrusty, timezoneOffset, timezoneLocation, deviceMemory, hardwareConcurrency, language, 
-        // languages,
-        platform, userAgent, uaPostReduction, webglRenderer, webglVendor, gpu, userAgentData, system, device, $hash, } = data || {};
+        const { lied, locale, systemCurrencyLocale, engineCurrencyLocale, localeEntropyIsTrusty, localeIntlEntropyIsTrusty, timezoneOffset, timezoneLocation, deviceMemory, hardwareConcurrency, language,
+            // languages,
+            platform, userAgent, uaPostReduction, webglRenderer, webglVendor, gpu, userAgentData, system, device, $hash, } = data || {};
         const { parts, warnings, gibbers, confidence, grade: confidenceGrade, compressedGPU, } = gpu || {};
         return `
 	<span class="time">${performanceLogger.getLog()[`${WORKER_TYPE} worker`]}</span>
@@ -2185,9 +2185,9 @@
 		<div class="help">lang/timezone:</div>
 		<div class="block-text help" title="WorkerNavigator.language\nWorkerNavigator.languages\nIntl.Collator.resolvedOptions()\nIntl.DateTimeFormat.resolvedOptions()\nIntl.DisplayNames.resolvedOptions()\nIntl.ListFormat.resolvedOptions()\nIntl.NumberFormat.resolvedOptions()\nIntl.PluralRules.resolvedOptions()\nIntl.RelativeTimeFormat.resolvedOptions()\nNumber.toLocaleString()\nIntl.DateTimeFormat().resolvedOptions().timeZone\nDate.getDate()\nDate.getMonth()\nDate.parse()">
 			${localeEntropyIsTrusty ? `${language} (${systemCurrencyLocale})` :
-        `${language} (<span class="bold-fail">${engineCurrencyLocale}</span>)`}
+                `${language} (<span class="bold-fail">${engineCurrencyLocale}</span>)`}
 			${locale === language ? '' : localeIntlEntropyIsTrusty ? ` ${locale}` :
-        ` <span class="bold-fail">${locale}</span>`}
+                ` <span class="bold-fail">${locale}</span>`}
 			<br>${timezoneLocation} (${'' + timezoneOffset})
 		</div>
 
@@ -2210,24 +2210,24 @@
 			${`${system}${platform ? ` (${platform})` : ''}`}
 			${device ? `<br>${device}` : HTMLNote.BLOCKED}
 			${hardwareConcurrency && deviceMemory ? `<br>cores: ${hardwareConcurrency}, ram: ${deviceMemory}` :
-        hardwareConcurrency && !deviceMemory ? `<br>cores: ${hardwareConcurrency}` :
-            !hardwareConcurrency && deviceMemory ? `<br>ram: ${deviceMemory}` : ''}
+                hardwareConcurrency && !deviceMemory ? `<br>cores: ${hardwareConcurrency}` :
+                    !hardwareConcurrency && deviceMemory ? `<br>ram: ${deviceMemory}` : ''}
 		</div>
 
 		<div>userAgentData:</div>
 		<div class="block-text help" title="WorkerNavigator.userAgentData\nNavigatorUAData.getHighEntropyValues()">
 			<div>
 			${((userAgentData) => {
-        const { architecture, bitness, brandsVersion, uaFullVersion, mobile, model, platformVersion, platform, } = userAgentData || {};
-        // @ts-ignore
-        const windowsRelease = computeWindowsRelease({ platform, platformVersion });
-        return !userAgentData ? HTMLNote.UNSUPPORTED : `
+                const { architecture, bitness, brandsVersion, uaFullVersion, mobile, model, platformVersion, platform, } = userAgentData || {};
+                // @ts-ignore
+                const windowsRelease = computeWindowsRelease({ platform, platformVersion });
+                return !userAgentData ? HTMLNote.UNSUPPORTED : `
 					${(brandsVersion || []).join(',')}${uaFullVersion ? ` (${uaFullVersion})` : ''}
 					<br>${windowsRelease || `${platform} ${platformVersion}`} ${architecture ? `${architecture}${bitness ? `_${bitness}` : ''}` : ''}
 					${model ? `<br>${model}` : ''}
 					${mobile ? '<br>mobile' : ''}
 				`;
-    })(userAgentData)}
+            })(userAgentData)}
 			</div>
 		</div>
 
@@ -2517,18 +2517,27 @@
     };
     const AUDIO_TRAP = Math.random();
     async function hasFakeAudio() {
+        console.log('[HUYLOG] Start hasFakeAudio');
         const context = new OfflineAudioContext(1, 100, 44100);
+
         const oscillator = context.createOscillator();
         oscillator.frequency.value = 0;
         oscillator.start(0);
         context.startRendering();
+        console.log('[HUYLOG] After startRendering');
         return new Promise((resolve) => {
             context.oncomplete = (event) => {
-                const channelData = event.renderedBuffer.getChannelData?.(0);
+                console.log('[HUYLOG] oncomplete callback fired');
+                console.log('[HUYLOG] event type:', event?.constructor?.name);
+                console.log('[HUYLOG] event.renderedBuffer:', event?.renderedBuffer);
+                console.log('[HUYLOG] event instanceof OfflineAudioCompletionEvent:', event instanceof OfflineAudioCompletionEvent);
+                const channelData = event?.renderedBuffer?.getChannelData?.(0);
+                console.log('[HUYLOG] channelData:', channelData);
                 if (!channelData)
                     resolve(false);
                 resolve('' + [...new Set(channelData)] !== '0');
             };
+            console.log('[HUYLOG] oncomplete handler set');
         }).finally(() => oscillator.disconnect());
     }
     async function getOfflineAudioContext() {
@@ -2597,46 +2606,79 @@
                 ['OscillatorNode.frequency.minValue']: attempt(() => oscillator.frequency.minValue),
             };
             const getRenderedBuffer = (context) => (new Promise((resolve) => {
+
+                console.log('[HUYLOG] A create nodes');
+
                 const analyser = context.createAnalyser();
+                console.log('[HUYLOG] B analyser ok');
+
                 const oscillator = context.createOscillator();
+                console.log('[HUYLOG] C oscillator ok');
+
                 const dynamicsCompressor = context.createDynamicsCompressor();
-                try {
-                    oscillator.type = 'triangle';
-                    oscillator.frequency.value = 10000;
-                    dynamicsCompressor.threshold.value = -50;
-                    dynamicsCompressor.knee.value = 40;
-                    dynamicsCompressor.attack.value = 0;
-                }
-                catch (err) { }
+                console.log('[HUYLOG] D compressor ok');
+
                 oscillator.connect(dynamicsCompressor);
+                console.log('[HUYLOG] E osc->compressor');
+
                 dynamicsCompressor.connect(analyser);
+                console.log('[HUYLOG] F compressor->analyser');
+
                 dynamicsCompressor.connect(context.destination);
+                console.log('[HUYLOG] G compressor->destination');
+
                 oscillator.start(0);
-                context.startRendering();
-                return context.addEventListener('complete', (event) => {
+                console.log('[HUYLOG] H oscillator.start');
+
+                context.addEventListener('complete', (event) => {
+                    console.log('[HUYLOG] I complete event fired');
+
                     try {
                         dynamicsCompressor.disconnect();
+                        console.log('[HUYLOG] J disconnect compressor');
+
                         oscillator.disconnect();
-                        const floatFrequencyData = new Float32Array(analyser.frequencyBinCount);
+                        console.log('[HUYLOG] K disconnect oscillator');
+
+                        const floatFrequencyData =
+                            new Float32Array(analyser.frequencyBinCount);
+
+                        console.log('[HUYLOG] L getFloatFrequencyData');
+
                         analyser.getFloatFrequencyData?.(floatFrequencyData);
-                        const floatTimeDomainData = new Float32Array(analyser.fftSize);
+
+                        const floatTimeDomainData =
+                            new Float32Array(analyser.fftSize);
+
+                        console.log('[HUYLOG] M getFloatTimeDomainData');
+
                         if ('getFloatTimeDomainData' in analyser) {
                             analyser.getFloatTimeDomainData(floatTimeDomainData);
                         }
-                        return resolve({
+
+                        console.log('[HUYLOG] N resolve');
+
+                        resolve({
                             floatFrequencyData,
                             floatTimeDomainData,
                             buffer: event.renderedBuffer,
-                            compressorGainReduction: (
-                            // @ts-expect-error if unsupported
-                            dynamicsCompressor.reduction.value || // webkit
-                                dynamicsCompressor.reduction),
                         });
-                    }
-                    catch (error) {
-                        return resolve(null);
+
+                    } catch (error) {
+                        console.log('[HUYLOG] COMPLETE_HANDLER_ERROR', error);
+                        resolve(null);
                     }
                 });
+
+                console.log('[HUYLOG] O listener installed');
+
+                context.startRendering();
+
+                console.log('[HUYLOG] P startRendering returned');
+
+                setTimeout(() => {
+                    console.log('[HUYLOG] TIMEOUT 5s complete never fired');
+                }, 5000);
             }));
             await queueEvent(timer);
             console.log('[HUYLOG] StartPromise 2 ');
@@ -2715,9 +2757,9 @@
                 const length = 2000;
                 try {
                     const result = [...new Set([
-                            ...getCopyFrom(AUDIO_TRAP, new AudioBuffer({ length, sampleRate: 44100 }), new Float32Array(length)),
-                            ...getCopyTo(AUDIO_TRAP, new AudioBuffer({ length, sampleRate: 44100 }), new Float32Array(length)),
-                        ])];
+                        ...getCopyFrom(AUDIO_TRAP, new AudioBuffer({ length, sampleRate: 44100 }), new Float32Array(length)),
+                        ...getCopyTo(AUDIO_TRAP, new AudioBuffer({ length, sampleRate: 44100 }), new Float32Array(length)),
+                    ])];
                     return +(result.length !== 1 &&
                         result.reduce((acc, n) => acc += +n, 0));
                 }
@@ -2886,25 +2928,25 @@
 		<span class="aside-note">${performanceLogger.getLog().audio}</span>
 		<strong>Audio</strong><span class="${lied ? 'lies ' : LowerEntropy.AUDIO ? 'bold-fail ' : ''}hash">${hashSlice($hash)}</span>
 		<div class="help" title="AudioBuffer.getChannelData()">sum: ${!sampleSum ? HTMLNote.BLOCKED : (!validAudio || matchesKnownAudio) ? sampleSum : getDiffs({
-        stringA: knownSums[0],
-        stringB: sampleSum,
-        charDiff: true,
-        decorate: (diff) => `<span class="bold-fail">${diff}</span>`,
-    })}</div>
+            stringA: knownSums[0],
+            stringB: sampleSum,
+            charDiff: true,
+            decorate: (diff) => `<span class="bold-fail">${diff}</span>`,
+        })}</div>
 		<div class="help" title="DynamicsCompressorNode.reduction">gain: ${compressorGainReduction || HTMLNote.BLOCKED}</div>
 		<div class="help" title="AnalyserNode.getFloatFrequencyData()">freq: ${floatFrequencyDataSum || HTMLNote.BLOCKED}</div>
 		<div class="help" title="AnalyserNode.getFloatTimeDomainData()">time: ${floatTimeDomainDataSum || HTMLNote.UNSUPPORTED}</div>
 		<div class="help" title="AudioBuffer.getChannelData()\nAudioBuffer.copyFromChannel()\nAudioBuffer.copyToChannel">trap: ${!noise ? AUDIO_TRAP : getDiffs({
-        stringA: AUDIO_TRAP,
-        stringB: noise,
-        charDiff: true,
-        decorate: (diff) => `<span class="bold-fail">${diff}</span>`,
-    })}</div>
+            stringA: AUDIO_TRAP,
+            stringB: noise,
+            charDiff: true,
+            decorate: (diff) => `<span class="bold-fail">${diff}</span>`,
+        })}</div>
 		<div>unique: ${totalUniqueSamples}</div>
 		<div class="help" title="AudioBuffer.getChannelData()">data:${'' + binsSample[0] == 'undefined' ? ` ${HTMLNote.BLOCKED}` :
-        `<span class="sub-hash">${hashMini(binsSample)}</span>`}</div>
+                `<span class="sub-hash">${hashMini(binsSample)}</span>`}</div>
 		<div class="help" title="AudioBuffer.copyFromChannel()">copy:${'' + copySample[0] == 'undefined' ? ` ${HTMLNote.BLOCKED}` :
-        `<span class="sub-hash">${hashMini(copySample)}</span>`}</div>
+                `<span class="sub-hash">${hashMini(copySample)}</span>`}</div>
 		<div>values: ${modal('creep-offline-audio-context', Object.keys(values).map((key) => `<div>${key}: ${values[key]}</div>`).join(''), hashMini(values))}</div>
 	</div>
 	`;
@@ -3278,8 +3320,8 @@
             const getTextMetricsFloatLie = (context) => {
                 const isFloat = (n) => n % 1 !== 0;
                 const { actualBoundingBoxAscent: abba, actualBoundingBoxDescent: abbd, actualBoundingBoxLeft: abbl, actualBoundingBoxRight: abbr, fontBoundingBoxAscent: fbba, fontBoundingBoxDescent: fbbd,
-                // width: w,
-                 } = context.measureText('') || {};
+                    // width: w,
+                } = context.measureText('') || {};
                 const lied = [
                     abba,
                     abbd,
@@ -3445,13 +3487,13 @@
 		<span class="aside-note">${performanceLogger.getLog()['canvas 2d']}</span>
 		<strong>Canvas 2d</strong><span class="${lied ? 'lies ' : LowerEntropy.CANVAS ? 'bold-fail ' : ''}hash">${hashSlice($hash)}</span>
 		<div class="help" title="HTMLCanvasElement.toDataURL()\nCanvasRenderingContext2D.getImageData()">data: ${modal('creep-canvas-data', dataTemplate, hashMini({
-        dataURI,
-        pixelImage,
-        paintURI,
-        paintCpuURI,
-        textURI,
-        emojiURI,
-    }))}</div>
+            dataURI,
+            pixelImage,
+            paintURI,
+            paintCpuURI,
+            textURI,
+            emojiURI,
+        }))}</div>
 		<div class="help" title="CanvasRenderingContext2D.getImageData()">rendering: ${rgba ? `${modPercent}% rgba noise ${rgbaHTML}` : ''}</div>
 		<div class="icon-pixel-container pixels">
 			${textURI ? `<div class="icon-pixel text-image"></div>` : ''}
@@ -3683,23 +3725,23 @@
 		<span class="aside-note">${performanceLogger.getLog()['computed style']}</span>
 		<strong>Computed Style</strong><span class="hash">${hashSlice($hash)}</span>
 		<div>keys (${!computedStyle ? '0' : count(computedStyle.keys)}): ${!computedStyle ? HTMLNote.BLOCKED :
-        modal('creep-computed-style', computedStyle.keys.join(', '), hashMini(computedStyle))}</div>
+                modal('creep-computed-style', computedStyle.keys.join(', '), hashMini(computedStyle))}</div>
 		<div>system styles: ${system && system.colors ? modal(`${id}-system-styles`, [
-        ...system.colors.map((color) => {
-            const key = Object.keys(color)[0];
-            const val = color[key];
-            return `
+                    ...system.colors.map((color) => {
+                        const key = Object.keys(color)[0];
+                        const val = color[key];
+                        return `
 							<div><span style="display:inline-block;border:1px solid #eee;border-radius:3px;width:12px;height:12px;background:${val}"></span> ${key}: ${val}</div>
 						`;
-        }),
-        ...system.fonts.map((font) => {
-            const key = Object.keys(font)[0];
-            const val = font[key];
-            return `
+                    }),
+                    ...system.fonts.map((font) => {
+                        const key = Object.keys(font)[0];
+                        const val = font[key];
+                        return `
 							<div>${key}: <span style="padding:0 5px;border-radius:3px;font:${val}">${val}</span></div>
 						`;
-        }),
-    ].join(''), hashMini(system)) : HTMLNote.BLOCKED}</div>
+                    }),
+                ].join(''), hashMini(system)) : HTMLNote.BLOCKED}</div>
 		<style>.gradient { background: repeating-linear-gradient(to right, ${gradientColors.join(', ')}); }</style>
 		<div class="gradient"></div>
 	</div>
@@ -3755,9 +3797,9 @@
                 ['prefers-reduced-motion']: (win.matchMedia('(prefers-reduced-motion: no-preference)').matches ? 'no-preference' :
                     win.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'reduce' : undefined),
                 ['prefers-color-scheme']: (
-                // prefer main window
-                matchMedia('(prefers-color-scheme: light)').matches ? 'light' :
-                    matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : undefined),
+                    // prefer main window
+                    matchMedia('(prefers-color-scheme: light)').matches ? 'light' :
+                        matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : undefined),
                 monochrome: (win.matchMedia('(monochrome)').matches ? 'monochrome' :
                     win.matchMedia('(monochrome: 0)').matches ? 'non-monochrome' : undefined),
                 ['inverted-colors']: (win.matchMedia('(inverted-colors: inverted)').matches ? 'inverted' :
@@ -3784,9 +3826,9 @@
                     win.matchMedia('(color-gamut: p3)').matches ? 'p3' :
                         win.matchMedia('(color-gamut: srgb)').matches ? 'srgb' : undefined),
                 orientation: (
-                // prefer main window
-                matchMedia('(orientation: landscape)').matches ? 'landscape' :
-                    matchMedia('(orientation: portrait)').matches ? 'portrait' : undefined),
+                    // prefer main window
+                    matchMedia('(orientation: landscape)').matches ? 'landscape' :
+                        matchMedia('(orientation: portrait)').matches ? 'portrait' : undefined),
             };
             body.innerHTML = `
 		<style>
@@ -3869,11 +3911,11 @@
 		<span class="aside-note">${performanceLogger.getLog()['css media']}</span>
 		<strong>CSS Media Queries</strong><span class="hash">${hashSlice($hash)}</span>
 		<div>@media: ${!mediaCSS || !Object.keys(mediaCSS).filter((key) => !!mediaCSS[key]).length ?
-        HTMLNote.BLOCKED :
-        modal('creep-css-media', `<strong>@media</strong><br><br>${Object.keys(mediaCSS).map((key) => `${key}: ${mediaCSS[key] || HTMLNote.UNSUPPORTED}`).join('<br>')}`, hashMini(mediaCSS))}</div>
+                HTMLNote.BLOCKED :
+                modal('creep-css-media', `<strong>@media</strong><br><br>${Object.keys(mediaCSS).map((key) => `${key}: ${mediaCSS[key] || HTMLNote.UNSUPPORTED}`).join('<br>')}`, hashMini(mediaCSS))}</div>
 		<div>matchMedia: ${!matchMediaCSS || !Object.keys(matchMediaCSS).filter((key) => !!matchMediaCSS[key]).length ?
-        HTMLNote.BLOCKED :
-        modal('creep-css-match-media', `<strong>matchMedia</strong><br><br>${Object.keys(matchMediaCSS).map((key) => `${key}: ${matchMediaCSS[key] || HTMLNote.UNSUPPORTED}`).join('<br>')}`, hashMini(matchMediaCSS))}</div>
+                HTMLNote.BLOCKED :
+                modal('creep-css-match-media', `<strong>matchMedia</strong><br><br>${Object.keys(matchMediaCSS).map((key) => `${key}: ${matchMediaCSS[key] || HTMLNote.UNSUPPORTED}`).join('<br>')}`, hashMini(matchMediaCSS))}</div>
 		<div>touch device: ${!mediaCSS ? HTMLNote.BLOCKED : mediaCSS['any-pointer'] == 'coarse' ? true : HTMLNote.UNKNOWN}</div>
 		<div>screen query: <span class="${(LowerEntropy.SCREEN || LowerEntropy.IFRAME_SCREEN) ? 'bold-fail ' : ''}">
 			${!screenQuery ? HTMLNote.BLOCKED : `${screenQuery.width} x ${screenQuery.height}`}
@@ -3970,7 +4012,7 @@
             const divElement = document.createElement('div');
             divElement.setAttribute('id', rectsId);
             DOC.body.appendChild(divElement);
-            patch(divElement, html `
+            patch(divElement, html`
 		<div id="${rectsId}">
 			<style>
 			.rect-ghost,
@@ -4112,8 +4154,8 @@
 				}
 				</style>
 				${EMOJIS.map((emoji) => {
-            return `<div class="domrect-emoji">${emoji}</div>`;
-        }).join('')}
+                return `<div class="domrect-emoji">${emoji}</div>`;
+            }).join('')}
 			</div>
 		</div>
 		`);
@@ -4826,17 +4868,17 @@
 			<strong>diffs from ${version}</strong>:
 			<div>
 			${diff && diff.added.length ?
-            diff.added.map((key) => `<div><span>${key}</span></div>`).join('') : ''}
+                    diff.added.map((key) => `<div><span>${key}</span></div>`).join('') : ''}
 			${diff && diff.removed.length ?
-            diff.removed.map((key) => `<div><span class="unsupport">${key}</span></div>`).join('') : ''}
+                    diff.removed.map((key) => `<div><span class="unsupport">${key}</span></div>`).join('') : ''}
 			</div>
 
 		`;
             return modal(`creep-features-${id}`, header + versionSort(Object.keys(engineMap)).map((key) => {
                 return `
 				<strong>${key}</strong>:<br>${engineMap[key].map((prop) => {
-                return `<span class="${!features.has(prop) ? 'unsupport' : ''}">${prop}</span>`;
-            }).join('<br>')}
+                    return `<span class="${!features.has(prop) ? 'unsupport' : ''}">${prop}</span>`;
+                }).join('<br>')}
 			`;
             }).join('<br>'), hashMini([...features]));
         };
@@ -5022,7 +5064,7 @@
     async function getFonts() {
         const getPixelEmojis = ({ doc, id, emojis }) => {
             try {
-                patch(doc.getElementById(id), html `
+                patch(doc.getElementById(id), html`
 				<div id="pixel-emoji-container">
 				<style>
 					.pixel-emoji {
@@ -5034,8 +5076,8 @@
 					}
 					</style>
 					${emojis.map((emoji) => {
-                return `<div class="pixel-emoji">${emoji}</div>`;
-            }).join('')}
+                    return `<div class="pixel-emoji">${emoji}</div>`;
+                }).join('')}
 				</div>
 			`);
                 // get emoji set and system
@@ -5241,15 +5283,15 @@
 		<span class="aside-note">${performanceLogger.getLog().fonts}</span>
 		<strong>Fonts</strong><span class="${lied ? 'lies ' : LowerEntropy.FONTS ? 'bold-fail ' : ''}hash">${hashSlice($hash)}</span>
 		<div class="help" title="FontFace.load()">load (${fontFaceLoadFonts ? count(fontFaceLoadFonts) : '0'}/${'' + FONT_LIST.length}): ${`Like ${platformVersion}` || ((fonts) => {
-        return !(fonts || []).length ? '' : ((('' + fonts).match(/Lucida Console/) || []).length ? `${icon.Windows}Like Windows` :
-            (('' + fonts).match(/Droid Sans Mono|Noto Color Emoji|Roboto/g) || []).length == 3 ? `${icon.Linux}${icon.Android}Like Linux Android` :
-                (('' + fonts).match(/Droid Sans Mono|Roboto/g) || []).length == 2 ? `${icon.Android}Like Android` :
-                    (('' + fonts).match(/Noto Color Emoji|Roboto/g) || []).length == 2 ? `${icon.CrOS}Like Chrome OS` :
-                        (('' + fonts).match(/Noto Color Emoji/) || []).length ? `${icon.Linux}Like Linux` :
-                            (('' + fonts).match(/Arimo/) || []).length ? `${icon.Linux}Like Linux` :
-                                (('' + fonts).match(/Helvetica Neue/g) || []).length == 2 ? `${icon.Apple}Like Apple` :
-                                    `${(fonts || [])[0]}...`);
-    })(fontFaceLoadFonts)}</div>
+                return !(fonts || []).length ? '' : ((('' + fonts).match(/Lucida Console/) || []).length ? `${icon.Windows}Like Windows` :
+                    (('' + fonts).match(/Droid Sans Mono|Noto Color Emoji|Roboto/g) || []).length == 3 ? `${icon.Linux}${icon.Android}Like Linux Android` :
+                        (('' + fonts).match(/Droid Sans Mono|Roboto/g) || []).length == 2 ? `${icon.Android}Like Android` :
+                            (('' + fonts).match(/Noto Color Emoji|Roboto/g) || []).length == 2 ? `${icon.CrOS}Like Chrome OS` :
+                                (('' + fonts).match(/Noto Color Emoji/) || []).length ? `${icon.Linux}Like Linux` :
+                                    (('' + fonts).match(/Arimo/) || []).length ? `${icon.Linux}Like Linux` :
+                                        (('' + fonts).match(/Helvetica Neue/g) || []).length == 2 ? `${icon.Apple}Like Apple` :
+                                            `${(fonts || [])[0]}...`);
+            })(fontFaceLoadFonts)}</div>
 		<div>apps: ${(apps || []).length ? apps.join(', ') : HTMLNote.UNSUPPORTED}</div>
 		<div class="block-text-large help relative" title="FontFace.load()\nFontFaceSet.check()">
 			${fontFaceLoadFonts.join(', ') || HTMLNote.UNSUPPORTED}
@@ -5461,8 +5503,8 @@
                     })(),
                     prefersLightColor: matchMedia('(prefers-color-scheme: light)').matches,
                     uaDataIsBlank: ('userAgentData' in navigator && (
-                    // @ts-expect-error if userAgentData is null
-                    navigator.userAgentData?.platform === '' ||
+                        // @ts-expect-error if userAgentData is null
+                        navigator.userAgentData?.platform === '' ||
                         // @ts-expect-error if userAgentData is null
                         await navigator.userAgentData.getHighEntropyValues(['platform']).platform === '')),
                     pdfIsDisabled: ('pdfViewerEnabled' in navigator && navigator.pdfViewerEnabled === false),
@@ -5582,12 +5624,12 @@
         const platformTemplate = !scores ? '' : `
 		${scoreKeys.map((key) => (scores[key] * 100).toFixed(0)).join(':')}
 		<br>${scoreKeys.map((key) => {
-        const score = scores[key];
-        const style = `
+            const score = scores[key];
+            const style = `
 				filter: opacity(${score == highestScore ? 100 : 15}%);
 			`;
-        return `<span style="${style}">${IconMap[key]}</span>`;
-    }).join('')}
+            return `<span style="${style}">${IconMap[key]}</span>`;
+        }).join('')}
 		`;
         return `
 	<div class="relative col-six">
@@ -5606,11 +5648,11 @@
 		<strong>Headless</strong><span class="hash">${hashSlice($hash)}</span>
 		<div>chromium: ${'' + chromium}</div>
 		<div class="like-headless-rating">${'' + likeHeadlessRating}% like headless: ${modal('creep-like-headless', '<strong>Like Headless</strong><br><br>' +
-        Object.keys(likeHeadless).map((key) => `${key}: ${'' + likeHeadless[key]}`).join('<br>'), hashMini(likeHeadless))}</div>
+            Object.keys(likeHeadless).map((key) => `${key}: ${'' + likeHeadless[key]}`).join('<br>'), hashMini(likeHeadless))}</div>
 		<div class="headless-rating">${'' + headlessRating}% headless: ${modal('creep-headless', '<strong>Headless</strong><br><br>' +
-        Object.keys(headless).map((key) => `${key}: ${'' + headless[key]}`).join('<br>'), hashMini(headless))}</div>
+                Object.keys(headless).map((key) => `${key}: ${'' + headless[key]}`).join('<br>'), hashMini(headless))}</div>
 		<div class="stealth-rating">${'' + stealthRating}% stealth: ${modal('creep-stealth', '<strong>Stealth</strong><br><br>' +
-        Object.keys(stealth).map((key) => `${key}: ${'' + stealth[key]}`).join('<br>'), hashMini(stealth))}</div>
+                    Object.keys(stealth).map((key) => `${key}: ${'' + stealth[key]}`).join('<br>'), hashMini(stealth))}</div>
 		<div>platform hints:</div>
 		<div class="block-text">
 			${systemFonts ? `<div>${systemFonts}</div>` : ''}
@@ -5730,14 +5772,14 @@
 		<strong>Intl</strong><span class="${lied ? 'lies ' : LowerEntropy.TIME_ZONE ? 'bold-fail ' : ''}hash">${hashSlice($hash)}</span>
 		<div class="block-text help"  title="Intl.Collator\nIntl.DateTimeFormat\nIntl.DisplayNames\nIntl.ListFormat\nIntl.NumberFormat\nIntl.PluralRules\nIntl.RelativeTimeFormat">
 			${[
-        locale,
-        dateTimeFormat,
-        displayNames,
-        numberFormat,
-        relativeTimeFormat,
-        listFormat,
-        pluralRules,
-    ].join('<br>')}
+                locale,
+                dateTimeFormat,
+                displayNames,
+                numberFormat,
+                relativeTimeFormat,
+                listFormat,
+                pluralRules,
+            ].join('<br>')}
 		</div>
 	</div>
 	`;
@@ -5971,7 +6013,7 @@
 		<span class="aside-note">${performanceLogger.getLog().math}</span>
 		<strong>Math</strong><span class="${lied ? 'lies ' : ''}hash">${hashSlice($hash)}</span>
 		<div>results: ${!data ? HTMLNote.Blocked :
-        modal('creep-maths', header + results.join('<br>'))}</div>
+                modal('creep-maths', header + results.join('<br>'))}</div>
 	</div>
 	`;
     }
@@ -6094,7 +6136,7 @@
 			<span class="aside-note">${performanceLogger.getLog().media}</span>
 			<strong>Media</strong><span class="hash">${hashSlice($hash)}</span>
 			<div class="help" title="HTMLMediaElement.canPlayType()\nMediaRecorder.isTypeSupported()\nMediaSource.isTypeSupported()">mimes (${count(mimeTypes)}/${mimesListLen}): ${invalidMimeTypes ? HTMLNote.BLOCKED :
-        modal('creep-media-mimeTypes', header + mimes.join('<br>'), hashMini(mimeTypes))}</div>
+                modal('creep-media-mimeTypes', header + mimes.join('<br>'), hashMini(mimeTypes))}</div>
 		</div>
 	`;
     }
@@ -6303,12 +6345,12 @@
                     }
                     const response = plugins ? [...plugins]
                         .map((p) => ({
-                        name: p.name,
-                        description: p.description,
-                        filename: p.filename,
-                        // @ts-ignore
-                        version: p.version,
-                    })) : [];
+                            name: p.name,
+                            description: p.description,
+                            filename: p.filename,
+                            // @ts-ignore
+                            version: p.version,
+                        })) : [];
                     const { lies } = getPluginLies(plugins, navigator.mimeTypes);
                     if (lies.length) {
                         lied = true;
@@ -6531,17 +6573,17 @@
 		<div class="help" title="Navigator.globalPrivacyControl">gpc: ${'' + globalPrivacyControl == 'undefined' ? HTMLNote.UNSUPPORTED : '' + globalPrivacyControl}</div>
 		<div class="help" title="Navigator.language\nNavigator.languages">lang: ${!blocked[language] ? language : HTMLNote.BLOCKED}</div>
 		<div>mimeTypes (${count(mimeTypes)}): ${!blocked['' + mimeTypes] ?
-        modal(`${id}-mimeTypes`, mimeTypes.join('<br>'), hashMini(mimeTypes)) :
-        HTMLNote.BLOCKED}</div>
+                modal(`${id}-mimeTypes`, mimeTypes.join('<br>'), hashMini(mimeTypes)) :
+                HTMLNote.BLOCKED}</div>
 		<div class="help" title="Permissions.query()">permissions (${'' + permissionsGranted}): ${!permissions || !permissionsKeys ? HTMLNote.UNSUPPORTED : modal('creep-permissions', permissionsKeys.map((key) => `<div class="perm perm-${key}"><strong>${key}</strong>:<br>${permissions[key].join('<br>')}</div>`).join(''), hashMini(permissions))}</div>
 		<div>plugins (${count(plugins)}): ${!blocked['' + plugins] ?
-        modal(`${id}-plugins`, plugins.map((plugin) => plugin.name).join('<br>'), hashMini(plugins)) :
-        HTMLNote.BLOCKED}</div>
+                modal(`${id}-plugins`, plugins.map((plugin) => plugin.name).join('<br>'), hashMini(plugins)) :
+                HTMLNote.BLOCKED}</div>
 		<div>vendor: ${!blocked[vendor] ? vendor : HTMLNote.BLOCKED}</div>
 		<div>webgpu: ${!webgpu ? HTMLNote.UNSUPPORTED :
-        modal(`${id}-webgpu`, ((webgpu) => {
-            const { adapterInfo, limits } = webgpu;
-            return `
+                modal(`${id}-webgpu`, ((webgpu) => {
+                    const { adapterInfo, limits } = webgpu;
+                    return `
 					<div>
 						<strong>Adapter</strong><br>${adapterInfo.filter((x) => x).join('<br>')}
 					</div>
@@ -6549,21 +6591,21 @@
 						<br><strong>Limits</strong><br>${Object.keys(limits).map((x) => `${x}: ${limits[x]}`).join('<br>')}
 					</div>
 					`;
-        })(webgpu), hashMini(webgpu))}</div>
+                })(webgpu), hashMini(webgpu))}</div>
 		<div>userAgentData:</div>
 		<div class="block-text help" title="Navigator.userAgentData\nNavigatorUAData.getHighEntropyValues()">
 			<div>
 			${((userAgentData) => {
-        const { architecture, bitness, brandsVersion, uaFullVersion, mobile, model, platformVersion, platform, } = userAgentData || {};
-        // @ts-ignore
-        const windowsRelease = computeWindowsRelease({ platform, platformVersion });
-        return !userAgentData ? HTMLNote.UNSUPPORTED : `
+                const { architecture, bitness, brandsVersion, uaFullVersion, mobile, model, platformVersion, platform, } = userAgentData || {};
+                // @ts-ignore
+                const windowsRelease = computeWindowsRelease({ platform, platformVersion });
+                return !userAgentData ? HTMLNote.UNSUPPORTED : `
 					${(brandsVersion || []).join(',')}${uaFullVersion ? ` (${uaFullVersion})` : ''}
 					<br>${windowsRelease || `${platform} ${platformVersion}`} ${architecture ? `${architecture}${bitness ? `_${bitness}` : ''}` : ''}
 					${model ? `<br>${model}` : ''}
 					${mobile ? '<br>mobile' : ''}
 				`;
-    })(userAgentData)}
+            })(userAgentData)}
 			</div>
 		</div>
 	</div>
@@ -6573,8 +6615,8 @@
 			${oscpu ? oscpu : ''}
 			${`${oscpu ? '<br>' : ''}${system}${platform ? ` (${platform})` : ''}`}
 			${device ? `<br>${device}` : HTMLNote.BLOCKED}${hardwareConcurrency && deviceMemory ? `<br>cores: ${hardwareConcurrency}, ram: ${deviceMemory}` :
-        hardwareConcurrency && !deviceMemory ? `<br>cores: ${hardwareConcurrency}` :
-            !hardwareConcurrency && deviceMemory ? `<br>ram: ${deviceMemory}` : ''}${typeof maxTouchPoints != 'undefined' ? `, touch: ${'' + maxTouchPoints}` : ''}${bluetoothAvailability ? `, bluetooth` : ''}
+                hardwareConcurrency && !deviceMemory ? `<br>cores: ${hardwareConcurrency}` :
+                    !hardwareConcurrency && deviceMemory ? `<br>ram: ${deviceMemory}` : ''}${typeof maxTouchPoints != 'undefined' ? `, touch: ${'' + maxTouchPoints}` : ''}${bluetoothAvailability ? `, bluetooth` : ''}
 		</div>
 		<div>ua parsed: ${userAgentParsed || HTMLNote.BLOCKED}</div>
 		<div class="relative">userAgent:${!uaPostReduction ? '' : `<span class="confidence-note">ua reduction</span>`}</div>
@@ -7063,12 +7105,12 @@
 		<strong>Resistance</strong><span class="hash">${hashSlice($hash)}</span>
 		<div>privacy: ${privacy ? `${browserIcon}${privacy}` : HTMLNote.UNKNOWN}</div>
 		<div>security: ${!security ? HTMLNote.UNKNOWN :
-        modal('creep-resistance', '<strong>Security</strong><br><br>' +
-            Object.keys(securitySettings).map((key) => `${key}: ${'' + securitySettings[key]}`).join('<br>'), hashMini(security))}</div>
+                modal('creep-resistance', '<strong>Security</strong><br><br>' +
+                    Object.keys(securitySettings).map((key) => `${key}: ${'' + securitySettings[key]}`).join('<br>'), hashMini(security))}</div>
 		<div>mode: ${mode || HTMLNote.UNKNOWN}</div>
 		<div>extension: ${!Object.keys(extensionHashPattern || {}).length ? HTMLNote.UNKNOWN :
-        modal('creep-extension', '<strong>Pattern</strong><br><br>' +
-            Object.keys(extensionHashPattern).map((key) => `${key}: ${'' + extensionHashPattern[key]}`).join('<br>'), (extension ? `${extensionIcon}${extension}` : hashMini(extensionHashPattern)))}</div>
+                modal('creep-extension', '<strong>Pattern</strong><br><br>' +
+                    Object.keys(extensionHashPattern).map((key) => `${key}: ${'' + extensionHashPattern[key]}`).join('<br>'), (extension ? `${extensionIcon}${extension}` : hashMini(extensionHashPattern)))}</div>
 	</div>
 	`;
     }
@@ -7154,7 +7196,7 @@
             }
             removeEventListener('resize', paintScreen);
             return getScreen(false).then((data) => {
-                requestAnimationFrame(() => patch(el, html `${resizeHTML(({ data, $hash, perf, paintScreen }))}`));
+                requestAnimationFrame(() => patch(el, html`${resizeHTML(({ data, $hash, perf, paintScreen }))}`));
             });
         };
         const resizeHTML = ({ data, $hash, perf, paintScreen }) => {
@@ -7316,13 +7358,13 @@
                     // filter first occurrence of unique voiceURI data
                     const getUniques = (data, voiceURISet) => data
                         .filter((x) => {
-                        const { voiceURI } = x;
-                        if (!voiceURISet.has(voiceURI)) {
-                            voiceURISet.add(voiceURI);
-                            return true;
-                        }
-                        return false;
-                    });
+                            const { voiceURI } = x;
+                            if (!voiceURISet.has(voiceURI)) {
+                                voiceURISet.add(voiceURI);
+                                return true;
+                            }
+                            return false;
+                        });
                     const dataUnique = getUniques(data, new Set());
                     // https://wicg.github.io/speech-api/#speechsynthesisvoice-attributes
                     const local = dataUnique.filter((x) => x.localService).map((x) => x.name);
@@ -7400,15 +7442,15 @@
 		<span class="aside-note">${performanceLogger.getLog().speech}</span>
 		<strong>Speech</strong><span class="${lied ? 'lies ' : ''}hash">${hashSlice($hash)}</span>
 		<div class="help" title="SpeechSynthesis.getVoices()\nSpeechSynthesisVoice.localService">local (${count(local)}): ${!local || !local.length ? HTMLNote.UNSUPPORTED :
-        modal('creep-voices-local', local.join('<br>'), `${system[systemVoice] || ''}${hashMini(local)}`)}</div>
+                modal('creep-voices-local', local.join('<br>'), `${system[systemVoice] || ''}${hashMini(local)}`)}</div>
 		<div class="help" title="SpeechSynthesis.getVoices()">remote (${count(remote)}): ${!remote || !remote.length ? HTMLNote.UNSUPPORTED :
-        modal('creep-voices-remote', remote.join('<br>'), hashMini(remote))}</div>
+                modal('creep-voices-remote', remote.join('<br>'), hashMini(remote))}</div>
 		<div class="help" title="SpeechSynthesis.getVoices()\nSpeechSynthesisVoice.lang">lang (${count(languages)}): ${!languages || !languages.length ? HTMLNote.BLOCKED :
-        languages.length == 1 ? languages[0] : modal('creep-voices-languages', languages.join('<br>'), hashMini(languages))}</div>
+                languages.length == 1 ? languages[0] : modal('creep-voices-languages', languages.join('<br>'), hashMini(languages))}</div>
 		<div class="help" title="SpeechSynthesis.getVoices()\nSpeechSynthesisVoice.default">default:</div>
 		<div class="block-text">
 			${!defaultVoiceName ? HTMLNote.UNSUPPORTED :
-        `${defaultVoiceName}${defaultVoiceLang ? ` [${defaultVoiceLang}]` : ''}`}
+                `${defaultVoiceName}${defaultVoiceLang ? ` [${defaultVoiceLang}]` : ''}`}
 		</div>
 	</div>
 	`;
@@ -7539,8 +7581,8 @@
         const quotaInGigabytes = quotaA ? +(+(quotaA) / GIGABYTE).toFixed(2) : null;
         // Network Info
         const { downlink, effectiveType, rtt, saveData, downlinkMax, type,
-        // @ts-expect-error if not supported
-         } = navigator?.connection || {};
+            // @ts-expect-error if not supported
+        } = navigator?.connection || {};
         const scripts = [
             ...document.querySelectorAll('script'),
         ].map((x) => x.src.replace(/^https?:\/\//, '')).slice(0, 10);
@@ -7610,10 +7652,10 @@
         <div>level: ${level * 100}%</div>
         <div>charging: ${charging}</div>
         <div>charge time: ${chargingTime === Infinity ? 'discharging' :
-        chargingTime === 0 ? 'fully charged' :
-            `${+(chargingTime / 60).toFixed(1)} min.`}</div>
+                    chargingTime === 0 ? 'fully charged' :
+                        `${+(chargingTime / 60).toFixed(1)} min.`}</div>
         <div>discharge time: ${dischargingTime === Infinity ? 'charging' :
-        `${+(dischargingTime / 60).toFixed(1)} min.`}</div>
+                    `${+(dischargingTime / 60).toFixed(1)} min.`}</div>
       `}</div>
     </div>
     <div class="col-four">
@@ -7648,7 +7690,7 @@
             const divElement = document.createElement('div');
             doc.body.appendChild(divElement);
             // patch div
-            patch(divElement, html `
+            patch(divElement, html`
 			<div id="svg-container">
 				<style>
 				#svg-container {
@@ -7670,8 +7712,8 @@
 				<svg>
 					<g id="svgBox">
 						${EMOJIS.map((emoji) => {
-            return `<text x="32" y="32" class="svgrect-emoji">${emoji}</text>`;
-        }).join('')}
+                return `<text x="32" y="32" class="svgrect-emoji">${emoji}</text>`;
+            }).join('')}
 					</g>
 				</svg>
 			</div>
@@ -8820,9 +8862,9 @@
 		<div>images:${!dataURI ? ' ' + HTMLNote.BLOCKED : `<span class="sub-hash">${hashMini(dataURI)}</span>${!dataURI2 || dataURI == dataURI2 ? '' : `<span class="sub-hash">${hashMini(dataURI2)}</span>`}`}</div>
 		<div>pixels:${!pixels ? ' ' + HTMLNote.BLOCKED : `<span class="sub-hash">${hashSlice(pixels)}</span>${!pixels2 || pixels == pixels2 ? '' : `<span class="sub-hash">${hashSlice(pixels2)}</span>`}`}</div>
 		<div>params (${count(paramKeys)}): ${!paramKeys.length ? HTMLNote.BLOCKED :
-        modal(`${id}-parameters`, paramKeys.map((key) => `${key}: ${parameters[key]}`).join('<br>'), hashMini(parameters))}</div>
+                modal(`${id}-parameters`, paramKeys.map((key) => `${key}: ${parameters[key]}`).join('<br>'), hashMini(parameters))}</div>
 		<div>exts (${count(extensions)}): ${!extensions.length ? HTMLNote.BLOCKED :
-        modal(`${id}-extensions`, extensions.sort().join('<br>'), hashMini(extensions))}</div>
+                modal(`${id}-extensions`, extensions.sort().join('<br>'), hashMini(extensions))}</div>
 
 		<div class="relative">gpu:${confidence ? `<span class="confidence-note">confidence: <span class="scale-up grade-${confidenceGrade}">${confidence}</span></span>` : ''}</div>
 		<div class="block-text help" title="${confidence ? `\nWebGLRenderingContext.getParameter()\ngpu compressed: ${compressedGPU}\nknown parts: ${parts || 'none'}\ngibberish: ${gibbers || 'none'}\nwarnings: ${warnings.join(', ') || 'none'}` : 'WebGLRenderingContext.getParameter()'}">
@@ -9105,8 +9147,8 @@
 			${x.channels > 1 ? `<br>Channels: ${x.channels}` : ''}
 			${x.sdpFmtpLine ? `<br>Format Specific Parameters:<br>- ${x.sdpFmtpLine.sort().map((x) => x.replace('=', ': ')).join('<br>- ')}` : ''}
 			${x.feedbackSupport ? `<br>Feedback Support:<br>- ${x.feedbackSupport.map((x) => {
-            return feedbackId[x] || x;
-        }).sort().join('<br>- ')}` : ''}
+                return feedbackId[x] || x;
+            }).sort().join('<br>- ')}` : ''}
 		`;
         }).join('<br><br>');
         return `
@@ -9122,14 +9164,14 @@
 	</div>
 	<div class="relative col-six">
 		<div class="help" title="RTCSessionDescription.sdp">sdp capabilities: ${!codecsSdp ? HTMLNote.BLOCKED :
-        modal(`${id}-sdp-capabilities`, getModalTemplate(audio) +
-            '<br><br>' + getModalTemplate(video) +
-            '<br><br><strong>extensions</strong><br>' + extensions.join('<br>'), hashMini({ audio, video, extensions }))}</div>
+                modal(`${id}-sdp-capabilities`, getModalTemplate(audio) +
+                    '<br><br>' + getModalTemplate(video) +
+                    '<br><br><strong>extensions</strong><br>' + extensions.join('<br>'), hashMini({ audio, video, extensions }))}</div>
 		<div>stun connection:</div>
 		<div class="block-text unblurred">${stunConnection || HTMLNote.BLOCKED}</div>
 		<div class="help" title="MediaDevices.enumerateDevices()\nMediaDeviceInfo.kind">devices (${count(mediaDevices)}):</div>
 		<div class="block-text unblurred">${!mediaDevices || !mediaDevices.length ? HTMLNote.BLOCKED :
-        mediaDevicesByType.join(', ')}
+                mediaDevicesByType.join(', ')}
 		</div>
 	</div>
 	`;
@@ -9567,7 +9609,7 @@
         }) || [];
         const blankFingerprint = '0000000000000000000000000000000000000000000000000000000000000000';
         const el = document.getElementById('fingerprint-data');
-        patch(el, html `
+        patch(el, html`
 	<div id="fingerprint-data">
 		<div class="fingerprint-header-container">
 			<div class="fingerprint-header">
@@ -9686,12 +9728,12 @@
                 getStatus(),
             ]).then(async (data) => {
                 const [webRTC, mediaDevices, status] = data || [];
-                patch(document.getElementById('webrtc-connection'), html `
+                patch(document.getElementById('webrtc-connection'), html`
 				<div class="flex-grid visitor-info">
 					${webrtcHTML(webRTC, mediaDevices)}
 				</div>
 			`);
-                patch(document.getElementById('status-info'), html `
+                patch(document.getElementById('status-info'), html`
 				<div class="flex-grid">
 					${statusHTML(status)}
 				</div>
@@ -9704,7 +9746,7 @@
             window.Creep = JSON.parse(JSON.stringify(creep));
             const fuzzyFingerprint = await getFuzzyHash(fp);
             const fuzzyFpEl = document.getElementById('fuzzy-fingerprint');
-            patch(fuzzyFpEl, html `
+            patch(fuzzyFpEl, html`
 			<div id="fuzzy-fingerprint">
 				<div class="ellipsis-all fuzzy-fp">Fuzzy: <span class="unblurred">${fuzzyFingerprint}</span></div>
 			</div>
@@ -9712,10 +9754,10 @@
             // Display fingerprint
             const rand = (min, max) => Math.floor(Math.random() * (max - min + 1) + min);
             setTimeout(() => {
-                patch(document.getElementById('creep-fingerprint'), html `
+                patch(document.getElementById('creep-fingerprint'), html`
 				<div class="ellipsis-all">FP ID: ${creepHash?.split('').map((x, i) => {
-                return `<span style="display:inline-block;animation: reveal-fingerprint ${i * rand(1, 5)}ms ${i * rand(1, 10)}ms ease both">${x}</span>`;
-            }).join('')}</div>
+                    return `<span style="display:inline-block;animation: reveal-fingerprint ${i * rand(1, 5)}ms ${i * rand(1, 10)}ms ease both">${x}</span>`;
+                }).join('')}</div>
 			`);
             }, 50);
         });

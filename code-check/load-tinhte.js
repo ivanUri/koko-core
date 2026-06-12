@@ -22,7 +22,7 @@ const CONFIG = {
     outDir: resolve(repoRoot, "code-check/tmp/test-creepjs"),
     htmlFile: "page.html",
     logFile: "page.log",
-    loadTimeoutMs: 60000,
+    loadTimeoutMs: 12000,
     settleAfterLoadMs: 20000,
     timeoutMs: 60000,
     logLevel: "info",

@@ -9,6 +9,7 @@ const js = @import("../../js/js.zig");
 const Frame = @import("../../browser/Frame.zig");
 const EventTarget = @import("../EventTarget.zig");
 const Event = @import("../Event.zig");
+const OfflineAudioCompletionEvent = @import("../event/OfflineAudioCompletionEvent.zig");
 
 pub fn registerTypes() []const type {
     return &.{
@@ -91,42 +92,6 @@ const AudioRenderData = struct {
         @memset(self.left, 0);
         @memset(self.right, 0);
     }
-};
-
-const OfflineAudioCompletionEvent = struct {
-    _proto: *Event,
-    _rendered_buffer: *AudioBuffer,
-
-    pub fn asEvent(self: *OfflineAudioCompletionEvent) *Event {
-        return self._proto;
-    }
-
-    pub fn init(rendered_buffer: *AudioBuffer, frame: *Frame) !*OfflineAudioCompletionEvent {
-        log.info(.js, "OfflineAudioCompletionEvent.init.begin", .{ .buffer_channels = rendered_buffer._channels, .buffer_length = rendered_buffer._length });
-        const event = try frame._factory.create(OfflineAudioCompletionEvent{
-            ._proto = undefined,
-            ._rendered_buffer = rendered_buffer,
-        });
-        const base = try Event.init("complete", .{ .bubbles = false, .cancelable = false }, frame._page);
-        base._type = .{ .generic = {} };
-        event._proto = base;
-        log.info(.js, "OfflineAudioCompletionEvent.init.done", .{});
-        return event;
-    }
-
-    pub fn getRenderedBuffer(self: *const OfflineAudioCompletionEvent) *AudioBuffer {
-        return self._rendered_buffer;
-    }
-
-    pub const JsApi = struct {
-        pub const bridge = js.Bridge(OfflineAudioCompletionEvent);
-        pub const Meta = struct {
-            pub const name = "OfflineAudioCompletionEvent";
-            pub const prototype_chain = bridge.prototypeChain();
-            pub var class_id: bridge.ClassId = undefined;
-        };
-        pub const renderedBuffer = bridge.accessor(OfflineAudioCompletionEvent.getRenderedBuffer, null, .{});
-    };
 };
 
 const AudioParam = struct {
@@ -710,7 +675,7 @@ const GainNode = struct {
     };
 };
 
-const AudioBuffer = struct {
+pub const AudioBuffer = struct {
     _channels: u32,
     _length: u32,
     _sample_rate: f64,
@@ -751,8 +716,11 @@ const AudioBuffer = struct {
     }
 
     pub fn getChannelData(self: *const AudioBuffer, channel: u32, frame: *Frame) !js.Value {
-        log.info(.js, "AudioBuffer.getChannelData", .{ .channel = channel, .channels = self._channels, .length = self._length, .first_sample = self.channelSlice(channel)[0], .sample_100 = self.channelSlice(channel)[100] });
         if (channel >= self._channels) return error.IndexSizeError;
+        const slice = self.channelSlice(channel);
+        const sample_0 = if (slice.len > 0) slice[0] else 0;
+        const sample_100 = if (slice.len > 100) slice[100] else 0;
+        log.info(.js, "AudioBuffer.getChannelData", .{ .channel = channel, .channels = self._channels, .length = self._length, .first_sample = sample_0, .sample_100 = sample_100 });
         const local = frame.js.local orelse return error.NotHandled;
         const arr = local.createTypedArray(.float32, self._length);
         const values = typedArrayData(f32, arr.handle) orelse return error.NotHandled;
@@ -1040,6 +1008,8 @@ pub const OfflineAudioContext = struct {
     _proto: *EventTarget,
     _ctx: *AudioContext,
     _length: u32,
+    _on_complete: ?js.Function.Temp = null,
+    _last_complete_event: ?*Event = null,
 
     pub fn constructor(channels: u32, length: u32, sample_rate: f64, frame: *Frame) !*OfflineAudioContext {
         log.info(.js, "OfflineAudioContext.constructor", .{ .channels = channels, .length = length, .sample_rate = sample_rate });
@@ -1069,23 +1039,84 @@ pub const OfflineAudioContext = struct {
         return self._ctx.getListener();
     }
 
-    fn dispatchCompleteEvent(self: *OfflineAudioContext, frame: *Frame) !void {
-        const event = try Event.init("complete", .{ .bubbles = false, .cancelable = false }, frame._page);
+    fn dispatchCompleteEvent(self: *OfflineAudioContext, rendered_buffer: *AudioBuffer, frame: *Frame) !void {
+        const completion_event = try OfflineAudioCompletionEvent.initTrusted(rendered_buffer, frame);
+        const event = completion_event.asEvent();
+
+        // EventManager.dispatch will release a reference at the end of its call.
+        // Since we need the event for dispatchDirect, we must hold an extra reference.
+        event.acquireRef();
+        defer _ = event.releaseRef(frame._page);
+
+        // Store the last complete event for oncomplete callback
+        self._last_complete_event = event;
+        // Dispatch to event listeners
         try frame._event_manager.dispatch(self.asEventTarget(), event);
+        // Also call the oncomplete property callback if set
+        if (self._on_complete) |cb| {
+            try frame._event_manager.dispatchDirect(
+                self.asEventTarget(),
+                event,
+                cb,
+                .{ .context = "OfflineAudioContext.oncomplete" },
+            );
+        }
+    }
+
+    pub fn getOnComplete(self: *const OfflineAudioContext) ?js.Function.Temp {
+        return self._on_complete;
+    }
+
+    pub fn setOnComplete(self: *OfflineAudioContext, cb: ?js.Function.Temp) !void {
+        self._on_complete = cb;
     }
 
     pub fn startRendering(self: *OfflineAudioContext, frame: *Frame) !js.Promise {
         log.info(.js, "OfflineAudioContext.startRendering.begin", .{ .length = self._length, .sample_rate = self._ctx.getSampleRate() });
 
-        const buf = try self._ctx.renderOffline(frame, self._length);
+        const local = frame.js.local orelse return error.NotHandled;
+        const resolver = local.createPromiseResolver();
+        const promise = resolver.promise();
+        const global_resolver = try resolver.persist();
 
-        log.info(.js, "OfflineAudioContext.renderOffline.done", .{ .length = self._length, .buffer_channels = buf._channels, .buffer_length = buf._length });
+        const TaskData = struct {
+            ctx: *OfflineAudioContext,
+            frame: *Frame,
+            global_resolver: js.PromiseResolver.Global,
+        };
 
-        try self.dispatchCompleteEvent(frame);
+        const data = try frame.arena.create(TaskData);
+        data.* = .{
+            .ctx = self,
+            .frame = frame,
+            .global_resolver = global_resolver,
+        };
 
-        log.info(.js, "OfflineAudioContext.complete_event.dispatch", .{});
+        try frame.js.scheduler.add(data, struct {
+            fn run(ctx: *anyopaque) !?u32 {
+                const d: *TaskData = @ptrCast(@alignCast(ctx));
+                var ls: js.Local.Scope = undefined;
+                d.frame.js.localScope(&ls);
 
-        return frame.js.local.?.resolvePromise(buf);
+                const buf = d.ctx._ctx.renderOffline(d.frame, d.ctx._length) catch |err| {
+                    log.err(.js, "OfflineAudioContext.startRendering.error", .{ .err = err });
+                    const error_msg = ls.local.newString("Failed to render audio");
+                    _ = ls.local.toLocal(d.global_resolver).reject("OfflineAudioContext.startRendering", error_msg);
+                    return null;
+                };
+
+                d.ctx.dispatchCompleteEvent(buf, d.frame) catch |err| {
+                    log.err(.js, "OfflineAudioContext.dispatchCompleteEvent.error", .{ .err = err });
+                };
+
+                log.info(.js, "OfflineAudioContext.complete_event.dispatch", .{});
+                _ = ls.local.toLocal(d.global_resolver).resolve("OfflineAudioContext.startRendering", buf);
+
+                return null;
+            }
+        }.run, 0, .{ .name = "OfflineAudioContext.startRendering" });
+
+        return promise;
     }
 
     pub const JsApi = struct {
@@ -1133,6 +1164,7 @@ pub const OfflineAudioContext = struct {
                 return s._ctx.createGain(frame);
             }
         }.f, .{});
+        pub const oncomplete = bridge.accessor(OfflineAudioContext.getOnComplete, OfflineAudioContext.setOnComplete, .{});
         pub const startRendering = bridge.function(OfflineAudioContext.startRendering, .{});
     };
 };
