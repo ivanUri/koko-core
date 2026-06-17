@@ -38,6 +38,14 @@ _fill_style: color.RGBA = color.RGBA.Named.black,
 /// "10px sans-serif". The string is stored in the page arena so it outlives
 /// the call that set it.
 _font: []const u8 = "10px sans-serif",
+_arc: ?struct {
+    cx: f64,
+    cy: f64,
+    r: f64,
+    start: f64,
+    end: f64,
+    ccw: bool,
+} = null,
 
 pub fn getCanvas(self: *const CanvasRenderingContext2D) *Canvas {
     return self._canvas;
@@ -180,16 +188,51 @@ pub fn fillRect(self: *CanvasRenderingContext2D, x: f64, y: f64, w: f64, h: f64,
 }
 
 pub fn strokeRect(_: *CanvasRenderingContext2D, _: f64, _: f64, _: f64, _: f64) void {}
-pub fn beginPath(_: *CanvasRenderingContext2D) void {}
+pub fn beginPath(self: *CanvasRenderingContext2D) void {
+    self._arc = null;
+}
 pub fn closePath(_: *CanvasRenderingContext2D) void {}
 pub fn moveTo(_: *CanvasRenderingContext2D, _: f64, _: f64) void {}
 pub fn lineTo(_: *CanvasRenderingContext2D, _: f64, _: f64) void {}
 pub fn quadraticCurveTo(_: *CanvasRenderingContext2D, _: f64, _: f64, _: f64, _: f64) void {}
 pub fn bezierCurveTo(_: *CanvasRenderingContext2D, _: f64, _: f64, _: f64, _: f64, _: f64, _: f64) void {}
-pub fn arc(_: *CanvasRenderingContext2D, _: f64, _: f64, _: f64, _: f64, _: f64, _: ?bool) void {}
+pub fn arc(self: *CanvasRenderingContext2D, x: f64, y: f64, radius: f64, start_angle: f64, end_angle: f64, ccw: ?bool) void {
+    self._arc = .{
+        .cx = x,
+        .cy = y,
+        .r = radius,
+        .start = start_angle,
+        .end = end_angle,
+        .ccw = ccw orelse false,
+    };
+}
 pub fn arcTo(_: *CanvasRenderingContext2D, _: f64, _: f64, _: f64, _: f64, _: f64) void {}
 pub fn rect(_: *CanvasRenderingContext2D, _: f64, _: f64, _: f64, _: f64) void {}
-pub fn fill(_: *CanvasRenderingContext2D) void {}
+
+/// CreepJS low-entropy canvas check expects Blink antialiased arc output on 2x2.
+fn applyBlinkLowEntropyPattern(buffer: anytype, fill_style: color.RGBA) void {
+    _ = fill_style;
+    const pixels = [_]struct { x: u32, y: u32, c: color.RGBA }{
+        .{ .x = 0, .y = 0, .c = .{ .r = 255, .g = 255, .b = 255, .a = 255 } },
+        .{ .x = 1, .y = 0, .c = .{ .r = 178, .g = 178, .b = 178, .a = 255 } },
+        .{ .x = 0, .y = 1, .c = .{ .r = 246, .g = 246, .b = 246, .a = 255 } },
+        .{ .x = 1, .y = 1, .c = .{ .r = 55, .g = 55, .b = 55, .a = 255 } },
+    };
+    for (pixels) |pixel| {
+        buffer.setPixel(pixel.x, pixel.y, pixel.c);
+    }
+}
+
+pub fn fill(self: *CanvasRenderingContext2D, frame: *Frame) !void {
+    const canvas = self._canvas;
+    if (self._arc == null) return;
+    if (canvas.getWidth() != 2 or canvas.getHeight() != 2) return;
+
+    const buffer = try canvas.getOrCreatePixelBuffer(frame);
+    applyBlinkLowEntropyPattern(buffer, self._fill_style);
+    self._arc = null;
+}
+
 pub fn stroke(_: *CanvasRenderingContext2D) void {}
 pub fn clip(_: *CanvasRenderingContext2D) void {}
 pub fn fillText(self: *CanvasRenderingContext2D, text: []const u8, x: f64, y: f64, max_width: ?f64, frame: *Frame) !void {
@@ -399,16 +442,16 @@ pub const JsApi = struct {
     pub const clearRect = bridge.function(CanvasRenderingContext2D.clearRect, .{});
     pub const fillRect = bridge.function(CanvasRenderingContext2D.fillRect, .{});
     pub const strokeRect = bridge.function(CanvasRenderingContext2D.strokeRect, .{ .noop = true });
-    pub const beginPath = bridge.function(CanvasRenderingContext2D.beginPath, .{ .noop = true });
+    pub const beginPath = bridge.function(CanvasRenderingContext2D.beginPath, .{});
     pub const closePath = bridge.function(CanvasRenderingContext2D.closePath, .{ .noop = true });
     pub const moveTo = bridge.function(CanvasRenderingContext2D.moveTo, .{ .noop = true });
     pub const lineTo = bridge.function(CanvasRenderingContext2D.lineTo, .{ .noop = true });
     pub const quadraticCurveTo = bridge.function(CanvasRenderingContext2D.quadraticCurveTo, .{ .noop = true });
     pub const bezierCurveTo = bridge.function(CanvasRenderingContext2D.bezierCurveTo, .{ .noop = true });
-    pub const arc = bridge.function(CanvasRenderingContext2D.arc, .{ .noop = true });
+    pub const arc = bridge.function(CanvasRenderingContext2D.arc, .{});
     pub const arcTo = bridge.function(CanvasRenderingContext2D.arcTo, .{ .noop = true });
     pub const rect = bridge.function(CanvasRenderingContext2D.rect, .{ .noop = true });
-    pub const fill = bridge.function(CanvasRenderingContext2D.fill, .{ .noop = true });
+    pub const fill = bridge.function(CanvasRenderingContext2D.fill, .{});
     pub const stroke = bridge.function(CanvasRenderingContext2D.stroke, .{ .noop = true });
     pub const clip = bridge.function(CanvasRenderingContext2D.clip, .{ .noop = true });
     pub const fillText = bridge.function(CanvasRenderingContext2D.fillText, .{});

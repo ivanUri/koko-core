@@ -120,13 +120,7 @@ fn trimFontToken(font: []const u8) []const u8 {
 }
 
 fn isAvailableFont(family: []const u8) bool {
-    for (identityProfile().fonts) |available| {
-        if (std.ascii.eqlIgnoreCase(family, available)) {
-            return true;
-        }
-    }
-
-    return false;
+    return FingerprintProfile.isFontFamilyAvailable(family);
 }
 
 // load(font, text?) - resolves immediately with an array containing a loaded

@@ -18,6 +18,7 @@ const RC = @import("../../../support/rc.zig").RC;
 const js = @import("../../js/js.zig");
 const Page = @import("../../browser/Page.zig");
 const Frame = @import("../../browser/Frame.zig");
+const FingerprintProfile = @import("../../fingerprint/Profile.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -57,16 +58,16 @@ pub fn getFamily(self: *const FontFace) []const u8 {
     return self._family;
 }
 
-// load() - resolves immediately; headless browser has no real font loading.
-// Per spec the promise resolves with the FontFace itself, so callers can read
-// `.family` etc on the resolved value.
+// load() rejects unavailable system fonts (CreepJS uses this path directly).
 pub fn load(self: *FontFace, frame: *Frame) !js.Promise {
+    if (!FingerprintProfile.isFontFamilyAvailable(self._family)) {
+        return frame.js.local.?.rejectPromise(.{ .dom_exception = .{ .err = error.NetworkError } });
+    }
     return frame.js.local.?.resolvePromise(self);
 }
 
-// loaded - returns an already-resolved Promise resolving to this FontFace.
 pub fn getLoaded(self: *FontFace, frame: *Frame) !js.Promise {
-    return frame.js.local.?.resolvePromise(self);
+    return load(self, frame);
 }
 
 pub const JsApi = struct {

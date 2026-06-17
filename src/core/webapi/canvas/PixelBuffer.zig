@@ -138,9 +138,28 @@ pub const PixelBuffer = struct {
         }
     }
 
-    /// Clear a rectangle (fill with transparent).
+    /// Clear a rectangle (transparent, no alpha blending).
     pub fn clearRect(self: *PixelBuffer, x: f64, y: f64, w: f64, h: f64) void {
-        self.fillRect(x, y, w, h, color.RGBA.Named.transparent);
+        const x0 = @as(i32, @intFromFloat(@floor(x)));
+        const y0 = @as(i32, @intFromFloat(@floor(y)));
+        const x1 = @as(i32, @intFromFloat(@floor(x + w)));
+        const y1 = @as(i32, @intFromFloat(@floor(y + h)));
+
+        const start_x = @max(0, x0);
+        const start_y = @max(0, y0);
+        const end_x = @min(@as(i32, @intCast(self.width)), x1);
+        const end_y = @min(@as(i32, @intCast(self.height)), y1);
+
+        if (start_x >= end_x or start_y >= end_y) return;
+
+        const transparent = color.RGBA.Named.transparent;
+        var py: i32 = start_y;
+        while (py < end_y) : (py += 1) {
+            var px: i32 = start_x;
+            while (px < end_x) : (px += 1) {
+                self.setPixel(@intCast(px), @intCast(py), transparent);
+            }
+        }
     }
 };
 

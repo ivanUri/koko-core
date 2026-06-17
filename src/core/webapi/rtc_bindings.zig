@@ -453,12 +453,12 @@ pub const RTCPeerConnectionJs = struct {
             .candidate = null,
         }, frame);
         try frame._event_manager.dispatchDirect(self._proto, event.asEvent(), self._on_ice_candidate, .{ .context = "RTCPeerConnection icecandidate end" });
-        const state_event = try Event.initTrusted(comptime .wrap("icegatheringstatechange"), .{}, frame._page);
+        const state_event = try Event.initTrusted(String.wrap("icegatheringstatechange"), .{}, frame._page);
         try frame._event_manager.dispatchDirect(self._proto, state_event, self._on_ice_gathering_state_change, .{ .context = "rtc gather" });
     }
 
-    fn dispatchStateEvent(self: *RTCPeerConnectionJs, comptime name: []const u8, handler: ?js.Function.Global) !void {
-        const event = try Event.initTrusted(comptime .wrap(name), .{}, self._frame._page);
+    fn dispatchStateEvent(self: *RTCPeerConnectionJs, name: []const u8, handler: ?js.Function.Global) !void {
+        const event = try Event.initTrusted(String.wrap(name), .{}, self._frame._page);
         try self._frame._event_manager.dispatchDirect(self._proto, event, handler, .{ .context = "rtc state" });
     }
 

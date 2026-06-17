@@ -208,16 +208,65 @@ pub const RGBA = packed struct(u32) {
         };
     }
 
-    /// Parses the given color.
-    /// Currently we only parse hex colors and named colors; other variants
-    /// require CSS evaluation.
-    pub fn parse(input: []const u8) !RGBA {
-        if (!isHexColor(input)) {
-            // Try named colors.
-            return find(input) orelse return error.Invalid;
+    fn trimAscii(input: []const u8) []const u8 {
+        var start: usize = 0;
+        var end: usize = input.len;
+        while (start < end and std.ascii.isWhitespace(input[start])) : (start += 1) {}
+        while (end > start and std.ascii.isWhitespace(input[end - 1])) : (end -= 1) {}
+        return input[start..end];
+    }
+
+    fn clampChannel(value: f64) u8 {
+        return @intFromFloat(@round(std.math.clamp(value, 0, 255)));
+    }
+
+    fn parseRgbFunction(input: []const u8) !RGBA {
+        const open = std.mem.indexOfScalar(u8, input, '(') orelse return error.Invalid;
+        const close = std.mem.lastIndexOfScalar(u8, input, ')') orelse return error.Invalid;
+        if (close <= open + 1) return error.Invalid;
+
+        const body = trimAscii(input[open + 1 .. close]);
+        var components: [4]f64 = .{ 0, 0, 0, 1 };
+        var count: usize = 0;
+        var i: usize = 0;
+        while (i < body.len and count < 4) {
+            while (i < body.len and (std.ascii.isWhitespace(body[i]) or body[i] == ',')) : (i += 1) {}
+            if (i >= body.len) break;
+            var end = i;
+            while (end < body.len and body[end] != ',') : (end += 1) {}
+            const part = trimAscii(body[i..end]);
+            components[count] = std.fmt.parseFloat(f64, part) catch return error.Invalid;
+            count += 1;
+            i = end + 1;
         }
 
-        const slice = input[1..];
+        if (count < 3) return error.Invalid;
+
+        const alpha_raw = if (count >= 4) components[3] else 1.0;
+        const alpha: u8 = if (alpha_raw <= 1.0)
+            clampChannel(alpha_raw * 255.0)
+        else
+            clampChannel(alpha_raw);
+
+        return .{
+            .r = clampChannel(components[0]),
+            .g = clampChannel(components[1]),
+            .b = clampChannel(components[2]),
+            .a = alpha,
+        };
+    }
+
+    /// Parses hex colors, rgb()/rgba(), and named colors.
+    pub fn parse(input: []const u8) !RGBA {
+        const trimmed = trimAscii(input);
+        if (std.mem.startsWith(u8, trimmed, "rgb")) {
+            return parseRgbFunction(trimmed);
+        }
+        if (!isHexColor(trimmed)) {
+            return find(trimmed) orelse error.Invalid;
+        }
+
+        const slice = trimmed[1..];
         switch (slice.len) {
             // This means the digit for a color is repeated.
             // Given HEX is #f0c, its interpreted the same as #FF00CC.

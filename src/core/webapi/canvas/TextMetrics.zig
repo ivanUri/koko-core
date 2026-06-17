@@ -198,82 +198,61 @@ fn fontFamilyScale(family: []const u8) f64 {
     return 1.18;
 }
 
-/// Add tiny variation based on hash (±0.001 to ±0.002)
-fn addVariation(base: f64, hash: u32) f64 {
+/// CreepJS flags fractional measureText('') metrics as noise.
+fn metricValue(self: *const TextMetrics, base: f64, hash: u32) f64 {
+    if (self._text_length == 0) return 0;
     const normalized = @as(f64, @floatFromInt(hash % 256)) / 255.0;
     const variation = (normalized - 0.5) * 0.0008;
     return base + variation;
 }
 
 pub fn getWidth(self: *const TextMetrics) f64 {
-    // Add micro-variation based on combined hash
     const combined_hash = self._text_hash ^ self._font_hash;
-    return addVariation(self._width, combined_hash);
+    return metricValue(self, self._width, combined_hash);
 }
 
 fn getActualBoundingBoxLeft(self: *const TextMetrics) f64 {
-    // For LTR text, left edge is typically at 0
-    // Tiny variation to avoid perfect 0
-    return addVariation(0.0, self._text_hash);
+    return metricValue(self, 0.0, self._text_hash);
 }
 
 fn getActualBoundingBoxRight(self: *const TextMetrics) f64 {
-    // Right edge is approximately the width
-    return addVariation(self._width, self._text_hash +% 1);
+    return metricValue(self, self._width, self._text_hash +% 1);
 }
 
 pub fn getActualBoundingBoxAscent(self: *const TextMetrics) f64 {
-    // Typical ascent is about 0.75 of font size
-    const base = self._font_size * 0.75;
-    return addVariation(base, self._font_hash);
+    return metricValue(self, self._font_size * 0.75, self._font_hash);
 }
 
 pub fn getActualBoundingBoxDescent(self: *const TextMetrics) f64 {
-    // Typical descent is about 0.25 of font size
-    const base = self._font_size * 0.25;
-    return addVariation(base, self._font_hash +% 1);
+    return metricValue(self, self._font_size * 0.25, self._font_hash +% 1);
 }
 
 fn getFontBoundingBoxAscent(self: *const TextMetrics) f64 {
-    // Font box ascent is typically 0.8 of font size
-    const base = self._font_size * 0.8;
-    return addVariation(base, self._font_hash +% 2);
+    return metricValue(self, self._font_size * 0.8, self._font_hash +% 2);
 }
 
 fn getFontBoundingBoxDescent(self: *const TextMetrics) f64 {
-    // Font box descent is typically 0.2 of font size
-    const base = self._font_size * 0.2;
-    return addVariation(base, self._font_hash +% 3);
+    return metricValue(self, self._font_size * 0.2, self._font_hash +% 3);
 }
 
 fn getEmHeightAscent(self: *const TextMetrics) f64 {
-    // Em height ascent is typically 0.75 of font size
-    const base = self._font_size * 0.75;
-    return addVariation(base, self._font_hash +% 4);
+    return metricValue(self, self._font_size * 0.75, self._font_hash +% 4);
 }
 
 fn getEmHeightDescent(self: *const TextMetrics) f64 {
-    // Em height descent is typically 0.25 of font size
-    const base = self._font_size * 0.25;
-    return addVariation(base, self._font_hash +% 5);
+    return metricValue(self, self._font_size * 0.25, self._font_hash +% 5);
 }
 
 fn getHangingBaseline(self: *const TextMetrics) f64 {
-    // Hanging baseline is typically 0.7 of ascent
-    const base = self._font_size * 0.75 * 0.7;
-    return addVariation(base, self._font_hash +% 6);
+    return metricValue(self, self._font_size * 0.75 * 0.7, self._font_hash +% 6);
 }
 
 fn getAlphabeticBaseline(self: *const TextMetrics) f64 {
-    // Alphabetic baseline is at 0 (the reference point)
-    // Keep near zero but add tiny variation
-    return addVariation(0.0, self._font_hash +% 7);
+    return metricValue(self, 0.0, self._font_hash +% 7);
 }
 
 fn getIdeographicBaseline(self: *const TextMetrics) f64 {
-    // Ideographic baseline is at the descent
-    const base = -self._font_size * 0.25;
-    return addVariation(base, self._font_hash +% 8);
+    return metricValue(self, -self._font_size * 0.25, self._font_hash +% 8);
 }
 
 pub const JsApi = struct {

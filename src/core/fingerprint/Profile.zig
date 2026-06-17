@@ -92,35 +92,32 @@ const macos_catalina_intel_webgl_extensions = [_][]const u8{
 };
 
 const macos_catalina_intel_fonts = [_][]const u8{
+    // macOS 10.9–10.15-11 system fonts (CreepJS APPLE_FONTS through Catalina/Big Sur)
     "American Typewriter",
     "American Typewriter Semibold",
-    "Apple Color Emoji",
-    "Apple SD Gothic Neo ExtraBold",
-    "Arial",
-    "Arial Hebrew",
-    "Arimo",
-    "Courier",
-    "Courier New",
-    "Cousine",
-    "Dancing Script",
     "Futura",
     "Futura Bold",
+    "Galvji",
     "Geneva",
-    "Gentium Book Basic",
-    "Georgia",
-    "Helvetica",
     "Helvetica Neue",
     "InaiMathi Bold",
     "Kohinoor Devanagari Medium",
     "Luminari",
+    "MuktaMahee Regular",
+    "PingFang HK Light",
+    "SignPainter-HouseScript Semibold",
+    // Common macOS UI / canvas fonts
+    "Apple Color Emoji",
+    "Arial",
+    "Arial Hebrew",
+    "Courier",
+    "Courier New",
+    "Georgia",
+    "Helvetica",
     "Lucida Grande",
     "Menlo",
     "Monaco",
-    "MuktaMahee Regular",
     "Palatino",
-    "PingFang HK Light",
-    "SignPainter-HouseScript Semibold",
-    "Source Code Pro",
     "Times",
     "Times New Roman",
     "Zapfino",
@@ -190,4 +187,11 @@ pub const macos_catalina_intel = IdentityProfile{
 
 pub fn defaultIdentity() *const IdentityProfile {
     return &macos_catalina_intel;
+}
+
+pub fn isFontFamilyAvailable(family: []const u8) bool {
+    for (defaultIdentity().fonts) |available| {
+        if (std.ascii.eqlIgnoreCase(family, available)) return true;
+    }
+    return false;
 }
