@@ -27,6 +27,8 @@ const Context = @import("Context.zig");
 const Scheduler = @import("Scheduler.zig");
 const Factory = @import("../browser/Factory.zig");
 const HttpClient = @import("../browser/HttpClient.zig");
+const FingerprintProfile = @import("../fingerprint/Profile.zig");
+const ProfileStore = @import("../fingerprint/ProfileStore.zig");
 const EventManagerBase = @import("../browser/EventManagerBase.zig");
 
 const Blob = @import("../webapi/Blob.zig");
@@ -82,6 +84,14 @@ pub fn getArena(self: *const Execution, size_or_bucket: anytype, debug: []const 
 
 pub fn releaseArena(self: *const Execution, allocator: Allocator) void {
     self.context.page.releaseArena(allocator);
+}
+
+pub fn identityProfile(self: *const Execution) *const FingerprintProfile.IdentityProfile {
+    return self.context.page.session.browser.app.config.profile.identityPtr();
+}
+
+pub fn loadedProfile(self: *const Execution) *const ProfileStore.LoadedProfile {
+    return &self.context.page.session.browser.app.config.profile;
 }
 
 pub fn headersForRequest(self: *const Execution, headers: *HttpClient.Headers) !void {

@@ -16,6 +16,9 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const App = @import("../../runtime/App.zig");
+const FingerprintProfile = @import("../fingerprint/Profile.zig");
+const ProfileStore = @import("../fingerprint/ProfileStore.zig");
+const NavigatorState = @import("../webapi/NavigatorState.zig");
 
 const js = @import("../js/js.zig");
 const v8 = js.v8;
@@ -108,6 +111,18 @@ queued_close: std.ArrayList(*Frame) = .empty,
 _state: enum { active, pending } = .active,
 
 // Initialize a Page and its root Frame.
+pub fn identityProfile(self: *const Page) *const FingerprintProfile.IdentityProfile {
+    return self.session.browser.app.config.profile.identityPtr();
+}
+
+pub fn loadedProfile(self: *const Page) *const ProfileStore.LoadedProfile {
+    return &self.session.browser.app.config.profile;
+}
+
+pub fn navigatorState(self: *const Page) NavigatorState {
+    return .{ .profile = self.identityProfile() };
+}
+
 pub fn init(self: *Page, session: *Session, frame_id: u32) !void {
     const frame_arena = try session.arena_pool.acquire(.large, "Page.frame_arena");
     errdefer session.arena_pool.release(frame_arena);

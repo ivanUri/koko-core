@@ -84,7 +84,8 @@ pub fn setUserAgentOverride(cmd: *CDP.Command) !void {
     }
 
     const ua = params.userAgent;
-    Config.validateUserAgent(ua) catch |err| switch (err) {
+    const allow_mozilla = cmd.cdp.browser.app.config.profile.allowsMozillaUserAgent();
+    Config.validateUserAgent(ua, allow_mozilla) catch |err| switch (err) {
         error.NonPrintable => return cmd.sendError(-32602, "User agent contains non-printable characters", .{}),
         error.Reserved => {
             log.warn(.not_implemented, "Emulation.setUserAgentOverride", .{ .param = "userAgent", .value = ua, .info = "User agent must not contain Mozilla" });

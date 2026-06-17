@@ -60,7 +60,7 @@ pub fn getFamily(self: *const FontFace) []const u8 {
 
 // load() rejects unavailable system fonts (CreepJS uses this path directly).
 pub fn load(self: *FontFace, frame: *Frame) !js.Promise {
-    if (!FingerprintProfile.isFontFamilyAvailable(self._family)) {
+    if (!FingerprintProfile.isFontFamilyAvailable(frame.identityProfile(), self._family)) {
         return frame.js.local.?.rejectPromise(.{ .dom_exception = .{ .err = error.NetworkError } });
     }
     return frame.js.local.?.resolvePromise(self);

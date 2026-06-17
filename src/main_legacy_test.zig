@@ -32,7 +32,7 @@ pub fn main() !void {
         wg.wait();
     }
     lp.log.opts.level = .warn;
-    const config = try lp.Config.init(allocator, "legacy-test", .{ .serve = .{
+    var config = try lp.Config.init(allocator, "legacy-test", .{ .serve = .{
         .insecure_disable_tls_host_verification = true,
         .user_agent_suffix = "internal-tester",
     } });

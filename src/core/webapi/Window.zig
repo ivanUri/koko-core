@@ -947,11 +947,31 @@ pub const JsApi = struct {
     // sites not to try to access those features
     pub const isSecureContext = bridge.attribute(false, .{});
 
-    pub const innerWidth = bridge.attribute(@as(u32, 1920), .{});
-    pub const innerHeight = bridge.attribute(@as(u32, 1080), .{});
-    pub const outerWidth = bridge.attribute(@as(u32, 1920), .{});
-    pub const outerHeight = bridge.attribute(@as(u32, 1080), .{});
-    pub const devicePixelRatio = bridge.attribute(@as(f64, 1.0), .{});
+    pub fn getInnerWidth(_: *const Window, frame: *Frame) u32 {
+        return frame.identityProfile().screen.width;
+    }
+
+    pub fn getInnerHeight(_: *const Window, frame: *Frame) u32 {
+        return frame.identityProfile().screen.height;
+    }
+
+    pub fn getOuterWidth(_: *const Window, frame: *Frame) u32 {
+        return frame.identityProfile().screen.width;
+    }
+
+    pub fn getOuterHeight(_: *const Window, frame: *Frame) u32 {
+        return frame.identityProfile().screen.height;
+    }
+
+    pub fn getDevicePixelRatio(_: *const Window, frame: *Frame) f64 {
+        return frame.identityProfile().screen.device_pixel_ratio;
+    }
+
+    pub const innerWidth = bridge.accessor(getInnerWidth, null, .{});
+    pub const innerHeight = bridge.accessor(getInnerHeight, null, .{});
+    pub const outerWidth = bridge.accessor(getOuterWidth, null, .{});
+    pub const outerHeight = bridge.accessor(getOuterHeight, null, .{});
+    pub const devicePixelRatio = bridge.accessor(getDevicePixelRatio, null, .{});
 
     pub const opener = bridge.accessor(Window.getOpener, null, .{});
     pub const closed = bridge.accessor(Window.getClosed, null, .{});

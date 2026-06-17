@@ -12,86 +12,62 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-const std = @import("std");
-
-const Config = @import("../../runtime/Config.zig");
 const js = @import("../js/js.zig");
-const NavigatorState = @import("NavigatorState.zig");
+const ProfileStore = @import("../fingerprint/ProfileStore.zig");
 
 const NavigatorUAData = @This();
 
-fn state() NavigatorState {
-    return NavigatorState.default();
-}
-
 _pad: bool = false,
 
-const Brand = struct {
-    brand: []const u8,
-    version: []const u8,
-};
+const Brand = ProfileStore.Brand;
 
-pub fn getBrands(_: *const NavigatorUAData) []const Brand {
-    return brandList();
+fn brandsFromProfile(profile: *const ProfileStore.LoadedProfile) []const Brand {
+    return profile.http.brands;
 }
 
-pub fn getMobile(_: *const NavigatorUAData) bool {
-    return false;
+pub fn getBrands(_: *const NavigatorUAData, exec: *js.Execution) []const Brand {
+    return brandsFromProfile(exec.loadedProfile());
 }
 
-pub fn getPlatform(_: *const NavigatorUAData) []const u8 {
-    return state().profile.ua_data_platform;
+pub fn getMobile(_: *const NavigatorUAData, exec: *js.Execution) bool {
+    return exec.identityProfile().ua_mobile;
 }
 
-pub fn toJSON(_: *const NavigatorUAData) struct {
+pub fn getPlatform(_: *const NavigatorUAData, exec: *js.Execution) []const u8 {
+    return exec.identityProfile().ua_data_platform;
+}
+
+pub fn toJSON(self: *const NavigatorUAData, exec: *js.Execution) struct {
     brands: []const Brand,
     mobile: bool,
     platform: []const u8,
 } {
     return .{
-        .mobile = false,
-        .brands = brandList(),
-        .platform = state().profile.ua_data_platform,
+        .mobile = getMobile(self, exec),
+        .brands = getBrands(self, exec),
+        .platform = getPlatform(self, exec),
     };
 }
 
 pub fn getHighEntropyValues(_: *const NavigatorUAData, hints: []const []const u8, exec: *js.Execution) !js.Promise {
-    // This should always return `brands` + `mobile` + `platform` and then whatever
-    // "hints" field is requested (assuming the browser has permission), but it's
-    // also valid to just return everything.
-    //
-    // Uses *Execution rather than *Frame so the same path works in both
-    // Window and Worker contexts. `context.local` is the local of whichever
-    // realm we're currently dispatched in.
-
     _ = hints;
 
+    const profile = exec.identityProfile();
+    const brands = brandsFromProfile(exec.loadedProfile());
+
     return exec.context.local.?.resolvePromise(.{
-        .brands = brandList(),
-        .mobile = false,
-        .platform = state().profile.ua_data_platform,
-        .architecture = state().profile.ua_architecture,
-        .bitness = state().profile.ua_bitness,
+        .brands = brands,
+        .mobile = profile.ua_mobile,
+        .platform = profile.ua_data_platform,
+        .architecture = profile.ua_architecture,
+        .bitness = profile.ua_bitness,
         .model = "",
-        .platformVersion = "",
-        .uaFullVersion = "1.0.0.0",
-        .fullVersionList = brandList(),
+        .platformVersion = profile.platform_version,
+        .uaFullVersion = profile.ua_full_version,
+        .fullVersionList = brands,
         .wow64 = false,
         .formFactor = [_][]const u8{"Desktop"},
     });
-}
-
-fn brandList() []const Brand {
-    const out = comptime blk: {
-        const src = &Config.HttpHeaders.brands;
-        var arr: [src.len]Brand = undefined;
-        for (src, 0..) |b, i| {
-            arr[i] = .{ .brand = b.brand, .version = b.version };
-        }
-        const final = arr;
-        break :blk final;
-    };
-    return &out;
 }
 
 pub const JsApi = struct {

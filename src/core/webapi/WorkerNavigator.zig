@@ -38,76 +38,72 @@ _gpu: navigator_extras.GPU = .{},
 
 pub const init: WorkerNavigator = .{};
 
-fn state() NavigatorState {
-    return NavigatorState.default();
-}
-
 pub fn getUserAgent(_: *const WorkerNavigator, page: *Page) []const u8 {
-    return state().userAgent(&page.session.browser.http_client);
+    return page.navigatorState().userAgent(&page.session.browser.http_client);
 }
 
-pub fn getLanguages(_: *const WorkerNavigator) [2][]const u8 {
-    return state().languages();
+pub fn getLanguages(_: *const WorkerNavigator, page: *Page) [2][]const u8 {
+    return page.navigatorState().languages();
 }
 
-pub fn getLanguage(_: *const WorkerNavigator) []const u8 {
-    return state().language();
+pub fn getLanguage(_: *const WorkerNavigator, page: *Page) []const u8 {
+    return page.navigatorState().language();
 }
 
-pub fn getPlatform(_: *const WorkerNavigator) []const u8 {
-    return state().platform();
+pub fn getPlatform(_: *const WorkerNavigator, page: *Page) []const u8 {
+    return page.navigatorState().platform();
 }
 
-pub fn getAppName(_: *const WorkerNavigator) []const u8 {
-    return state().appName();
+pub fn getAppName(_: *const WorkerNavigator, _: *Page) []const u8 {
+    return "Netscape";
 }
 
-pub fn getAppCodeName(_: *const WorkerNavigator) []const u8 {
-    return state().appCodeName();
+pub fn getAppCodeName(_: *const WorkerNavigator, _: *Page) []const u8 {
+    return "Mozilla";
 }
 
-pub fn getAppVersion(_: *const WorkerNavigator) []const u8 {
-    return state().appVersion();
+pub fn getAppVersion(_: *const WorkerNavigator, page: *Page) []const u8 {
+    return page.navigatorState().appVersion();
 }
 
-pub fn getHardwareConcurrency(_: *const WorkerNavigator) u32 {
-    return state().hardwareConcurrency();
+pub fn getHardwareConcurrency(_: *const WorkerNavigator, page: *Page) u32 {
+    return page.navigatorState().hardwareConcurrency();
 }
 
 pub fn getUserAgentData(self: *WorkerNavigator) *NavigatorUAData {
     return &self._ua_data;
 }
 
-pub fn getOnLine(_: *const WorkerNavigator) bool {
-    return state().onLine();
+pub fn getOnLine(_: *const WorkerNavigator, _: *Page) bool {
+    return true;
 }
 
-pub fn getProduct(_: *const WorkerNavigator) []const u8 {
-    return state().product();
+pub fn getProduct(_: *const WorkerNavigator, _: *Page) []const u8 {
+    return "Gecko";
 }
 
-pub fn getWebdriver(_: *const WorkerNavigator) bool {
-    return state().webdriver();
+pub fn getWebdriver(_: *const WorkerNavigator, _: *Page) bool {
+    return false;
 }
 
-pub fn getDoNotTrack(_: *const WorkerNavigator) ?[]const u8 {
-    return state().doNotTrack();
+pub fn getDoNotTrack(_: *const WorkerNavigator, _: *Page) ?[]const u8 {
+    return null;
 }
 
-pub fn getDeviceMemory(_: *const WorkerNavigator) f64 {
-    return state().deviceMemory();
+pub fn getDeviceMemory(_: *const WorkerNavigator, page: *Page) f64 {
+    return page.navigatorState().deviceMemory();
 }
 
-pub fn getMaxTouchPoints(_: *const WorkerNavigator) u32 {
-    return state().maxTouchPoints();
+pub fn getMaxTouchPoints(_: *const WorkerNavigator, page: *Page) u32 {
+    return page.navigatorState().maxTouchPoints();
 }
 
-pub fn getVendor(_: *const WorkerNavigator) []const u8 {
-    return state().vendor();
+pub fn getVendor(_: *const WorkerNavigator, page: *Page) []const u8 {
+    return page.navigatorState().vendor();
 }
 
-pub fn getGlobalPrivacyControl(_: *const WorkerNavigator) bool {
-    return state().globalPrivacyControl();
+pub fn getGlobalPrivacyControl(_: *const WorkerNavigator, page: *Page) bool {
+    return page.navigatorState().globalPrivacyControl();
 }
 
 pub fn getGpu(self: *WorkerNavigator) *navigator_extras.GPU {

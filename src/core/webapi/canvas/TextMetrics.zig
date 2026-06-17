@@ -24,10 +24,6 @@ const Frame = @import("../../browser/Frame.zig");
 /// for fingerprinting and basic layout code without requiring a full font engine.
 const TextMetrics = @This();
 
-fn identityProfile() *const FingerprintProfile.IdentityProfile {
-    return FingerprintProfile.defaultIdentity();
-}
-
 _width: f64 = 0.0,
 _font_size: f64 = 10.0,
 _text_length: usize = 0,
@@ -36,7 +32,7 @@ _font_hash: u32 = 0,
 
 pub fn init(text: []const u8, font: []const u8, frame: *Frame) !*TextMetrics {
     const font_size = parseFontSize(font);
-    const width = estimateTextWidth(text, font, font_size);
+    const width = estimateTextWidth(text, font, font_size, frame.identityProfile());
 
     // Generate hashes for deterministic variations
     const text_hash = simpleHash(text);
@@ -89,11 +85,11 @@ fn parseFontSize(font: []const u8) f64 {
 }
 
 /// Estimate text width using simple heuristics
-fn estimateTextWidth(text: []const u8, font: []const u8, font_size: f64) f64 {
+fn estimateTextWidth(text: []const u8, font: []const u8, font_size: f64, profile: *const FingerprintProfile.IdentityProfile) f64 {
     if (text.len == 0) return 0.0;
 
     const font_family = extractPrimaryFontFamily(font);
-    const font_scale = fontFamilyScale(font_family);
+    const font_scale = fontFamilyScale(font_family, profile);
     const avg_char_width = font_size * 0.52 * font_scale;
 
     var width: f64 = 0.0;
@@ -153,7 +149,7 @@ fn trimFontFamily(font: []const u8) []const u8 {
     return family;
 }
 
-fn fontFamilyScale(family: []const u8) f64 {
+fn fontFamilyScale(family: []const u8, profile: *const FingerprintProfile.IdentityProfile) f64 {
     if (std.ascii.eqlIgnoreCase(family, "Menlo") or
         std.ascii.eqlIgnoreCase(family, "Monaco") or
         std.ascii.eqlIgnoreCase(family, "Courier") or
@@ -191,7 +187,7 @@ fn fontFamilyScale(family: []const u8) f64 {
         return 0.985;
     }
 
-    for (identityProfile().fonts) |available| {
+    for (profile.fonts) |available| {
         if (std.ascii.eqlIgnoreCase(family, available)) return 1.0;
     }
 

@@ -47,7 +47,15 @@ pub const JsApi = struct {
     pub const offsetTop = bridge.property(0, .{ .template = false });
     pub const pageLeft = bridge.accessor(VisualViewport.getPageLeft, null, .{});
     pub const pageTop = bridge.accessor(VisualViewport.getPageTop, null, .{});
-    pub const width = bridge.property(1920, .{ .template = false });
-    pub const height = bridge.property(1080, .{ .template = false });
+    pub fn getWidth(_: *const VisualViewport, frame: *Frame) u32 {
+        return frame.identityProfile().screen.width;
+    }
+
+    pub fn getHeight(_: *const VisualViewport, frame: *Frame) u32 {
+        return frame.identityProfile().screen.height;
+    }
+
+    pub const width = bridge.accessor(getWidth, null, .{});
+    pub const height = bridge.accessor(getHeight, null, .{});
     pub const scale = bridge.property(1.0, .{ .template = false });
 };

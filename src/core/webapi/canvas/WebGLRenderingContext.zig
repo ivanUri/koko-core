@@ -41,10 +41,6 @@ pub fn registerTypes() []const type {
 
 const WebGLRenderingContext = @This();
 
-fn identityProfile() *const FingerprintProfile.IdentityProfile {
-    return FingerprintProfile.defaultIdentity();
-}
-
 /// Reference to the parent canvas element, or null if created from OffscreenCanvas.
 /// https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext/canvas
 _canvas: ?*Canvas = null,
@@ -309,7 +305,7 @@ pub fn getDrawingBufferHeight(self: *const WebGLRenderingContext) u32 {
 /// support any though.
 pub fn getParameter(_: *const WebGLRenderingContext, pname: u32, exec: *Execution) !js.Value {
     const local = exec.context.local orelse return error.NotHandled;
-    const profile = identityProfile().webgl;
+    const profile = exec.identityProfile().webgl;
     switch (pname) {
         VERSION => return (try local.zigValueToJs(profile.version, .{})),
         VENDOR => return (try local.zigValueToJs(profile.vendor, .{})),
@@ -499,8 +495,8 @@ pub fn getExtension(_: *const WebGLRenderingContext, name: []const u8, exec: *Ex
 }
 
 /// Returns a list of all the supported WebGL extensions.
-pub fn getSupportedExtensions(_: *const WebGLRenderingContext) []const []const u8 {
-    return identityProfile().webgl.extensions;
+pub fn getSupportedExtensions(_: *const WebGLRenderingContext, exec: *Execution) []const []const u8 {
+    return exec.identityProfile().webgl.extensions;
 }
 
 pub const JsApi = struct {

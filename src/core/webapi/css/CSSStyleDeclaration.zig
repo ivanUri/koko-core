@@ -22,13 +22,7 @@ const Element = @import("../../dom/Element.zig");
 const log = @import("../../../support/log.zig");
 const String = @import("../../../support/string.zig").String;
 const Allocator = std.mem.Allocator;
-const FingerprintProfile = @import("../../fingerprint/Profile.zig");
-
 const CSSStyleDeclaration = @This();
-
-fn identityProfile() *const FingerprintProfile.IdentityProfile {
-    return FingerprintProfile.defaultIdentity();
-}
 
 _element: ?*Element = null,
 _properties: std.DoublyLinkedList = .{},

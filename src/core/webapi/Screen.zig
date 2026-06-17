@@ -49,12 +49,36 @@ pub const JsApi = struct {
         pub var class_id: bridge.ClassId = undefined;
     };
 
-    pub const width = bridge.attribute(@as(u32, 1920), .{});
-    pub const height = bridge.attribute(@as(u32, 1080), .{});
-    pub const availWidth = bridge.attribute(@as(u32, 1920), .{});
-    pub const availHeight = bridge.attribute(@as(u32, 1040), .{});
-    pub const colorDepth = bridge.attribute(@as(u32, 24), .{});
-    pub const pixelDepth = bridge.attribute(@as(u32, 24), .{});
+    pub fn getWidth(_: *const Screen, frame: *Frame) u32 {
+        return frame.identityProfile().screen.width;
+    }
+
+    pub fn getHeight(_: *const Screen, frame: *Frame) u32 {
+        return frame.identityProfile().screen.height;
+    }
+
+    pub fn getAvailWidth(_: *const Screen, frame: *Frame) u32 {
+        return frame.identityProfile().screen.avail_width;
+    }
+
+    pub fn getAvailHeight(_: *const Screen, frame: *Frame) u32 {
+        return frame.identityProfile().screen.avail_height;
+    }
+
+    pub fn getColorDepth(_: *const Screen, frame: *Frame) u32 {
+        return frame.identityProfile().screen.color_depth;
+    }
+
+    pub fn getPixelDepth(_: *const Screen, frame: *Frame) u32 {
+        return frame.identityProfile().screen.pixel_depth;
+    }
+
+    pub const width = bridge.accessor(getWidth, null, .{});
+    pub const height = bridge.accessor(getHeight, null, .{});
+    pub const availWidth = bridge.accessor(getAvailWidth, null, .{});
+    pub const availHeight = bridge.accessor(getAvailHeight, null, .{});
+    pub const colorDepth = bridge.accessor(getColorDepth, null, .{});
+    pub const pixelDepth = bridge.accessor(getPixelDepth, null, .{});
     pub const orientation = bridge.accessor(Screen.getOrientation, null, .{});
 };
 

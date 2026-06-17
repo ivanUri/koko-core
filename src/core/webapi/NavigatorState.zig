@@ -19,14 +19,6 @@ const NavigatorState = @This();
 
 profile: *const FingerprintProfile.IdentityProfile,
 
-pub const init: NavigatorState = .{
-    .profile = FingerprintProfile.defaultIdentity(),
-};
-
-pub fn default() NavigatorState {
-    return .init;
-}
-
 pub fn userAgent(_: *const NavigatorState, http_client: *const HttpClient) []const u8 {
     return http_client.getUserAgent();
 }
@@ -39,8 +31,8 @@ pub fn appCodeName(_: *const NavigatorState) []const u8 {
     return "Mozilla";
 }
 
-pub fn appVersion(_: *const NavigatorState) []const u8 {
-    return "1.0";
+pub fn appVersion(self: *const NavigatorState) []const u8 {
+    return self.profile.app_version;
 }
 
 pub fn platform(self: *const NavigatorState) []const u8 {

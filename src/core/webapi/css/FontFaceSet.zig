@@ -30,10 +30,6 @@ const Allocator = std.mem.Allocator;
 
 const FontFaceSet = @This();
 
-fn identityProfile() *const FingerprintProfile.IdentityProfile {
-    return FingerprintProfile.defaultIdentity();
-}
-
 _rc: RC(u8) = .{},
 _proto: *EventTarget,
 _arena: Allocator,
@@ -71,13 +67,9 @@ pub fn getReady(_: *FontFaceSet, frame: *Frame) !js.Promise {
 }
 
 // check(font, text?) - checks if font is in available whitelist
-pub fn check(_: *const FontFaceSet, font: []const u8) bool {
-    // Parse font string to extract font family name
-    // Format: "12px Arial" or "'Segoe UI' 12px" or "bold 12px 'Comic Sans MS'"
+pub fn check(_: *const FontFaceSet, font: []const u8, frame: *Frame) bool {
     const family = extractFontFamily(font);
-
-    // Check against available fonts whitelist
-    return isAvailableFont(family);
+    return isAvailableFont(family, frame.identityProfile());
 }
 
 fn extractFontFamily(font: []const u8) []const u8 {
@@ -119,15 +111,15 @@ fn trimFontToken(font: []const u8) []const u8 {
     return family;
 }
 
-fn isAvailableFont(family: []const u8) bool {
-    return FingerprintProfile.isFontFamilyAvailable(family);
+fn isAvailableFont(family: []const u8, profile: *const FingerprintProfile.IdentityProfile) bool {
+    return FingerprintProfile.isFontFamilyAvailable(profile, family);
 }
 
 // load(font, text?) - resolves immediately with an array containing a loaded
 // FontFace when the family is available; otherwise an empty array.
 pub fn load(self: *FontFaceSet, font: []const u8, frame: *Frame) !js.Promise {
     const family = extractFontFamily(font);
-    const available = isAvailableFont(family);
+    const available = isAvailableFont(family, frame.identityProfile());
 
     const target = self.asEventTarget();
     if (frame._event_manager.hasDirectListeners(target, "loading", null)) {

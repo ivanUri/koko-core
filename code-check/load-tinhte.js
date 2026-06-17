@@ -22,6 +22,8 @@ const CONFIG = {
     outDir: resolve(repoRoot, "code-check/tmp/test-creepjs"),
     htmlFile: "page.html",
     logFile: "page.log",
+    // "velora" (default honest profile) or "chrome-macos-catalina" (antidetect)
+    browserProfile: "velora",
     loadTimeoutMs: 12000,
     settleAfterLoadMs: 20000,
     timeoutMs: 60000,
@@ -145,6 +147,9 @@ async function main() {
         "--log-format", "pretty",
         "--http-timeout", String(CONFIG.timeoutMs),
     ];
+    if (CONFIG.browserProfile) {
+        veloraArgs.push("--browser-profile", CONFIG.browserProfile);
+    }
     console.log(`[velora] launching ${veloraBin}`);
     console.log(`[velora]   args=${veloraArgs.join(" ")}`);
     console.log(`[velora]   url=${CONFIG.url}`);

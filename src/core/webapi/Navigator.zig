@@ -51,36 +51,32 @@ _service_worker: navigator_extras.ServiceWorkerContainer = .{},
 
 pub const init: Navigator = .{};
 
-fn state() NavigatorState {
-    return NavigatorState.default();
-}
-
 pub fn getUserAgent(_: *const Navigator, frame: *Frame) []const u8 {
-    return state().userAgent(&frame._session.browser.http_client);
+    return frame.navigatorState().userAgent(&frame._session.browser.http_client);
 }
 
-pub fn getLanguages(_: *const Navigator) [2][]const u8 {
-    return state().languages();
+pub fn getLanguages(_: *const Navigator, frame: *Frame) [2][]const u8 {
+    return frame.navigatorState().languages();
 }
 
-pub fn getLanguage(_: *const Navigator) []const u8 {
-    return state().language();
+pub fn getLanguage(_: *const Navigator, frame: *Frame) []const u8 {
+    return frame.navigatorState().language();
 }
 
-pub fn getPlatform(_: *const Navigator) []const u8 {
-    return state().platform();
+pub fn getPlatform(_: *const Navigator, frame: *Frame) []const u8 {
+    return frame.navigatorState().platform();
 }
 
-pub fn getAppName(_: *const Navigator) []const u8 {
-    return state().appName();
+pub fn getAppName(_: *const Navigator, _: *Frame) []const u8 {
+    return "Netscape";
 }
 
-pub fn getAppCodeName(_: *const Navigator) []const u8 {
-    return state().appCodeName();
+pub fn getAppCodeName(_: *const Navigator, _: *Frame) []const u8 {
+    return "Mozilla";
 }
 
-pub fn getAppVersion(_: *const Navigator) []const u8 {
-    return state().appVersion();
+pub fn getAppVersion(_: *const Navigator, frame: *Frame) []const u8 {
+    return frame.navigatorState().appVersion();
 }
 
 /// Returns whether Java is enabled (always false)
@@ -108,40 +104,40 @@ pub fn getUserAgentData(self: *Navigator) *NavigatorUAData {
     return &self._ua_data;
 }
 
-pub fn getHardwareConcurrency(_: *const Navigator) u32 {
-    return state().hardwareConcurrency();
+pub fn getHardwareConcurrency(_: *const Navigator, frame: *Frame) u32 {
+    return frame.navigatorState().hardwareConcurrency();
 }
 
-pub fn getDeviceMemory(_: *const Navigator) f64 {
-    return state().deviceMemory();
+pub fn getDeviceMemory(_: *const Navigator, frame: *Frame) f64 {
+    return frame.navigatorState().deviceMemory();
 }
 
-pub fn getMaxTouchPoints(_: *const Navigator) u32 {
-    return state().maxTouchPoints();
+pub fn getMaxTouchPoints(_: *const Navigator, frame: *Frame) u32 {
+    return frame.navigatorState().maxTouchPoints();
 }
 
-pub fn getVendor(_: *const Navigator) []const u8 {
-    return state().vendor();
+pub fn getVendor(_: *const Navigator, frame: *Frame) []const u8 {
+    return frame.navigatorState().vendor();
 }
 
-pub fn getProduct(_: *const Navigator) []const u8 {
-    return state().product();
+pub fn getProduct(_: *const Navigator, _: *Frame) []const u8 {
+    return "Gecko";
 }
 
-pub fn getWebdriver(_: *const Navigator) bool {
-    return state().webdriver();
+pub fn getWebdriver(_: *const Navigator, _: *Frame) bool {
+    return false;
 }
 
-pub fn getDoNotTrack(_: *const Navigator) ?[]const u8 {
-    return state().doNotTrack();
+pub fn getDoNotTrack(_: *const Navigator, _: *Frame) ?[]const u8 {
+    return null;
 }
 
-pub fn getGlobalPrivacyControl(_: *const Navigator) bool {
-    return state().globalPrivacyControl();
+pub fn getGlobalPrivacyControl(_: *const Navigator, frame: *Frame) bool {
+    return frame.navigatorState().globalPrivacyControl();
 }
 
-pub fn getOnLine(_: *const Navigator) bool {
-    return state().onLine();
+pub fn getOnLine(_: *const Navigator, _: *Frame) bool {
+    return true;
 }
 
 pub fn getConnection(_: *const Navigator) NetworkInformation {
@@ -204,8 +200,8 @@ pub fn getServiceWorker(self: *Navigator) *navigator_extras.ServiceWorkerContain
     return &self._service_worker;
 }
 
-pub fn getPdfViewerEnabled(_: *const Navigator) bool {
-    return state().pdfViewerEnabled();
+pub fn getPdfViewerEnabled(_: *const Navigator, frame: *Frame) bool {
+    return frame.navigatorState().pdfViewerEnabled();
 }
 
 pub fn getOscpu(_: *const Navigator) ?[]const u8 {

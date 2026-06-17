@@ -47,7 +47,7 @@ pub fn main() !void {
 }
 
 fn run(allocator: Allocator, main_arena: Allocator) !void {
-    const args = try Config.parseArgs(main_arena);
+    var args = try Config.parseArgs(main_arena);
     defer args.deinit(main_arena);
 
     switch (args.mode) {

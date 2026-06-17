@@ -56,6 +56,10 @@ pub const IdentityProfile = struct {
     global_privacy_control: bool,
     vendor: []const u8,
     user_agent_fallback: []const u8,
+    app_version: []const u8 = "1.0",
+    platform_version: []const u8 = "",
+    ua_full_version: []const u8 = "1.0.0.0",
+    ua_mobile: bool = false,
     screen: ScreenProfile,
     webgl: WebGLProfile,
     fonts: []const []const u8,
@@ -148,6 +152,10 @@ pub const macos_catalina_intel = IdentityProfile{
     .global_privacy_control = true,
     .vendor = "",
     .user_agent_fallback = "Velora/1.0 (Macintosh; Intel Mac OS X 10_15_7)",
+    .app_version = "1.0",
+    .platform_version = "",
+    .ua_full_version = "1.0.0.0",
+    .ua_mobile = false,
     .screen = .{
         .width = 1920,
         .height = 1080,
@@ -189,9 +197,13 @@ pub fn defaultIdentity() *const IdentityProfile {
     return &macos_catalina_intel;
 }
 
-pub fn isFontFamilyAvailable(family: []const u8) bool {
-    for (defaultIdentity().fonts) |available| {
+pub fn isFontFamilyAvailable(profile: *const IdentityProfile, family: []const u8) bool {
+    for (profile.fonts) |available| {
         if (std.ascii.eqlIgnoreCase(family, available)) return true;
     }
     return false;
+}
+
+pub fn defaultIsFontFamilyAvailable(family: []const u8) bool {
+    return isFontFamilyAvailable(defaultIdentity(), family);
 }

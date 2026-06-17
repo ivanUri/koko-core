@@ -54,6 +54,9 @@ const KeyboardEvent = @import("../webapi/event/KeyboardEvent.zig");
 const MouseEvent = @import("../webapi/event/MouseEvent.zig");
 
 const HttpClient = @import("HttpClient.zig");
+const FingerprintProfile = @import("../fingerprint/Profile.zig");
+const ProfileStore = @import("../fingerprint/ProfileStore.zig");
+const NavigatorState = @import("../webapi/NavigatorState.zig");
 
 const timestamp = @import("../../support/datetime.zig").timestamp;
 const milliTimestamp = @import("../../support/datetime.zig").milliTimestamp;
@@ -564,6 +567,18 @@ pub fn removeWorker(self: *Frame, worker: *Worker) void {
             break;
         }
     }
+}
+
+pub fn identityProfile(self: *const Frame) *const FingerprintProfile.IdentityProfile {
+    return self._session.browser.app.config.profile.identityPtr();
+}
+
+pub fn loadedProfile(self: *const Frame) *const ProfileStore.LoadedProfile {
+    return &self._session.browser.app.config.profile;
+}
+
+pub fn navigatorState(self: *const Frame) NavigatorState {
+    return .{ .profile = self.identityProfile() };
 }
 
 pub fn base(self: *const Frame) [:0]const u8 {

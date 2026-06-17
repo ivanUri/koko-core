@@ -13,6 +13,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
+const ProfileStore = @import("../core/fingerprint/ProfileStore.zig");
 const log = @import("../support/log.zig");
 const builtin = @import("builtin");
 
@@ -87,6 +88,7 @@ const CommonOptions = .{
     .{ .name = "web_bot_auth_keyid", .type = ?[]const u8 },
     .{ .name = "web_bot_auth_domain", .type = ?[]const u8 },
     .{ .name = "user_agent", .type = ?[]const u8 },
+    .{ .name = "browser_profile", .type = ?[]const u8 },
     .{ .name = "block_private_networks", .type = bool },
     .{ .name = "block_cidrs", .type = ?[]const u8 },
     .{ .name = "cookie", .type = ?[]const u8 },
@@ -178,20 +180,25 @@ pub const Mode = Commands.Union;
 
 mode: Mode,
 exec_name: []const u8,
+profile: ProfileStore.LoadedProfile,
 http_headers: HttpHeaders,
 
 pub fn init(allocator: Allocator, exec_name: []const u8, mode: Mode) !Config {
     var config = Config{
         .mode = mode,
         .exec_name = exec_name,
+        .profile = undefined,
         .http_headers = undefined,
     };
+    config.profile = try ProfileStore.resolve(config.browserProfile());
+    errdefer config.profile.deinit();
     config.http_headers = try HttpHeaders.init(allocator, &config);
     return config;
 }
 
-pub fn deinit(self: *const Config, allocator: Allocator) void {
+pub fn deinit(self: *Config, allocator: Allocator) void {
     self.http_headers.deinit(allocator);
+    self.profile.deinit();
 }
 
 pub fn tlsVerifyHost(self: *const Config) bool {
@@ -299,6 +306,13 @@ pub fn userAgentSuffix(self: *const Config) ?[]const u8 {
 pub fn userAgent(self: *const Config) ?[]const u8 {
     return switch (self.mode) {
         inline .serve, .fetch, .mcp => |opts| opts.user_agent,
+        .help, .version => null,
+    };
+}
+
+pub fn browserProfile(self: *const Config) ?[]const u8 {
+    return switch (self.mode) {
+        inline .serve, .fetch, .mcp => |opts| opts.browser_profile,
         .help, .version => null,
     };
 }
@@ -430,49 +444,32 @@ pub const HttpHeaders = struct {
         break :blk "Velora/1.0 (" ++ os_part ++ ")";
     };
 
-    const Brand = struct {
-        brand: [:0]const u8,
-        version: [:0]const u8,
-    };
-
-    /// Source of truth for client-hints brand data. Both the Sec-Ch-Ua
-    /// HTTP header and navigator.userAgentData.brands derive from this
-    /// list, so the two sides cannot drift.
-    pub const brands = [_]Brand{
-        .{ .brand = "Velora", .version = "1" },
-    };
-
-    pub const sec_ch_ua: [:0]const u8 = blk: {
-        var out: [:0]const u8 = "Sec-Ch-Ua:";
-        for (brands, 0..) |b, i| {
-            const sep = if (i == 0) " " else ", ";
-            out = out ++ sep ++ "\"" ++ b.brand ++ "\";v=\"" ++ b.version ++ "\"";
-        }
-        break :blk out;
-    };
-
-    // Some bot-protection frontends (e.g. Akamai on canada.ca) RST the HTTP/2
-    // stream when a client sends Accept-Encoding without Accept-Language,
-    // treating it as a bot signal. Ship a neutral default so we look like a
-    // normal client.
-    pub const accept_language: [:0]const u8 = "Accept-Language: en-US,en;q=0.9";
-
-    user_agent: [:0]const u8, // User agent value (e.g. "Velora/1.0")
+    user_agent: [:0]const u8,
     user_agent_header: [:0]const u8,
-
+    sec_ch_ua_header: [:0]const u8,
+    accept_language_header: [:0]const u8,
+    brands: []const ProfileStore.Brand,
     proxy_bearer_header: ?[:0]const u8,
+    user_agent_owned: bool,
 
     pub fn init(allocator: Allocator, config: *const Config) !HttpHeaders {
-        const user_agent: [:0]const u8 = if (config.userAgent()) |ua|
-            try allocator.dupeZ(u8, ua)
-        else if (config.userAgentSuffix()) |suffix|
-            try std.fmt.allocPrintSentinel(allocator, "{s} {s}", .{ user_agent_base, suffix }, 0)
-        else
-            user_agent_base;
-        errdefer if (config.userAgent() != null or config.userAgentSuffix() != null) allocator.free(user_agent);
+        const profile = &config.profile;
+        const user_agent: [:0]const u8 = if (config.userAgent()) |ua| blk: {
+            break :blk try allocator.dupeZ(u8, ua);
+        } else if (config.userAgentSuffix()) |suffix| blk: {
+            break :blk try std.fmt.allocPrintSentinel(allocator, "{s} {s}", .{ profile.http.user_agent, suffix }, 0);
+        } else profile.http.user_agent;
+        const user_agent_owned = config.userAgent() != null or config.userAgentSuffix() != null;
+        errdefer if (user_agent_owned) allocator.free(user_agent);
 
         const user_agent_header = try std.fmt.allocPrintSentinel(allocator, "User-Agent: {s}", .{user_agent}, 0);
         errdefer allocator.free(user_agent_header);
+
+        const sec_ch_ua_header = try allocator.dupeZ(u8, profile.http.sec_ch_ua);
+        errdefer allocator.free(sec_ch_ua_header);
+
+        const accept_language_header = try allocator.dupeZ(u8, profile.http.accept_language);
+        errdefer allocator.free(accept_language_header);
 
         const proxy_bearer_header: ?[:0]const u8 = if (config.proxyBearerToken()) |token|
             try std.fmt.allocPrintSentinel(allocator, "Proxy-Authorization: Bearer {s}", .{token}, 0)
@@ -482,18 +479,20 @@ pub const HttpHeaders = struct {
         return .{
             .user_agent = user_agent,
             .user_agent_header = user_agent_header,
+            .sec_ch_ua_header = sec_ch_ua_header,
+            .accept_language_header = accept_language_header,
+            .brands = profile.http.brands,
             .proxy_bearer_header = proxy_bearer_header,
+            .user_agent_owned = user_agent_owned,
         };
     }
 
     pub fn deinit(self: *const HttpHeaders, allocator: Allocator) void {
-        if (self.proxy_bearer_header) |hdr| {
-            allocator.free(hdr);
-        }
+        if (self.proxy_bearer_header) |hdr| allocator.free(hdr);
+        allocator.free(self.accept_language_header);
+        allocator.free(self.sec_ch_ua_header);
         allocator.free(self.user_agent_header);
-        if (self.user_agent.ptr != user_agent_base.ptr) {
-            allocator.free(self.user_agent);
-        }
+        if (self.user_agent_owned) allocator.free(self.user_agent);
     }
 };
 
@@ -731,14 +730,14 @@ pub fn parseArgs(allocator: Allocator) !Config {
     return .init(allocator, exec_name, command);
 }
 
-pub fn validateUserAgent(ua: []const u8) !void {
+pub fn validateUserAgent(ua: []const u8, allow_mozilla: bool) !void {
     for (ua) |c| {
         if (!std.ascii.isPrint(c)) {
             return error.NonPrintable;
         }
     }
 
-    if (std.ascii.indexOfIgnoreCase(ua, "mozilla") != null) {
+    if (!allow_mozilla and std.ascii.indexOfIgnoreCase(ua, "mozilla") != null) {
         return error.Reserved;
     }
 }
