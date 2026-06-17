@@ -194,6 +194,9 @@ _slotchange_delivery_task_owner: RealmLifecycleKernel.TaskOwner = .{ .realm_id =
 _performance_observers: std.ArrayList(*PerformanceObserver) = .{},
 _performance_delivery_scheduled: bool = false,
 
+/// Active RTCPeerConnection instances owned by this frame.
+_rtc_peer_connections: std.ArrayList(*@import("../webapi/rtc_bindings.zig").RTCPeerConnectionJs) = .{},
+
 // Lookup for customized built-in elements. Maps element pointer to definition.
 _customized_builtin_definitions: std.AutoHashMapUnmanaged(*Element, *CustomElementDefinition) = .{},
 _customized_builtin_connected_callback_invoked: std.AutoHashMapUnmanaged(*Element, void) = .{},
@@ -461,6 +464,7 @@ pub fn deinit(self: *Frame) void {
     }
 
     self.enterRealmDraining();
+    self.closeRtcPeerConnections();
 
     if (comptime IS_DEBUG) {
         log.debug(.frame, "frame.deinit", .{ .url = self.url, .type = self._type });
@@ -3058,6 +3062,35 @@ pub fn dupeString(self: *Frame, value: []const u8) ![]const u8 {
         return v;
     }
     return self.arena.dupe(u8, value);
+}
+
+pub fn registerRtcPeerConnection(self: *Frame, pc: *@import("../webapi/rtc_bindings.zig").RTCPeerConnectionJs) !void {
+    try self._rtc_peer_connections.append(self.arena, pc);
+}
+
+pub fn unregisterRtcPeerConnection(self: *Frame, pc: *@import("../webapi/rtc_bindings.zig").RTCPeerConnectionJs) void {
+    for (self._rtc_peer_connections.items, 0..) |item, i| {
+        if (item == pc) {
+            _ = self._rtc_peer_connections.swapRemove(i);
+            return;
+        }
+    }
+}
+
+pub fn drainRtcEvents(self: *Frame) void {
+    for (self._rtc_peer_connections.items) |pc| {
+        pc.drainEvents();
+    }
+}
+
+pub fn closeRtcPeerConnections(self: *Frame) void {
+    const pcs = self._rtc_peer_connections.items;
+    var i: usize = pcs.len;
+    while (i > 0) {
+        i -= 1;
+        pcs[i].close();
+    }
+    self._rtc_peer_connections.clearRetainingCapacity();
 }
 
 // Direct (non-propagating) dispatch of an event. Mirrors WorkerGlobalScope.dispatch

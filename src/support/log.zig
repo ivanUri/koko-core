@@ -37,6 +37,7 @@ pub const Scope = enum {
     mcp,
     cache,
     websocket,
+    webrtc,
     storage,
 };
 

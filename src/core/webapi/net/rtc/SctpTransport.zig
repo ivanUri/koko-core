@@ -83,19 +83,19 @@ _self_ptr: *SctpTransport,
 // usrsctp global init (call once per process)
 // ---------------------------------------------------------------------------
 
-var _global_init_done: std.atomic.Value(bool) = .init(false);
+var _global_refcount: std.atomic.Value(usize) = .init(0);
 
 pub fn globalInit() void {
-    if (_global_init_done.swap(true, .acq_rel)) return;
+    if (_global_refcount.fetchAdd(1, .acq_rel) > 0) return;
 
     usrsctp.usrsctp_init(0, sendCb, null);
-    usrsctp.usrsctp_sysctl_set_sctp_blackhole(2);
-    usrsctp.usrsctp_sysctl_set_sctp_no_csum_on_loopback(0);
+    _ = usrsctp.usrsctp_sysctl_set_sctp_blackhole(2);
+    _ = usrsctp.usrsctp_sysctl_set_sctp_no_csum_on_loopback(0);
 }
 
 pub fn globalDeinit() void {
-    if (!_global_init_done.load(.acquire)) return;
-    usrsctp.usrsctp_finish();
+    if (_global_refcount.fetchSub(1, .acq_rel) != 1) return;
+    _ = usrsctp.usrsctp_finish();
 }
 
 // ---------------------------------------------------------------------------
@@ -183,7 +183,7 @@ pub fn connect(self: *SctpTransport) !void {
     // Configure stream reset (required for DataChannel close)
     var reset: usrsctp.struct_sctp_assoc_value = .{
         .assoc_id = usrsctp.SCTP_ALL_ASSOC,
-        .assoc_value = usrsctp.ENABLE_RESET_STREAM_REQ | usrsctp.ENABLE_RESET_ASSOC_REQ | usrsctp.ENABLE_CHANGE_ASSOC_REQ,
+        .assoc_value = usrsctp.SCTP_ENABLE_RESET_STREAM_REQ | usrsctp.SCTP_ENABLE_RESET_ASSOC_REQ | usrsctp.SCTP_ENABLE_CHANGE_ASSOC_REQ,
     };
     _ = usrsctp.usrsctp_setsockopt(sock, usrsctp.IPPROTO_SCTP, usrsctp.SCTP_ENABLE_STREAM_RESET, &reset, @sizeOf(usrsctp.struct_sctp_assoc_value));
 
@@ -326,17 +326,24 @@ pub fn openChannel(
 /// Close a specific stream (sends SCTP stream reset).
 pub fn closeChannel(self: *SctpTransport, stream_id: u16) void {
     const sock = self._sock orelse return;
-    var reset: usrsctp.struct_sctp_reset_streams = std.mem.zeroes(usrsctp.struct_sctp_reset_streams);
-    reset.srs_assoc_id = usrsctp.SCTP_ALL_ASSOC;
-    reset.srs_flags = usrsctp.SCTP_STREAM_RESET_OUTGOING;
-    reset.srs_number_streams = 1;
-    reset.srs_stream_list[0] = stream_id;
+    const ResetStreams = extern struct {
+        srs_assoc_id: usrsctp.sctp_assoc_t,
+        srs_flags: u16,
+        srs_number_streams: u16,
+        srs_stream_list: [1]u16,
+    };
+    var reset: ResetStreams = .{
+        .srs_assoc_id = usrsctp.SCTP_ALL_ASSOC,
+        .srs_flags = usrsctp.SCTP_STREAM_RESET_OUTGOING,
+        .srs_number_streams = 1,
+        .srs_stream_list = .{stream_id},
+    };
     _ = usrsctp.usrsctp_setsockopt(
         sock,
         usrsctp.IPPROTO_SCTP,
         usrsctp.SCTP_RESET_STREAMS,
         &reset,
-        @sizeOf(usrsctp.struct_sctp_reset_streams),
+        @sizeOf(ResetStreams),
     );
 }
 
@@ -351,7 +358,7 @@ export fn sendCb(
     length: usize,
     _: u8,
     _: u8,
-) callconv(.C) c_int {
+) callconv(.c) c_int {
     const self: *SctpTransport = @ptrCast(@alignCast(addr orelse return -1));
     const data: [*]const u8 = @ptrCast(buf orelse return -1);
 
@@ -364,7 +371,7 @@ export fn sendCb(
         // stored context pointer set by WebRtcThread.
         if (g_send_ctx) |ctx| {
             self._dtls.send(data[0..length], ctx.sock, ctx.peer, ctx.peer_len) catch |err| {
-                log.warn(.webrtc, "SCTP->DTLS send failed", .{ .err = err });
+                log.warn(.webrtc, "SCTP DTLS send failed", .{ .err = err });
                 return -1;
             };
         }
@@ -375,32 +382,25 @@ export fn sendCb(
 /// Called by usrsctp when data arrives on a stream.
 export fn recvCb(
     sock: ?*usrsctp.struct_socket,
-    _: ?*anyopaque,
+    _: usrsctp.union_sctp_sockstore,
     buf: ?*anyopaque,
     length: usize,
-    _: ?*usrsctp.struct_sctp_recvv_rn,
-    _: usrsctp.socklen_t,
+    rcvinfo: usrsctp.struct_sctp_rcvinfo,
     flags: c_int,
-    _: c_int,
-    infotype: c_uint,
-    _: ?*anyopaque,
-) callconv(.C) c_int {
+    ulp_info: ?*anyopaque,
+) callconv(.c) c_int {
     _ = sock;
     _ = flags;
 
-    const self_ptr = g_recv_ctx orelse return -1;
+    const self_ptr: *SctpTransport = @ptrCast(@alignCast(ulp_info orelse return -1));
     const data: [*]const u8 = @ptrCast(buf orelse return -1);
 
-    if (infotype == usrsctp.SCTP_RECVV_RCVINFO) {
-        // Normal data
-        const rcvinfo_ptr = g_recv_rcvinfo orelse return 0;
-        const stream_id = rcvinfo_ptr.rcv_sid;
-        const ppid = std.mem.bigToNative(u32, rcvinfo_ptr.rcv_ppid);
+    const stream_id = rcvinfo.rcv_sid;
+    const ppid = std.mem.bigToNative(u32, rcvinfo.rcv_ppid);
 
-        self_ptr.handleIncomingData(stream_id, ppid, data[0..length]) catch |err| {
-            log.warn(.webrtc, "SCTP recv handler error", .{ .err = err });
-        };
-    }
+    self_ptr.handleIncomingData(stream_id, ppid, data[0..length]) catch |err| {
+        log.warn(.webrtc, "SCTP recv handler error", .{ .err = err });
+    };
 
     return 0;
 }
@@ -415,13 +415,11 @@ pub const SendCtx = struct {
 };
 
 var g_send_ctx: ?*const SendCtx = null;
-var g_recv_ctx: ?*SctpTransport = null;
-var g_recv_rcvinfo: ?*usrsctp.struct_sctp_rcvinfo = null;
 
 /// Set before calling usrsctp_conninput / usrsctp_sendv.
 pub fn setCallbackContext(self: *SctpTransport, send_ctx: ?*const SendCtx) void {
+    _ = self;
     g_send_ctx = send_ctx;
-    g_recv_ctx = self;
 }
 
 // ---------------------------------------------------------------------------

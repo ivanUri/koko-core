@@ -47,6 +47,27 @@ const RtcEventQueue = @import("../../../../runtime/network/RtcEventQueue.zig");
 
 const IceAgent = @This();
 
+fn FixedList(comptime T: type, comptime capacity: usize) type {
+    return struct {
+        buffer: [capacity]T = undefined,
+        len: usize = 0,
+
+        pub fn append(self: *@This(), item: T) !void {
+            if (self.len >= capacity) return error.Overflow;
+            self.buffer[self.len] = item;
+            self.len += 1;
+        }
+
+        pub fn slice(self: *const @This()) []const T {
+            return self.buffer[0..self.len];
+        }
+
+        pub fn sliceMut(self: *@This()) []T {
+            return self.buffer[0..self.len];
+        }
+    };
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -129,9 +150,9 @@ _role: Role,
 _tiebreaker: u64,
 
 // Candidates
-_local: std.BoundedArray(Candidate, MAX_LOCAL_CANDIDATES),
-_remote: std.BoundedArray(Candidate, MAX_REMOTE_CANDIDATES),
-_pairs: std.BoundedArray(CandidatePair, MAX_PAIRS),
+_local: FixedList(Candidate, MAX_LOCAL_CANDIDATES) = .{},
+_remote: FixedList(Candidate, MAX_REMOTE_CANDIDATES) = .{},
+_pairs: FixedList(CandidatePair, MAX_PAIRS) = .{},
 
 // Nominated pair (valid after .connected)
 _nominated: ?*CandidatePair,
@@ -326,20 +347,6 @@ pub fn handleIncoming(self: *IceAgent, data: []const u8, from: std.net.Address, 
 fn gatherHostCandidates(self: *IceAgent) !usize {
     var count: usize = 0;
 
-    // Use getifaddrs to enumerate interfaces
-    const IfAddrs = extern struct {
-        ifa_next: ?*@This(),
-        ifa_name: [*:0]u8,
-        ifa_flags: c_uint,
-        ifa_addr: ?*posix.sockaddr,
-        ifa_netmask: ?*posix.sockaddr,
-        ifa_ifu: extern union {
-            ifu_broadaddr: ?*posix.sockaddr,
-            ifu_dstaddr: ?*posix.sockaddr,
-        },
-        ifa_data: ?*anyopaque,
-    };
-
     const c = @cImport({
         @cInclude("ifaddrs.h");
         @cInclude("net/if.h");
@@ -358,22 +365,23 @@ fn gatherHostCandidates(self: *IceAgent) !usize {
     var ifa = ifaddr;
     while (ifa) |iface| : (ifa = iface.ifa_next) {
         const sa = iface.ifa_addr orelse continue;
+        const sa_generic: *posix.sockaddr = @ptrCast(@alignCast(sa));
 
         // Skip loopback and down interfaces
         if (iface.ifa_flags & @as(c_uint, @bitCast(c.IFF_LOOPBACK)) != 0) continue;
         if (iface.ifa_flags & @as(c_uint, @bitCast(c.IFF_UP)) == 0) continue;
 
-        if (sa.family == posix.AF.INET) {
-            const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(sa));
+        if (sa_generic.family == posix.AF.INET) {
+            const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(sa_generic));
             const ip_bytes: [4]u8 = @bitCast(sin.addr);
             const addr = std.net.Address.initIp4(ip_bytes, self._sock_port);
             // local_pref: default route interface gets higher pref
             const local_pref: u16 = if (isDefaultRouteIface(iface.ifa_name)) 65535 else 65000;
             _ = try self.addHostCandidate(addr, local_pref);
             count += 1;
-        } else if (sa.family == posix.AF.INET6) {
-            const sin6: *const posix.sockaddr.in6 = @ptrCast(@alignCast(sa));
-            const ip_bytes: [16]u8 = sin6.addr.__in6_u.__u6_addr8;
+        } else if (sa_generic.family == posix.AF.INET6) {
+            const sin6: *const posix.sockaddr.in6 = @ptrCast(@alignCast(sa_generic));
+            const ip_bytes: [16]u8 = sin6.addr;
             // Skip link-local (fe80::)
             if (ip_bytes[0] == 0xFE and ip_bytes[1] == 0x80) continue;
             const addr = std.net.Address.initIp6(ip_bytes, self._sock_port, sin6.flowinfo, sin6.scope_id);
@@ -401,7 +409,13 @@ fn addHostCandidate(self: *IceAgent, addr: std.net.Address, local_pref: u16) !us
     const priority = computePriority(TYPE_PREF_HOST, local_pref, 1);
 
     var foundation: [32]u8 = std.mem.zeroes([32]u8);
-    const flen: u8 = @intCast(std.fmt.bufPrint(&foundation, "host{d}", .{self._local.len}) catch "host".len);
+    const flen: u8 = blk: {
+        const written = std.fmt.bufPrint(&foundation, "host{d}", .{self._local.len}) catch {
+            @memcpy(foundation[0..4], "host");
+            break :blk 4;
+        };
+        break :blk @intCast(written.len);
+    };
 
     try self._local.append(Candidate{
         .foundation = foundation,
@@ -465,7 +479,13 @@ fn handleSrflxResponse(self: *IceAgent, resp: StunClient.BindingResponse) !void 
 
     const priority = computePriority(TYPE_PREF_SRFLX, 65535, 1);
     var foundation: [32]u8 = std.mem.zeroes([32]u8);
-    const flen: u8 = @intCast(std.fmt.bufPrint(&foundation, "srflx0", .{}) catch "srflx0".len);
+    const flen: u8 = blk: {
+        const written = std.fmt.bufPrint(&foundation, "srflx0", .{}) catch {
+            @memcpy(foundation[0..6], "srflx0");
+            break :blk 6;
+        };
+        break :blk @intCast(written.len);
+    };
 
     const cand = Candidate{
         .foundation = foundation,
@@ -523,7 +543,7 @@ fn runConnectivityChecks(self: *IceAgent, now_ms: u64) !void {
 }
 
 fn sendConnectivityCheck(self: *IceAgent, pair_idx: usize, now_ms: u64) !void {
-    const pair = &self._pairs.slice()[pair_idx];
+    const pair = &self._pairs.sliceMut()[pair_idx];
 
     // Build USERNAME: remote_ufrag:local_ufrag
     var username_buf: [64]u8 = undefined;
@@ -569,7 +589,6 @@ fn sendConnectivityCheck(self: *IceAgent, pair_idx: usize, now_ms: u64) !void {
 // ---------------------------------------------------------------------------
 
 fn handleStunMessage(self: *IceAgent, data: []const u8, from: std.net.Address, now_ms: u64) !bool {
-    _ = from;
     if (data.len < 2) return false;
 
     const msg_type_raw = std.mem.readInt(u16, data[0..2], .big);
@@ -604,23 +623,23 @@ fn handleCheckResponse(self: *IceAgent, data: []const u8, now_ms: u64) !void {
     var tid: [12]u8 = undefined;
     @memcpy(&tid, data[8..20]);
 
-    for (self._pairs.slice()) |*pair| {
-        if (!std.mem.eql(u8, &pair.check_tid, &tid)) continue;
+    for (self._pairs.sliceMut()) |*pair_ptr| {
+        if (!std.mem.eql(u8, &pair_ptr.check_tid, &tid)) continue;
 
         const resp = StunClient.parseBindingResponse(data) catch {
-            pair.state = .failed;
+            pair_ptr.state = .failed;
             return;
         };
         _ = resp;
 
-        pair.state = .succeeded;
-        pair.rtt_ms = @intCast(now_ms -| pair.last_check_ms);
+        pair_ptr.state = .succeeded;
+        pair_ptr.rtt_ms = @intCast(now_ms -| pair_ptr.last_check_ms);
 
         if (self._nominated == null) {
-            pair.nominated = true;
-            self._nominated = pair;
+            pair_ptr.nominated = true;
+            self._nominated = pair_ptr;
             self._connection = .connected;
-            log.info(.webrtc, "ICE connected", .{ .rtt = pair.rtt_ms });
+            log.info(.webrtc, "ICE connected", .{ .rtt = pair_ptr.rtt_ms });
             try self.emitConnectionState(.connected);
         }
         return;
@@ -632,7 +651,7 @@ fn handleInboundCheck(self: *IceAgent, data: []const u8, from: std.net.Address, 
 
     // Verify MESSAGE-INTEGRITY with our local password
     if (!StunClient.verifyMessageIntegrity(data, self._local_pwd[0..pwdLen(self._local_pwd)])) {
-        log.warn(.webrtc, "ICE check: bad MI, ignoring", .{});
+        log.warn(.webrtc, "ICE check bad MI ignored", .{});
         return;
     }
 
@@ -710,6 +729,32 @@ fn computeHmacSha1ForResponse(msg: []const u8, key: []const u8, out: *[20]u8) vo
 // Private: event emission helpers
 // ---------------------------------------------------------------------------
 
+fn formatCandidateAddress(addr: std.net.Address, out: *[64]u8) ?u8 {
+    switch (addr.any.family) {
+        posix.AF.INET => {
+            const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&addr.any));
+            const ip: [4]u8 = @bitCast(sin.addr);
+            const written = std.fmt.bufPrint(out, "{d}.{d}.{d}.{d}", .{ ip[0], ip[1], ip[2], ip[3] }) catch return null;
+            return @intCast(written.len);
+        },
+        posix.AF.INET6 => {
+            const sin6: *const posix.sockaddr.in6 = @ptrCast(@alignCast(&addr.any));
+            const written = std.fmt.bufPrint(out, "{x:0>4}:{x:0>4}:{x:0>4}:{x:0>4}:{x:0>4}:{x:0>4}:{x:0>4}:{x:0>4}", .{
+                std.mem.readInt(u16, sin6.addr[0..2], .big),
+                std.mem.readInt(u16, sin6.addr[2..4], .big),
+                std.mem.readInt(u16, sin6.addr[4..6], .big),
+                std.mem.readInt(u16, sin6.addr[6..8], .big),
+                std.mem.readInt(u16, sin6.addr[8..10], .big),
+                std.mem.readInt(u16, sin6.addr[10..12], .big),
+                std.mem.readInt(u16, sin6.addr[12..14], .big),
+                std.mem.readInt(u16, sin6.addr[14..16], .big),
+            }) catch return null;
+            return @intCast(written.len);
+        },
+        else => return null,
+    }
+}
+
 fn emitCandidate(self: *IceAgent, cand: *const Candidate) !void {
     var ev = RtcEventQueue.RtcEvent.IceCandidateEvent{
         .foundation = cand.foundation,
@@ -731,23 +776,13 @@ fn emitCandidate(self: *IceAgent, cand: *const Candidate) !void {
         .related_port = 0,
     };
 
-    // Stringify address
-    const addr_str = std.fmt.bufPrint(&ev.address, "{}", .{cand.addr}) catch "";
-    // Strip port: find last colon
-    const colon_pos = std.mem.lastIndexOfScalar(u8, addr_str, ':') orelse addr_str.len;
-    const ip_str = addr_str[0..colon_pos];
-    if (ip_str.len <= 64) {
-        @memcpy(ev.address[0..ip_str.len], ip_str);
-        ev.address_len = @intCast(ip_str.len);
+    if (formatCandidateAddress(cand.addr, &ev.address)) |ip_len| {
+        ev.address_len = ip_len;
     }
 
     if (cand.related_addr) |rel| {
-        const rel_str = std.fmt.bufPrint(&ev.related_address, "{}", .{rel}) catch "";
-        const rel_colon = std.mem.lastIndexOfScalar(u8, rel_str, ':') orelse rel_str.len;
-        const rel_ip = rel_str[0..rel_colon];
-        if (rel_ip.len <= 64) {
-            @memcpy(ev.related_address[0..rel_ip.len], rel_ip);
-            ev.related_address_len = @intCast(rel_ip.len);
+        if (formatCandidateAddress(rel, &ev.related_address)) |rel_len| {
+            ev.related_address_len = rel_len;
             ev.related_port = rel.getPort();
         }
     }

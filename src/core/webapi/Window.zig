@@ -753,6 +753,11 @@ pub fn unhandledPromiseRejection(self: *Window, no_handler: bool, rejection: js.
             .value = rejection.reason(),
             .stack = rejection.local.stackTrace() catch |err| @errorName(err) orelse "???",
         });
+    } else {
+        log.warn(.js, "unhandled rejection", .{
+            .target = "window",
+            .value = rejection.reason(),
+        });
     }
 
     const event_name, const attribute_callback = blk: {
@@ -768,7 +773,10 @@ pub fn unhandledPromiseRejection(self: *Window, no_handler: bool, rejection: js.
             .reason = if (rejection.reason()) |r| try r.temp() else null,
             .promise = try rejection.promise().temp(),
         }, frame._page)).asEvent();
-        try frame._event_manager.dispatchDirect(target, event, attribute_callback, .{ .context = "window.unhandledrejection" });
+        // Ignore any errors from dispatching the event to avoid crashing
+        frame._event_manager.dispatchDirect(target, event, attribute_callback, .{ .context = "window.unhandledrejection" }) catch |err| {
+            log.warn(.js, "failed to dispatch unhandledrejection event", .{ .err = err });
+        };
     }
 }
 

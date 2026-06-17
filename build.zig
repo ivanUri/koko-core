@@ -1096,6 +1096,7 @@ fn linkWebRtc(b: *Build, mod: *Build.Module, is_tsan: bool) !void {
     });
 
     mod.linkLibrary(usrsctp);
+    mod.addIncludePath(usrsctp_dep.path("usrsctplib"));
 
     // ── BoringSSL (ssl + crypto) for DTLS ────────────────────────────────────
     // Already built via buildBoringSsl() for curl — reuse the same artifacts.

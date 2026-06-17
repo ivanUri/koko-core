@@ -95,13 +95,12 @@ pub fn init(alloc: Allocator, event_queue: *RtcEventQueue, role: Role) !DtlsTran
     // Generate ECDSA P-256 key
     const pkey = blk: {
         const ec_key = ssl_c.EC_KEY_new_by_curve_name(ssl_c.NID_X9_62_prime256v1) orelse return error.KeyGenFailed;
-        defer ssl_c.EC_KEY_free(ec_key);
+        errdefer ssl_c.EC_KEY_free(ec_key);
         if (ssl_c.EC_KEY_generate_key(ec_key) != 1) return error.KeyGenFailed;
         const pk = ssl_c.EVP_PKEY_new() orelse return error.KeyGenFailed;
-        if (ssl_c.EVP_PKEY_assign_EC_KEY(pk, ec_key) != 1) {
-            ssl_c.EVP_PKEY_free(pk);
-            return error.KeyGenFailed;
-        }
+        errdefer ssl_c.EVP_PKEY_free(pk);
+        if (ssl_c.EVP_PKEY_assign_EC_KEY(pk, ec_key) != 1) return error.KeyGenFailed;
+        // ec_key ownership transferred to pk
         break :blk pk;
     };
     defer ssl_c.EVP_PKEY_free(pkey);
@@ -146,7 +145,7 @@ pub fn init(alloc: Allocator, event_queue: *RtcEventQueue, role: Role) !DtlsTran
     // Memory BIOs (non-blocking)
     const read_bio = ssl_c.BIO_new(ssl_c.BIO_s_mem()) orelse return error.SslInitFailed;
     const write_bio = ssl_c.BIO_new(ssl_c.BIO_s_mem()) orelse {
-        ssl_c.BIO_free(read_bio);
+        _ = ssl_c.BIO_free(read_bio);
         return error.SslInitFailed;
     };
 

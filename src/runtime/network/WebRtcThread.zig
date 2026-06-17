@@ -117,7 +117,7 @@ pub fn create(alloc: Allocator, event_queue: *RtcEventQueue, cmd_queue: *RtcComm
     const pipe_fds = try posix.pipe2(.{ .NONBLOCK = true, .CLOEXEC = true });
 
     // Init ICE agent (opens UDP socket)
-    const ice = try IceAgent.init(alloc, event_queue, ufrag, config.ice_role);
+    const ice = try IceAgent.init(alloc, event_queue, ufrag, pwd, config.ice_role);
 
     // Init DTLS transport (generates certificate)
     const dtls_role: DtlsTransport.Role = if (config.ice_role == .controlling) .client else .server;
@@ -214,7 +214,7 @@ fn run(self: *WebRtcThread) !void {
         };
 
         _ = posix.poll(&fds, 20) catch |err| {
-            log.warn(.webrtc, "poll() failed", .{ .err = err });
+            log.warn(.webrtc, "poll failed", .{ .err = err });
             continue;
         };
 
@@ -485,7 +485,7 @@ fn handleCommand(self: *WebRtcThread, cmd: RtcCommandQueue.RtcCommand) !void {
 
 fn parsedCandidateToIce(pc: SdpParser.ParsedCandidate) ?IceAgent.Candidate {
     // Only handle UDP candidates for now
-    if (!std.mem.eqlIgnoreCase(pc.transport, "UDP") and !std.mem.eqlIgnoreCase(pc.transport, "udp")) return null;
+    if (!std.ascii.eqlIgnoreCase(pc.transport, "UDP")) return null;
 
     const addr = std.net.Address.parseIp(pc.address, pc.port) catch return null;
 

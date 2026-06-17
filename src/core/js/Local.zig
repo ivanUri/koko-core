@@ -186,7 +186,16 @@ pub fn compileAndRun(self: *const Local, src: []const u8, name: ?[]const u8) !js
     ) orelse return error.CompilationError;
 
     // Run the script
-    const result = v8.v8__Script__Run(v8_script, self.handle) orelse return error.JsException;
+    var try_catch: js.TryCatch = undefined;
+    try_catch.init(self);
+    defer try_catch.deinit();
+
+    const result = v8.v8__Script__Run(v8_script, self.handle) orelse {
+        if (try_catch.hasCaught()) {
+            log.warn(.frame, "Script execution error isolated", .{});
+        }
+        return error.JsException;
+    };
     return .{ .local = self, .handle = result };
 }
 

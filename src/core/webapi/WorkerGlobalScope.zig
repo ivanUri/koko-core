@@ -378,6 +378,11 @@ pub fn unhandledPromiseRejection(self: *WorkerGlobalScope, no_handler: bool, rej
             .value = rejection.reason(),
             .stack = rejection.local.stackTrace() catch |err| @errorName(err) orelse "???",
         });
+    } else {
+        log.warn(.js, "unhandled rejection", .{
+            .target = "worker",
+            .value = rejection.reason(),
+        });
     }
 
     const event_name, const attribute_callback = blk: {
@@ -393,7 +398,10 @@ pub fn unhandledPromiseRejection(self: *WorkerGlobalScope, no_handler: bool, rej
             .reason = if (rejection.reason()) |r| try r.temp() else null,
             .promise = try rejection.promise().temp(),
         }, self._page)).asEvent();
-        try self.dispatch(target, event, attribute_callback, .{});
+        // Ignore any errors from dispatching the event to avoid crashing
+        self.dispatch(target, event, attribute_callback, .{}) catch |err| {
+            log.warn(.js, "failed to dispatch unhandledrejection event", .{ .err = err });
+        };
     }
 }
 

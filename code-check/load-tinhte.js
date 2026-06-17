@@ -18,7 +18,7 @@ const veloraBin = resolve(repoRoot, "zig-out/bin/velora");
 // CONFIG — edit here, no CLI flags.
 // ---------------------------------------------------------------------------
 const CONFIG = {
-    url: "http://127.0.0.1:3000/code-check/creep.html",
+    url: "http://127.0.0.1:5500/code-check/creep.html",
     outDir: resolve(repoRoot, "code-check/tmp/test-creepjs"),
     htmlFile: "page.html",
     logFile: "page.log",
@@ -46,7 +46,7 @@ async function getFreePort() {
 async function waitFor(url, timeoutMs) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
-        try { const r = await fetch(url); if (r.ok) return; } catch (_) {}
+        try { const r = await fetch(url); if (r.ok) return; } catch (_) { }
         await delay(50);
     }
     throw new Error(`waitFor timed out: ${url}`);
@@ -224,7 +224,7 @@ async function main() {
         let title = null;
         try {
             title = await pageEval(client, sessionId, "document.title", 5000);
-        } catch (_) {}
+        } catch (_) { }
 
         console.log("\n=== load summary ===");
         console.log(`url:        ${CONFIG.url}`);
@@ -236,7 +236,7 @@ async function main() {
         console.error("[load] error:", err.message);
         process.exitCode = 1;
     } finally {
-        try { ws && ws.close(); } catch (_) {}
+        try { ws && ws.close(); } catch (_) { }
         await cleanup();
     }
 }

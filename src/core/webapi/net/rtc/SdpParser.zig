@@ -147,7 +147,7 @@ pub fn parse(input: []const u8) !ParsedSdp {
     if (!have_ufrag) return ParseError.MissingIceUfrag;
     if (!have_pwd) return ParseError.MissingIcePwd;
     if (!have_fp) return ParseError.MissingFingerprint;
-    _ = have_setup; // setup defaults to actpass if missing
+    if (!have_setup) result.setup = .actpass;
 
     return result;
 }

@@ -43,6 +43,11 @@ pub const RtcEvent = union(enum) {
     sctp_data: SctpDataEvent,
     /// SCTP association is established; all pending channels can open.
     sctp_connected,
+    /// Local createDataChannel command completed; stream_id is now known.
+    channel_created: struct {
+        stream_id: u16,
+        js_channel_id: u32,
+    },
     /// A data channel was closed by the remote peer.
     sctp_channel_closed: u16, // stream_id
     /// The peer connection was shut down cleanly by the network thread.
@@ -170,6 +175,20 @@ pub fn drainAll(self: *RtcEventQueue, out: *std.ArrayList(*Node)) !void {
         i -= 1;
         try out.append(tmp[i]);
     }
+}
+
+/// Pop one event (JS thread). Returns nodes in LIFO order.
+pub fn pop(self: *RtcEventQueue) ?*Node {
+    var head = self._head.load(.acquire);
+    while (head) |node| {
+        const next = node.next.load(.monotonic);
+        if (self._head.cmpxchgWeak(head, next, .acquire, .monotonic)) |_| {
+            head = self._head.load(.acquire);
+        } else {
+            return node;
+        }
+    }
+    return null;
 }
 
 /// Returns true if the queue is non-empty.

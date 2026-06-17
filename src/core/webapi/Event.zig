@@ -74,6 +74,7 @@ pub const Type = union(enum) {
     submit_event: *@import("event/SubmitEvent.zig"),
     form_data_event: *@import("event/FormDataEvent.zig"),
     close_event: *@import("event/CloseEvent.zig"),
+    rtc_peer_connection_ice_event: *@import("rtc_bindings.zig").RTCPeerConnectionIceEvent,
     offline_audio_completion_event: *@import("event/OfflineAudioCompletionEvent.zig"),
 };
 
@@ -171,6 +172,7 @@ pub fn is(self: *Event, comptime T: type) ?*T {
         .submit_event => |e| return if (T == @import("event/SubmitEvent.zig")) e else null,
         .form_data_event => |e| return if (T == @import("event/FormDataEvent.zig")) e else null,
         .close_event => |e| return if (T == @import("event/CloseEvent.zig")) e else null,
+        .rtc_peer_connection_ice_event => |e| return if (T == @import("rtc_bindings.zig").RTCPeerConnectionIceEvent) e else null,
         .offline_audio_completion_event => |e| return if (T == @import("event/OfflineAudioCompletionEvent.zig")) e else null,
         .ui_event => |e| {
             if (T == @import("event/UIEvent.zig")) {

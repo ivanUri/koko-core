@@ -189,6 +189,7 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
             // store http_client.http_active BEFORE this call and then use
             // it AFTER.
             try browser.runMacrotasks();
+            frame.drainRtcEvents();
 
             const http_active = http_client.http_active;
             const total_network_activity = http_active + http_client.interception_layer.intercepted;
@@ -212,7 +213,7 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
                 },
             }
 
-            if (http_active == 0 and http_client.ws_active == 0 and (comptime is_cdp == false)) {
+            if (http_active == 0 and http_client.ws_active == 0 and http_client.rtc_active == 0 and (comptime is_cdp == false)) {
                 // we don't need to consider http_client.intercepted here
                 // because is_cdp is false, and that can only be
                 // the case when interception isn't possible.

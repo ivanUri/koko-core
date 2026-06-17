@@ -115,6 +115,12 @@ pub const Config = struct {
     is_offerer: bool = true,
 };
 
+pub const OfferOptions = struct {
+    offer_to_receive_audio: bool = false,
+    offer_to_receive_video: bool = false,
+    include_datachannel: bool = true,
+};
+
 // ---------------------------------------------------------------------------
 // Callbacks (set by JS binding layer)
 // ---------------------------------------------------------------------------
@@ -181,6 +187,9 @@ _pending_count: usize,
 // Handlers
 handlers: Handlers,
 
+// SDP generation options (set before createOffer)
+_offer_options: OfferOptions = .{},
+
 // STUN server address (parsed from config, sent to network thread)
 _stun_addr: ?std.net.Address,
 
@@ -193,6 +202,7 @@ _closed: std.atomic.Value(bool),
 
 const PendingChannel = struct {
     js_channel_id: u32,
+    channel: *RTCDataChannel,
     label: []u8, // owned
     init: RTCDataChannel.Init,
     protocol: []u8, // owned
@@ -214,7 +224,7 @@ pub fn create(alloc: Allocator, config: Config) !*RTCPeerConnection {
     cmd_queue.* = RtcCommandQueue.init();
 
     // Parse STUN server from config
-    const stun_addr = parseFirstStunServer(config.ice_servers);
+    const stun_addr = parseFirstStunServer(alloc, config.ice_servers);
 
     // Create network thread
     const thread_config = WebRtcThread.Config{
@@ -273,6 +283,7 @@ pub fn destroy(self: *RTCPeerConnection) void {
     // Free pending channels
     for (self._pending_channels[0..self._pending_count]) |*pc| {
         if (pc.*) |p| {
+            p.channel.unref();
             self._alloc.free(p.label);
             self._alloc.free(p.protocol);
         }
@@ -295,6 +306,11 @@ pub fn destroy(self: *RTCPeerConnection) void {
 // ---------------------------------------------------------------------------
 // WebRTC API (JS thread)
 // ---------------------------------------------------------------------------
+
+/// Set options for the next createOffer() call.
+pub fn setOfferOptions(self: *RTCPeerConnection, opts: OfferOptions) void {
+    self._offer_options = opts;
+}
 
 /// createOffer() — RFC 8829 §4.1.6
 pub fn createOffer(self: *RTCPeerConnection, out_buf: *std.ArrayList(u8)) ![]const u8 {
@@ -391,11 +407,13 @@ pub fn createDataChannel(
         const proto_copy2 = try self._alloc.dupe(u8, init.protocol);
         self._pending_channels[self._pending_count] = PendingChannel{
             .js_channel_id = js_id,
+            .channel = ch,
             .label = try self._alloc.dupe(u8, label),
             .init = init,
             .protocol = proto_copy2,
         };
         self._alloc.free(protocol_copy);
+        _ = ch.ref();
         self._pending_count += 1;
     }
 
@@ -455,18 +473,22 @@ fn handleEvent(self: *RTCPeerConnection, event: RtcEventQueue.RtcEvent) void {
     switch (event) {
         .ice_candidate => |cand| {
             if (self.handlers.on_ice_candidate) |cb| {
-                // Format as a=candidate line
-                var buf: [512]u8 = undefined;
-                const line = SdpBuilder.formatCandidateLine(&buf, .{
+                const transport: []const u8 = switch (cand.protocol) {
+                    .udp => "UDP",
+                    .tcp => "TCP",
+                };
+                const has_related = cand.related_address_len > 0;
+                var line_buf: [512]u8 = undefined;
+                const line = SdpBuilder.formatCandidateLine(&line_buf, .{
                     .foundation = cand.foundation[0..cand.foundation_len],
                     .component = cand.component,
-                    .transport = "UDP",
+                    .transport = transport,
                     .priority = cand.priority,
                     .address = cand.address[0..cand.address_len],
                     .port = cand.port,
-                    .typ = candTypStr(cand.typ),
-                    .related_address = if (cand.has_related) cand.related_address[0..cand.related_address_len] else null,
-                    .related_port = if (cand.has_related) cand.related_port else null,
+                    .typ = eventCandTypStr(cand.typ),
+                    .related_address = if (has_related) cand.related_address[0..cand.related_address_len] else null,
+                    .related_port = if (has_related) cand.related_port else null,
                 }) catch return;
                 cb(self.handlers.ctx, line, "0");
             }
@@ -478,23 +500,24 @@ fn handleEvent(self: *RTCPeerConnection, event: RtcEventQueue.RtcEvent) void {
             if (self.handlers.on_ice_gathering_complete) |cb| cb(self.handlers.ctx);
         },
 
-        .ice_connected => {
-            self.setIceConnectionState(.connected);
-            self.setConnectionState(.connecting);
+        .ice_connection_state => |state| {
+            self.setIceConnectionState(mapIceConnectionState(state));
+            if (state == .connected or state == .completed) {
+                self.setConnectionState(.connecting);
+            } else if (state == .failed) {
+                self.setConnectionState(.failed);
+            }
         },
 
-        .ice_failed => {
+        .dtls_handshake_done => {},
+
+        .dtls_failed => {
             self.setIceConnectionState(.failed);
             self.setConnectionState(.failed);
         },
 
-        .dtls_connected => {
-            // DTLS done — connection is now "connected" once SCTP opens
-        },
-
         .sctp_connected => {
             self.setConnectionState(.connected);
-            // Flush any pending createDataChannel calls that couldn't run before SCTP was up
         },
 
         .channel_created => |info| {
@@ -502,7 +525,6 @@ fn handleEvent(self: *RTCPeerConnection, event: RtcEventQueue.RtcEvent) void {
         },
 
         .sctp_channel_open => |info| {
-            // Remote-initiated channel (answerer side)
             self.onRemoteChannelOpen(info);
         },
 
@@ -525,9 +547,11 @@ fn handleEvent(self: *RTCPeerConnection, event: RtcEventQueue.RtcEvent) void {
             }
         },
 
-        .error_event => |msg| {
-            log.warn(.webrtc, "RTCPeerConnection network error", .{ .msg = msg });
+        .connection_state => |state| {
+            self.setConnectionState(mapConnectionState(state));
         },
+
+        .shutdown_ack => {},
     }
 }
 
@@ -536,48 +560,27 @@ fn handleEvent(self: *RTCPeerConnection, event: RtcEventQueue.RtcEvent) void {
 // ---------------------------------------------------------------------------
 
 fn onChannelCreated(self: *RTCPeerConnection, stream_id: u16, js_channel_id: u32) void {
-    // Find the pending channel with this js_channel_id
     for (self._pending_channels[0..self._pending_count], 0..) |*slot, i| {
         const pending = slot.* orelse continue;
         if (pending.js_channel_id != js_channel_id) continue;
 
-        // Create the real channel with correct stream_id
-        const ch = RTCDataChannel.create(
-            self._alloc,
-            self._cmd_queue,
-            stream_id,
-            js_channel_id,
-            pending.label,
-            pending.init,
-        ) catch {
-            log.warn(.webrtc, "failed to create RTCDataChannel for stream", .{ .stream_id = stream_id });
-            self._alloc.free(pending.label);
-            self._alloc.free(pending.protocol);
-            slot.* = null;
-            // Compact
-            if (i + 1 < self._pending_count) {
-                std.mem.copyForwards(?PendingChannel, self._pending_channels[i..], self._pending_channels[i + 1 .. self._pending_count]);
-            }
-            self._pending_count -= 1;
-            return;
-        };
+        const ch = pending.channel;
+        ch.stream_id = stream_id;
 
-        // Register in channel table
         if (stream_id < MAX_CHANNELS) {
             self._channels[stream_id] = ch;
+            _ = ch.ref();
         }
 
         self._alloc.free(pending.label);
         self._alloc.free(pending.protocol);
         slot.* = null;
 
-        // Compact
         if (i + 1 < self._pending_count) {
             std.mem.copyForwards(?PendingChannel, self._pending_channels[i..], self._pending_channels[i + 1 .. self._pending_count]);
         }
         self._pending_count -= 1;
 
-        // Channel is now open (DATA_CHANNEL_ACK received → sctp_connected event follows)
         ch.onOpen();
         return;
     }
@@ -661,9 +664,12 @@ fn buildSdpParams(self: *const RTCPeerConnection, setup: SdpBuilder.DtlsSetup) S
         .sctp_port = 5000,
         .max_message_size = 262144,
         .role = if (self._config.is_offerer) .offerer else .answerer,
-        .candidates = &.{}, // trickle ICE — candidates sent via onicecandidate
+        .candidates = &.{},
         .session_id = self._session_id,
         .session_version = self._session_version,
+        .include_audio = self._offer_options.offer_to_receive_audio,
+        .include_video = self._offer_options.offer_to_receive_video,
+        .include_datachannel = self._offer_options.include_datachannel,
     };
 }
 
@@ -671,24 +677,55 @@ fn buildSdpParams(self: *const RTCPeerConnection, setup: SdpBuilder.DtlsSetup) S
 // Private: STUN server parsing
 // ---------------------------------------------------------------------------
 
-fn parseFirstStunServer(servers: []const IceServer) ?std.net.Address {
+fn parseFirstStunServer(alloc: Allocator, servers: []const IceServer) ?std.net.Address {
     for (servers) |srv| {
-        // Handle "stun:hostname:port" or "stun:hostname"
         const url = srv.url;
         const rest = if (std.mem.startsWith(u8, url, "stun:")) url[5..] else continue;
 
-        // Find port separator
         const colon_pos = std.mem.lastIndexOfScalar(u8, rest, ':');
         if (colon_pos) |cp| {
             const host = rest[0..cp];
             const port_str = rest[cp + 1 ..];
             const port = std.fmt.parseInt(u16, port_str, 10) catch 3478;
-            const addr = std.net.Address.parseIp(host, port) catch continue;
-            return addr;
+            if (resolveStunAddress(alloc, host, port)) |addr| return addr;
         } else {
-            const addr = std.net.Address.parseIp(rest, 3478) catch continue;
-            return addr;
+            if (resolveStunAddress(alloc, rest, 3478)) |addr| return addr;
         }
+    }
+    return null;
+}
+
+fn resolveStunAddress(alloc: Allocator, host: []const u8, port: u16) ?std.net.Address {
+    const parsed = std.net.Address.parseIp(host, port) catch null;
+    if (parsed) |addr| return addr;
+
+    const c = @cImport({
+        @cInclude("netdb.h");
+        @cInclude("sys/socket.h");
+    });
+
+    const host_z = alloc.dupeZ(u8, host) catch return null;
+    defer alloc.free(host_z);
+
+    var port_buf: [16]u8 = undefined;
+    const port_slice = std.fmt.bufPrint(&port_buf, "{d}", .{port}) catch return null;
+    const port_z = alloc.dupeZ(u8, port_slice) catch return null;
+    defer alloc.free(port_z);
+
+    var hints: c.struct_addrinfo = std.mem.zeroes(c.struct_addrinfo);
+    hints.ai_family = c.AF_INET;
+    hints.ai_socktype = c.SOCK_DGRAM;
+
+    var res: ?*c.struct_addrinfo = null;
+    if (c.getaddrinfo(host_z.ptr, port_z.ptr, &hints, &res) != 0) return null;
+    defer c.freeaddrinfo(res);
+
+    var cur = res;
+    while (cur) |ai| : (cur = ai.ai_next) {
+        if (ai.ai_family != c.AF_INET or ai.ai_addr == null) continue;
+        const sin: *std.posix.sockaddr.in = @ptrCast(@alignCast(ai.ai_addr));
+        const ip: [4]u8 = @bitCast(sin.addr);
+        return std.net.Address.initIp4(ip, port);
     }
     return null;
 }
@@ -709,11 +746,34 @@ fn freeEventNode(alloc: Allocator, node: *RtcEventQueue.Node) void {
 // Private: candidate type string
 // ---------------------------------------------------------------------------
 
-fn candTypStr(typ: IceAgent.CandidateType) []const u8 {
+fn eventCandTypStr(typ: RtcEventQueue.RtcEvent.IceCandidateEvent.CandidateType) []const u8 {
     return switch (typ) {
         .host => "host",
         .srflx => "srflx",
         .prflx => "prflx",
         .relay => "relay",
+    };
+}
+
+fn mapIceConnectionState(state: RtcEventQueue.RtcEvent.IceConnectionState) IceConnectionState {
+    return switch (state) {
+        .new => .new,
+        .checking => .checking,
+        .connected => .connected,
+        .completed => .completed,
+        .failed => .failed,
+        .disconnected => .disconnected,
+        .closed => .closed,
+    };
+}
+
+fn mapConnectionState(state: RtcEventQueue.RtcEvent.ConnectionState) PeerConnectionState {
+    return switch (state) {
+        .new => .new,
+        .connecting => .connecting,
+        .connected => .connected,
+        .disconnected => .disconnected,
+        .failed => .failed,
+        .closed => .closed,
     };
 }

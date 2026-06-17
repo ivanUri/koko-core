@@ -57,6 +57,9 @@ pub const Client = @This();
 // Count of active ws requests
 ws_active: usize = 0,
 
+// Count of active RTCPeerConnection instances
+rtc_active: usize = 0,
+
 // Count of active http requests
 http_active: usize = 0,
 
@@ -893,8 +896,16 @@ fn releaseConn(self: *Client, conn: *http.Connection) void {
     self.network.releaseConnection(conn);
 }
 
+pub fn trackRtcPeerConnection(self: *Client) void {
+    self.rtc_active += 1;
+}
+
+pub fn untrackRtcPeerConnection(self: *Client) void {
+    if (self.rtc_active > 0) self.rtc_active -= 1;
+}
+
 fn ensureNoActiveConnection(self: *const Client) !void {
-    if (self.http_active > 0 or self.ws_active > 0) {
+    if (self.http_active > 0 or self.ws_active > 0 or self.rtc_active > 0) {
         return error.InflightConnection;
     }
 }
