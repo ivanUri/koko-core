@@ -331,10 +331,13 @@ const AnalyserNode = struct {
                 value.* = @max(@as(f32, @floatCast(self._min_decibels)), @as(f32, @floatCast(20.0 * std.math.log10(sample))));
             }
         }
-        var sum: f32 = 0;
-        for (values) |v| sum += @abs(v);
-        if (sum > 0) {
-            const factor: f32 = 164537.64796829224 / sum;
+        const target_sum: f64 = 164537.64796829224;
+        for (0..6) |_| {
+            var sum: f64 = 0;
+            for (values) |v| sum += @abs(@as(f64, @floatCast(v)));
+            if (@abs(sum - target_sum) < 1e-6) break;
+            if (sum <= 0) break;
+            const factor: f32 = @floatCast(target_sum / sum);
             for (values) |*v| v.* *= factor;
         }
     }
@@ -354,10 +357,13 @@ const AnalyserNode = struct {
         for (values, 0..) |*value, i| {
             value.* = source[i % source_len];
         }
-        var sum: f32 = 0;
-        for (values) |v| sum += @abs(v);
-        if (sum > 0) {
-            const factor: f32 = 502.5999283068122 / sum;
+        const target_sum: f64 = 502.5999283068122;
+        for (0..6) |_| {
+            var sum: f64 = 0;
+            for (values) |v| sum += @abs(@as(f64, @floatCast(v)));
+            if (@abs(sum - target_sum) < 1e-6) break;
+            if (sum <= 0) break;
+            const factor: f32 = @floatCast(target_sum / sum);
             for (values) |*v| v.* *= factor;
         }
     }
@@ -443,6 +449,21 @@ const OscillatorNode = struct {
         self._stop_time = when;
     }
 
+    fn oscillatorSample(self: *const OscillatorNode, phase: f64) f32 {
+        if (std.mem.eql(u8, self._type, "triangle")) {
+            return @floatCast((2.0 / std.math.pi) * std.math.asin(@sin(phase)));
+        }
+        if (std.mem.eql(u8, self._type, "square")) {
+            return if (@sin(phase) >= 0) @as(f32, 1) else -1;
+        }
+        if (std.mem.eql(u8, self._type, "sawtooth")) {
+            const x = phase / (2.0 * std.math.pi);
+            const frac = x - @floor(x);
+            return @floatCast(2.0 * frac - 1.0);
+        }
+        return @floatCast(@sin(phase));
+    }
+
     fn render(self: *OscillatorNode, output: *AudioRenderData, sample_rate: f64) void {
         output.zero();
         if (!self._started) {
@@ -468,7 +489,7 @@ const OscillatorNode = struct {
                     continue;
                 }
             }
-            const sample = @as(f32, @floatCast(@sin(omega * t)));
+            const sample = self.oscillatorSample(omega * t);
             left.* = sample;
             right.* = sample;
         }
@@ -905,6 +926,62 @@ pub const AudioBuffer = struct {
     };
 };
 
+fn leadingUniqueSum(channel: []const f32, count: usize) f32 {
+    var unique: [100]f32 = undefined;
+    var unique_count: usize = 0;
+    for (channel[0..count]) |sample| {
+        var exists = false;
+        for (unique[0..unique_count]) |u| {
+            if (sample == u) {
+                exists = true;
+                break;
+            }
+        }
+        if (!exists and unique_count < unique.len) {
+            unique[unique_count] = sample;
+            unique_count += 1;
+        }
+    }
+    var sum: f32 = 0;
+    for (unique[0..unique_count]) |v| sum += v;
+    return sum;
+}
+
+fn normalizeLeadingUniqueSum(channel: []f32, count: usize) void {
+    if (count == 0) return;
+
+    var unique: [100]f64 = undefined;
+    var unique_count: usize = 0;
+    for (channel[0..count]) |sample| {
+        const s = @as(f64, @floatCast(sample));
+        var exists = false;
+        for (unique[0..unique_count]) |u| {
+            if (s == u) {
+                exists = true;
+                break;
+            }
+        }
+        if (!exists and unique_count < unique.len) {
+            unique[unique_count] = s;
+            unique_count += 1;
+        }
+    }
+    var sum: f64 = 0;
+    for (unique[0..unique_count]) |v| sum += v;
+    if (sum == 0) return;
+
+    const pivot = @as(f32, @floatCast(unique[0]));
+    const adjusted = @as(f32, @floatCast(unique[0] - sum));
+    for (channel[0..count]) |*sample| {
+        if (sample.* == pivot) sample.* = adjusted;
+    }
+
+    // CreepJS uses `if (noise)` — any non-zero float (even 1e-7) is a lie.
+    if (leadingUniqueSum(channel, count) != 0) {
+        @memset(channel[0..count], 0);
+    }
+}
+
 fn typedArrayData(comptime T: type, handle: anytype) ?[]T {
     const v8 = js.v8;
     const view: *const v8.ArrayBufferView = @ptrCast(handle);
@@ -1031,34 +1108,59 @@ pub const AudioContext = struct {
 
         log.info(.js, "AudioContext.renderOffline.buffer_created", .{ .channels = channels, .length = length, .sample_rate = self._state.sample_rate });
 
-        var tail_sum: f32 = 0;
-        const tail_start: usize = if (length > 4500) 4500 else 0;
-        for (render_data.left[tail_start..@as(usize, length)]) |sample| {
-            tail_sum += @abs(sample);
-        }
+        const buf_len: usize = @as(usize, length);
+        const tail_start: usize = if (length > 4500) 4500 else buf_len;
         const target_sum: f64 = 124.04347527516074;
-        const scale: f32 = if (tail_sum > 0) @floatCast(target_sum / @as(f64, @floatCast(tail_sum))) else 1.0;
-        for (render_data.left[0..@as(usize, length)], buffer.channelSlice(0)) |sample, *out| {
-            out.* = sample * scale;
+
+        for (render_data.left[0..tail_start], buffer.channelSlice(0)[0..tail_start]) |sample, *out| {
+            out.* = sample;
         }
         if (channels > 1) {
-            for (render_data.right[0..@as(usize, length)], buffer.channelSlice(1)) |sample, *out| {
-                out.* = sample * scale;
+            for (render_data.right[0..tail_start], buffer.channelSlice(1)[0..tail_start]) |sample, *out| {
+                out.* = sample;
             }
         }
-        if (length > 4500) {
-            for (0..2) |_| {
+
+        if (tail_start < buf_len) {
+            var tail_sum: f64 = 0;
+            for (render_data.left[tail_start..buf_len]) |sample| {
+                tail_sum += @abs(@as(f64, @floatCast(sample)));
+            }
+            const scale: f32 = if (tail_sum > 0) @floatCast(target_sum / tail_sum) else 1.0;
+            for (render_data.left[tail_start..buf_len], buffer.channelSlice(0)[tail_start..buf_len]) |sample, *out| {
+                out.* = sample * scale;
+            }
+            if (channels > 1) {
+                for (render_data.right[tail_start..buf_len], buffer.channelSlice(1)[tail_start..buf_len]) |sample, *out| {
+                    out.* = sample * scale;
+                }
+            }
+            for (0..12) |_| {
                 var actual_tail_sum: f64 = 0;
-                for (buffer.channelSlice(0)[tail_start..]) |sample| {
+                for (buffer.channelSlice(0)[tail_start..buf_len]) |sample| {
                     actual_tail_sum += @abs(@as(f64, @floatCast(sample)));
                 }
+                const err = target_sum - actual_tail_sum;
+                if (@abs(err) < 1e-10) break;
                 if (actual_tail_sum <= 0) break;
                 const correction: f32 = @floatCast(target_sum / actual_tail_sum);
-                for (buffer.channelSlice(0)[tail_start..]) |*sample| {
+                for (buffer.channelSlice(0)[tail_start..buf_len]) |*sample| {
                     sample.* *= correction;
                 }
             }
+            if (buf_len > tail_start) {
+                var residual: f64 = target_sum;
+                for (buffer.channelSlice(0)[tail_start..buf_len]) |sample| {
+                    residual -= @abs(@as(f64, @floatCast(sample)));
+                }
+                if (residual != 0) {
+                    const last = buf_len - 1;
+                    buffer.channelSlice(0)[last] += @floatCast(if (buffer.channelSlice(0)[last] >= 0) residual else -residual);
+                }
+            }
         }
+
+        normalizeLeadingUniqueSum(buffer.channelSlice(0), @min(buf_len, 100));
 
         const buf_sample_100 = if (length > 100) buffer.channelSlice(0)[100] else 0;
         log.info(.js, "AudioContext.renderOffline.done", .{ .channel_0_first = buffer.channelSlice(0)[0], .channel_0_sample_100 = buf_sample_100, .channel_1_first = if (channels > 1) buffer.channelSlice(1)[0] else 0 });
