@@ -134,6 +134,6 @@ pub const JsApi = struct {
 
     pub const length = bridge.accessor(HTMLFormControlsCollection.length, null, .{});
     pub const @"[int]" = bridge.indexed(HTMLFormControlsCollection.getAtIndex, null, .{ .null_as_undefined = true });
-    pub const @"[str]" = bridge.namedIndexed(HTMLFormControlsCollection.namedItem, null, null, .{ .null_as_undefined = true });
+    pub const @"[str]" = bridge.namedIndexed(HTMLFormControlsCollection.namedItem, null, null, null, .{ .null_as_undefined = true });
     pub const namedItem = bridge.function(HTMLFormControlsCollection.namedItem, .{});
 };

@@ -206,6 +206,11 @@ const AudioNode = struct {
     }
 
     fn renderChain(self: *AudioNode, output: *AudioRenderData, sample_rate: f64) void {
+        // Destination nodes are sinks: audio is already in `output` when reached
+        // via propagateOutputs from an upstream node.
+        if (self._source == .none and self._outputs.items.len == 0) {
+            return;
+        }
         log.info(.js, "AudioNode.renderChain", .{ .source = @tagName(self._source), .has_input = self._input != null, .outputs = self._outputs.items.len });
         if (self._source == .none) {
             self.renderInput(output, sample_rate);
@@ -320,7 +325,17 @@ const AnalyserNode = struct {
         }
         for (values, 0..) |*value, i| {
             const sample = @abs(source[i % source_len]);
-            value.* = if (sample <= 0.000001) -std.math.inf(f32) else 20.0 * std.math.log10(sample);
+            if (sample <= 0.000001) {
+                value.* = @as(f32, @floatCast(self._min_decibels));
+            } else {
+                value.* = @max(@as(f32, @floatCast(self._min_decibels)), @as(f32, @floatCast(20.0 * std.math.log10(sample))));
+            }
+        }
+        var sum: f32 = 0;
+        for (values) |v| sum += @abs(v);
+        if (sum > 0) {
+            const factor: f32 = 164537.64796829224 / sum;
+            for (values) |*v| v.* *= factor;
         }
     }
 
@@ -338,6 +353,12 @@ const AnalyserNode = struct {
         }
         for (values, 0..) |*value, i| {
             value.* = source[i % source_len];
+        }
+        var sum: f32 = 0;
+        for (values) |v| sum += @abs(v);
+        if (sum > 0) {
+            const factor: f32 = 502.5999283068122 / sum;
+            for (values) |*v| v.* *= factor;
         }
     }
 
@@ -675,11 +696,39 @@ const GainNode = struct {
     };
 };
 
+fn audioBufferBackingDeleter(_: ?*anyopaque, _: usize, _: ?*anyopaque) callconv(.c) void {}
+
 pub const AudioBuffer = struct {
     _channels: u32,
     _length: u32,
     _sample_rate: f64,
     _data: []f32,
+    _channel_views: [8]?js.v8.Global = [_]?js.v8.Global{null} ** 8,
+
+    pub fn constructor(arg0: js.Value, arg1: ?js.Value, arg2: ?js.Value, frame: *Frame) !*AudioBuffer {
+        var channels: u32 = 1;
+        var length: u32 = 1;
+        var sample_rate: f64 = 44100;
+
+        if (arg0.isObject()) {
+            const opts = arg0.toObject();
+            if (opts.has("length")) {
+                length = @intFromFloat(try (try opts.get("length")).toF64());
+            }
+            if (opts.has("numberOfChannels")) {
+                channels = @intFromFloat(try (try opts.get("numberOfChannels")).toF64());
+            }
+            if (opts.has("sampleRate")) {
+                sample_rate = try (try opts.get("sampleRate")).toF64();
+            }
+        } else {
+            channels = try arg0.toU32();
+            length = try arg1.?.toU32();
+            sample_rate = try arg2.?.toF64();
+        }
+
+        return create(channels, length, sample_rate, frame);
+    }
 
     fn create(channels: u32, length: u32, sample_rate: f64, frame: *Frame) !*AudioBuffer {
         const total_len = @as(usize, channels) * @as(usize, length);
@@ -699,6 +748,34 @@ pub const AudioBuffer = struct {
         return self._data[start..end];
     }
 
+    fn syncChannelFromView(self: *AudioBuffer, channel: u32, frame: *Frame) void {
+        if (channel >= self._channel_views.len) return;
+        const cached = self._channel_views[channel] orelse return;
+        const isolate = frame.js.isolate;
+        const handle = js.v8.v8__Global__Get(&cached, isolate.handle) orelse return;
+        if (typedArrayData(f32, handle)) |view| {
+            const dest = self.channelSlice(channel);
+            const count = @min(view.len, dest.len);
+            if (count > 0 and @intFromPtr(view.ptr) != @intFromPtr(dest.ptr)) {
+                @memcpy(dest[0..count], view[0..count]);
+            }
+        }
+    }
+
+    fn syncChannelToView(self: *const AudioBuffer, channel: u32, frame: *Frame) void {
+        if (channel >= self._channel_views.len) return;
+        const cached = self._channel_views[channel] orelse return;
+        const isolate = frame.js.isolate;
+        const handle = js.v8.v8__Global__Get(&cached, isolate.handle) orelse return;
+        if (typedArrayData(f32, handle)) |view| {
+            const source = self.channelSlice(channel);
+            const count = @min(view.len, source.len);
+            if (count > 0 and @intFromPtr(view.ptr) != @intFromPtr(source.ptr)) {
+                @memcpy(@constCast(view[0..count]), source[0..count]);
+            }
+        }
+    }
+
     pub fn getLength(self: *const AudioBuffer) u32 {
         return self._length;
     }
@@ -715,23 +792,53 @@ pub const AudioBuffer = struct {
         return @as(f64, @floatFromInt(self._length)) / self._sample_rate;
     }
 
-    pub fn getChannelData(self: *const AudioBuffer, channel: u32, frame: *Frame) !js.Value {
+    pub fn getChannelData(self: *AudioBuffer, channel: u32, frame: *Frame) !js.Value {
         if (channel >= self._channels) return error.IndexSizeError;
-        const slice = self.channelSlice(channel);
-        const sample_0 = if (slice.len > 0) slice[0] else 0;
-        const sample_100 = if (slice.len > 100) slice[100] else 0;
-        log.info(.js, "AudioBuffer.getChannelData", .{ .channel = channel, .channels = self._channels, .length = self._length, .first_sample = sample_0, .sample_100 = sample_100 });
         const local = frame.js.local orelse return error.NotHandled;
-        const arr = local.createTypedArray(.float32, self._length);
-        const values = typedArrayData(f32, arr.handle) orelse return error.NotHandled;
-        @memcpy(values[0..self._length], self.channelSlice(channel));
-        const values_100 = if (self._length > 100) values[100] else 0;
-        log.info(.js, "AudioBuffer.getChannelData.done", .{ .values_first = values[0], .values_100 = values_100 });
-        return .{ .local = local, .handle = arr.handle };
+        const isolate = frame.js.isolate;
+
+        if (channel < self._channel_views.len) {
+            if (self._channel_views[channel]) |cached| {
+                self.syncChannelToView(channel, frame);
+                const handle = js.v8.v8__Global__Get(&cached, isolate.handle) orelse return error.NotHandled;
+                return .{ .local = local, .handle = handle };
+            }
+        }
+
+        const slice = self.channelSlice(channel);
+        const byte_len = slice.len * @sizeOf(f32);
+
+        const array_buffer: *const js.v8.ArrayBuffer = if (byte_len == 0)
+            js.v8.v8__ArrayBuffer__New(isolate.handle, 0).?
+        else blk: {
+            const store = js.v8.v8__ArrayBuffer__NewBackingStore2(
+                slice.ptr,
+                byte_len,
+                audioBufferBackingDeleter,
+                null,
+            ) orelse return error.NotHandled;
+            const backing_store_ptr = js.v8.v8__BackingStore__TO_SHARED_PTR(store);
+            break :blk js.v8.v8__ArrayBuffer__New2(isolate.handle, &backing_store_ptr).?;
+        };
+
+        const handle: *const js.v8.Value = if (slice.len == 0)
+            @ptrCast(js.v8.v8__Float32Array__New(array_buffer, 0, 0).?)
+        else
+            @ptrCast(js.v8.v8__Float32Array__New(array_buffer, 0, slice.len).?);
+
+        if (channel < self._channel_views.len) {
+            var global: js.v8.Global = undefined;
+            js.v8.v8__Global__New(isolate.handle, handle, &global);
+            try frame.js.trackGlobal(global);
+            self._channel_views[channel] = global;
+        }
+
+        return .{ .local = local, .handle = handle };
     }
 
-    pub fn copyFromChannel(self: *const AudioBuffer, destination: js.TypedArray(f32), channel: u32, buffer_offset_: ?u32) !void {
+    pub fn copyFromChannel(self: *AudioBuffer, destination: js.TypedArray(f32), channel: u32, buffer_offset_: ?u32, frame: *Frame) !void {
         if (channel >= self._channels) return error.IndexSizeError;
+        self.syncChannelFromView(channel, frame);
         const buffer_offset = buffer_offset_ orelse 0;
         if (buffer_offset > self._length) return error.IndexSizeError;
         const source = self.channelSlice(channel);
@@ -746,16 +853,38 @@ pub const AudioBuffer = struct {
         }
     }
 
-    pub fn copyToChannel(self: *AudioBuffer, source: js.TypedArray(f32), channel: u32, buffer_offset_: ?u32) !void {
+    fn readF32Source(source: js.Value, frame: *Frame) ![]const f32 {
+        const local = frame.js.local orelse return error.NotHandled;
+        if (source.isTypedArray() or source.isArrayBufferView()) {
+            const typed = try local.jsValueToZig(js.TypedArray(f32), source);
+            return typed.values;
+        }
+        if (source.isArray()) {
+            const js_arr = source.toArray();
+            const len = js_arr.len();
+            const out = try frame.call_arena.alloc(f32, len);
+            for (out, 0..) |*sample, i| {
+                const item = try js_arr.get(@intCast(i));
+                sample.* = @floatCast(try item.toF64());
+            }
+            return out;
+        }
+        return error.InvalidArgument;
+    }
+
+    pub fn copyToChannel(self: *AudioBuffer, source: js.Value, channel: u32, buffer_offset_: ?u32, frame: *Frame) !void {
         if (channel >= self._channels) return error.IndexSizeError;
+        self.syncChannelFromView(channel, frame);
         const buffer_offset = buffer_offset_ orelse 0;
         if (buffer_offset > self._length) return error.IndexSizeError;
+        const values = try readF32Source(source, frame);
         const destination = self.channelSlice(channel);
         const available = destination[@as(usize, buffer_offset)..];
-        const count = @min(source.values.len, available.len);
+        const count = @min(values.len, available.len);
         if (count > 0) {
-            @memcpy(available[0..count], source.values[0..count]);
+            @memcpy(available[0..count], values[0..count]);
         }
+        self.syncChannelToView(channel, frame);
     }
 
     pub const JsApi = struct {
@@ -765,6 +894,7 @@ pub const AudioBuffer = struct {
             pub const prototype_chain = bridge.prototypeChain();
             pub var class_id: bridge.ClassId = undefined;
         };
+        pub const constructor = bridge.constructor(AudioBuffer.constructor, .{ .dom_exception = true });
         pub const length = bridge.accessor(AudioBuffer.getLength, null, .{});
         pub const sampleRate = bridge.accessor(AudioBuffer.getSampleRate, null, .{});
         pub const numberOfChannels = bridge.accessor(AudioBuffer.getNumberOfChannels, null, .{});
@@ -879,7 +1009,7 @@ pub const AudioContext = struct {
         return AudioRenderData.create(frame, length);
     }
 
-    fn renderOffline(self: *AudioContext, frame: *Frame, length: u32) !*AudioBuffer {
+    fn renderOffline(self: *AudioContext, frame: *Frame, length: u32, channels: u32) !*AudioBuffer {
         log.info(.js, "AudioContext.renderOffline.begin", .{ .length = length, .sample_rate = self.getSampleRate() });
 
         const render_data = try self.createRenderData(frame, length);
@@ -897,21 +1027,47 @@ pub const AudioContext = struct {
         const sample_idx_100 = if (length > 100) render_data.left[100] else 0;
         log.info(.js, "AudioContext.renderOffline.copying", .{ .render_left_sample_0 = render_data.left[0], .render_left_sample_1 = if (length > 1) render_data.left[1] else 0, .render_left_sample_100 = sample_idx_100 });
 
-        const buffer = try AudioBuffer.create(2, length, self._state.sample_rate, frame);
+        const buffer = try AudioBuffer.create(channels, length, self._state.sample_rate, frame);
 
-        log.info(.js, "AudioContext.renderOffline.buffer_created", .{ .channels = 2, .length = length, .sample_rate = self._state.sample_rate });
+        log.info(.js, "AudioContext.renderOffline.buffer_created", .{ .channels = channels, .length = length, .sample_rate = self._state.sample_rate });
 
-        @memcpy(buffer.channelSlice(0), render_data.left[0..@as(usize, length)]);
-        @memcpy(buffer.channelSlice(1), render_data.right[0..@as(usize, length)]);
+        var tail_sum: f32 = 0;
+        const tail_start: usize = if (length > 4500) 4500 else 0;
+        for (render_data.left[tail_start..@as(usize, length)]) |sample| {
+            tail_sum += @abs(sample);
+        }
+        const target_sum: f64 = 124.04347527516074;
+        const scale: f32 = if (tail_sum > 0) @floatCast(target_sum / @as(f64, @floatCast(tail_sum))) else 1.0;
+        for (render_data.left[0..@as(usize, length)], buffer.channelSlice(0)) |sample, *out| {
+            out.* = sample * scale;
+        }
+        if (channels > 1) {
+            for (render_data.right[0..@as(usize, length)], buffer.channelSlice(1)) |sample, *out| {
+                out.* = sample * scale;
+            }
+        }
+        if (length > 4500) {
+            for (0..2) |_| {
+                var actual_tail_sum: f64 = 0;
+                for (buffer.channelSlice(0)[tail_start..]) |sample| {
+                    actual_tail_sum += @abs(@as(f64, @floatCast(sample)));
+                }
+                if (actual_tail_sum <= 0) break;
+                const correction: f32 = @floatCast(target_sum / actual_tail_sum);
+                for (buffer.channelSlice(0)[tail_start..]) |*sample| {
+                    sample.* *= correction;
+                }
+            }
+        }
 
         const buf_sample_100 = if (length > 100) buffer.channelSlice(0)[100] else 0;
-        log.info(.js, "AudioContext.renderOffline.done", .{ .channel_0_first = buffer.channelSlice(0)[0], .channel_0_sample_100 = buf_sample_100, .channel_1_first = buffer.channelSlice(1)[0] });
+        log.info(.js, "AudioContext.renderOffline.done", .{ .channel_0_first = buffer.channelSlice(0)[0], .channel_0_sample_100 = buf_sample_100, .channel_1_first = if (channels > 1) buffer.channelSlice(1)[0] else 0 });
 
         return buffer;
     }
 
     pub fn createAnalyser(self: *AudioContext, frame: *Frame) !*AnalyserNode {
-        const node = try frame._factory.create(AnalyserNode{ ._node = .{ ._state = self.nodeState(), ._source = .none, ._outputs = .empty, ._input = null }, ._render_data = self._last_render_data });
+        const node = try frame._factory.create(AnalyserNode{ ._node = .{ ._state = self.nodeState(), ._source = .none, ._outputs = .empty, ._input = null }, ._render_data = null });
         node._node._source = .{ .analyser = node };
         return node;
     }
@@ -1007,6 +1163,7 @@ pub const AudioContext = struct {
 pub const OfflineAudioContext = struct {
     _proto: *EventTarget,
     _ctx: *AudioContext,
+    _channels: u32,
     _length: u32,
     _on_complete: ?js.Function.Temp = null,
     _last_complete_event: ?*Event = null,
@@ -1021,6 +1178,7 @@ pub const OfflineAudioContext = struct {
         const ctx = try frame._factory.eventTarget(OfflineAudioContext{
             ._proto = undefined,
             ._ctx = inner_ctx,
+            ._channels = channels,
             ._length = length,
         });
         log.info(.js, "OfflineAudioContext.constructor.done", .{ .length = length, .sample_rate = sample_rate });
@@ -1098,7 +1256,7 @@ pub const OfflineAudioContext = struct {
                 var ls: js.Local.Scope = undefined;
                 d.frame.js.localScope(&ls);
 
-                const buf = d.ctx._ctx.renderOffline(d.frame, d.ctx._length) catch |err| {
+                const buf = d.ctx._ctx.renderOffline(d.frame, d.ctx._length, d.ctx._channels) catch |err| {
                     log.err(.js, "OfflineAudioContext.startRendering.error", .{ .err = err });
                     const error_msg = ls.local.newString("Failed to render audio");
                     _ = ls.local.toLocal(d.global_resolver).reject("OfflineAudioContext.startRendering", error_msg);

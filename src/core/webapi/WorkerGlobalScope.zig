@@ -39,6 +39,7 @@ const ErrorEvent = @import("event/ErrorEvent.zig");
 const Fetch = @import("net/Fetch.zig");
 const Performance = @import("Performance.zig");
 const WorkerNavigator = @import("WorkerNavigator.zig");
+const WorkerLocation = @import("WorkerLocation.zig");
 
 const builtin = @import("builtin");
 const IS_DEBUG = builtin.mode == .Debug;
@@ -94,6 +95,7 @@ _proto: *EventTarget,
 _console: Console = .init,
 _crypto: Crypto = .init,
 _navigator: WorkerNavigator = .init,
+_location: *WorkerLocation,
 _performance: Performance,
 _on_error: ?JS.Function.Global = null,
 _on_rejection_handled: ?JS.Function.Global = null,
@@ -130,6 +132,7 @@ pub fn init(worker: *Worker, url: [:0]const u8) !*WorkerGlobalScope {
         ._performance = Performance.init(),
         ._event_manager = .init(arena),
         ._script_manager = undefined,
+        ._location = try WorkerLocation.init(url, &parent.js.execution, factory),
     });
     errdefer factory.destroy(self);
 
@@ -257,6 +260,10 @@ pub fn getPerformance(self: *WorkerGlobalScope) *Performance {
 
 pub fn getNavigator(self: *WorkerGlobalScope) *WorkerNavigator {
     return &self._navigator;
+}
+
+pub fn getLocation(self: *WorkerGlobalScope) *WorkerLocation {
+    return self._location;
 }
 
 pub fn getOnError(self: *const WorkerGlobalScope) ?JS.Function.Global {
@@ -654,6 +661,7 @@ pub const JsApi = struct {
     pub const crypto = bridge.accessor(WorkerGlobalScope.getCrypto, null, .{});
     pub const performance = bridge.accessor(WorkerGlobalScope.getPerformance, null, .{});
     pub const navigator = bridge.accessor(WorkerGlobalScope.getNavigator, null, .{});
+    pub const location = bridge.accessor(WorkerGlobalScope.getLocation, null, .{ .deletable = false });
 
     pub const onerror = bridge.accessor(WorkerGlobalScope.getOnError, WorkerGlobalScope.setOnError, .{});
     pub const onrejectionhandled = bridge.accessor(WorkerGlobalScope.getOnRejectionHandled, WorkerGlobalScope.setOnRejectionHandled, .{});

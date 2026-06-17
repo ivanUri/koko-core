@@ -443,5 +443,5 @@ pub const JsApi = struct {
     pub const setProperty = bridge.function(CSSStyleProperties.setProperty, .{});
     pub const removeProperty = bridge.function(CSSStyleProperties.removeProperty, .{});
     pub const cssFloat = bridge.accessor(CSSStyleProperties.getFloat, CSSStyleProperties.setFloat, .{});
-    pub const @"[]" = bridge.namedIndexed(CSSStyleProperties.getNamed, CSSStyleProperties.setNamed, null, .{});
+    pub const @"[]" = bridge.namedIndexed(CSSStyleProperties.getNamed, CSSStyleProperties.setNamed, null, null, .{});
 };

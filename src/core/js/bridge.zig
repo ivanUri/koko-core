@@ -46,8 +46,8 @@ pub fn Builder(comptime T: type) type {
             return Indexed.init(T, getter_func, enumerator_func, opts);
         }
 
-        pub fn namedIndexed(comptime getter_func: anytype, setter_func: anytype, deleter_func: anytype, comptime opts: NamedIndexed.Opts) NamedIndexed {
-            return NamedIndexed.init(T, getter_func, setter_func, deleter_func, opts);
+        pub fn namedIndexed(comptime getter_func: anytype, setter_func: anytype, deleter_func: anytype, comptime enumerator_func: anytype, comptime opts: NamedIndexed.Opts) NamedIndexed {
+            return NamedIndexed.init(T, getter_func, setter_func, deleter_func, enumerator_func, opts);
         }
 
         pub fn iterator(comptime func: anytype, comptime opts: Iterator.Opts) Iterator {
@@ -349,13 +349,14 @@ pub const NamedIndexed = struct {
     getter: *const fn (c_name: ?*const v8.Name, handle: ?*const v8.PropertyCallbackInfo) callconv(.c) u8,
     setter: ?*const fn (c_name: ?*const v8.Name, c_value: ?*const v8.Value, handle: ?*const v8.PropertyCallbackInfo) callconv(.c) u8 = null,
     deleter: ?*const fn (c_name: ?*const v8.Name, handle: ?*const v8.PropertyCallbackInfo) callconv(.c) u8 = null,
+    enumerator: ?*const fn (handle: ?*const v8.PropertyCallbackInfo) callconv(.c) u8 = null,
 
     const Opts = struct {
         as_typed_array: bool = false,
         null_as_undefined: bool = false,
     };
 
-    fn init(comptime T: type, comptime getter: anytype, setter: anytype, deleter: anytype, comptime opts: Opts) NamedIndexed {
+    fn init(comptime T: type, comptime getter: anytype, setter: anytype, deleter: anytype, comptime enumerator: anytype, comptime opts: Opts) NamedIndexed {
         const getter_fn = struct {
             fn wrap(c_name: ?*const v8.Name, handle: ?*const v8.PropertyCallbackInfo) callconv(.c) u8 {
                 const v8_isolate = v8.v8__PropertyCallbackInfo__GetIsolate(handle).?;
@@ -404,10 +405,23 @@ pub const NamedIndexed = struct {
             }
         }.wrap;
 
+        const enumerator_fn = if (@typeInfo(@TypeOf(enumerator)) == .null) null else struct {
+            fn wrap(handle: ?*const v8.PropertyCallbackInfo) callconv(.c) u8 {
+                const v8_isolate = v8.v8__PropertyCallbackInfo__GetIsolate(handle).?;
+                var caller: Caller = undefined;
+                if (!caller.init(v8_isolate)) {
+                    return 0;
+                }
+                defer caller.deinit();
+                return caller.getEnumerator(T, enumerator, handle.?, .{});
+            }
+        }.wrap;
+
         return .{
             .getter = getter_fn,
             .setter = setter_fn,
             .deleter = deleter_fn,
+            .enumerator = enumerator_fn,
         };
     }
 };
@@ -808,6 +822,7 @@ pub const PageJsApis = flattenTypes(&.{
     @import("../webapi/cdata/ProcessingInstruction.zig"),
     @import("../webapi/collections.zig"),
     @import("../webapi/Console.zig"),
+    @import("../webapi/Chrome.zig"),
     @import("../webapi/Crypto.zig"),
     @import("../webapi/Permissions.zig"),
     @import("../webapi/MediaCapabilities.zig"),
@@ -1020,6 +1035,7 @@ pub const PageJsApis = flattenTypes(&.{
 // TODO: Expand this list to include all worker-appropriate APIs.
 pub const WorkerJsApis = flattenTypes(&.{
     @import("../webapi/WorkerGlobalScope.zig"),
+    @import("../webapi/WorkerLocation.zig"),
     @import("../webapi/WorkerNavigator.zig"),
     @import("../webapi/NavigatorUAData.zig"),
     @import("../webapi/PluginArray.zig"),
@@ -1066,6 +1082,7 @@ pub const WorkerJsApis = flattenTypes(&.{
 pub const JsApis = blk: {
     const base = PageJsApis ++ [_]type{
         @import("../webapi/WorkerGlobalScope.zig").JsApi,
+        @import("../webapi/WorkerLocation.zig").JsApi,
         @import("../webapi/WorkerNavigator.zig").JsApi,
     };
     if (build_config.wpt_extensions == false) {

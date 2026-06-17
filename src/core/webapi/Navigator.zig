@@ -84,12 +84,14 @@ pub fn javaEnabled(_: *const Navigator) bool {
     return false;
 }
 
-pub fn getPlugins(self: *Navigator) *PluginArray {
+pub fn getPlugins(self: *Navigator, frame: *Frame) *PluginArray {
+    self._plugins.ensureChrome(frame) catch {};
     return &self._plugins;
 }
 
-pub fn getMimeTypes(self: *Navigator) *PluginArray.MimeTypeArray {
-    return &self._mime_types;
+pub fn getMimeTypes(self: *Navigator, frame: *Frame) *PluginArray.MimeTypeArray {
+    self._plugins.ensureChrome(frame) catch {};
+    return self._plugins.getMimeTypes();
 }
 
 pub fn getPermissions(self: *Navigator) *Permissions {

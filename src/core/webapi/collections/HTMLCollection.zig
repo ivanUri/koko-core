@@ -155,7 +155,7 @@ pub const JsApi = struct {
             if (name.len == 0) return error.NotHandled;
             return self.getByName(name, frame) orelse return error.NotHandled;
         }
-    }.wrap, null, null, .{ .null_as_undefined = true });
+    }.wrap, null, null, null, .{ .null_as_undefined = true });
 
     pub const item = bridge.function(_item, .{});
     fn _item(self: *HTMLCollection, index: i32, frame: *Frame) ?*Element {

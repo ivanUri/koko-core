@@ -21,16 +21,28 @@ _pad: bool = false,
 pub const init: CSS = .{};
 
 pub fn parseDimension(value: []const u8) ?f64 {
-    if (value.len == 0) {
+    const trimmed = std.mem.trim(u8, value, &std.ascii.whitespace);
+    if (trimmed.len == 0) {
         return null;
     }
 
-    var num_str = value;
-    if (std.mem.endsWith(u8, value, "px")) {
-        num_str = value[0 .. value.len - 2];
+    if (std.mem.endsWith(u8, trimmed, "px")) {
+        return std.fmt.parseFloat(f64, trimmed[0 .. trimmed.len - 2]) catch null;
+    }
+    if (std.mem.endsWith(u8, trimmed, "rem")) {
+        const num = std.fmt.parseFloat(f64, trimmed[0 .. trimmed.len - 3]) catch return null;
+        return num * 16.0;
+    }
+    if (std.mem.endsWith(u8, trimmed, "pt")) {
+        const num = std.fmt.parseFloat(f64, trimmed[0 .. trimmed.len - 2]) catch return null;
+        return num * (96.0 / 72.0);
+    }
+    if (std.mem.endsWith(u8, trimmed, "%")) {
+        const num = std.fmt.parseFloat(f64, trimmed[0 .. trimmed.len - 1]) catch return null;
+        return num * 10.0;
     }
 
-    return std.fmt.parseFloat(f64, num_str) catch null;
+    return std.fmt.parseFloat(f64, trimmed) catch null;
 }
 
 /// Escapes a CSS identifier string

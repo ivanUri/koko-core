@@ -371,6 +371,7 @@ fn countExternalReferences() comptime_int {
                 count += 1;
                 if (value.setter != null) count += 1;
                 if (value.deleter != null) count += 1;
+                if (value.enumerator != null) count += 1;
             }
         }
     }
@@ -452,6 +453,10 @@ fn collectExternalReferences() [countExternalReferences()]isize {
                 }
                 if (value.deleter) |deleter| {
                     references[idx] = @bitCast(@intFromPtr(deleter));
+                    idx += 1;
+                }
+                if (value.enumerator) |enumerator| {
+                    references[idx] = @bitCast(@intFromPtr(enumerator));
                     idx += 1;
                 }
             }
@@ -694,7 +699,7 @@ fn attachClass(comptime JsApi: type, isolate: *v8.Isolate, template: *const v8.F
                     .setter = value.setter,
                     .query = null,
                     .deleter = value.deleter,
-                    .enumerator = null,
+                    .enumerator = value.enumerator,
                     .definer = null,
                     .descriptor = null,
                     .data = null,

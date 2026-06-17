@@ -45,6 +45,7 @@ const IDBFactory = @import("idb.zig").IDBFactory;
 const CacheStorage = @import("cache_storage.zig").CacheStorage;
 const SpeechSynthesis = @import("speech/SpeechSynthesis.zig").SpeechSynthesis;
 const TrustedTypePolicyFactory = @import("trusted_types.zig").TrustedTypePolicyFactory;
+const Chrome = @import("Chrome.zig");
 
 const log = @import("../../support/log.zig");
 const IS_DEBUG = builtin.mode == .Debug;
@@ -77,6 +78,7 @@ _on_rejection_handled: ?js.Function.Global = null,
 _on_unhandled_rejection: ?js.Function.Global = null,
 _current_event: ?*Event = null,
 _location: *Location,
+_chrome: Chrome = .init,
 _timers: Timers = .{},
 _custom_elements: CustomElementRegistry = .{},
 _indexed_db: IDBFactory = .{},
@@ -211,6 +213,10 @@ pub fn getSelection(self: *const Window) *Selection {
 
 pub fn getLocation(self: *const Window) *Location {
     return self._location;
+}
+
+pub fn getChrome(self: *Window) *Chrome {
+    return &self._chrome;
 }
 
 pub fn setLocation(self: *Window, url: [:0]const u8, frame: *Frame) !void {
@@ -892,6 +898,7 @@ pub const JsApi = struct {
     pub const sessionStorage = bridge.accessor(Window.getSessionStorage, null, .{});
     pub const origin = bridge.accessor(Window.getOrigin, null, .{});
     pub const location = bridge.accessor(Window.getLocation, Window.setLocation, .{ .deletable = false });
+    pub const chrome = bridge.accessor(Window.getChrome, null, .{});
     pub const history = bridge.accessor(Window.getHistory, null, .{});
     pub const navigation = bridge.accessor(Window.getNavigation, null, .{});
     pub const crypto = bridge.accessor(Window.getCrypto, null, .{});

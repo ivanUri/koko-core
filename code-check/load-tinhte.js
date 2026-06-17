@@ -18,12 +18,12 @@ const veloraBin = resolve(repoRoot, "zig-out/bin/velora");
 // CONFIG — edit here, no CLI flags.
 // ---------------------------------------------------------------------------
 const CONFIG = {
-    url: "http://127.0.0.1:5500/code-check/creep.html",
-    outDir: resolve(repoRoot, "code-check/tmp/test-creepjs"),
+    url: "http://127.0.0.1:5500/creep.html",
+    outDir: resolve(repoRoot, "code-check/tmp/test-creepjs-chrome"),
     htmlFile: "page.html",
     logFile: "page.log",
     // "velora" (default honest profile) or "chrome-macos-catalina" (antidetect)
-    browserProfile: "velora",
+    browserProfile: "chrome-macos-catalina",
     loadTimeoutMs: 12000,
     settleAfterLoadMs: 20000,
     timeoutMs: 60000,

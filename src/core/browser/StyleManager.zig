@@ -105,6 +105,20 @@ fn addRawRule(self: *StyleManager, selector_text: []const u8, block_text: []cons
             props.opacity_zero = std.ascii.eqlIgnoreCase(val, "0");
         } else if (std.ascii.eqlIgnoreCase(name, "pointer-events")) {
             props.pointer_events_none = std.ascii.eqlIgnoreCase(val, "none");
+        } else if (std.ascii.eqlIgnoreCase(name, "width")) {
+            props.width = try self.arena.dupe(u8, val);
+        } else if (std.ascii.eqlIgnoreCase(name, "height")) {
+            props.height = try self.arena.dupe(u8, val);
+        } else if (std.ascii.eqlIgnoreCase(name, "top")) {
+            props.top = try self.arena.dupe(u8, val);
+        } else if (std.ascii.eqlIgnoreCase(name, "left")) {
+            props.left = try self.arena.dupe(u8, val);
+        } else if (std.ascii.eqlIgnoreCase(name, "margin-top")) {
+            props.margin_top = try self.arena.dupe(u8, val);
+        } else if (std.ascii.eqlIgnoreCase(name, "margin-left")) {
+            props.margin_left = try self.arena.dupe(u8, val);
+        } else if (std.ascii.eqlIgnoreCase(name, "transform")) {
+            props.transform = try self.arena.dupe(u8, val);
         }
     }
 
@@ -537,6 +551,79 @@ fn elementHasPointerEventsNone(self: *StyleManager, el: *Element) bool {
     return result orelse false;
 }
 
+/// Resolves a layout property (width/height) from inline styles and stylesheets.
+pub fn getLayoutProperty(self: *StyleManager, el: *Element, property_name: []const u8) ?[]const u8 {
+    const frame = self.frame;
+    const wrapped = String.wrap(property_name);
+
+    if (getInlineStyleProperty(el, wrapped, frame)) |property| {
+        const value = property._value.str();
+        if (value.len > 0) return value;
+    }
+
+    var result: ?[]const u8 = null;
+    var best_priority: u64 = 0;
+
+    const checkRules = struct {
+        fn check(rules: *const RuleList, res: *?[]const u8, current_priority: *u64, elem: *Element, p: *Frame, prop: []const u8) void {
+            if (current_priority.* == INLINE_PRIORITY) return;
+
+            const priorities = rules.items(.priority);
+            const props_list = rules.items(.props);
+            const selectors = rules.items(.selector);
+
+            for (priorities, props_list, selectors) |priority, props, selector| {
+                if (priority <= current_priority.*) continue;
+                const value = if (std.ascii.eqlIgnoreCase(prop, "width"))
+                    props.width
+                else if (std.ascii.eqlIgnoreCase(prop, "height"))
+                    props.height
+                else if (std.ascii.eqlIgnoreCase(prop, "top"))
+                    props.top
+                else if (std.ascii.eqlIgnoreCase(prop, "left"))
+                    props.left
+                else if (std.ascii.eqlIgnoreCase(prop, "margin-top"))
+                    props.margin_top
+                else if (std.ascii.eqlIgnoreCase(prop, "margin-left"))
+                    props.margin_left
+                else if (std.ascii.eqlIgnoreCase(prop, "transform"))
+                    props.transform
+                else
+                    null;
+                if (value == null) continue;
+
+                if (matchesSelector(elem, selector, p)) {
+                    res.* = value;
+                    current_priority.* = priority;
+                }
+            }
+        }
+    }.check;
+
+    if (el.getAttributeSafe(comptime .wrap("id"))) |id| {
+        if (self.id_rules.get(id)) |rules| {
+            checkRules(&rules, &result, &best_priority, el, frame, property_name);
+        }
+    }
+
+    if (el.getAttributeSafe(comptime .wrap("class"))) |class_attr| {
+        var it = std.mem.tokenizeAny(u8, class_attr, &std.ascii.whitespace);
+        while (it.next()) |class| {
+            if (self.class_rules.get(class)) |rules| {
+                checkRules(&rules, &result, &best_priority, el, frame, property_name);
+            }
+        }
+    }
+
+    if (self.tag_rules.get(el.getTag())) |rules| {
+        checkRules(&rules, &result, &best_priority, el, frame, property_name);
+    }
+
+    checkRules(&self.other_rules, &result, &best_priority, el, frame, property_name);
+
+    return result;
+}
+
 // Extracts visibility-relevant rules from a CSS rule.
 // Creates one VisibilityRule per selector (not per selector list) so each has correct specificity.
 // Buckets rules by their rightmost selector part for fast lookup.
@@ -671,6 +758,34 @@ fn extractVisibilityProperties(style: *CSSStyleProperties) VisibilityProperties 
         props.pointer_events_none = property._value.eql(comptime .wrap("none"));
     }
 
+    if (decl.findProperty(comptime .wrap("width"))) |property| {
+        props.width = property._value.str();
+    }
+
+    if (decl.findProperty(comptime .wrap("height"))) |property| {
+        props.height = property._value.str();
+    }
+
+    if (decl.findProperty(comptime .wrap("top"))) |property| {
+        props.top = property._value.str();
+    }
+
+    if (decl.findProperty(comptime .wrap("left"))) |property| {
+        props.left = property._value.str();
+    }
+
+    if (decl.findProperty(comptime .wrap("margin-top"))) |property| {
+        props.margin_top = property._value.str();
+    }
+
+    if (decl.findProperty(comptime .wrap("margin-left"))) |property| {
+        props.margin_left = property._value.str();
+    }
+
+    if (decl.findProperty(comptime .wrap("transform"))) |property| {
+        props.transform = property._value.str();
+    }
+
     return props;
 }
 
@@ -736,13 +851,27 @@ const VisibilityProperties = struct {
     visibility_hidden: ?bool = null,
     opacity_zero: ?bool = null,
     pointer_events_none: ?bool = null,
+    width: ?[]const u8 = null,
+    height: ?[]const u8 = null,
+    top: ?[]const u8 = null,
+    left: ?[]const u8 = null,
+    margin_top: ?[]const u8 = null,
+    margin_left: ?[]const u8 = null,
+    transform: ?[]const u8 = null,
 
     // return true if any field in VisibilityProperties is not null
     fn isRelevant(self: VisibilityProperties) bool {
         return self.display_none != null or
             self.visibility_hidden != null or
             self.opacity_zero != null or
-            self.pointer_events_none != null;
+            self.pointer_events_none != null or
+            self.width != null or
+            self.height != null or
+            self.top != null or
+            self.left != null or
+            self.margin_top != null or
+            self.margin_left != null or
+            self.transform != null;
     }
 };
 

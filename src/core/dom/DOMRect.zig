@@ -48,19 +48,23 @@ pub fn getHeight(self: *const DOMRect) f64 {
 }
 
 pub fn getTop(self: *const DOMRect) f64 {
-    return @min(self._y, self._y + self._height);
+    if (self._height < 0) return self._y + self._height;
+    return self._y;
 }
 
 pub fn getRight(self: *const DOMRect) f64 {
-    return @max(self._x, self._x + self._width);
+    if (self._width < 0) return self._x;
+    return self._x + self._width;
 }
 
 pub fn getBottom(self: *const DOMRect) f64 {
-    return @max(self._y, self._y + self._height);
+    if (self._height < 0) return self._y;
+    return self._y + self._height;
 }
 
 pub fn getLeft(self: *const DOMRect) f64 {
-    return @min(self._x, self._x + self._width);
+    if (self._width < 0) return self._x + self._width;
+    return self._x;
 }
 
 pub const JsApi = struct {

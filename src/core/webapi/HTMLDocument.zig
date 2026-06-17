@@ -355,5 +355,5 @@ pub const JsApi = struct {
     pub const doctype = bridge.accessor(HTMLDocument.getDocType, null, .{});
 
     // `document[name]` named property getter (HTML spec).
-    pub const @"[str]" = bridge.namedIndexed(getNamedItem, null, null, .{ .null_as_undefined = true });
+    pub const @"[str]" = bridge.namedIndexed(getNamedItem, null, null, null, .{ .null_as_undefined = true });
 };

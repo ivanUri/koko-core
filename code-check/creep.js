@@ -2454,7 +2454,6 @@
             return acc;
         }, {});
         // hash each bin
-        console.log('[HUYLOG] StartPromise 1');
         await Promise.all(Object.keys(fuzzyFpMaster).map((key) => hashify(fuzzyFpMaster[key]).then((hash) => {
             fuzzyFpMaster[key] = hash; // swap values for hash
             return hash;
@@ -2517,27 +2516,18 @@
     };
     const AUDIO_TRAP = Math.random();
     async function hasFakeAudio() {
-        console.log('[HUYLOG] Start hasFakeAudio');
         const context = new OfflineAudioContext(1, 100, 44100);
-
         const oscillator = context.createOscillator();
         oscillator.frequency.value = 0;
         oscillator.start(0);
         context.startRendering();
-        console.log('[HUYLOG] After startRendering');
         return new Promise((resolve) => {
             context.oncomplete = (event) => {
-                console.log('[HUYLOG] oncomplete callback fired');
-                console.log('[HUYLOG] event type:', event?.constructor?.name);
-                console.log('[HUYLOG] event.renderedBuffer:', event?.renderedBuffer);
-                console.log('[HUYLOG] event instanceof OfflineAudioCompletionEvent:', event instanceof OfflineAudioCompletionEvent);
-                const channelData = event?.renderedBuffer?.getChannelData?.(0);
-                console.log('[HUYLOG] channelData:', channelData);
+                const channelData = event.renderedBuffer.getChannelData?.(0);
                 if (!channelData)
                     resolve(false);
                 resolve('' + [...new Set(channelData)] !== '0');
             };
-            console.log('[HUYLOG] oncomplete handler set');
         }).finally(() => oscillator.disconnect());
     }
     async function getOfflineAudioContext() {
@@ -2606,82 +2596,48 @@
                 ['OscillatorNode.frequency.minValue']: attempt(() => oscillator.frequency.minValue),
             };
             const getRenderedBuffer = (context) => (new Promise((resolve) => {
-
-                console.log('[HUYLOG] A create nodes');
-
                 const analyser = context.createAnalyser();
-                console.log('[HUYLOG] B analyser ok');
-
                 const oscillator = context.createOscillator();
-                console.log('[HUYLOG] C oscillator ok');
-
                 const dynamicsCompressor = context.createDynamicsCompressor();
-                console.log('[HUYLOG] D compressor ok');
-
+                try {
+                    oscillator.type = 'triangle';
+                    oscillator.frequency.value = 10000;
+                    dynamicsCompressor.threshold.value = -50;
+                    dynamicsCompressor.knee.value = 40;
+                    dynamicsCompressor.attack.value = 0;
+                }
+                catch (err) { }
                 oscillator.connect(dynamicsCompressor);
-                console.log('[HUYLOG] E osc->compressor');
-
                 dynamicsCompressor.connect(analyser);
-                console.log('[HUYLOG] F compressor->analyser');
-
                 dynamicsCompressor.connect(context.destination);
-                console.log('[HUYLOG] G compressor->destination');
-
                 oscillator.start(0);
-                console.log('[HUYLOG] H oscillator.start');
-
-                context.addEventListener('complete', (event) => {
-                    console.log('[HUYLOG] I complete event fired');
-
+                context.startRendering();
+                return context.addEventListener('complete', (event) => {
                     try {
                         dynamicsCompressor.disconnect();
-                        console.log('[HUYLOG] J disconnect compressor');
-
                         oscillator.disconnect();
-                        console.log('[HUYLOG] K disconnect oscillator');
-
-                        const floatFrequencyData =
-                            new Float32Array(analyser.frequencyBinCount);
-
-                        console.log('[HUYLOG] L getFloatFrequencyData');
-
+                        const floatFrequencyData = new Float32Array(analyser.frequencyBinCount);
                         analyser.getFloatFrequencyData?.(floatFrequencyData);
-
-                        const floatTimeDomainData =
-                            new Float32Array(analyser.fftSize);
-
-                        console.log('[HUYLOG] M getFloatTimeDomainData');
-
+                        const floatTimeDomainData = new Float32Array(analyser.fftSize);
                         if ('getFloatTimeDomainData' in analyser) {
                             analyser.getFloatTimeDomainData(floatTimeDomainData);
                         }
-
-                        console.log('[HUYLOG] N resolve');
-
-                        resolve({
+                        return resolve({
                             floatFrequencyData,
                             floatTimeDomainData,
                             buffer: event.renderedBuffer,
+                            compressorGainReduction: (
+                                // @ts-expect-error if unsupported
+                                dynamicsCompressor.reduction.value || // webkit
+                                dynamicsCompressor.reduction),
                         });
-
-                    } catch (error) {
-                        console.log('[HUYLOG] COMPLETE_HANDLER_ERROR', error);
-                        resolve(null);
+                    }
+                    catch (error) {
+                        return resolve(null);
                     }
                 });
-
-                console.log('[HUYLOG] O listener installed');
-
-                context.startRendering();
-
-                console.log('[HUYLOG] P startRendering returned');
-
-                setTimeout(() => {
-                    console.log('[HUYLOG] TIMEOUT 5s complete never fired');
-                }, 5000);
             }));
             await queueEvent(timer);
-            console.log('[HUYLOG] StartPromise 2 ');
             const [audioData, audioIsFake,] = await Promise.all([
                 getRenderedBuffer(new OfflineAudioContext(1, bufferLen, 44100)),
                 hasFakeAudio().catch(() => false),
@@ -6427,7 +6383,6 @@
                     .then((res) => ({ name, state: res.state }))
                     .catch((error) => ({ name, state: 'unknown' }));
                 // https://w3c.github.io/permissions/#permission-registry
-                console.log('[HUYLOG] StartPromise 3');
                 const permissions = !('permissions' in navigator) ? undefined : Promise.all([
                     getPermissionState('accelerometer'),
                     getPermissionState('ambient-light-sensor'),
@@ -6497,7 +6452,6 @@
                 });
             }, 'webgpu failed');
             await queueEvent(timer);
-            console.log('[HUYLOG] StartPromise 4 WebGPU...');
             return Promise.all([
                 getUserAgentData(),
                 getBluetoothAvailability(),
@@ -6693,7 +6647,6 @@
                     precisionValue: protection ? lastCharA : undefined,
                 };
             };
-            console.log('[HUYLOG] StartPromise 5');
             const [isBrave, timerPrecision,] = await Promise.all([
                 braveBrowser(),
                 IS_BLINK ? undefined : getTimerPrecision(),
@@ -7535,7 +7488,6 @@
     async function getStorage() {
         if (!navigator?.storage?.estimate)
             return null;
-        console.log('[HUYLOG] StartPromise 6 Storage...');
         return Promise.all([
             navigator.storage.estimate().then(({ quota }) => quota),
             new Promise((resolve) => {
@@ -7561,7 +7513,6 @@
             .catch(() => null);
     }
     async function getStatus() {
-        console.log('[HUYLOG] StartPromise 7 Status...');
         const [batteryInfo, quotaA, quotaB, scriptSize, stackSize, timingRes, clientLitter,] = await Promise.all([
             getBattery(),
             getStorage(),
@@ -9245,7 +9196,6 @@
             const timeStart = timer();
             const fingerprintTimeStart = timer();
             // @ts-ignore
-            console.log('[HUYLOG] StartPromise 8');
             const [workerScopeComputed, voicesComputed, offlineAudioContextComputed, canvasWebglComputed, canvas2dComputed, windowFeaturesComputed, htmlElementVersionComputed, cssComputed, cssMediaComputed, screenComputed, mathsComputed, consoleErrorsComputed, timezoneComputed, clientRectsComputed, fontsComputed, mediaComputed, svgComputed, resistanceComputed, intlComputed,] = await Promise.all([
                 getBestWorkerScope(),
                 getVoices(),
@@ -9270,7 +9220,6 @@
             const navigatorComputed = await getNavigator(workerScopeComputed)
                 .catch((error) => console.error(error.message));
             // @ts-ignore
-            console.log('[HUYLOG] StartPromise 9');
             const [headlessComputed, featuresComputed,] = await Promise.all([
                 getHeadlessFeatures({
                     webgl: canvasWebglComputed,
@@ -9283,7 +9232,6 @@
                 }),
             ]).catch((error) => console.error(error.message));
             // @ts-ignore
-            console.log('[HUYLOG] StartPromise 10');
             const [liesComputed, trashComputed, capturedErrorsComputed,] = await Promise.all([
                 getLies(),
                 getTrash(),
@@ -9306,7 +9254,6 @@
             // Hashing
             const hashStartTime = timer();
             // @ts-ignore
-            console.log('[HUYLOG] StartPromise 11 Hashing...');
             const [windowHash, headlessHash, htmlHash, cssMediaHash, cssHash, styleHash, styleSystemHash, screenHash, voicesHash, canvas2dHash, canvas2dImageHash, canvas2dPaintHash, canvas2dTextHash, canvas2dEmojiHash, canvasWebglHash, canvasWebglImageHash, canvasWebglParametersHash, pixelsHash, pixels2Hash, mathsHash, consoleErrorsHash, timezoneHash, rectsHash, domRectHash, audioHash, fontsHash, workerHash, mediaHash, mimeTypesHash, navigatorHash, liesHash, trashHash, errorsHash, svgHash, resistanceHash, intlHash, featuresHash, deviceOfTimezoneHash,] = await Promise.all([
                 hashify(windowFeaturesComputed),
                 hashify(headlessComputed),
@@ -9449,7 +9396,6 @@
             };
         };
         // fingerprint and render
-        console.log('[HUYLOG] StartPromise 12 ');
         const [{ fingerprint: fp, styleSystemHash, styleHash, domRectHash, mimeTypesHash, canvas2dImageHash, canvas2dPaintHash, canvas2dTextHash, canvas2dEmojiHash, canvasWebglImageHash, canvasWebglParametersHash, deviceOfTimezoneHash, timeEnd, },] = await Promise.all([
             fingerprint().catch((error) => console.error(error)) || {},
         ]);
@@ -9603,7 +9549,6 @@
         console.groupCollapsed('Stable Fingerprint JSON');
         console.log('diff check at https://www.diffchecker.com/diff\n\n', JSON.stringify(creep, null, '\t'));
         console.groupEnd();
-        console.log('[HUYLOG] StartPromise 13');
         const [fpHash, creepHash] = await Promise.all([hashify(fp), hashify(creep)]).catch((error) => {
             console.error(error.message);
         }) || [];
@@ -9721,7 +9666,6 @@
 	</div>
 	`, async () => {
             // send analysis fingerprint
-            console.log('[HUYLOG] StartPromise 14');
             Promise.all([
                 getWebRTCData(),
                 getWebRTCDevices(),

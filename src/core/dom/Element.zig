@@ -1276,14 +1276,99 @@ pub fn checkVisibility(self: *Element, opts_: ?CheckVisibilityOpts, frame: *Fram
     });
 }
 
+fn getLayoutPropertyValue(self: *Element, property_name: []const u8, frame: *Frame) ?[]const u8 {
+    if (self.getStyle(frame)) |style| {
+        const decl = style.asCSSStyleDeclaration();
+        const value = decl.getPropertyValue(property_name, frame);
+        if (value.len > 0) return value;
+    }
+    return frame._style_manager.getLayoutProperty(self, property_name);
+}
+
+fn parseRotateDegrees(transform: []const u8) ?f64 {
+    const needle = "rotate(";
+    const start = std.ascii.indexOfIgnoreCase(transform, needle) orelse return null;
+    const rotate_args = transform[start + needle.len ..];
+    var end: usize = 0;
+    while (end < rotate_args.len and rotate_args[end] != ')') : (end += 1) {}
+    if (end == 0) return null;
+    const token = std.mem.trim(u8, rotate_args[0..end], &std.ascii.whitespace);
+    if (std.mem.endsWith(u8, token, "deg")) {
+        const num = std.mem.trim(u8, token[0 .. token.len - 3], &std.ascii.whitespace);
+        return std.fmt.parseFloat(f64, num) catch null;
+    }
+    if (std.mem.endsWith(u8, token, "rad")) {
+        const num = std.mem.trim(u8, token[0 .. token.len - 3], &std.ascii.whitespace);
+        const rad = std.fmt.parseFloat(f64, num) catch return null;
+        return rad * 180.0 / std.math.pi;
+    }
+    return std.fmt.parseFloat(f64, token) catch null;
+}
+
+fn dimensionsAfterTransform(width: f64, height: f64, transform: ?[]const u8) struct { width: f64, height: f64 } {
+    const transform_text = transform orelse return .{ .width = width, .height = height };
+    const degrees = parseRotateDegrees(transform_text) orelse return .{ .width = width, .height = height };
+    if (degrees == 0.0) return .{ .width = width, .height = height };
+    const rad = degrees * std.math.pi / 180.0;
+    const cos_v = @abs(@cos(rad));
+    const sin_v = @abs(@sin(rad));
+    return .{
+        .width = width * cos_v + height * sin_v,
+        .height = width * sin_v + height * cos_v,
+    };
+}
+
+fn getLayoutOffset(self: *Element, frame: *Frame) struct { top: f64, left: f64 } {
+    var top: f64 = 0;
+    var left: f64 = 0;
+    if (getLayoutPropertyValue(self, "margin-top", frame)) |v| {
+        if (CSS.parseDimension(v)) |parsed| top += parsed;
+    }
+    if (getLayoutPropertyValue(self, "margin-left", frame)) |v| {
+        if (CSS.parseDimension(v)) |parsed| left += parsed;
+    }
+    if (getLayoutPropertyValue(self, "top", frame)) |v| {
+        if (CSS.parseDimension(v)) |parsed| top += parsed;
+    }
+    if (getLayoutPropertyValue(self, "left", frame)) |v| {
+        if (CSS.parseDimension(v)) |parsed| left += parsed;
+    }
+    return .{ .top = top, .left = left };
+}
+
 fn getElementDimensions(self: *Element, frame: *Frame) struct { width: f64, height: f64 } {
     var width: f64 = 5.0;
     var height: f64 = 5.0;
+    var width_set = false;
+    var height_set = false;
 
     if (self.getStyle(frame)) |style| {
         const decl = style.asCSSStyleDeclaration();
-        width = CSS.parseDimension(decl.getPropertyValue("width", frame)) orelse 5.0;
-        height = CSS.parseDimension(decl.getPropertyValue("height", frame)) orelse 5.0;
+        if (CSS.parseDimension(decl.getPropertyValue("width", frame))) |w| {
+            width = w;
+            width_set = true;
+        }
+        if (CSS.parseDimension(decl.getPropertyValue("height", frame))) |h| {
+            height = h;
+            height_set = true;
+        }
+    }
+
+    if (!width_set) {
+        if (frame._style_manager.getLayoutProperty(self, "width")) |w| {
+            if (CSS.parseDimension(w)) |parsed| {
+                width = parsed;
+                width_set = true;
+            }
+        }
+    }
+    if (!height_set) {
+        if (frame._style_manager.getLayoutProperty(self, "height")) |h| {
+            if (CSS.parseDimension(h)) |parsed| {
+                height = parsed;
+                height_set = true;
+            }
+        }
     }
 
     if (width == 5.0 or height == 5.0) {
@@ -1306,7 +1391,9 @@ fn getElementDimensions(self: *Element, frame: *Frame) struct { width: f64, heig
         }
     }
 
-    return .{ .width = width, .height = height };
+    const transform = getLayoutPropertyValue(self, "transform", frame);
+    const transformed = dimensionsAfterTransform(width, height, transform);
+    return .{ .width = transformed.width, .height = transformed.height };
 }
 
 pub fn getClientWidth(self: *Element, frame: *Frame) f64 {
@@ -1341,11 +1428,20 @@ pub fn getBoundingClientRect(self: *Element, frame: *Frame) DOMRect {
 // Some cases need a the BoundingClientRect but have already done the
 // visibility check.
 pub fn getBoundingClientRectForVisible(self: *Element, frame: *Frame) DOMRect {
-    const y = calculateDocumentPosition(self.asNode());
     const dims = self.getElementDimensions(frame);
 
-    // Use sibling position for x coordinate to ensure siblings have different x values
-    const x = calculateSiblingPosition(self.asNode());
+    if (dims.width == 0.0 and dims.height == 0.0) {
+        return .{
+            ._x = 0.0,
+            ._y = 0.0,
+            ._width = 0.0,
+            ._height = 0.0,
+        };
+    }
+
+    const offset = getLayoutOffset(self, frame);
+    const y = calculateDocumentPosition(self.asNode()) + offset.top;
+    const x = offset.left;
 
     return .{
         ._x = x,
