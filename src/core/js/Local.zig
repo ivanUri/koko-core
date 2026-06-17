@@ -294,7 +294,12 @@ pub fn mapZigInstanceToJs(self: *const Local, js_obj_handle: ?*const v8.Object, 
                     // so that we can cleanup on Page teardown if v8 doesn't finalize.
                     errdefer _ = page.finalizer_callbacks.remove(finalizer_ptr_id);
                     finalizer.acquire_ref(finalizer_ptr_id);
-                    finalizer_gop.value_ptr.* = try self.createFinalizerCallback(resolved_ptr_id, finalizer_ptr_id, finalizer.release_ref_from_zig);
+                    finalizer_gop.value_ptr.* = try self.createFinalizerCallback(
+                        resolved_ptr_id,
+                        finalizer_ptr_id,
+                        finalizer.release_ref_from_zig,
+                        finalizer.force_deinit_from_zig,
+                    );
                 }
                 const fc = finalizer_gop.value_ptr.*;
                 const identity_finalizer = try session.fc_identity_pool.create();
@@ -1205,6 +1210,7 @@ const Resolved = struct {
         acquire_ref: *const fn (ptr_id: usize) void,
         release_ref: *const fn (handle: ?*const v8.WeakCallbackInfo) callconv(.c) void,
         release_ref_from_zig: *const fn (ptr_id: usize, page: *Page) void,
+        force_deinit_from_zig: *const fn (ptr_id: usize, page: *Page) void,
     };
 };
 pub fn resolveValue(value: anytype) Resolved {
@@ -1275,12 +1281,45 @@ fn resolveT(comptime T: type, value: *T) Resolved {
 
                     const identity_count = fc.identity_count;
                     if (identity_count == 1) {
-                        // Last identity - clean up the FC.
-                        // Remove from map before releaseRef to prevent address reuse issues.
-                        _ = page.finalizer_callbacks.remove(finalizer_ptr_id);
+                        // Unlink before the Identity node is destroyed at the end of
+                        // this callback; detachFinalizer walks this list during teardown.
+                        if (fc.identities == identity_finalizer) {
+                            fc.identities = identity_finalizer.next;
+                        } else {
+                            var id = fc.identities;
+                            while (id) |node| {
+                                if (node.next == identity_finalizer) {
+                                    node.next = identity_finalizer.next;
+                                    break;
+                                }
+                                id = node.next;
+                            }
+                        }
+                        fc.identity_count = 0;
+
+                        // Drop the JS identity's ref. If Zig-side acquireRef is still
+                        // outstanding (e.g. an in-flight XMLHttpRequest), keep the FC
+                        // registered so Page teardown can force_deinit the instance.
+                        // When RC reaches zero, RC.release calls detachFinalizer which
+                        // removes the FC and releases fc.arena.
                         FT.releaseRef(@ptrFromInt(finalizer_ptr_id), page);
-                        page.releaseArena(fc.arena);
+                        const owner: *FT = @ptrFromInt(finalizer_ptr_id);
+                        if (@hasField(FT, "_rc") and @field(owner, "_rc").count > 0) {
+                            return;
+                        }
                     } else {
+                        if (fc.identities == identity_finalizer) {
+                            fc.identities = identity_finalizer.next;
+                        } else {
+                            var id = fc.identities;
+                            while (id) |node| {
+                                if (node.next == identity_finalizer) {
+                                    node.next = identity_finalizer.next;
+                                    break;
+                                }
+                                id = node.next;
+                            }
+                        }
                         fc.identity_count = identity_count - 1;
                     }
                 }
@@ -1288,12 +1327,22 @@ fn resolveT(comptime T: type, value: *T) Resolved {
                 fn releaseRefFromZig(ptr_id: usize, page: *Page) void {
                     FT.releaseRef(@ptrFromInt(ptr_id), page);
                 }
+
+                fn forceDeinitFromZig(ptr_id: usize, page: *Page) void {
+                    const owner: *FT = @ptrFromInt(ptr_id);
+                    if (@hasField(FT, "_rc")) {
+                        @field(owner, "_rc").forceDeinit(owner, page);
+                    } else {
+                        owner.deinit(page);
+                    }
+                }
             };
             break :blk .{
                 .ptr_id = @intFromPtr(finalizer_ptr),
                 .acquire_ref = Wrap.acquireRef,
                 .release_ref = Wrap.releaseRef,
                 .release_ref_from_zig = Wrap.releaseRefFromZig,
+                .force_deinit_from_zig = Wrap.forceDeinitFromZig,
             };
         },
     };
@@ -1553,6 +1602,7 @@ fn createFinalizerCallback(
     // What actually gets acquired / released / deinit
     finalizer_ptr_id: usize,
     release_ref: *const fn (ptr_id: usize, page: *Page) void,
+    force_deinit: *const fn (ptr_id: usize, page: *Page) void,
 ) !*FinalizerCallback {
     const page = self.ctx.page;
 
@@ -1564,6 +1614,7 @@ fn createFinalizerCallback(
         .page = page,
         .arena = arena,
         .release_ref = release_ref,
+        .force_deinit = force_deinit,
         .resolved_ptr_id = resolved_ptr_id,
         .finalizer_ptr_id = finalizer_ptr_id,
     };

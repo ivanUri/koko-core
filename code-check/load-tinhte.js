@@ -18,7 +18,7 @@ const veloraBin = resolve(repoRoot, "zig-out/bin/velora");
 // CONFIG — edit here, no CLI flags.
 // ---------------------------------------------------------------------------
 const CONFIG = {
-    url: "http://127.0.0.1:5500/creep.html",
+    url: "https://demo.fingerprint.com/playground",
     outDir: resolve(repoRoot, "code-check/tmp/test-creepjs-chrome"),
     htmlFile: "page.html",
     logFile: "page.log",

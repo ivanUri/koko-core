@@ -100,6 +100,7 @@ pub fn deinit(self: *XMLHttpRequest, page: *Page) void {
         resp.abort(error.Abort);
         self._http_response = null;
     }
+    self._active_request = false;
 
     if (self._on_ready_state_change) |func| {
         func.release();

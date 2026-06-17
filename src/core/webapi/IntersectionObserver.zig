@@ -302,6 +302,8 @@ pub fn deliverEntries(self: *IntersectionObserver, frame: *Frame) !void {
     }
 
     const entries = try self.takeRecords(frame);
+    errdefer for (entries) |entry| entry.deinit(frame._page);
+
     var caught: js.TryCatch.Caught = undefined;
 
     var ls: js.Local.Scope = undefined;
@@ -309,6 +311,7 @@ pub fn deliverEntries(self: *IntersectionObserver, frame: *Frame) !void {
     defer ls.deinit();
 
     ls.toLocal(self._callback).tryCall(void, .{ entries, self }, &caught) catch |err| {
+        for (entries) |entry| entry.deinit(frame._page);
         log.err(.frame, "IntsctObserver.deliverEntries", .{ .err = err, .caught = caught });
         return err;
     };

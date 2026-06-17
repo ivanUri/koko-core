@@ -45,6 +45,16 @@ pub fn RC(comptime T: type) type {
         // We now treat extra releases as a no-op rather than a fatal
         // underflow. The browser keeps running and we log a single warning so
         // the underlying lifecycle issue can still be traced.
+        // Force teardown during Page/Frame shutdown. V8 weak callbacks do not
+        // run when the context is destroyed, so a single release would leave
+        // leaked arenas if acquireRef ran more than once (e.g. live collection
+        // iterators holding a NodeList ref).
+        pub fn forceDeinit(self: *Self, owner: anytype, page: anytype) void {
+            if (self.count == 0) return;
+            self.count = 1;
+            self.release(owner, page);
+        }
+
         pub fn release(self: *Self, owner: anytype, page: anytype) void {
             if (self.count == 0) {
                 log.warn(.app, "RC.release on already-released instance", .{

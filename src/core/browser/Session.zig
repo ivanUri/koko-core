@@ -656,6 +656,7 @@ pub const FinalizerCallback = struct {
     resolved_ptr_id: usize,
     finalizer_ptr_id: usize,
     release_ref: *const fn (ptr_id: usize, page: *Page) void,
+    force_deinit: *const fn (ptr_id: usize, page: *Page) void,
 
     // Linked list of Identities referencing this FC.
     identities: ?*Identity = null,
@@ -688,7 +689,7 @@ pub const FinalizerCallback = struct {
             identity.done = true;
             id = identity.next;
         }
-        self.release_ref(self.finalizer_ptr_id, page);
+        self.force_deinit(self.finalizer_ptr_id, page);
         page.releaseArena(self.arena);
     }
 };
