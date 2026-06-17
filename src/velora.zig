@@ -33,6 +33,9 @@ pub const FetchOpts = struct {
     wait_until: Config.WaitUntil = .done,
     wait_script: ?[:0]const u8 = null,
     wait_selector: ?[:0]const u8 = null,
+    click_selector: ?[:0]const u8 = null,
+    click_offset_x: u16 = 28,
+    click_offset_y: ?u16 = null,
     dump_mode: ?Config.DumpFormat = null,
     dump: dump.Opts = .{},
     writer: ?*std.Io.Writer = null,
@@ -55,6 +58,25 @@ pub fn fetch(_: *App, browser: *Browser, url: [:0]const u8, opts: FetchOpts) !vo
         log.debug(.app, "fetch wait selector start", .{ .url = url, .selector = selector, .wait_ms = opts.wait_ms });
         _ = try runner.waitForSelector(selector, opts.wait_ms);
         log.debug(.app, "fetch wait selector done", .{ .url = url, .selector = selector });
+    }
+    if (opts.click_selector) |selector| {
+        log.debug(.app, "fetch click start", .{ .url = url, .selector = selector });
+        const el = try runner.waitForSelector(selector, opts.wait_ms);
+        const rect = el.getBoundingClientRect(active_frame);
+        const x = rect.getLeft() + @as(f64, @floatFromInt(opts.click_offset_x));
+        const y = rect.getTop() + (@as(f64, @floatFromInt(opts.click_offset_y orelse 0)) + if (opts.click_offset_y == null) rect.getHeight() / 2 else 0);
+        log.info(.app, "fetch core click", .{
+            .selector = selector,
+            .x = x,
+            .y = y,
+            .left = rect.getLeft(),
+            .top = rect.getTop(),
+            .width = rect.getWidth(),
+            .height = rect.getHeight(),
+        });
+        try active_frame.triggerMouseClick(x, y);
+        log.debug(.app, "fetch click done", .{ .url = url, .selector = selector });
+        std.Thread.sleep(500 * std.time.ns_per_ms);
     }
     if (opts.wait_script) |script| {
         log.debug(.app, "fetch wait script start", .{ .url = url, .wait_ms = opts.wait_ms });

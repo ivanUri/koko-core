@@ -47,6 +47,9 @@ _pending_records: std.ArrayList(*MutationRecord) = .{},
 /// Intrusively linked to next element (see Frame.zig).
 node: std.DoublyLinkedList.Node = .{},
 
+/// Frame that registered this observer for live DOM notifications.
+_frame: ?*Frame = null,
+
 const Observing = struct {
     target: *Node,
     options: ResolvedOptions,
@@ -85,6 +88,10 @@ pub fn init(callback: js.Function.Temp, frame: *Frame) !*MutationObserver {
 }
 
 pub fn deinit(self: *MutationObserver, page: *Page) void {
+    if (self._frame) |frame| {
+        frame._mutation_observers.remove(&self.node);
+        self._frame = null;
+    }
     self.clearPendingRecords(page);
     self._observing.clearRetainingCapacity();
     self._callback.release();
@@ -102,6 +109,14 @@ fn releaseRecordList(records: []*MutationRecord, page: *Page) void {
     for (records) |record| {
         record.releaseRef(page);
     }
+}
+
+pub fn setObservingFrame(self: *MutationObserver, frame: *Frame) void {
+    self._frame = frame;
+}
+
+pub fn clearObservingFrame(self: *MutationObserver) void {
+    self._frame = null;
 }
 
 pub fn releaseRef(self: *MutationObserver, page: *Page) void {

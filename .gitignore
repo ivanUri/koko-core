@@ -13,3 +13,4 @@ sdk/node_modules
 code-check/tmp
 diff.txt
 .clinerules
+telegram.config.local.js

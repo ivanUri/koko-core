@@ -19,6 +19,8 @@ const Node = @import("../../../dom/Node.zig");
 const Element = @import("../../../dom/Element.zig");
 const HtmlElement = @import("../Html.zig");
 
+const String = @import("../../../../support/string.zig").String;
+
 const Script = @This();
 
 _proto: *HtmlElement,
@@ -144,6 +146,12 @@ pub const Build = struct {
     pub fn complete(node: *Node, _: *Frame) !void {
         const self = node.as(Script);
         const element = self.asElement();
+        self._src = element.getAttributeSafe(comptime .wrap("src")) orelse "";
+    }
+
+    pub fn attributeChange(element: *Element, name: String, _: String, _: *Frame) !void {
+        if (!std.ascii.eqlIgnoreCase(name.str(), "src")) return;
+        const self = element.as(Script);
         self._src = element.getAttributeSafe(comptime .wrap("src")) orelse "";
     }
 };

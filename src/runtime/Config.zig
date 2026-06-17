@@ -160,6 +160,9 @@ const Commands = cli.Builder(.{
                 },
             },
             .{ .name = "wait_selector", .type = ?[:0]const u8 },
+            .{ .name = "click_selector", .type = ?[:0]const u8 },
+            .{ .name = "click_offset_x", .type = u16, .default = 28 },
+            .{ .name = "click_offset_y", .type = ?u16 },
             .{ .name = "terminate_ms", .type = ?u32 },
         },
         .shared_options = CommonOptions,
@@ -650,6 +653,18 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\
         \\--wait-script-file
         \\                Like --wait-script, but reads the script from a file.
+        \\
+        \\--click-selector
+        \\                After --wait-selector/--wait-until, click inside the
+        \\                element matching this CSS selector using core
+        \\                triggerMouseClick (parent-frame coordinates).
+        \\
+        \\--click-offset-x
+        \\                X offset from the element's left edge. Defaults to 28.
+        \\
+        \\--click-offset-y
+        \\                Y offset from the element's top edge. Defaults to
+        \\                vertical center of the element.
         \\
         \\--terminate-ms  Hard deadline in milliseconds. After this time elapses,
         \\                JavaScript execution is forcibly terminated (e.g. for

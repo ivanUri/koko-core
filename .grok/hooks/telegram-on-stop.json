@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ../../telegram-hook-stop.js",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

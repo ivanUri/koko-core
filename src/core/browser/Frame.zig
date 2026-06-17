@@ -1801,10 +1801,12 @@ pub fn schedulePerformanceObserverDelivery(self: *Frame) !void {
 
 pub fn registerMutationObserver(self: *Frame, observer: *MutationObserver) !void {
     observer.acquireRef();
+    observer.setObservingFrame(self);
     self._mutation_observers.append(&observer.node);
 }
 
 pub fn unregisterMutationObserver(self: *Frame, observer: *MutationObserver) void {
+    observer.clearObservingFrame();
     observer.releaseRef(self._page);
     self._mutation_observers.remove(&observer.node);
 }
@@ -3766,11 +3768,16 @@ fn nodeIsReady(self: *Frame, comptime from_parser: bool, node: *Node) !void {
         return;
     }
     if (node.is(Element.Html.Script)) |script| {
-        if ((comptime from_parser == false) and script._src.len == 0) {
-            // Script was added via JavaScript without a src attribute.
-            // Only skip if it has no inline content either — scripts with
-            // textContent/text should still execute per spec.
-            if (node.firstChild() == null) {
+        if (comptime from_parser == false) {
+            // React Helmet and other libs often set `src` via setAttribute rather
+            // than the .src IDL property; only the latter updates Script._src.
+            // Fall back to the live attribute so external scripts still execute.
+            const has_src = script._src.len > 0 or blk: {
+                const attr = script.asElement().getAttributeSafe(comptime .wrap("src")) orelse break :blk false;
+                break :blk attr.len > 0;
+            };
+            if (!has_src and node.firstChild() == null) {
+                // No src and no inline content — nothing to evaluate.
                 return;
             }
         }
@@ -4023,25 +4030,76 @@ fn findFrameByName(frame: *Frame, name: []const u8) ?*Frame {
     return null;
 }
 
+pub const InputHit = struct {
+    element: *Element,
+    frame: *Frame,
+    client_x: f64,
+    client_y: f64,
+};
+
+/// Hit-test for synthetic input (CDP, fetch --click-selector). Unlike
+/// `document.elementFromPoint`, this descends into child browsing contexts when
+/// the topmost element is an iframe so clicks can reach nested content.
+pub fn hitTestForInput(self: *Frame, x: f64, y: f64) !?InputHit {
+    const target = (try self.window._document.elementFromPoint(x, y, self)) orelse return null;
+    return try resolveInputHit(target, x, y, self);
+}
+
+fn resolveInputHit(element: *Element, x: f64, y: f64, frame: *Frame) !?InputHit {
+    if (element.asNode().is(IFrame)) |iframe| {
+        const child_window = iframe._window orelse {
+            if (comptime IS_DEBUG) {
+                log.debug(.frame, "input hit iframe without child window", .{ .url = frame.url });
+            }
+            return .{ .element = element, .frame = frame, .client_x = x, .client_y = y };
+        };
+        const child_frame = child_window._frame;
+        // Internal input routing uses the browsing context directly. Do not
+        // gate on realmReadyForExternalObservers(), which only applies to the
+        // contentWindow/contentDocument accessors exposed to page script.
+
+        const rect = element.getBoundingClientRectForVisible(frame);
+        const child_x = x - rect.getLeft();
+        const child_y = y - rect.getTop();
+
+        const child_target = (try child_frame.window._document.elementFromPoint(child_x, child_y, child_frame)) orelse {
+            return .{ .element = element, .frame = frame, .client_x = x, .client_y = y };
+        };
+
+        return try resolveInputHit(child_target, child_x, child_y, child_frame);
+    }
+
+    return .{ .element = element, .frame = frame, .client_x = x, .client_y = y };
+}
+
 pub fn triggerMouseClick(self: *Frame, x: f64, y: f64) !void {
-    const target = (try self.window._document.elementFromPoint(x, y, self)) orelse return;
+    const hit = (try self.hitTestForInput(x, y)) orelse return;
     if (comptime IS_DEBUG) {
         log.debug(.frame, "frame mouse click", .{
-            .url = self.url,
-            .node = target,
-            .x = x,
-            .y = y,
-            .type = self._type,
+            .url = hit.frame.url,
+            .node = hit.element,
+            .x = hit.client_x,
+            .y = hit.client_y,
+            .type = hit.frame._type,
         });
     }
-    const mouse_event: *MouseEvent = try .initTrusted(comptime .wrap("click"), .{
+    const opts: MouseEvent.Options = .{
         .bubbles = true,
         .cancelable = true,
         .composed = true,
-        .clientX = x,
-        .clientY = y,
-    }, self);
-    try self._event_manager.dispatch(target.asEventTarget(), mouse_event.asEvent());
+        .clientX = hit.client_x,
+        .clientY = hit.client_y,
+    };
+
+    // Match the browser event sequence for a primary-button activation.
+    for (&[_]String{
+        comptime .wrap("mousedown"),
+        comptime .wrap("mouseup"),
+        comptime .wrap("click"),
+    }) |typ| {
+        const mouse_event: *MouseEvent = try .initTrusted(typ, opts, hit.frame);
+        try hit.frame._event_manager.dispatch(hit.element.asEventTarget(), mouse_event.asEvent());
+    }
 }
 
 // callback when the "click" event reaches the frame.

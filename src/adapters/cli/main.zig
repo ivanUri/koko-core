@@ -122,6 +122,9 @@ fn run(allocator: Allocator, main_arena: Allocator) !void {
                 .wait_until = opts.wait_until orelse .done,
                 .wait_script = opts.wait_script,
                 .wait_selector = opts.wait_selector,
+                .click_selector = opts.click_selector,
+                .click_offset_x = opts.click_offset_x,
+                .click_offset_y = opts.click_offset_y,
                 .dump_mode = opts.dump,
                 .dump = .{
                     .strip = opts.strip_mode,
