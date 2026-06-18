@@ -78,6 +78,10 @@ pub fn setName(self: *IFrame, value: []const u8, frame: *Frame) !void {
     try self.asElement().setAttributeSafe(comptime .wrap("name"), .wrap(value), frame);
 }
 
+pub fn getSandboxList(self: *IFrame, frame: *Frame) !*@import("../../collections.zig").DOMTokenList {
+    return self.asElement().getSandboxList(frame);
+}
+
 pub const JsApi = struct {
     pub const bridge = js.Bridge(IFrame);
 
@@ -91,6 +95,7 @@ pub const JsApi = struct {
     pub const name = bridge.accessor(IFrame.getName, IFrame.setName, .{});
     pub const contentWindow = bridge.accessor(IFrame.getContentWindow, null, .{});
     pub const contentDocument = bridge.accessor(IFrame.getContentDocument, null, .{});
+    pub const sandbox = bridge.accessor(IFrame.getSandboxList, null, .{});
 };
 
 pub const Build = struct {

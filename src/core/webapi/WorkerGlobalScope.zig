@@ -643,9 +643,16 @@ const ReceiveMessageCallback = struct {
             .cancelable = false,
         }, worker_scope._page)).asEvent();
         try worker_scope.dispatch(target, event, on_message, .{});
+        pumpAfterWorkerMessage(worker_scope);
         return null;
     }
 };
+
+fn pumpAfterWorkerMessage(worker_scope: *WorkerGlobalScope) void {
+    worker_scope._session.browser.runMacrotasks() catch |err| {
+        log.warn(.browser, "worker pump macrotasks", .{ .err = err });
+    };
+}
 
 pub const JsApi = struct {
     pub const bridge = JS.Bridge(WorkerGlobalScope);

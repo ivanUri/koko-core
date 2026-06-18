@@ -35,16 +35,9 @@ fn dispatchInputAndChangeEvents(el: *Element, frame: *Frame) !void {
 
 pub fn click(node: *DOMNode, frame: *Frame) !void {
     const el = node.is(Element) orelse return error.InvalidNodeType;
+    const owner = el.asNode().ownerFrame(frame);
 
-    const mouse_event: *MouseEvent = try .initTrusted(comptime .wrap("click"), .{
-        .bubbles = true,
-        .cancelable = true,
-        .composed = true,
-        .clientX = 0,
-        .clientY = 0,
-    }, frame);
-
-    frame._event_manager.dispatch(el.asEventTarget(), mouse_event.asEvent()) catch |err| {
+    @import("InputController.zig").dispatchActivationOnElement(el, owner) catch |err| {
         @import("../../support/log.zig").err(.app, "click failed", .{ .err = err });
         return error.ActionFailed;
     };

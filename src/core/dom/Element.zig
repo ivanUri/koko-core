@@ -49,6 +49,7 @@ pub const DatasetLookup = std.AutoHashMapUnmanaged(*Element, *DOMStringMap);
 pub const StyleLookup = std.AutoHashMapUnmanaged(*Element, *CSSStyleProperties);
 pub const ClassListLookup = std.AutoHashMapUnmanaged(*Element, *collections.DOMTokenList);
 pub const RelListLookup = std.AutoHashMapUnmanaged(*Element, *collections.DOMTokenList);
+pub const SandboxListLookup = std.AutoHashMapUnmanaged(*Element, *collections.DOMTokenList);
 pub const ShadowRootLookup = std.AutoHashMapUnmanaged(*Element, *ShadowRoot);
 pub const AssignedSlotLookup = std.AutoHashMapUnmanaged(*Element, *Html.Slot);
 pub const NamespaceUriLookup = std.AutoHashMapUnmanaged(*Element, []const u8);
@@ -845,13 +846,21 @@ pub fn getAssignedSlot(self: *Element, frame: *Frame) ?*Html.Slot {
 }
 
 pub fn attachShadow(self: *Element, mode_str: []const u8, frame: *Frame) !*ShadowRoot {
-    if (frame._element_shadow_roots.get(self)) |_| {
+    const mode = try ShadowRoot.Mode.fromString(mode_str);
+    if (frame._element_shadow_roots.get(self)) |existing| {
+        // React Strict Mode / SDK re-init may call attachShadow twice on the same
+        // element. Return the existing root when the mode matches (open roots are
+        // retrievable via element.shadowRoot anyway).
+        if (existing._mode == mode) return existing;
         return error.AlreadyHasShadowRoot;
     }
-    const mode = try ShadowRoot.Mode.fromString(mode_str);
     const shadow_root = try ShadowRoot.init(self, mode, frame);
     try frame._element_shadow_roots.put(frame.arena, self, shadow_root);
     return shadow_root;
+}
+
+pub fn detachShadowRoot(self: *Element, frame: *Frame) void {
+    _ = frame._element_shadow_roots.remove(self);
 }
 
 pub fn insertAdjacentElement(
@@ -990,6 +999,17 @@ pub fn getRelList(self: *Element, frame: *Frame) !*collections.DOMTokenList {
         gop.value_ptr.* = try frame._factory.create(collections.DOMTokenList{
             ._element = self,
             ._attribute_name = comptime .wrap("rel"),
+        });
+    }
+    return gop.value_ptr.*;
+}
+
+pub fn getSandboxList(self: *Element, frame: *Frame) !*collections.DOMTokenList {
+    const gop = try frame._element_sandbox_lists.getOrPut(frame.arena, self);
+    if (!gop.found_existing) {
+        gop.value_ptr.* = try frame._factory.create(collections.DOMTokenList{
+            ._element = self,
+            ._attribute_name = comptime .wrap("sandbox"),
         });
     }
     return gop.value_ptr.*;

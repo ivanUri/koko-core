@@ -68,6 +68,7 @@ const log = @import("../../support/log.zig");
 const RealmLifecycleKernel = @import("../../runtime/RealmLifecycleKernel.zig");
 const String = @import("../../support/string.zig").String;
 const IFrame = Element.Html.IFrame;
+const IFrameSandbox = @import("IFrameSandbox.zig");
 const Allocator = std.mem.Allocator;
 const IS_DEBUG = builtin.mode == .Debug;
 
@@ -83,6 +84,13 @@ pub var default_location: Location = Location{ ._url = &default_url };
 pub const BUF_SIZE = 1024;
 
 const Frame = @This();
+
+pub const InputHit = struct {
+    element: *Element,
+    frame: *Frame,
+    client_x: f64,
+    client_y: f64,
+};
 
 // This is the "id" of the frame. It can be re-used from frame-to-frame, e.g.
 // when navigating.
@@ -128,6 +136,7 @@ _element_styles: Element.StyleLookup = .empty,
 _element_datasets: Element.DatasetLookup = .empty,
 _element_class_lists: Element.ClassListLookup = .empty,
 _element_rel_lists: Element.RelListLookup = .empty,
+_element_sandbox_lists: Element.SandboxListLookup = .empty,
 _element_shadow_roots: Element.ShadowRootLookup = .empty,
 _node_owner_documents: Node.OwnerDocumentLookup = .empty,
 _element_assigned_slots: Element.AssignedSlotLookup = .empty,
@@ -266,6 +275,9 @@ child_frames: std.ArrayList(*Frame) = .{},
 
 // Workers created by this frame. Cleaned up when frame is destroyed.
 workers: std.ArrayList(*Worker) = .{},
+
+// Press-half state for split CDP mouse press/release sequences.
+_input_press_hit: ?InputHit = null,
 
 // DOM version used to invalidate cached state of "live" collections
 version: usize = 0,
@@ -620,6 +632,21 @@ pub fn releaseArena(self: *Frame, allocator: Allocator) void {
     return self._session.releaseArena(allocator);
 }
 
+fn iframeSandboxFlags(self: *const Frame) IFrameSandbox.Flags {
+    const iframe = self.iframe orelse return .{};
+    return IFrameSandbox.parse(iframe);
+}
+
+fn applySandboxOrigin(self: *Frame, url_origin: ?[]const u8) !void {
+    const flags = self.iframeSandboxFlags();
+    if (IFrameSandbox.usesOpaqueOrigin(flags)) {
+        self.origin = null;
+    } else {
+        self.origin = url_origin;
+    }
+    try self.js.setOrigin(self.origin);
+}
+
 pub fn isSameOrigin(self: *const Frame, url: [:0]const u8) bool {
     const current_origin = self.origin orelse return false;
 
@@ -667,17 +694,19 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
         // address and thus be mapped to the same v8::Object in the identity map.
         self.window._location = try Location.init(self.url, self);
 
-        if (is_blob) {
-            // strip out blob:
-            self.origin = try URL.getOrigin(self.arena, request_url[5.. :0]);
-        } else if (self.parent) |parent| {
-            self.origin = parent.origin;
-        } else if (self.window._opener) |opener| {
-            self.origin = opener._frame.origin;
-        } else {
-            self.origin = null;
-        }
-        try self.js.setOrigin(self.origin);
+        const inherited_origin: ?[]const u8 = blk: {
+            if (is_blob) {
+                break :blk try URL.getOrigin(self.arena, request_url[5.. :0]);
+            }
+            if (self.parent) |parent| {
+                break :blk parent.origin;
+            }
+            if (self.window._opener) |opener| {
+                break :blk opener._frame.origin;
+            }
+            break :blk null;
+        };
+        try self.applySandboxOrigin(inherited_origin);
 
         // Assume we parsed the document.
         // It's important to force a reset during the following navigation.
@@ -754,7 +783,8 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
     const http_client = &session.browser.http_client;
 
     self.url = try self.arena.dupeZ(u8, request_url);
-    self.origin = try URL.getOrigin(self.arena, self.url);
+    const url_origin = try URL.getOrigin(self.arena, self.url);
+    try self.applySandboxOrigin(url_origin);
 
     self._req_id = req_id;
     self._navigated_options = .{
@@ -1121,9 +1151,11 @@ fn frameHeaderDoneCallback(response: HttpClient.Response) !bool {
     if (std.mem.eql(u8, response_url, self.url) == false) {
         // would be different than self.url in the case of a redirect
         self.url = try self.arena.dupeZ(u8, response_url);
-        self.origin = try URL.getOrigin(self.arena, self.url);
+        const url_origin = try URL.getOrigin(self.arena, self.url);
+        try self.applySandboxOrigin(url_origin);
+    } else {
+        try self.js.setOrigin(self.origin);
     }
-    try self.js.setOrigin(self.origin);
 
     // After any redirect, drop the original method/body/header so a later
     // Page.reload doesn't re-POST form data to the redirect target. Conservative
@@ -1444,6 +1476,10 @@ pub fn isGoingAway(self: *const Frame) bool {
 pub fn scriptAddedCallback(self: *Frame, comptime from_parser: bool, script: *Element.Html.Script) !void {
     if (self.isGoingAway()) {
         // if we're planning on navigating to another frame, don't run this script
+        return;
+    }
+
+    if (IFrameSandbox.blocksScripts(self.iframeSandboxFlags())) {
         return;
     }
 
@@ -3229,6 +3265,10 @@ pub fn removeNode(self: *Frame, parent: *Node, child: *Node, opts: RemoveNodeOpt
 
         Element.Html.Custom.invokeDisconnectedCallbackOnElement(el, self);
 
+        if (el.is(Element)) |element| {
+            element.detachShadowRoot(self);
+        }
+
         if (el.is(IFrame)) |iframe| {
             self.detachChildFrameForIframe(iframe);
         }
@@ -4030,13 +4070,6 @@ fn findFrameByName(frame: *Frame, name: []const u8) ?*Frame {
     return null;
 }
 
-pub const InputHit = struct {
-    element: *Element,
-    frame: *Frame,
-    client_x: f64,
-    client_y: f64,
-};
-
 /// Hit-test for synthetic input (CDP, fetch --click-selector). Unlike
 /// `document.elementFromPoint`, this descends into child browsing contexts when
 /// the topmost element is an iframe so clicks can reach nested content.
@@ -4057,6 +4090,16 @@ fn resolveInputHit(element: *Element, x: f64, y: f64, frame: *Frame) !?InputHit 
         // Internal input routing uses the browsing context directly. Do not
         // gate on realmReadyForExternalObservers(), which only applies to the
         // contentWindow/contentDocument accessors exposed to page script.
+        if (child_frame._load_state == .waiting or child_frame._load_state == .parsing) {
+            if (comptime IS_DEBUG) {
+                log.debug(.frame, "input hit child frame not ready", .{
+                    .parent_url = frame.url,
+                    .child_url = child_frame.url,
+                    .load_state = child_frame._load_state,
+                });
+            }
+            return .{ .element = element, .frame = frame, .client_x = x, .client_y = y };
+        }
 
         const rect = element.getBoundingClientRectForVisible(frame);
         const child_x = x - rect.getLeft();
@@ -4073,33 +4116,15 @@ fn resolveInputHit(element: *Element, x: f64, y: f64, frame: *Frame) !?InputHit 
 }
 
 pub fn triggerMouseClick(self: *Frame, x: f64, y: f64) !void {
-    const hit = (try self.hitTestForInput(x, y)) orelse return;
-    if (comptime IS_DEBUG) {
-        log.debug(.frame, "frame mouse click", .{
-            .url = hit.frame.url,
-            .node = hit.element,
-            .x = hit.client_x,
-            .y = hit.client_y,
-            .type = hit.frame._type,
-        });
-    }
-    const opts: MouseEvent.Options = .{
-        .bubbles = true,
-        .cancelable = true,
-        .composed = true,
-        .clientX = hit.client_x,
-        .clientY = hit.client_y,
-    };
+    try @import("InputController.zig").dispatchPointerClick(self, x, y);
+}
 
-    // Match the browser event sequence for a primary-button activation.
-    for (&[_]String{
-        comptime .wrap("mousedown"),
-        comptime .wrap("mouseup"),
-        comptime .wrap("click"),
-    }) |typ| {
-        const mouse_event: *MouseEvent = try .initTrusted(typ, opts, hit.frame);
-        try hit.frame._event_manager.dispatch(hit.element.asEventTarget(), mouse_event.asEvent());
-    }
+pub fn triggerMousePress(self: *Frame, x: f64, y: f64) !void {
+    try @import("InputController.zig").dispatchPointerDownAt(self, x, y);
+}
+
+pub fn triggerMouseRelease(self: *Frame, x: f64, y: f64) !void {
+    try @import("InputController.zig").dispatchPointerUpAt(self, x, y);
 }
 
 // callback when the "click" event reaches the frame.

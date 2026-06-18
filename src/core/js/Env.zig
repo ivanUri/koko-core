@@ -58,6 +58,7 @@ pub const TaskSource = enum {
 };
 
 const MAX_CHECKPOINT_PASSES_PER_SCHEDULER_TICK = 32;
+const MAX_SCHEDULER_PUMP_DEPTH = 4;
 
 fn initClassIds() void {
     inline for (JsApis, 0..) |JsApi, i| {
@@ -112,6 +113,7 @@ private_symbols: PrivateSymbols,
 
 checkpoint_active: bool,
 checkpoint_pending: bool,
+scheduler_pump_depth: u8 = 0,
 
 pub const InitOpts = struct {
     with_inspector: bool = false,
@@ -417,6 +419,7 @@ pub fn runMicrotasks(self: *Env, source: TaskSource) void {
     }
 
     var checkpoint_passes: usize = 0;
+    var deferred_reentry_passes: usize = 0;
     self.checkpoint_active = true;
     while (true) {
         self.checkpoint_pending = false;
@@ -484,8 +487,23 @@ pub fn runMicrotasks(self: *Env, source: TaskSource) void {
             RealmLifecycleKernel.traceMicrotaskCheckpoint(false, frame_id, epoch, st);
         }
         if (!self.checkpoint_pending) break;
+        deferred_reentry_passes += 1;
     }
     self.checkpoint_active = false;
+    if (deferred_reentry_passes > 0) {
+        self.pumpSchedulerTasks();
+    }
+}
+
+pub fn pumpSchedulerTasks(self: *Env) void {
+    if (self.scheduler_pump_depth >= MAX_SCHEDULER_PUMP_DEPTH) return;
+    self.scheduler_pump_depth += 1;
+    defer self.scheduler_pump_depth -= 1;
+    self.runMacrotasks() catch |err| {
+        if (comptime IS_DEBUG) {
+            log.warn(.frame, "scheduler.pump", .{ .err = err });
+        }
+    };
 }
 
 pub fn runMacrotasks(self: *Env) !void {

@@ -177,6 +177,12 @@ fn httpDoneCallback(ctx: *anyopaque) !void {
     try self.loadInitialScript(script);
 }
 
+fn pumpAfterWorkerMessage(frame: *Frame) void {
+    frame._session.browser.runMacrotasks() catch |err| {
+        log.warn(.browser, "worker pump macrotasks", .{ .err = err });
+    };
+}
+
 fn loadInitialScript(self: *Worker, script: []const u8) !void {
     var ls: js.Local.Scope = undefined;
     self._worker_scope.js.localScope(&ls);
@@ -270,12 +276,7 @@ pub fn postMessage(self: *Worker, data: js.Value) !void {
 // Called internally by WorkerGlobalScope when it wants to post a message to us
 pub fn receiveMessage(self: *Worker, data: js.Value, message_id: u64) !void {
     if (!self._bootstrap_complete) {
-        var ls: js.Local.Scope = undefined;
-        self._worker_scope.js.localScope(&ls);
-        defer ls.deinit();
-
-        const cloned = try data.structuredCloneTo(&ls.local);
-        const cloned_data = try cloned.temp();
+        const cloned_data = try self.cloneMessageToFrame(data);
 
         try self._pending_inbound_messages.append(self._arena, .{
             .message_id = message_id,
@@ -372,16 +373,19 @@ fn enqueueInboundTempMessage(self: *Worker, cloned_data: js.Value.Temp, message_
     });
 }
 
+fn cloneMessageToFrame(self: *Worker, data: js.Value) !js.Value.Temp {
+    // Worker->page messages must deserialize into the parent frame's realm so
+    // `data instanceof Array` and other intrinsics match the main document.
+    var ls: js.Local.Scope = undefined;
+    self._frame.js.localScope(&ls);
+    defer ls.deinit();
+
+    const cloned = try data.structuredCloneTo(&ls.local);
+    return try cloned.temp();
+}
+
 fn enqueueInboundMessage(self: *Worker, data: js.Value, message_id: u64) !void {
-    const cloned_data = blk: {
-        var ls: js.Local.Scope = undefined;
-        self._worker_scope.js.localScope(&ls);
-        defer ls.deinit();
-
-        const cloned = try data.structuredCloneTo(&ls.local);
-        break :blk try cloned.temp();
-    };
-
+    const cloned_data = try self.cloneMessageToFrame(data);
     try self.enqueueInboundTempMessage(cloned_data, message_id);
 }
 
@@ -476,6 +480,8 @@ const ReceiveMessageCallback = struct {
         }, frame._page)).asEvent();
 
         try frame._event_manager.dispatchDirect(target, event, on_message, .{ .context = "Worker.receiveMessage" });
+
+        pumpAfterWorkerMessage(frame);
 
         return null;
     }

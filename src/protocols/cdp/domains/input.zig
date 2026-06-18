@@ -90,15 +90,19 @@ fn dispatchMouseEvent(cmd: *CDP.Command) !void {
 
     try cmd.sendResult(null, .{});
 
-    // quickly ignore types we know we don't handle
     switch (params.type) {
-        .mouseMoved, .mouseWheel, .mouseReleased => return,
-        else => {},
+        .mouseMoved, .mouseWheel => return,
+        .mousePressed => {
+            const bc = cmd.browser_context orelse return;
+            const frame = bc.session.currentFrame() orelse return;
+            try frame.triggerMousePress(params.x, params.y);
+        },
+        .mouseReleased => {
+            const bc = cmd.browser_context orelse return;
+            const frame = bc.session.currentFrame() orelse return;
+            try frame.triggerMouseRelease(params.x, params.y);
+        },
     }
-
-    const bc = cmd.browser_context orelse return;
-    const frame = bc.session.currentFrame() orelse return;
-    try frame.triggerMouseClick(params.x, params.y);
     // result already sent
 }
 

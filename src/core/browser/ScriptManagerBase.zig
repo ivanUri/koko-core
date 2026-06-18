@@ -235,15 +235,20 @@ pub fn deinit(self: *ScriptManagerBase) void {
     // allocations.
 }
 
-pub fn reset(self: *ScriptManagerBase) void {
-    var it = self.imported_modules.valueIterator();
-    while (it.next()) |value_ptr| {
-        switch (value_ptr.state) {
+fn clearImportedModules(self: *ScriptManagerBase) void {
+    var it = self.imported_modules.iterator();
+    while (it.next()) |entry| {
+        switch (entry.value_ptr.state) {
             .done => |script| script.deinit(),
             else => {},
         }
+        self.allocator.free(entry.key_ptr.*);
     }
     self.imported_modules.clearRetainingCapacity();
+}
+
+pub fn reset(self: *ScriptManagerBase) void {
+    clearImportedModules(self);
 
     // The importmap's keys/values were allocated from the owner's arena, which
     // has been reset. Can't use clearAndRetainCapacity — that space is no
@@ -308,6 +313,9 @@ pub fn preloadImport(self: *ScriptManagerBase, url: [:0]const u8, referrer: []co
     errdefer _ = self.imported_modules.remove(url);
     const owned_url = try self.allocator.dupe(u8, url);
     gop.key_ptr.* = owned_url;
+    errdefer if (self.imported_modules.fetchRemove(owned_url)) |kv| {
+        self.allocator.free(kv.key);
+    };
 
     const arena = try self.acquireArena(.large, "SM.preloadImport");
     errdefer self.releaseArena(arena);

@@ -100,6 +100,137 @@
         };
     }
 
+    /** Probe anchor iframe DOM after core click (Velora exposes same-origin child doc). */
+    function inspectAnchorCheckbox(iframe) {
+        if (!iframe) return { error: "no_iframe" };
+        const access = iframeAccessProbe(iframe);
+        if (!access.contentDocumentAccessible) {
+            return { error: "content_document_blocked", access };
+        }
+        const doc = iframe.contentDocument;
+        const anchor =
+            doc.getElementById("recaptcha-anchor") ||
+            doc.querySelector('[role="checkbox"]');
+        const border = doc.querySelector(".recaptcha-checkbox-border");
+        const checkedMark = doc.querySelector(".recaptcha-checkbox-checked");
+        const iframeRect = iframe.getBoundingClientRect();
+        const localX = 28;
+        const localY = iframeRect.height / 2;
+        const topAtOffset = doc.elementFromPoint(localX, localY);
+        const stackAtOffset = doc.elementsFromPoint
+            ? doc.elementsFromPoint(localX, localY).map((n) => ({
+                  tag: n.tagName,
+                  id: n.id || null,
+                  role: n.getAttribute ? n.getAttribute("role") : null,
+              }))
+            : [];
+        return {
+            access,
+            anchor: describeEl(anchor),
+            ariaChecked: anchor ? anchor.getAttribute("aria-checked") : null,
+            anchorClass: anchor ? anchor.className : null,
+            hasCheckedDecoration: !!checkedMark,
+            border: describeEl(border),
+            activeElement: describeEl(doc.activeElement),
+            coreOffsetInChild: {
+                localX,
+                localY,
+                topElement: describeEl(topAtOffset),
+                stack: stackAtOffset,
+                hitsRecaptchaAnchor:
+                    !!(topAtOffset && (topAtOffset.id === "recaptcha-anchor" || topAtOffset.closest?.("#recaptcha-anchor"))),
+            },
+        };
+    }
+
+    function renderVisibleReport(report) {
+        let panel = document.getElementById("velora-click-inspect");
+        if (!panel) {
+            panel = document.createElement("div");
+            panel.id = "velora-click-inspect";
+            panel.style.cssText = [
+                "position:fixed",
+                "top:12px",
+                "right:12px",
+                "z-index:2147483647",
+                "max-width:420px",
+                "max-height:90vh",
+                "overflow:auto",
+                "background:#111",
+                "color:#eee",
+                "font:13px/1.45 ui-monospace,Menlo,monospace",
+                "padding:14px 16px",
+                "border:2px solid #0a84ff",
+                "border-radius:8px",
+                "box-shadow:0 8px 32px rgba(0,0,0,.45)",
+            ].join(";");
+            document.documentElement.appendChild(panel);
+        }
+
+        const inspect = report.anchorInspect || {};
+        const offset = inspect.coreOffsetInChild || {};
+        const anchor = inspect.anchor || {};
+        const token = report.tokenAfterDomClick || {};
+        const hit = report.hitTest || {};
+
+        const lines = [
+            "VELORA CLICK INSPECT",
+            "mode: " + report.mode,
+            "verdict: " + report.verdict,
+            "",
+            "Parent click coords (core offset +28):",
+            "  x=" + (hit.clickX != null ? hit.clickX.toFixed(1) : "?") +
+                " y=" + (hit.clickY != null ? hit.clickY.toFixed(1) : "?"),
+            "  parent elementFromPoint: " + (hit.topElement?.tag || "?"),
+            "",
+            "Child frame (anchor iframe) at offset (28, h/2):",
+            "  top: " + (offset.topElement?.tag || "?") +
+                " id=" + (offset.topElement?.id || "-") +
+                " role=" + (offset.stack?.[0]?.role || "-"),
+            "  hits #recaptcha-anchor: " + (offset.hitsRecaptchaAnchor ? "YES" : "NO"),
+            "",
+            "#recaptcha-anchor:",
+            "  aria-checked: " + (inspect.ariaChecked ?? "?"),
+            "  checked decoration: " + (inspect.hasCheckedDecoration ? "YES" : "NO"),
+            "  activeElement: " + (inspect.activeElement?.id || inspect.activeElement?.tag || "?"),
+            "",
+            "Token: len=" + (token.length ?? 0),
+            "Challenge bframe: " + (report.challengeVisible ? "YES" : "NO"),
+        ];
+
+        panel.innerHTML =
+            "<pre style='margin:0;white-space:pre-wrap'>" +
+            lines.map((l) => l.replace(/</g, "&lt;")).join("\n") +
+            "</pre>" +
+            "<details style='margin-top:10px'><summary>JSON</summary><pre style='margin:8px 0 0;white-space:pre-wrap;font-size:11px'>" +
+            JSON.stringify(report, null, 2).replace(/</g, "&lt;") +
+            "</pre></details>";
+
+        if (anchor.rect) {
+            const marker = document.getElementById("velora-anchor-marker");
+            if (marker) marker.remove();
+            const m = document.createElement("div");
+            m.id = "velora-anchor-marker";
+            m.title = "recaptcha-anchor (parent viewport)";
+            const r = anchor.rect;
+            const ir = report.iframe?.rect;
+            if (ir) {
+                m.style.cssText = [
+                    "position:fixed",
+                    "left:" + (ir.left + r.left) + "px",
+                    "top:" + (ir.top + r.top) + "px",
+                    "width:" + r.width + "px",
+                    "height:" + r.height + "px",
+                    "border:2px dashed #ff3b30",
+                    "pointer-events:none",
+                    "z-index:2147483646",
+                    "box-sizing:border-box",
+                ].join(";");
+                document.documentElement.appendChild(m);
+            }
+        }
+    }
+
     function grecaptchaRenderReady() {
         return typeof grecaptcha === "object" && typeof grecaptcha.render === "function";
     }
@@ -294,9 +425,13 @@
     if (state.phase === 3) {
         if (Date.now() - state.domClickAt < 12_000) return false;
 
-        const report = finalizeReport(Object.assign({}, state.baseReport, {
-            domClick: state.domClick,
-        }));
+        const iframe = widgetIframe();
+        const report = finalizeReport(
+            Object.assign({}, state.baseReport, {
+                domClick: state.domClick,
+                anchorInspect: inspectAnchorCheckbox(iframe),
+            })
+        );
         state.report = report;
         const payload = TAG + JSON.stringify(report);
         console.log(payload);
@@ -308,6 +443,7 @@
             document.documentElement.appendChild(pre);
         }
         pre.textContent = payload;
+        renderVisibleReport(report);
         state.phase = 4;
         return true;
     }

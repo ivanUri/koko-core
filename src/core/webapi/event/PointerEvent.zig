@@ -75,7 +75,7 @@ pub const PointerEventOptions = struct {
     isPrimary: bool = false,
 };
 
-const Options = Event.inheritOptions(
+pub const Options = Event.inheritOptions(
     PointerEvent,
     PointerEventOptions,
 );
@@ -84,11 +84,20 @@ pub fn init(typ: []const u8, _opts: ?Options, frame: *Frame) !*PointerEvent {
     const arena = try frame.getArena(.tiny, "PointerEvent");
     errdefer frame.releaseArena(arena);
     const type_string = try String.init(arena, typ, .{});
+    return initWithTrusted(arena, type_string, _opts, false, frame);
+}
 
+pub fn initTrusted(typ: String, _opts: ?Options, frame: *Frame) !*PointerEvent {
+    const arena = try frame.getArena(.tiny, "PointerEvent.trusted");
+    errdefer frame.releaseArena(arena);
+    return initWithTrusted(arena, typ, _opts, true, frame);
+}
+
+fn initWithTrusted(arena: std.mem.Allocator, typ: String, _opts: ?Options, trusted: bool, frame: *Frame) !*PointerEvent {
     const opts = _opts orelse Options{};
     const event = try frame._factory.mouseEvent(
         arena,
-        type_string,
+        typ,
         MouseEvent{
             ._type = .{ .pointer_event = undefined },
             ._proto = undefined,
@@ -121,7 +130,7 @@ pub fn init(typ: []const u8, _opts: ?Options, frame: *Frame) !*PointerEvent {
         },
     );
 
-    Event.populatePrototypes(event, opts, false);
+    Event.populatePrototypes(event, opts, trusted);
     return event;
 }
 

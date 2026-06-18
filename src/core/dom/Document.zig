@@ -1123,6 +1123,7 @@ fn _injectBlank(self: *Document, frame: *Frame) !void {
     try frame.appendNode(html, head, .{});
     try frame.appendNode(html, body, .{});
     try frame.appendNode(self.asNode(), html, .{});
+    self._ready_state = .complete;
 }
 
 const ReadyState = enum {
