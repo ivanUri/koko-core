@@ -128,11 +128,12 @@ pub fn init(url: []const u8, protocols: [][]const u8, frame: *Frame) !*WebSocket
 
     var headers = try http_client.newHeaders();
     errdefer headers.deinit();
+    try frame.appendOriginHeader(&headers);
     if (protocols.len > 0) {
         const header = try std.fmt.allocPrintSentinel(arena, "Sec-WebSocket-Protocol: {s}", .{try std.mem.join(arena, ", ", protocols)}, 0);
         try headers.add(header);
-        try conn.setHeaders(&headers);
     }
+    try conn.setHeaders(&headers);
 
     const self = try frame._factory.eventTargetWithAllocator(arena, WebSocket{
         ._frame = frame,

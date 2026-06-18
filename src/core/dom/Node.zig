@@ -1167,8 +1167,8 @@ pub const JsApi = struct {
     pub const lookupNamespaceURI = bridge.function(Node.lookupNamespaceURI, .{});
     pub const isDefaultNamespace = bridge.function(Node.isDefaultNamespace, .{});
 
-    fn _baseURI(_: *Node, frame: *const Frame) []const u8 {
-        return frame.base();
+    fn _baseURI(self: *Node, frame: *const Frame) []const u8 {
+        return self.ownerFrame(@constCast(frame)).base();
     }
     pub const baseURI = bridge.accessor(_baseURI, null, .{});
 };

@@ -1,5 +1,8 @@
 const std = @import("std");
+const c = std.c;
 const Profile = @import("Profile.zig");
+
+extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, override: c_int) c_int;
 
 pub const Mode = enum {
     velora,
@@ -127,12 +130,27 @@ pub fn resolve(name: ?[]const u8) !LoadedProfile {
     defer if (path.allocated) std.heap.page_allocator.free(path.slice);
 
     const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path.slice, 1024 * 1024) catch |err| switch (err) {
-        error.FileNotFound => return fromEmbedded(name),
+        error.FileNotFound => {
+            var embedded = try fromEmbedded(name);
+            applyProcessTimezone(&embedded);
+            return embedded;
+        },
         else => return err,
     };
     defer std.heap.page_allocator.free(bytes);
 
-    return try parseJson(bytes);
+    var loaded = try parseJson(bytes);
+    applyProcessTimezone(&loaded);
+    return loaded;
+}
+
+fn applyProcessTimezone(profile: *const LoadedProfile) void {
+    const tz = profile.identity.timezone;
+    if (tz.len == 0 or tz.len >= 96) return;
+    var buf: [96:0]u8 = undefined;
+    @memcpy(buf[0..tz.len], tz);
+    buf[tz.len] = 0;
+    _ = setenv("TZ", &buf, 1);
 }
 
 const PathResult = struct {

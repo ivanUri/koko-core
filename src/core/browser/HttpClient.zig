@@ -938,8 +938,9 @@ pub const RequestParams = struct {
     // mid-flight. Session.discardPendingPage uses .full scope to override
     // the flag in failure paths.
     protect_from_abort: bool = false,
+    skip_cache: bool = false,
 
-    const ResourceType = enum {
+    pub const ResourceType = enum {
         document,
         xhr,
         script,

@@ -748,15 +748,19 @@ fn looksLikeNewDocument(html: []const u8) bool {
         std.ascii.startsWithIgnoreCase(trimmed, "<html");
 }
 
+fn frameForDocument(self: *Document, executing: *Frame) *Frame {
+    return self._frame orelse executing;
+}
+
 pub fn write(self: *Document, text: []const []const u8, frame: *Frame) !void {
-    return self.writeInternal(text, false, frame);
+    return self.writeInternal(text, false, self.frameForDocument(frame));
 }
 
 // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-document-writeln
 // `writeln(...text)` runs the document write steps with `text` followed by a
 // U+000A LINE FEED character.
 pub fn writeln(self: *Document, text: []const []const u8, frame: *Frame) !void {
-    return self.writeInternal(text, true, frame);
+    return self.writeInternal(text, true, self.frameForDocument(frame));
 }
 
 fn writeInternal(self: *Document, text: []const []const u8, append_newline: bool, frame: *Frame) !void {
@@ -862,7 +866,8 @@ fn writeInternal(self: *Document, text: []const []const u8, append_newline: bool
     self._write_insertion_point = children_to_insert.getLast();
 }
 
-pub fn open(self: *Document, frame: *Frame) !*Document {
+pub fn open(self: *Document, executing: *Frame) !*Document {
+    const frame = self.frameForDocument(executing);
     if (self._type == .xml) {
         return error.InvalidStateError;
     }
@@ -904,7 +909,8 @@ pub fn open(self: *Document, frame: *Frame) !*Document {
     return self;
 }
 
-pub fn close(self: *Document, frame: *Frame) !void {
+pub fn close(self: *Document, executing: *Frame) !void {
+    const frame = self.frameForDocument(executing);
     if (self._type == .xml) {
         return error.InvalidStateError;
     }
@@ -1213,8 +1219,9 @@ pub const JsApi = struct {
     pub const hidden = bridge.property(false, .{ .template = false, .readonly = true });
     pub const visibilityState = bridge.property("visible", .{ .template = false, .readonly = true });
     pub const defaultView = bridge.accessor(struct {
-        fn defaultView(_: *const Document, frame: *Frame) *@import("../webapi/Window.zig") {
-            return frame.window;
+        fn defaultView(self: *const Document, frame: *Frame) *@import("../webapi/Window.zig") {
+            const doc_frame = self._frame orelse frame;
+            return doc_frame.window;
         }
     }.defaultView, null, .{});
     pub const hasFocus = bridge.function(Document.hasFocus, .{});

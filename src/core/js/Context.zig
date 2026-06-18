@@ -555,6 +555,11 @@ fn postCompileModule(self: *Context, mod: js.Module, url: [:0]const u8, local: *
             nested_gop.value_ptr.* = .{};
             nested_gop.value_ptr.state = .fetching;
             try script_manager.preloadImport(owned_specifier, url);
+            if (script_manager.imported_modules.get(owned_specifier)) |im| {
+                if (im.state == .done) {
+                    nested_gop.value_ptr.state = .fetched;
+                }
+            }
         } else if (nested_gop.value_ptr.module == null) {
             // Entry exists but module failed to compile previously.
             // The imported_modules entry may have been consumed, so
@@ -564,6 +569,11 @@ fn postCompileModule(self: *Context, mod: js.Module, url: [:0]const u8, local: *
             const key_z: [:0]const u8 = key.ptr[0..key.len :0];
             if (nested_gop.value_ptr.state == .uninitialized) nested_gop.value_ptr.state = .fetching;
             try script_manager.preloadImport(key_z, url);
+            if (script_manager.imported_modules.get(key_z)) |im| {
+                if (im.state == .done) {
+                    nested_gop.value_ptr.state = .fetched;
+                }
+            }
         }
     }
 }

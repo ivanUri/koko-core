@@ -21,7 +21,7 @@ const CacheRequest = Cache.CacheRequest;
 const CachedMetadata = Cache.CachedMetadata;
 const CachedResponse = Cache.CachedResponse;
 
-const CACHE_VERSION: usize = 1;
+const CACHE_VERSION: usize = 2;
 const LOCK_STRIPES = 16;
 comptime {
     std.debug.assert(std.math.isPowerOfTwo(LOCK_STRIPES));
@@ -84,6 +84,16 @@ pub fn deinit(self: *FsCache) void {
 }
 
 pub fn get(self: *FsCache, arena: std.mem.Allocator, req: CacheRequest) ?CachedResponse {
+    return self.loadEntry(arena, req, .fresh_only);
+}
+
+pub fn getStale(self: *FsCache, arena: std.mem.Allocator, req: CacheRequest) ?CachedResponse {
+    return self.loadEntry(arena, req, .allow_stale);
+}
+
+const LoadPolicy = enum { fresh_only, allow_stale };
+
+fn loadEntry(self: *FsCache, arena: std.mem.Allocator, req: CacheRequest, policy: LoadPolicy) ?CachedResponse {
     const hashed_key = hashKey(req.url);
     const cache_p = cachePath(&hashed_key);
 
@@ -157,12 +167,12 @@ pub fn get(self: *FsCache, arena: std.mem.Allocator, req: CacheRequest) ?CachedR
 
     const metadata = cache_file.metadata;
 
-    // Check entry expiration.
-    const now = req.timestamp;
-    const age = (now - metadata.stored_at) + @as(i64, @intCast(metadata.age_at_store));
-    if (age < 0 or @as(u64, @intCast(age)) >= metadata.cache_control.max_age) {
+    const response_age = metadata.responseAge(req.timestamp);
+    if (policy == .fresh_only and !metadata.cache_control.isFresh(response_age)) {
         log.debug(.cache, "miss", .{ .url = req.url, .reason = "expired" });
-        cleanup = true;
+        if (!metadata.hasValidators()) {
+            cleanup = true;
+        }
         return null;
     }
 
@@ -194,7 +204,10 @@ pub fn get(self: *FsCache, arena: std.mem.Allocator, req: CacheRequest) ?CachedR
         return null;
     }
 
-    log.debug(.cache, "hit", .{ .url = req.url, .hash = &hashed_key });
+    switch (policy) {
+        .fresh_only => log.debug(.cache, "hit", .{ .url = req.url, .hash = &hashed_key }),
+        .allow_stale => log.debug(.cache, "stale", .{ .url = req.url, .hash = &hashed_key }),
+    }
 
     return .{
         .metadata = metadata,

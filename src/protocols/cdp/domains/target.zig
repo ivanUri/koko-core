@@ -174,6 +174,11 @@ fn createTarget(cmd: *CDP.Command) !void {
 
     const frame = try bc.session.createPage();
 
+    if (std.mem.eql(u8, params.url, "about:blank")) {
+        try frame.document.injectBlank(frame);
+        frame.markRealmReadyForPublication();
+    }
+
     // the target_id == the frame_id of the "root" frame
     const frame_id = id.toFrameId(frame._frame_id);
     bc.target_id = frame_id;

@@ -50,7 +50,7 @@ pub fn processMessage(cmd: *CDP.Command) !void {
     switch (action) {
         .enable => return enable(cmd),
         .disable => return disable(cmd),
-        .setCacheDisabled => return cmd.sendResult(null, .{}),
+        .setCacheDisabled => return setCacheDisabled(cmd),
         .setUserAgentOverride => return @import("emulation.zig").setUserAgentOverride(cmd),
         .setExtraHTTPHeaders => return setExtraHTTPHeaders(cmd),
         .deleteCookies => return deleteCookies(cmd),
@@ -72,6 +72,15 @@ fn enable(cmd: *CDP.Command) !void {
 fn disable(cmd: *CDP.Command) !void {
     const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
     bc.networkDisable();
+    return cmd.sendResult(null, .{});
+}
+
+fn setCacheDisabled(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        cacheDisabled: bool,
+    })) orelse return error.InvalidParams;
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    bc.session.browser.http_client.network.cache_disabled = params.cacheDisabled;
     return cmd.sendResult(null, .{});
 }
 

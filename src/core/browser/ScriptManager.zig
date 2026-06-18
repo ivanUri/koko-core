@@ -76,8 +76,8 @@ pub fn tailHook(base: *ScriptManagerBase) void {
     }
 }
 
-fn getHeaders(self: *ScriptManager) !HttpClient.Headers {
-    return self.base.getHeaders();
+fn getHeaders(self: *ScriptManager, url: [:0]const u8, resource_type: HttpClient.RequestParams.ResourceType) !HttpClient.Headers {
+    return self.base.getHeaders(url, resource_type);
 }
 
 pub fn addFromElement(self: *ScriptManager, comptime from_parser: bool, script_element: *Element.Html.Script, comptime ctx: []const u8) !void {
@@ -226,7 +226,7 @@ pub fn addFromElement(self: *ScriptManager, comptime from_parser: bool, script_e
         self.base.is_evaluating = true;
         defer self.base.is_evaluating = was_evaluating;
 
-        const headers = try self.getHeaders();
+        const headers = try self.getHeaders(url, .script);
 
         if (is_blocking) {
             const response = try self.base.client.syncRequest(arena, .{

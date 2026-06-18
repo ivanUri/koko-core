@@ -20,6 +20,7 @@ const std = @import("std");
 
 const JS = @import("../js/js.zig");
 const URL = @import("../browser/URL.zig");
+const Frame = @import("../browser/Frame.zig");
 const Page = @import("../browser/Page.zig");
 const Factory = @import("../browser/Factory.zig");
 const Session = @import("../browser/Session.zig");
@@ -225,8 +226,8 @@ pub fn hasDirectListeners(self: *WorkerGlobalScope, target: *EventTarget, typ: [
 
 // Workers don't have their own Referer; per spec, dedicated worker requests
 // use the parent document's URL. Delegate to the owning frame.
-pub fn headersForRequest(self: *WorkerGlobalScope, headers: *HttpClient.Headers) !void {
-    return self._worker._frame.headersForRequest(headers);
+pub fn headersForRequest(self: *WorkerGlobalScope, headers: *HttpClient.Headers, opts: Frame.HeadersForRequestOpts) !void {
+    return self._worker._frame.headersForRequest(headers, opts);
 }
 
 pub fn isSameOrigin(self: *const WorkerGlobalScope, url: [:0]const u8) bool {
@@ -448,7 +449,10 @@ fn importScript(self: *WorkerGlobalScope, arena: Allocator, url: [:0]const u8) !
     const http_client = &session.browser.http_client;
 
     var headers = try http_client.newHeaders();
-    try self.headersForRequest(&headers);
+    try self.headersForRequest(&headers, .{
+        .request_url = resolved_url,
+        .resource_type = .script,
+    });
 
     const response = http_client.syncRequest(arena, .{
         .url = resolved_url,

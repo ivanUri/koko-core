@@ -26,6 +26,7 @@ const std = @import("std");
 const Context = @import("Context.zig");
 const Scheduler = @import("Scheduler.zig");
 const Factory = @import("../browser/Factory.zig");
+const Frame = @import("../browser/Frame.zig");
 const HttpClient = @import("../browser/HttpClient.zig");
 const FingerprintProfile = @import("../fingerprint/Profile.zig");
 const ProfileStore = @import("../fingerprint/ProfileStore.zig");
@@ -94,9 +95,9 @@ pub fn loadedProfile(self: *const Execution) *const ProfileStore.LoadedProfile {
     return &self.context.page.session.browser.app.config.profile;
 }
 
-pub fn headersForRequest(self: *const Execution, headers: *HttpClient.Headers) !void {
+pub fn headersForRequest(self: *const Execution, headers: *HttpClient.Headers, opts: Frame.HeadersForRequestOpts) !void {
     return switch (self.context.global) {
-        inline else => |g| g.headersForRequest(headers),
+        inline else => |g| g.headersForRequest(headers, opts),
     };
 }
 

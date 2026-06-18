@@ -16,6 +16,8 @@ const std = @import("std");
 const js = @import("../js/js.zig");
 const NavigatorState = @import("NavigatorState.zig");
 const NavigatorUAData = @import("NavigatorUAData.zig");
+const Permissions = @import("Permissions.zig");
+const StorageManager = @import("StorageManager.zig");
 const Page = @import("../browser/Page.zig");
 const navigator_extras = @import("navigator_extras.zig");
 
@@ -34,6 +36,8 @@ const WorkerNavigator = @This();
 
 _pad: bool = false,
 _ua_data: NavigatorUAData = .{},
+_permissions: Permissions = .{},
+_storage: StorageManager = .{},
 _gpu: navigator_extras.GPU = .{},
 
 pub const init: WorkerNavigator = .{};
@@ -110,6 +114,18 @@ pub fn getGpu(self: *WorkerNavigator) *navigator_extras.GPU {
     return &self._gpu;
 }
 
+pub fn getPermissions(self: *WorkerNavigator) *Permissions {
+    return &self._permissions;
+}
+
+pub fn getStorage(self: *WorkerNavigator) *StorageManager {
+    return &self._storage;
+}
+
+pub fn getPdfViewerEnabled(_: *const WorkerNavigator, page: *Page) bool {
+    return page.navigatorState().pdfViewerEnabled();
+}
+
 pub const JsApi = struct {
     pub const bridge = js.Bridge(WorkerNavigator);
 
@@ -137,4 +153,8 @@ pub const JsApi = struct {
     pub const globalPrivacyControl = bridge.accessor(WorkerNavigator.getGlobalPrivacyControl, null, .{});
     pub const userAgentData = bridge.accessor(WorkerNavigator.getUserAgentData, null, .{});
     pub const gpu = bridge.accessor(WorkerNavigator.getGpu, null, .{});
+    pub const cookieEnabled = bridge.attribute(true, .{});
+    pub const pdfViewerEnabled = bridge.accessor(WorkerNavigator.getPdfViewerEnabled, null, .{});
+    pub const permissions = bridge.accessor(WorkerNavigator.getPermissions, null, .{});
+    pub const storage = bridge.accessor(WorkerNavigator.getStorage, null, .{});
 };

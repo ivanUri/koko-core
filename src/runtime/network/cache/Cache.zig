@@ -38,6 +38,12 @@ pub fn get(self: *Cache, arena: std.mem.Allocator, req: CacheRequest) ?CachedRes
     };
 }
 
+pub fn getStale(self: *Cache, arena: std.mem.Allocator, req: CacheRequest) ?CachedResponse {
+    return switch (self.kind) {
+        inline else => |*c| c.getStale(arena, req),
+    };
+}
+
 pub fn put(self: *Cache, metadata: CachedMetadata, body: []const u8) !void {
     return switch (self.kind) {
         inline else => |*c| c.put(metadata, body),
@@ -52,10 +58,17 @@ pub fn evict(self: *Cache, url: []const u8) void {
 }
 
 pub const CacheControl = struct {
-    max_age: u64,
+    max_age: u64 = 0,
+    no_cache: bool = false,
+    must_revalidate: bool = false,
+
+    pub fn isFresh(self: CacheControl, age: u64) bool {
+        if (self.no_cache) return false;
+        return age < self.max_age;
+    }
 
     pub fn parse(value: []const u8) ?CacheControl {
-        var cc: CacheControl = .{ .max_age = undefined };
+        var cc: CacheControl = .{};
 
         var max_age_set = false;
         var max_s_age_set = false;
@@ -64,18 +77,23 @@ pub const CacheControl = struct {
         while (iter.next()) |part| {
             const stripped = std.mem.trim(u8, part, &std.ascii.whitespace);
 
-            var buf: [16]u8 = undefined;
+            var buf: [24]u8 = undefined;
             const len = @min(buf.len, stripped.len);
             const directive = std.ascii.lowerString(buf[0..len], stripped[0..len]);
 
             if (std.mem.eql(u8, directive, "no-store")) {
                 return null;
             }
-            if (std.mem.eql(u8, directive, "no-cache")) {
-                return null;
-            }
             if (std.mem.eql(u8, directive, "private")) {
                 return null;
+            }
+            if (std.mem.eql(u8, directive, "no-cache")) {
+                cc.no_cache = true;
+                continue;
+            }
+            if (std.mem.eql(u8, directive, "must-revalidate")) {
+                cc.must_revalidate = true;
+                continue;
             }
 
             if (std.mem.startsWith(u8, directive, "max-age=")) {
@@ -94,6 +112,7 @@ pub const CacheControl = struct {
             }
         }
 
+        if (cc.no_cache) return cc;
         if (!max_age_set) return null;
         if (cc.max_age == 0) return null;
 
@@ -115,6 +134,19 @@ pub const CachedMetadata = struct {
 
     /// These are Request Headers used by Vary.
     vary_headers: []const Http.Header,
+
+    etag: ?[]const u8 = null,
+    last_modified: ?[]const u8 = null,
+
+    pub fn hasValidators(self: CachedMetadata) bool {
+        return self.etag != null or self.last_modified != null;
+    }
+
+    pub fn responseAge(self: CachedMetadata, timestamp: i64) u64 {
+        const age = (timestamp - self.stored_at) + @as(i64, @intCast(self.age_at_store));
+        if (age < 0) return 0;
+        return @intCast(age);
+    }
 
     pub fn format(self: CachedMetadata, writer: *std.Io.Writer) !void {
         try writer.print("url={s} | status={d} | content_type={s} | max_age={d} | vary=[", .{
@@ -180,6 +212,8 @@ pub fn tryCache(
     cache_control: ?[]const u8,
     vary: ?[]const u8,
     age: ?[]const u8,
+    etag: ?[]const u8,
+    last_modified: ?[]const u8,
     has_set_cookie: bool,
     has_authorization: bool,
 ) !?CachedMetadata {
@@ -220,6 +254,8 @@ pub fn tryCache(
         .cache_control = cc,
         .headers = &.{},
         .vary_headers = &.{},
+        .etag = if (etag) |e| try arena.dupe(u8, e) else null,
+        .last_modified = if (last_modified) |lm| try arena.dupe(u8, lm) else null,
     };
 }
 const testing = @import("../../../testing/testing.zig");
@@ -236,10 +272,11 @@ test "Cache: CacheControl.parse" {
     try testing.expectEqual(600, CacheControl.parse("s-maxage=600, max-age=300").?.max_age);
 
     try testing.expectEqual(null, CacheControl.parse("no-store"));
-    try testing.expectEqual(null, CacheControl.parse("no-cache"));
+    try testing.expect(CacheControl.parse("no-cache").?.no_cache);
     try testing.expectEqual(null, CacheControl.parse("private"));
     try testing.expectEqual(null, CacheControl.parse("max-age=300, no-store"));
-    try testing.expectEqual(null, CacheControl.parse("no-cache, max-age=300"));
+    try testing.expectEqual(300, CacheControl.parse("no-cache, max-age=300").?.max_age);
+    try testing.expect(CacheControl.parse("no-cache, max-age=300").?.no_cache);
     try testing.expectEqual(null, CacheControl.parse("Private, max-age=300"));
 
     try testing.expectEqual(null, CacheControl.parse("max-age=0"));

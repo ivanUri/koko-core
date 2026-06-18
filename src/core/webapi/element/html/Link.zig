@@ -87,10 +87,19 @@ pub fn linkAddedCallback(self: *Link, frame: *Frame) !void {
     const element = self.asElement();
 
     const rel = element.getAttributeSafe(comptime .wrap("rel")) orelse return;
+
+    if (std.mem.eql(u8, rel, "modulepreload")) {
+        const href = element.getAttributeSafe(comptime .wrap("href")) orelse return;
+        if (href.len == 0) return;
+        const resolved = try self.asNode().resolveURL(href, frame, .{});
+        const resolved_z: [:0]const u8 = resolved.ptr[0..resolved.len :0];
+        try frame._script_manager.base.preloadImport(resolved_z, frame.base());
+        return;
+    }
+
     const loadable_rels = std.StaticStringMap(void).initComptime(.{
         .{ "stylesheet", {} },
         .{ "preload", {} },
-        .{ "modulepreload", {} },
     });
     if (loadable_rels.has(rel) == false) {
         return;

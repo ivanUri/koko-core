@@ -353,6 +353,8 @@ fn processFrameNavigation(self: *Session, frame: *Frame, qn: *QueuedNavigation) 
     const iframe = frame.iframe.?;
     const parent = frame.parent.?;
 
+    const old_window_ptr: ?usize = if (iframe._window) |w| @intFromPtr(w) else null;
+
     frame._queued_navigation = null;
     defer self.releaseArena(qn.arena);
 
@@ -391,6 +393,16 @@ fn processFrameNavigation(self: *Session, frame: *Frame, qn: *QueuedNavigation) 
 
     frame.iframe = iframe;
     iframe._window = frame.window;
+
+    if (old_window_ptr) |old| {
+        _ = page.identity.rekey(
+            page.frame_arena,
+            self.browser.env.isolate.handle,
+            old,
+            @intFromPtr(frame.window),
+            frame.window,
+        );
+    }
 
     frame.navigate(qn.url, qn.opts) catch |err| {
         log.err(.browser, "queued frame navigation error", .{ .err = err });

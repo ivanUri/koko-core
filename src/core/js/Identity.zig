@@ -26,6 +26,7 @@ const std = @import("std");
 const js = @import("js.zig");
 
 const v8 = js.v8;
+const TaggedOpaque = @import("TaggedOpaque.zig");
 
 const Identity = @This();
 
@@ -37,4 +38,36 @@ pub fn deinit(self: *Identity) void {
     while (it.next()) |global| {
         v8.v8__Global__Reset(global);
     }
+}
+
+/// Re-key an existing JS wrapper from `old_ptr` to `new_ptr`, updating the
+/// TaggedOpaque to point at `new_value`. Used when iframe child frames
+/// re-navigate in place: the Frame pointer is stable but the Window struct is
+/// replaced, and contentWindow must keep object identity across navigations.
+pub fn rekey(
+    self: *Identity,
+    allocator: std.mem.Allocator,
+    isolate: *v8.Isolate,
+    old_ptr: usize,
+    new_ptr: usize,
+    new_value: *anyopaque,
+) bool {
+    const kv = self.identity_map.fetchRemove(old_ptr) orelse return false;
+
+    if (v8.v8__Global__Get(&kv.value, isolate)) |obj| {
+        if (v8.v8__Object__GetAlignedPointerFromInternalField(@ptrCast(obj), 0)) |tao_raw| {
+            const tao: *TaggedOpaque = @ptrCast(@alignCast(tao_raw));
+            tao.value = new_value;
+        }
+    }
+
+    const gop = self.identity_map.getOrPut(allocator, new_ptr) catch {
+        v8.v8__Global__Reset(@constCast(&kv.value));
+        return false;
+    };
+    if (gop.found_existing) {
+        v8.v8__Global__Reset(gop.value_ptr);
+    }
+    gop.value_ptr.* = kv.value;
+    return true;
 }

@@ -79,7 +79,10 @@ pub fn init(input: Input, options: ?InitOpts, exec: *const Execution) !js.Promis
     if (request._headers) |h| {
         try h.populateHttpHeader(exec.call_arena, &headers);
     }
-    try exec.headersForRequest(&headers);
+    try exec.headersForRequest(&headers, .{
+        .request_url = request._url,
+        .resource_type = .fetch,
+    });
 
     if (comptime IS_DEBUG) {
         log.debug(.http, "fetch", .{ .url = request._url });

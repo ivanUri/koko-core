@@ -6,8 +6,6 @@ const Element = @import("../../../dom/Element.zig");
 const HtmlElement = @import("../Html.zig");
 const ShadowRoot = @import("../../ShadowRoot.zig");
 
-const log = @import("../../../../support/log.zig");
-
 const Slot = @This();
 
 _proto: *HtmlElement,
@@ -55,11 +53,33 @@ fn CollectionType(comptime elements: bool) type {
 }
 
 fn collectAssignedNodes(self: *Slot, comptime elements: bool, coll: CollectionType(elements), opts: AssignedNodesOptions, frame: *Frame) !void {
+    const allocator = frame.call_arena;
+
+    if (frame.getManualSlotAssignment(self)) |manual| {
+        for (manual) |child| {
+            if (opts.flatten) {
+                if (child.is(Slot)) |child_slot| {
+                    if (child_slot.findShadowRoot()) |_| {
+                        try child_slot.collectAssignedNodes(elements, coll, opts, frame);
+                        continue;
+                    }
+                }
+            }
+            if (comptime elements) {
+                if (child.is(Element)) |el| {
+                    try coll.append(allocator, el);
+                }
+            } else {
+                try coll.append(allocator, child);
+            }
+        }
+        return;
+    }
+
     // Find the shadow root this slot belongs to
     const shadow_root = self.findShadowRoot() orelse return;
 
     const slot_name = self.getName();
-    const allocator = frame.call_arena;
 
     const host = shadow_root.getHost();
     const initial_count = coll.items.len;
@@ -104,15 +124,36 @@ fn collectAssignedNodes(self: *Slot, comptime elements: bool, coll: CollectionTy
     }
 }
 
-pub fn assign(self: *Slot, nodes: []const *Node) void {
-    // Imperative slot assignment API
-    // This would require storing manually assigned nodes
-    // For now, this is a placeholder for the API
-    _ = self;
-    _ = nodes;
+pub fn assign(self: *Slot, nodes: []const *Node, frame: *Frame) !void {
+    var affected: std.AutoHashMapUnmanaged(*Slot, void) = .{};
+    defer affected.deinit(frame.call_arena);
 
-    // let's see if this is ever actually used
-    log.warn(.not_implemented, "Slot.assign", .{});
+    try affected.put(frame.call_arena, self, {});
+
+    if (frame.getManualSlotAssignment(self)) |old_nodes| {
+        for (old_nodes) |n| {
+            if (n.is(Element)) |el| {
+                if (frame._element_assigned_slots.get(el)) |s| {
+                    try affected.put(frame.call_arena, s, {});
+                }
+            }
+        }
+    }
+
+    for (nodes) |n| {
+        if (n.is(Element)) |el| {
+            if (frame._element_assigned_slots.get(el)) |s| {
+                try affected.put(frame.call_arena, s, {});
+            }
+        }
+    }
+
+    try frame.setManualSlotAssignment(self, nodes);
+
+    var it = affected.keyIterator();
+    while (it.next()) |slot_ptr| {
+        frame.signalSlotChange(slot_ptr.*);
+    }
 }
 
 fn findShadowRoot(self: *Slot) ?*ShadowRoot {

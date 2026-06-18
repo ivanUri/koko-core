@@ -163,9 +163,17 @@ pub const Owner = union(enum) {
         };
     }
 
-    pub fn addHeaders(self: Owner, headers: *HttpClient.Headers) !void {
+    pub fn addHeaders(
+        self: Owner,
+        headers: *HttpClient.Headers,
+        request_url: [:0]const u8,
+        resource_type: HttpClient.RequestParams.ResourceType,
+    ) !void {
         switch (self) {
-            .frame => |f| try f.headersForRequest(headers),
+            .frame => |f| try f.headersForRequest(headers, .{
+                .request_url = request_url,
+                .resource_type = resource_type,
+            }),
             .worker => {},
         }
     }
@@ -268,9 +276,13 @@ fn clearList(list: *std.DoublyLinkedList) void {
     }
 }
 
-pub fn getHeaders(self: *ScriptManagerBase) !http.Headers {
+pub fn getHeaders(
+    self: *ScriptManagerBase,
+    request_url: [:0]const u8,
+    resource_type: HttpClient.RequestParams.ResourceType,
+) !http.Headers {
     var headers = try self.client.newHeaders();
-    try self.owner.addHeaders(&headers);
+    try self.owner.addHeaders(&headers, request_url, resource_type);
     return headers;
 }
 
@@ -305,9 +317,22 @@ pub fn resolveSpecifier(self: *ScriptManagerBase, arena: Allocator, base: [:0]co
 }
 
 pub fn preloadImport(self: *ScriptManagerBase, url: [:0]const u8, referrer: []const u8) !void {
+    if (self.imported_modules.get(url)) |entry| {
+        switch (entry.state) {
+            .done, .loading => {
+                log.debug(.js, "module cache hit", .{ .url = url, .state = @tagName(entry.state) });
+                return;
+            },
+            .err => {
+                if (self.imported_modules.fetchRemove(url)) |kv| {
+                    self.allocator.free(kv.key);
+                }
+            },
+        }
+    }
+
     const gop = try self.imported_modules.getOrPut(self.allocator, url);
     if (gop.found_existing) {
-        log.debug(.js, "module cache hit", .{ .url = url, .state = @tagName(gop.value_ptr.state) });
         return;
     }
     errdefer _ = self.imported_modules.remove(url);
@@ -361,7 +386,7 @@ pub fn preloadImport(self: *ScriptManagerBase, url: [:0]const u8, referrer: []co
             .method = .GET,
             .frame_id = self.owner.frameId(),
             .loader_id = self.owner.loaderId(),
-            .headers = try self.getHeaders(),
+            .headers = try self.getHeaders(url, .script),
             .cookie_jar = &session.cookie_jar,
             .cookie_origin = self.owner.url(),
             .resource_type = .script,
@@ -458,7 +483,7 @@ pub fn getAsyncImport(self: *ScriptManagerBase, url: [:0]const u8, cb: ImportAsy
             .method = .GET,
             .frame_id = self.owner.frameId(),
             .loader_id = self.owner.loaderId(),
-            .headers = try self.getHeaders(),
+            .headers = try self.getHeaders(url, .script),
             .resource_type = .script,
             .cookie_jar = &session.cookie_jar,
             .cookie_origin = self.owner.url(),

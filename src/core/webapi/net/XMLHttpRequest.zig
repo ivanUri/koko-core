@@ -245,9 +245,10 @@ pub fn send(self: *XMLHttpRequest, body_: ?[]const u8) !void {
     const cookie_support = self._with_credentials or exec.isSameOrigin(self._url);
 
     try self._request_headers.populateHttpHeader(exec.call_arena, &headers);
-    if (cookie_support) {
-        try exec.headersForRequest(&headers);
-    }
+    try exec.headersForRequest(&headers, .{
+        .request_url = self._url,
+        .resource_type = .xhr,
+    });
 
     self.acquireRef();
     self._active_request = true;

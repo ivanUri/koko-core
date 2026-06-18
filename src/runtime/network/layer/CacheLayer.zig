@@ -23,8 +23,11 @@ const Response = @import("../../../core/browser/HttpClient.zig").Response;
 const Layer = @import("../../../core/browser/HttpClient.zig").Layer;
 
 const Cache = @import("../cache/Cache.zig");
+const CacheControl = Cache.CacheControl;
 const CachedMetadata = @import("../cache/Cache.zig").CachedMetadata;
 const CachedResponse = @import("../cache/Cache.zig").CachedResponse;
+const CachedData = @import("../cache/Cache.zig").CachedData;
+const CacheRequest = @import("../cache/Cache.zig").CacheRequest;
 const Forward = @import("Forward.zig");
 
 const CacheLayer = @This();
@@ -48,20 +51,51 @@ fn request(ptr: *anyopaque, client: *Client, req: Request) anyerror!void {
         return self.next.request(client, req);
     }
 
+    if (network.cache_disabled or req.params.skip_cache) {
+        return self.next.request(client, req);
+    }
+
+    const cache = &(network.cache orelse {
+        return self.next.request(client, req);
+    });
+
     const arena = req.params.arena;
 
     var iter = req.params.headers.iterator();
     const req_header_list = try iter.collect(arena);
 
-    if (network.cache.?.get(arena, .{
+    const cache_req: CacheRequest = .{
         .url = req.params.url,
         .timestamp = std.time.timestamp(),
         .request_headers = req_header_list.items,
-    })) |cached| {
+    };
+
+    if (cache.get(arena, cache_req)) |cached| {
         try serveFromCache(req, &cached);
         client.deinitRequest(req);
         return;
     }
+
+    if (cache.getStale(arena, cache_req)) |stale| {
+        defer closeCachedData(&stale.data);
+        if (stale.metadata.hasValidators()) {
+            return try conditionalRequest(self, client, req, cache_req, &stale);
+        }
+        cache.evict(req.params.url);
+    }
+
+    return unconditionalRequest(self, client, req);
+}
+
+fn closeCachedData(data: *const CachedData) void {
+    switch (data.*) {
+        .buffer => |_| {},
+        .file => |f| f.file.close(),
+    }
+}
+
+fn unconditionalRequest(self: *CacheLayer, client: *Client, req: Request) !void {
+    const arena = req.params.arena;
 
     const cache_ctx = try arena.create(CacheContext);
     cache_ctx.* = .{
@@ -85,6 +119,71 @@ fn request(ptr: *anyopaque, client: *Client, req: Request) anyerror!void {
     );
 
     return self.next.request(client, wrapped);
+}
+
+fn conditionalRequest(
+    self: *CacheLayer,
+    client: *Client,
+    req: Request,
+    cache_req: CacheRequest,
+    stale: *const CachedResponse,
+) !void {
+    const arena = req.params.arena;
+
+    const stale_meta = try arena.create(CachedMetadata);
+    stale_meta.* = stale.metadata;
+
+    const stale_body = try duplicateCachedData(arena, stale.data);
+
+    const cache_ctx = try arena.create(CacheContext);
+    cache_ctx.* = .{
+        .arena = arena,
+        .client = client,
+        .forward = Forward.fromRequest(req),
+        .req_url = req.params.url,
+        .req_headers = req.params.headers,
+        .stale_cached = stale_meta,
+        .stale_body = stale_body,
+        .cache_req = cache_req,
+    };
+
+    var headers = req.params.headers;
+    if (stale.metadata.etag) |etag| {
+        const hdr = try std.fmt.allocPrintSentinel(arena, "If-None-Match: {s}", .{etag}, 0);
+        try headers.add(hdr);
+    }
+    if (stale.metadata.last_modified) |lm| {
+        const hdr = try std.fmt.allocPrintSentinel(arena, "If-Modified-Since: {s}", .{lm}, 0);
+        try headers.add(hdr);
+    }
+
+    const wrapped = cache_ctx.forward.wrapRequest(
+        req,
+        cache_ctx,
+        .{
+            .start = CacheContext.startCallback,
+            .header = CacheContext.headerCallback,
+            .done = CacheContext.doneCallback,
+            .shutdown = CacheContext.shutdownCallback,
+            .err = CacheContext.errorCallback,
+        },
+    );
+
+    return self.next.request(client, wrapped);
+}
+
+fn duplicateCachedData(arena: std.mem.Allocator, data: CachedData) !CachedData {
+    return switch (data) {
+        .buffer => |buf| .{ .buffer = try arena.dupe(u8, buf) },
+        .file => |f| blk: {
+            const file = f.file;
+            var read_buf: [1024]u8 = undefined;
+            var file_reader = file.reader(&read_buf);
+            try file_reader.seekTo(f.offset);
+            const body = try file_reader.interface.readAlloc(arena, f.len);
+            break :blk .{ .buffer = body };
+        },
+    };
 }
 
 fn serveFromCache(req: Request, cached: *const CachedResponse) !void {
@@ -138,6 +237,10 @@ const CacheContext = struct {
     req_url: [:0]const u8,
     req_headers: http.Headers,
     pending_metadata: ?*CachedMetadata = null,
+    stale_cached: ?*CachedMetadata = null,
+    stale_body: ?CachedData = null,
+    cache_req: ?CacheRequest = null,
+    served_stale: bool = false,
 
     fn startCallback(response: Response) anyerror!void {
         const self: *CacheContext = @ptrCast(@alignCast(response.ctx));
@@ -152,6 +255,71 @@ const CacheContext = struct {
         const transfer = response.inner.transfer;
         var rh = &transfer.response_header.?;
 
+        const status = rh.status;
+
+        if (status == 304) {
+            if (self.stale_cached) |stale_meta| {
+                const cache = &(self.client.network.cache orelse {
+                    return self.forward.forwardHeader(response);
+                });
+
+                stale_meta.stored_at = std.time.timestamp();
+                if (transfer._conn) |conn| {
+                    if (conn.getResponseHeader("age", 0)) |h| {
+                        stale_meta.age_at_store = std.fmt.parseInt(u64, h.value, 10) catch 0;
+                    } else {
+                        stale_meta.age_at_store = 0;
+                    }
+                    if (conn.getResponseHeader("etag", 0)) |h| {
+                        stale_meta.etag = try allocator.dupe(u8, h.value);
+                    }
+                    if (conn.getResponseHeader("last-modified", 0)) |h| {
+                        stale_meta.last_modified = try allocator.dupe(u8, h.value);
+                    }
+                    if (conn.getResponseHeader("cache-control", 0)) |h| {
+                        if (CacheControl.parse(h.value)) |cc| {
+                            stale_meta.cache_control = cc;
+                        }
+                    }
+                }
+
+                const body = self.stale_body orelse return self.forward.forwardHeader(response);
+                switch (body) {
+                    .buffer => |data| {
+                        cache.put(stale_meta.*, data) catch |err| {
+                            log.warn(.http, "cache put failed", .{ .err = err });
+                        };
+                    },
+                    .file => |_| {},
+                }
+
+                const cached = CachedResponse{
+                    .metadata = stale_meta.*,
+                    .data = body,
+                };
+
+                const cached_response = Response.fromCached(self.forward.ctx, &cached);
+                if (self.forward.start) |cb| {
+                    try cb(cached_response);
+                }
+                const proceed = try self.forward.header(cached_response);
+                if (!proceed) return false;
+
+                switch (body) {
+                    .buffer => |data| {
+                        if (data.len > 0) {
+                            try self.forward.data(cached_response, data);
+                        }
+                    },
+                    .file => |_| {},
+                }
+
+                self.served_stale = true;
+                try self.forward.forwardDone();
+                return false;
+            }
+        }
+
         const conn = transfer._conn.?;
 
         const vary = if (conn.getResponseHeader("vary", 0)) |h| h.value else null;
@@ -165,6 +333,8 @@ const CacheContext = struct {
             if (conn.getResponseHeader("cache-control", 0)) |h| h.value else null,
             vary,
             if (conn.getResponseHeader("age", 0)) |h| h.value else null,
+            if (conn.getResponseHeader("etag", 0)) |h| h.value else null,
+            if (conn.getResponseHeader("last-modified", 0)) |h| h.value else null,
             conn.getResponseHeader("set-cookie", 0) != null,
             conn.getResponseHeader("authorization", 0) != null,
         );
@@ -202,10 +372,16 @@ const CacheContext = struct {
 
     fn doneCallback(ctx: *anyopaque) anyerror!void {
         const self: *CacheContext = @ptrCast(@alignCast(ctx));
+        if (self.served_stale) {
+            return;
+        }
+
         const transfer = self.transfer orelse @panic("Start Callback didn't set CacheLayer.transfer");
 
         if (self.pending_metadata) |metadata| {
-            const cache = &self.client.network.cache.?;
+            const cache = &(self.client.network.cache orelse {
+                return self.forward.forwardDone();
+            });
 
             log.debug(.browser, "http cache", .{ .key = self.req_url, .metadata = metadata });
             cache.put(metadata.*, transfer._stream_buffer.items) catch |err| {

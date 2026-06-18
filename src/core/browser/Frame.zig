@@ -140,6 +140,7 @@ _element_sandbox_lists: Element.SandboxListLookup = .empty,
 _element_shadow_roots: Element.ShadowRootLookup = .empty,
 _node_owner_documents: Node.OwnerDocumentLookup = .empty,
 _element_assigned_slots: Element.AssignedSlotLookup = .empty,
+_manual_slot_assignments: std.AutoHashMapUnmanaged(*Element.Html.Slot, []const *Node) = .{},
 _element_scroll_positions: Element.ScrollPositionLookup = .empty,
 _element_namespace_uris: Element.NamespaceUriLookup = .empty,
 _attr_associated_elements: @import("../dom/AttrAssociatedElement.zig").Lookup = .empty,
@@ -174,6 +175,13 @@ _blob_urls: std.StringHashMapUnmanaged(*Blob) = .{},
 _to_load_1: std.ArrayList(*Element.Html) = .{},
 _to_load_2: std.ArrayList(*Element.Html) = .{},
 _to_load: *std.ArrayList(*Element.Html) = undefined,
+
+// iframe `load` events deferred to the next macrotask so sibling inline
+// scripts can register handlers first (Lightpanda PR #2753 pattern).
+_iframe_load_1: std.ArrayList(*IFrame) = .{},
+_iframe_load_2: std.ArrayList(*IFrame) = .{},
+_iframe_load: *std.ArrayList(*IFrame) = undefined,
+_iframe_load_scheduled: bool = false,
 
 _style_manager: StyleManager,
 _script_manager: ScriptManager,
@@ -329,6 +337,7 @@ pub fn init(self: *Frame, frame_id: u32, page: *Page, parent: ?*Frame) !void {
         ._event_manager = EventManager.init(arena, self),
     };
     self._to_load = &self._to_load_1;
+    self._iframe_load = &self._iframe_load_1;
 
     var screen: *Screen = undefined;
     var visual_viewport: *VisualViewport = undefined;
@@ -601,27 +610,101 @@ pub fn getTitle(self: *Frame) !?[]const u8 {
     return try self.window._document.getTitle(self);
 }
 
-// Add common headers for a request:
-// * referer
-pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers) !void {
-    // Build the referer
+pub const HeadersForRequestOpts = struct {
+    request_url: ?[:0]const u8 = null,
+    resource_type: HttpClient.RequestParams.ResourceType = .fetch,
+};
+
+// Add common subresource/navigation headers (Referer, Origin, Sec-Fetch-*, client hints).
+pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: HeadersForRequestOpts) !void {
     const referer = blk: {
         if (self.referer_header == null) {
-            // build the cache
             if (std.mem.startsWith(u8, self.url, "http")) {
                 self.referer_header = try std.mem.concatWithSentinel(self.arena, u8, &.{ "Referer: ", self.url }, 0);
             } else {
                 self.referer_header = "";
             }
         }
-
         break :blk self.referer_header.?;
     };
 
-    // If the referer is empty, ignore the header.
     if (referer.len > 0) {
         try headers.add(referer);
     }
+
+    const identity = self._session.browser.app.config.profile.identityPtr();
+
+    const mobile_hdr = try std.fmt.allocPrintSentinel(
+        self.arena,
+        "Sec-Ch-Ua-Mobile: {s}",
+        .{if (identity.ua_mobile) "?1" else "?0"},
+        0,
+    );
+    try headers.add(mobile_hdr);
+
+    const platform_hdr = try std.fmt.allocPrintSentinel(
+        self.arena,
+        "Sec-Ch-Ua-Platform: \"{s}\"",
+        .{identity.ua_data_platform},
+        0,
+    );
+    try headers.add(platform_hdr);
+
+    if (opts.request_url) |request_url| {
+        if (!std.mem.startsWith(u8, request_url, "http")) return;
+
+        try headers.add("Accept: */*");
+        try self.appendOriginHeader(headers);
+
+        const dest = secFetchDest(opts.resource_type);
+        const mode = secFetchMode(opts.resource_type);
+        const site = secFetchSite(self, request_url);
+
+        const dest_hdr = try std.fmt.allocPrintSentinel(self.arena, "Sec-Fetch-Dest: {s}", .{dest}, 0);
+        try headers.add(dest_hdr);
+
+        const mode_hdr = try std.fmt.allocPrintSentinel(self.arena, "Sec-Fetch-Mode: {s}", .{mode}, 0);
+        try headers.add(mode_hdr);
+
+        const site_hdr = try std.fmt.allocPrintSentinel(self.arena, "Sec-Fetch-Site: {s}", .{site}, 0);
+        try headers.add(site_hdr);
+    }
+}
+
+// Origin for WebSocket upgrade and other callers that only need the origin token.
+pub fn appendOriginHeader(self: *Frame, headers: *HttpClient.Headers) !void {
+    const origin = try self.requestOrigin();
+    const origin_hdr = try std.fmt.allocPrintSentinel(self.arena, "Origin: {s}", .{origin}, 0);
+    try headers.add(origin_hdr);
+}
+
+fn requestOrigin(self: *Frame) ![]const u8 {
+    if (self.origin) |o| return o;
+    if (std.mem.startsWith(u8, self.url, "http")) {
+        return (try URL.getOrigin(self.arena, self.url)) orelse "null";
+    }
+    return "null";
+}
+
+fn secFetchDest(resource_type: HttpClient.RequestParams.ResourceType) []const u8 {
+    return switch (resource_type) {
+        .document => "document",
+        .script => "script",
+        .fetch, .xhr => "empty",
+    };
+}
+
+fn secFetchMode(resource_type: HttpClient.RequestParams.ResourceType) []const u8 {
+    return switch (resource_type) {
+        .document => "navigate",
+        .script => "no-cors",
+        .fetch, .xhr => "cors",
+    };
+}
+
+fn secFetchSite(frame: *Frame, request_url: [:0]const u8) []const u8 {
+    if (frame.isSameOrigin(request_url)) return "same-origin";
+    return "cross-site";
 }
 
 pub fn getArena(self: *Frame, size_or_bucket: anytype, debug: []const u8) !Allocator {
@@ -846,6 +929,7 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
             .resource_type = .document,
             .notification = self._session.notification,
             .protect_from_abort = is_pending_root,
+            .skip_cache = opts.force,
         },
         .header_callback = frameHeaderDoneCallback,
         .data_callback = frameDataCallback,
@@ -1038,24 +1122,45 @@ pub fn scriptsCompletedLoading(self: *Frame) void {
 }
 
 pub fn iframeCompletedLoading(self: *Frame, iframe: *IFrame) void {
-    var ls: JS.Local.Scope = undefined;
-    self.js.localScope(&ls);
-    defer ls.deinit();
+    self.queueIframeLoad(iframe) catch |err| {
+        log.warn(.js, "iframe onload queue", .{ .err = err, .url = iframe._src });
+    };
+    self.pendingLoadCompleted();
+}
 
-    const entered = self.js.enter(&ls.handle_scope);
-    defer entered.exit();
+fn queueIframeLoad(self: *Frame, iframe: *IFrame) !void {
+    try self._iframe_load.append(self.arena, iframe);
+    if (self._iframe_load_scheduled) return;
+    self._iframe_load_scheduled = true;
+    try self.js.scheduler.add(self, struct {
+        fn cleanup(ctx: *anyopaque) !?u32 {
+            const f: *Frame = @ptrCast(@alignCast(ctx));
+            try f.dispatchIframeLoad();
+            return null;
+        }
+    }.cleanup, 0, .{ .name = "frame.dispatchIframeLoad" });
+}
 
-    blk: {
+fn dispatchIframeLoad(self: *Frame) !void {
+    self._iframe_load_scheduled = false;
+
+    const to_process = self._iframe_load;
+    self._iframe_load = if (self._iframe_load == &self._iframe_load_1)
+        &self._iframe_load_2
+    else
+        &self._iframe_load_1;
+
+    for (to_process.items) |iframe| {
         const event = Event.initTrusted(comptime .wrap("load"), .{}, self._page) catch |err| {
             log.err(.frame, "iframe event init", .{ .err = err, .url = iframe._src });
-            break :blk;
+            continue;
         };
         self._event_manager.dispatch(iframe.asNode().asEventTarget(), event) catch |err| {
             log.warn(.js, "iframe onload", .{ .err = err, .url = iframe._src });
         };
     }
 
-    self.pendingLoadCompleted();
+    to_process.clearRetainingCapacity();
 }
 
 fn pendingLoadCompleted(self: *Frame) void {
@@ -3569,7 +3674,7 @@ pub fn attributeRemove(self: *Frame, element: *Element, name: String, old_value:
     }
 }
 
-fn signalSlotChange(self: *Frame, slot: *Element.Html.Slot) void {
+pub fn signalSlotChange(self: *Frame, slot: *Element.Html.Slot) void {
     self._slots_pending_slotchange.put(self.arena, slot, {}) catch |err| {
         log.err(.frame, "signalSlotChange.put", .{ .err = err, .type = self._type, .url = self.url });
         return;
@@ -3598,6 +3703,26 @@ fn updateSlotAssignments(self: *Frame, element: *Element) void {
     // Signal change for the new slot (if any)
     if (self._element_assigned_slots.get(element)) |new_slot| {
         self.signalSlotChange(new_slot);
+    }
+}
+
+pub fn getManualSlotAssignment(self: *Frame, slot: *Element.Html.Slot) ?[]const *Node {
+    return self._manual_slot_assignments.get(slot);
+}
+
+pub fn setManualSlotAssignment(self: *Frame, slot: *Element.Html.Slot, nodes: []const *Node) !void {
+    const owned = try self.arena.dupe(*Node, nodes);
+    try self._manual_slot_assignments.put(self.arena, slot, owned);
+
+    for (nodes) |node| {
+        if (node.is(Element)) |el| {
+            if (self._element_assigned_slots.get(el)) |old_slot| {
+                if (old_slot != slot) {
+                    self.signalSlotChange(old_slot);
+                }
+            }
+            try self._element_assigned_slots.put(self.arena, el, slot);
+        }
     }
 }
 

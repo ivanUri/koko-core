@@ -26,6 +26,7 @@ const v8 = js.v8;
 const Frame = @import("Frame.zig");
 const Session = @import("Session.zig");
 const Factory = @import("Factory.zig");
+const BroadcastChannel = @import("../webapi/broadcast_channel.zig").BroadcastChannel;
 
 const log = @import("../../support/log.zig");
 const Allocator = std.mem.Allocator;
@@ -85,6 +86,9 @@ queued_queued_navigation: std.ArrayList(*Frame) = .empty,
 
 // The root Frame of this Page. Non-optional — a Page always has a root frame.
 frame: Frame,
+
+// BroadcastChannel registry keyed by "{origin_key}\x1f{channel_name}".
+broadcast_channels: std.StringHashMapUnmanaged(std.ArrayList(*BroadcastChannel)) = .{},
 
 // Popup Frames opened by window.open. They are top-level browsing contexts
 // (parent == null, no iframe element) but share this Page's factory, arena,
@@ -313,4 +317,29 @@ fn findFrameBy(frame: *Frame, comptime field: []const u8, id: u32) ?*Frame {
         }
     }
     return null;
+}
+
+pub fn broadcastChannelRegistryKey(self: *Page, origin_key: []const u8, name: []const u8) ![]const u8 {
+    return try std.fmt.allocPrint(self.frame_arena, "{s}\x1f{s}", .{ origin_key, name });
+}
+
+pub fn registerBroadcastChannel(self: *Page, channel: *BroadcastChannel) !void {
+    const gop = try self.broadcast_channels.getOrPut(self.frame_arena, channel.registryKey());
+    if (!gop.found_existing) {
+        gop.value_ptr.* = .{};
+    }
+    try gop.value_ptr.append(self.frame_arena, channel);
+}
+
+pub fn unregisterBroadcastChannel(self: *Page, channel: *BroadcastChannel) void {
+    const list = self.broadcast_channels.getPtr(channel.registryKey()) orelse return;
+    for (list.items, 0..) |existing, i| {
+        if (existing == channel) {
+            _ = list.swapRemove(i);
+            break;
+        }
+    }
+    if (list.items.len == 0) {
+        _ = self.broadcast_channels.remove(channel.registryKey());
+    }
 }

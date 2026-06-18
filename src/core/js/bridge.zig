@@ -1072,6 +1072,7 @@ pub const WorkerJsApis = flattenTypes(&.{
     @import("../webapi/net/XMLHttpRequest.zig"),
     @import("../webapi/net/XMLHttpRequestEventTarget.zig"),
     @import("../webapi/FileReader.zig"),
+    @import("../webapi/broadcast_channel.zig"),
     // @import("../webapi/Performance.zig"),
 });
 

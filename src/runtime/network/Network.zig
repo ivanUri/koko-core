@@ -58,6 +58,7 @@ ca_blob: ?http.Blob,
 robot_store: RobotStore,
 web_bot_auth: ?WebBotAuth,
 cache: ?Cache,
+cache_disabled: bool = false,
 
 connections: []http.Connection,
 available: std.DoublyLinkedList = .{},
