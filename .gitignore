@@ -1,6 +1,7 @@
 /.zig-cache/
 /zig-pkg/
 zig-out
+/bin/
 velora.id
 /src/html5ever/target/
 src/snapshot.bin
