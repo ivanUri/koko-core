@@ -42,7 +42,7 @@ pub const Shed = struct {
         }
 
         const bucket = try allocator.create(Bucket);
-        errdefer allocator.free(bucket);
+        errdefer allocator.destroy(bucket);
         bucket.* = .{};
 
         gop.key_ptr.* = try allocator.dupe(u8, origin);
@@ -66,17 +66,24 @@ pub const Lookup = struct {
 
     pub fn setItem(self: *Lookup, key_: ?[]const u8, value: []const u8, frame: *Frame) !void {
         const k = key_ orelse return;
+        const allocator = frame._session.arena;
 
+        if (self._data.get(k)) |old_value| {
+            self._size -= old_value.len;
+        }
         if (self._size + value.len > max_size) {
             return error.QuotaExceeded;
         }
-        defer self._size += value.len;
 
-        const key_owned = try frame.dupeString(k);
-        const value_owned = try frame.dupeString(value);
+        const value_owned = try allocator.dupe(u8, value);
+        errdefer allocator.free(value_owned);
 
-        const gop = try self._data.getOrPut(frame.arena, key_owned);
+        const gop = try self._data.getOrPut(allocator, k);
+        if (!gop.found_existing) {
+            gop.key_ptr.* = try allocator.dupe(u8, k);
+        }
         gop.value_ptr.* = value_owned;
+        self._size += value.len;
     }
 
     pub fn removeItem(self: *Lookup, key_: ?[]const u8) void {

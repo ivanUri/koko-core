@@ -177,8 +177,12 @@ src/
 sdk/
   src/          # TypeScript CDP SDK and CLI helpers
 
-tests-lifecycle/
-  */            # Browser lifecycle and realm correctness tests
+code-check/
+  lifecycle/    # Browser lifecycle and realm correctness tests
+  suite/        # Fingerprint / bot-detection regression suite
+  local/        # Offline HTML fixtures (CreepJS, engine probe, …)
+  sites/        # Per-site integration scripts
+  features/     # Per-engine feature checks (canvas, webgl, worker)
 ```
 
 This structure keeps engine internals isolated, runtime services explicit, automation protocols modular, public APIs stable, and browser execution embeddable.
@@ -208,6 +212,22 @@ Current development priorities include:
 - Multi-session runtime infrastructure
 - AI-agent integration
 - Scalable browser execution
+
+## Benchmarks
+
+Velora vs Playwright Chromium (startup, static navigation, JS workloads) on local fixtures:
+
+- Microbench (local fixtures): [`docs/benchmarks/latest.md`](docs/benchmarks/latest.md)
+- Real-world crawl (100× en.wikipedia.org): [`docs/benchmarks/crawl-wikipedia-latest.md`](docs/benchmarks/crawl-wikipedia-latest.md)
+
+```bash
+zig build
+npx playwright install chromium   # first time only
+npm run bench:compare:publish              # local HTML fixtures
+npm run bench:crawl:wikipedia:publish      # 100 live Wikipedia pages
+```
+
+Numbers are machine-local and use Playwright bundled Chromium (not Google Chrome desktop). See the benchmark docs for methodology and limitations.
 
 ## Performance Direction
 

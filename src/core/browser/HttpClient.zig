@@ -15,6 +15,7 @@ const std = @import("std");
 const assert = @import("../../support/assert.zig").assert;
 const builtin = @import("builtin");
 
+const js = @import("../js/js.zig");
 const URL = @import("URL.zig");
 const Notification = @import("../../runtime/Notification.zig");
 const CookieJar = @import("../webapi/storage/Cookie.zig").Jar;
@@ -119,6 +120,9 @@ user_agent_override: ?[:0]const u8 = null,
 user_agent_header_override: ?[:0]const u8 = null,
 
 cdp_client: ?CDPClient = null,
+
+// Optional env for pumping schedulers during blocking syncRequest waits.
+env: ?*js.Env = null,
 
 max_response_size: usize,
 
@@ -515,6 +519,9 @@ pub fn syncRequest(self: *Client, allocator: Allocator, params: RequestParams) !
     while (sync_ctx.completion == .in_progress) {
         const status = try self.tick(200);
         log.debug(.http, "sync request tick", .{ .status = status });
+        if (self.env) |env| {
+            env.pumpSchedulerTasks();
+        }
         switch (status) {
             .cdp_socket => {
                 const cdp = self.cdp_client.?;

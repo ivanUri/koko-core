@@ -24,9 +24,9 @@ pub fn constructor(_: []const u8, _: ?[]const u8, frame: *Frame) !*SharedWorker 
     });
 }
 
-pub fn getPort(self: *SharedWorker, frame: *Frame) !*MessagePort {
+pub fn getPort(self: *SharedWorker, exec: *const js.Execution) !*MessagePort {
     if (self._port) |p| return p;
-    const p = try MessagePort.init(frame);
+    const p = try MessagePort.init(exec);
     self._port = p;
     return p;
 }

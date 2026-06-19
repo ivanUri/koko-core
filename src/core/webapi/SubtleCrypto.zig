@@ -232,20 +232,20 @@ pub fn verify(
 }
 
 /// Generates a digest of the given data, using the specified hash function.
-pub fn digest(_: *const SubtleCrypto, algo: []const u8, data: js.TypedArray(u8), frame: *Frame) !js.Promise {
-    const local = frame.js.local.?;
+pub fn digest(_: *const SubtleCrypto, algo: []const u8, data: js.TypedArray(u8), exec: *const js.Execution) !js.Promise {
+    const local = exec.context.local orelse return error.JsEntryIllegal;
 
     if (algo.len > 10) {
         return local.rejectPromise(.{ .dom_exception = .{ .err = error.NotSupported } });
     }
 
-    const normalized = std.ascii.upperString(&frame.buf, algo);
+    const normalized = std.ascii.upperString(exec.buf, algo);
     const digest_type = crypto.findDigest(normalized) catch {
         return local.rejectPromise(.{ .dom_exception = .{ .err = error.NotSupported } });
     };
 
     const bytes = data.values;
-    const out = frame.buf[0..crypto.EVP_MAX_MD_SIZE];
+    const out = exec.buf[0..crypto.EVP_MAX_MD_SIZE];
     var out_size: c_uint = 0;
     const result = crypto.EVP_Digest(bytes.ptr, bytes.len, out, &out_size, digest_type, null);
     assert(result == 1, "SubtleCrypto.digest", .{ .algo = algo });

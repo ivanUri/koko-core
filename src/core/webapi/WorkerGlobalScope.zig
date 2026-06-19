@@ -49,6 +49,8 @@ const log = @import("../../support/log.zig");
 const RealmLifecycleKernel = @import("../../runtime/RealmLifecycleKernel.zig");
 const Allocator = std.mem.Allocator;
 
+const MessagePort = @import("MessagePort.zig");
+
 const WorkerGlobalScope = @This();
 
 // Meant to follow the same field naming as Page so that an anytype of generic
@@ -309,7 +311,7 @@ pub fn setOnMessageError(self: *WorkerGlobalScope, setter: ?FunctionSetter) void
 
 // Posts a message from the worker back to the frame.
 // The message is cloned via structured clone and dispatched on the Worker object.
-pub fn postMessage(self: *WorkerGlobalScope, data: JS.Value) !void {
+pub fn postMessage(self: *WorkerGlobalScope, data: JS.Value, transfer: ?[]JS.Value) !void {
     const message_id = self._debug_nextMessageId();
     if (comptime IS_DEBUG) {
         log.info(.browser, "worker postMessage to page", .{
@@ -317,23 +319,35 @@ pub fn postMessage(self: *WorkerGlobalScope, data: JS.Value) !void {
             .message_id = message_id,
         });
     }
-    try self._worker.receiveMessage(data, message_id);
+
+    const frame = self._worker._frame;
+    const transferred_ports = if (transfer) |list|
+        try MessagePort.processTransferList(list, &self.js.execution, &frame.js.execution, self.arena)
+    else
+        &[_]*MessagePort{};
+
+    try self._worker.receiveMessage(data, message_id, transferred_ports);
+    // Ensure the parent frame can dispatch the queued Worker message event.
+    self._worker._frame._session.browser.runMacrotasks() catch |err| {
+        log.warn(.browser, "worker postMessage pump", .{ .err = err });
+    };
 }
 
 // Called internally by Worker when it wants to post a message to us
-pub fn receiveMessage(self: *WorkerGlobalScope, data: JS.Value, message_id: u64) !void {
+pub fn receiveMessage(self: *WorkerGlobalScope, data: JS.Value, message_id: u64, ports: []const *MessagePort) !void {
     if (self._closed) {
         return;
     }
 
     const cloned_data: ?JS.Value.Temp = blk: {
-        // Enter our context to clone the message
-        var ls: JS.Local.Scope = undefined;
-        self.js.localScope(&ls);
-        defer ls.deinit();
+        var source_ls: JS.Local.Scope = undefined;
+        self._worker._frame.js.localScope(&source_ls);
+        defer source_ls.deinit();
+        var target_ls: JS.Local.Scope = undefined;
+        self.js.localScope(&target_ls);
+        defer target_ls.deinit();
 
-        // clones from where it currently is (the Worker's Page context) to our Context
-        const cloned = data.structuredCloneTo(&ls.local) catch break :blk null;
+        const cloned = data.structuredCloneTo(&target_ls.local) catch break :blk null;
         break :blk cloned.temp() catch break :blk null;
     };
 
@@ -342,9 +356,12 @@ pub fn receiveMessage(self: *WorkerGlobalScope, data: JS.Value, message_id: u64)
     const message_arena = try session.getArena(.tiny, "WorkerGlobalScope.receiveMessage");
     errdefer session.releaseArena(message_arena);
 
+    const ports_copy = try message_arena.dupe(*MessagePort, ports);
+
     const callback = try message_arena.create(ReceiveMessageCallback);
     callback.* = .{
         .data = cloned_data,
+        .ports = ports_copy,
         .worker_scope = self,
         .arena = message_arena,
         .message_id = message_id,
@@ -482,13 +499,30 @@ fn importScript(self: *WorkerGlobalScope, arena: Allocator, url: [:0]const u8) !
     try_catch.init(&ls.local);
     defer try_catch.deinit();
 
-    _ = ls.local.eval(response.body.items, url) catch |err| {
+    // Imported classic scripts often end with `.call(this)`. Wrap like the
+    // initial worker bootstrap so `this` resolves to the worker global.
+    const wrapped_script = try std.fmt.allocPrint(
+        arena,
+        "(function(){{\n{s}\n}}).call(globalThis);",
+        .{response.body.items},
+    );
+
+    session.browser.env.pumpSchedulerTasks();
+    _ = ls.local.eval(wrapped_script, url) catch |err| {
         const caught = try_catch.caughtOrError(arena, err);
-        log.err(.browser, "importScript", .{ .url = resolved_url, .caught = caught });
-        return;
+        log.err(.browser, "importScript", .{
+            .url = resolved_url,
+            .body_len = response.body.items.len,
+            .err = err,
+            .caught = caught,
+        });
+        return err;
     };
 
     ls.local.runMacrotasks();
+    session.browser.runMacrotasks() catch |err| {
+        log.warn(.browser, "importScript pump", .{ .err = err });
+    };
 }
 
 pub fn reportError(self: *WorkerGlobalScope, err: JS.Value) !void {
@@ -590,6 +624,7 @@ fn getFunctionFromSetter(setter_: ?FunctionSetter) ?JS.Function.Global {
 
 const ReceiveMessageCallback = struct {
     data: ?JS.Value.Temp,
+    ports: []const *MessagePort,
     arena: Allocator,
     worker_scope: *WorkerGlobalScope,
     message_id: u64,
@@ -643,6 +678,7 @@ const ReceiveMessageCallback = struct {
 
         const event = (try MessageEvent.initTrusted(comptime .wrap("message"), .{
             .data = .{ .value = self.data.? },
+            .ports = self.ports,
             .bubbles = false,
             .cancelable = false,
         }, worker_scope._page)).asEvent();

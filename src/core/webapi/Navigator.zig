@@ -30,8 +30,9 @@ const log = @import("../../support/log.zig");
 
 const Navigator = @This();
 _pad: bool = false,
-_plugins: PluginArray = .{},
-_mime_types: PluginArray.MimeTypeArray = .{},
+// Heap-backed PluginArray avoids identity-map collisions between the embedded
+// field address and the parent Navigator pointer (see Permissions._pad note).
+_plugin_store: ?*PluginArray = null,
 _permissions: Permissions = .{},
 _storage: StorageManager = .{},
 _ua_data: NavigatorUAData = .{},
@@ -85,13 +86,19 @@ pub fn javaEnabled(_: *const Navigator) bool {
 }
 
 pub fn getPlugins(self: *Navigator, frame: *Frame) *PluginArray {
-    self._plugins.ensureChrome(frame) catch {};
-    return &self._plugins;
+    if (self._plugin_store) |stored| {
+        stored.ensureChrome(frame) catch {};
+        return stored;
+    }
+    const stored = frame.arena.create(PluginArray) catch unreachable;
+    stored.* = .{};
+    stored.ensureChrome(frame) catch {};
+    self._plugin_store = stored;
+    return stored;
 }
 
 pub fn getMimeTypes(self: *Navigator, frame: *Frame) *PluginArray.MimeTypeArray {
-    self._plugins.ensureChrome(frame) catch {};
-    return self._plugins.getMimeTypes();
+    return self.getPlugins(frame).getMimeTypes();
 }
 
 pub fn getPermissions(self: *Navigator) *Permissions {

@@ -1073,6 +1073,10 @@ pub const WorkerJsApis = flattenTypes(&.{
     @import("../webapi/net/XMLHttpRequestEventTarget.zig"),
     @import("../webapi/FileReader.zig"),
     @import("../webapi/broadcast_channel.zig"),
+    @import("../webapi/MessageChannel.zig"),
+    @import("../webapi/MessagePort.zig"),
+    @import("../webapi/SubtleCrypto.zig"),
+    @import("../webapi/CryptoKey.zig"),
     // @import("../webapi/Performance.zig"),
 });
 
@@ -1080,14 +1084,8 @@ pub const WorkerJsApis = flattenTypes(&.{
 // Used by Env (class IDs, templates), JsApiLookup, and anywhere that needs
 // to know about all possible types. Individual snapshots use their own
 // subsets (PageJsApis, WorkerSnapshot.JsApis).
-pub const JsApis = blk: {
-    const base = PageJsApis ++ [_]type{
-        @import("../webapi/WorkerGlobalScope.zig").JsApi,
-        @import("../webapi/WorkerLocation.zig").JsApi,
-        @import("../webapi/WorkerNavigator.zig").JsApi,
-    };
-    if (build_config.wpt_extensions == false) {
-        break :blk base;
-    }
-    break :blk base ++ [_]type{@import("../webapi/WebDriver.zig").JsApi};
+pub const JsApis = PageJsApis ++ [_]type{
+    @import("../webapi/WorkerGlobalScope.zig").JsApi,
+    @import("../webapi/WorkerLocation.zig").JsApi,
+    @import("../webapi/WorkerNavigator.zig").JsApi,
 };

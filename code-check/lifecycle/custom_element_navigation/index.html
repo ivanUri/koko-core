@@ -1,0 +1,19 @@
+<!doctype html><meta charset="utf-8"><title>custom_element_navigation</title><body></body>
+<script>
+window.TEST_LOGS = ["index-start"];
+window.TEST_RESULT = { done: false, scenario: "custom_element_navigation" };
+class AsyncElement extends HTMLElement {
+  connectedCallback() {
+    window.TEST_LOGS.push("connected-before-navigation");
+    setTimeout(() => {
+      window.TEST_LOGS.push("stale-custom-element-callback");
+      this.setAttribute("data-stale", "true");
+    }, 30);
+  }
+}
+customElements.define("async-element", AsyncElement);
+document.body.appendChild(document.createElement("async-element"));
+window.TEST_LOGS.push("navigation-started");
+sessionStorage.setItem("__lifecycle_logs__", JSON.stringify(window.TEST_LOGS));
+location.href = "next.html";
+</script>

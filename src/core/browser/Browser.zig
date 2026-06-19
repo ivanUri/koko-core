@@ -64,6 +64,7 @@ pub fn init(self: *Browser, app: *App, opts: InitOpts, cdp_client: ?HttpClient.C
         .page_pool = std.heap.MemoryPool(Page).init(allocator),
     };
     try self.http_client.init(allocator, &app.network, cdp_client);
+    self.http_client.env = &self.env;
 }
 
 pub fn deinit(self: *Browser) void {

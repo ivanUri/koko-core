@@ -1,1 +1,0 @@
-JSON.stringify(window.TEST_LOGS || [])

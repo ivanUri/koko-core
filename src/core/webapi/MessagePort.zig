@@ -14,12 +14,14 @@
 const std = @import("std");
 
 const js = @import("../js/js.zig");
-const Frame = @import("../browser/Frame.zig");
+const TaggedOpaque = @import("../js/TaggedOpaque.zig");
 
 const EventTarget = @import("EventTarget.zig");
 const MessageEvent = @import("event/MessageEvent.zig");
 
 const log = @import("../../support/log.zig");
+
+const Allocator = std.mem.Allocator;
 
 const MessagePort = @This();
 
@@ -29,11 +31,16 @@ _closed: bool = false,
 _on_message: ?js.Function.Global = null,
 _on_message_error: ?js.Function.Global = null,
 _entangled_port: ?*MessagePort = null,
+_pending_messages: std.ArrayList(js.Value.Temp) = .{},
+// The execution context that currently owns this port (updated on transfer).
+_active_exec: *const js.Execution,
 
-pub fn init(frame: *Frame) !*MessagePort {
-    return frame._factory.eventTarget(MessagePort{
+pub fn init(exec: *const js.Execution) !*MessagePort {
+    const port = try exec._factory.eventTarget(MessagePort{
         ._proto = undefined,
+        ._active_exec = exec,
     });
+    return port;
 }
 
 pub fn asEventTarget(self: *MessagePort) *EventTarget {
@@ -45,9 +52,46 @@ pub fn entangle(port1: *MessagePort, port2: *MessagePort) void {
     port2._entangled_port = port1;
 }
 
-pub fn postMessage(self: *MessagePort, message: js.Value.Temp, frame: *Frame) !void {
+pub fn activeExecution(self: *const MessagePort) *const js.Execution {
+    return self._active_exec;
+}
+
+/// Detach this port from `sender_exec` and attach it to `receiver_exec`.
+pub fn transferTo(self: *MessagePort, sender_exec: *const js.Execution, receiver_exec: *const js.Execution) void {
+    if (self._active_exec.context == sender_exec.context) {
+        _ = sender_exec.context.identity.identity_map.remove(@intFromPtr(self));
+    }
+    self._active_exec = receiver_exec;
+}
+
+pub fn processTransferList(
+    transfer: []js.Value,
+    sender_exec: *const js.Execution,
+    receiver_exec: *const js.Execution,
+    arena: Allocator,
+) ![]*MessagePort {
+    var ports: std.ArrayList(*MessagePort) = .{};
+    errdefer ports.deinit(arena);
+
+    for (transfer) |item| {
+        if (!item.isObject()) return error.DataClone;
+        const port = TaggedOpaque.fromJS(*MessagePort, @ptrCast(item.handle)) catch return error.DataClone;
+        if (port._closed) return error.DataClone;
+        if (port._active_exec.context != sender_exec.context) return error.DataClone;
+        port.transferTo(sender_exec, receiver_exec);
+        try ports.append(arena, port);
+    }
+
+    return try ports.toOwnedSlice(arena);
+}
+
+pub fn postMessage(self: *MessagePort, message: js.Value.Temp, exec: *const js.Execution) !void {
     if (self._closed) {
         return;
+    }
+
+    if (self._active_exec.context != exec.context) {
+        return error.InvalidStateError;
     }
 
     const other = self._entangled_port orelse return;
@@ -55,41 +99,71 @@ pub fn postMessage(self: *MessagePort, message: js.Value.Temp, frame: *Frame) !v
         return;
     }
 
-    if (!other._enabled) {
-        return;
-    }
+    const receiver_exec = other._active_exec;
 
     const cloned_message = blk: {
-        var ls: js.Local.Scope = undefined;
-        frame.js.localScope(&ls);
-        defer ls.deinit();
+        var source_ls: js.Local.Scope = undefined;
+        exec.context.localScope(&source_ls);
+        defer source_ls.deinit();
+        var target_ls: js.Local.Scope = undefined;
+        receiver_exec.context.localScope(&target_ls);
+        defer target_ls.deinit();
 
-        const cloned = message.local(&ls.local).structuredCloneTo(&ls.local) catch return;
+        const cloned = message.local(&source_ls.local).structuredCloneTo(&target_ls.local) catch return;
         break :blk try cloned.temp();
     };
 
-    // Create callback to deliver message
-    const callback = try frame._factory.create(PostMessageCallback{
-        .frame = frame,
-        .port = other,
-        .message = cloned_message,
+    if (!other._enabled) {
+        try other._pending_messages.append(receiver_exec.arena, cloned_message);
+        return;
+    }
+
+    try other.enqueueMessage(cloned_message, receiver_exec);
+}
+
+fn enqueueMessage(self: *MessagePort, message: js.Value.Temp, exec: *const js.Execution) !void {
+    const callback = try exec._factory.create(PostMessageCallback{
+        .exec = exec,
+        .port = self,
+        .message = message,
     });
 
-    try frame.js.scheduler.add(callback, PostMessageCallback.run, 0, .{
+    try exec._scheduler.add(callback, PostMessageCallback.run, 0, .{
         .name = "MessagePort.postMessage",
         .low_priority = false,
     });
+
+    exec.context.page.session.browser.runMacrotasks() catch |err| {
+        log.warn(.browser, "MessagePort pump", .{ .err = err });
+    };
 }
 
-pub fn start(self: *MessagePort) void {
+fn flushPendingMessages(self: *MessagePort) !void {
+    const exec = self._active_exec;
+    for (self._pending_messages.items) |message| {
+        try self.enqueueMessage(message, exec);
+    }
+    self._pending_messages.clearRetainingCapacity();
+}
+
+fn releasePendingMessages(self: *MessagePort) void {
+    for (self._pending_messages.items) |message| {
+        message.release();
+    }
+    self._pending_messages.clearRetainingCapacity();
+}
+
+pub fn start(self: *MessagePort) !void {
     if (self._closed) {
         return;
     }
     self._enabled = true;
+    try self.flushPendingMessages();
 }
 
 pub fn close(self: *MessagePort) void {
     self._closed = true;
+    self.releasePendingMessages();
 
     // Break entanglement
     if (self._entangled_port) |other| {
@@ -117,36 +191,39 @@ pub fn setOnMessageError(self: *MessagePort, cb: ?js.Function.Global) !void {
 const PostMessageCallback = struct {
     port: *MessagePort,
     message: js.Value.Temp,
-    frame: *Frame,
+    exec: *const js.Execution,
 
     fn deinit(self: *PostMessageCallback) void {
-        self.frame._factory.destroy(self);
+        self.exec._factory.destroy(self);
     }
 
     fn run(ctx: *anyopaque) !?u32 {
         const self: *PostMessageCallback = @ptrCast(@alignCast(ctx));
         defer self.deinit();
-        const frame = self.frame;
 
         if (self.port._closed) {
             return null;
         }
 
         const target = self.port.asEventTarget();
-        if (frame._event_manager.hasDirectListeners(target, "message", self.port._on_message)) {
+        if (self.exec.hasDirectListeners(target, "message", self.port._on_message)) {
             const event = (MessageEvent.initTrusted(comptime .wrap("message"), .{
                 .data = .{ .value = self.message },
                 .origin = "",
                 .source = null,
-            }, frame._page) catch |err| {
+            }, self.exec.context.page) catch |err| {
                 log.err(.dom, "MessagePort.postMessage", .{ .err = err });
                 return null;
             }).asEvent();
 
-            frame._event_manager.dispatchDirect(target, event, self.port._on_message, .{ .context = "MessagePort message" }) catch |err| {
+            self.exec.dispatch(target, event, self.port._on_message, .{ .context = "MessagePort message" }) catch |err| {
                 log.err(.dom, "MessagePort.postMessage", .{ .err = err });
             };
         }
+
+        self.exec.context.page.session.browser.runMacrotasks() catch |err| {
+            log.warn(.browser, "MessagePort dispatch pump", .{ .err = err });
+        };
 
         return null;
     }
@@ -161,8 +238,8 @@ pub const JsApi = struct {
         pub const prototype_chain = bridge.prototypeChain();
     };
 
-    pub const postMessage = bridge.function(MessagePort.postMessage, .{});
-    pub const start = bridge.function(MessagePort.start, .{});
+    pub const postMessage = bridge.function(MessagePort.postMessage, .{ .dom_exception = true });
+    pub const start = bridge.function(MessagePort.start, .{ .dom_exception = true });
     pub const close = bridge.function(MessagePort.close, .{});
 
     pub const onmessage = bridge.accessor(MessagePort.getOnMessage, MessagePort.setOnMessage, .{});

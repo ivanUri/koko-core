@@ -102,6 +102,18 @@ pub fn setName(self: *Option, name: []const u8, frame: *Frame) !void {
     try self.asElement().setAttributeSafe(comptime .wrap("name"), .wrap(name), frame);
 }
 
+// https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-label
+pub fn getLabel(self: *const Option, frame: *Frame) []const u8 {
+    if (self.asConstElement().getAttributeSafe(comptime .wrap("label"))) |label| {
+        if (label.len != 0) return label;
+    }
+    return self.getText(frame);
+}
+
+pub fn setLabel(self: *Option, label: []const u8, frame: *Frame) !void {
+    try self.asElement().setAttributeSafe(comptime .wrap("label"), .wrap(label), frame);
+}
+
 pub const JsApi = struct {
     pub const bridge = js.Bridge(Option);
 
@@ -112,6 +124,7 @@ pub const JsApi = struct {
     };
 
     pub const value = bridge.accessor(Option.getValue, Option.setValue, .{});
+    pub const label = bridge.accessor(Option.getLabel, Option.setLabel, .{});
     pub const text = bridge.accessor(Option.getText, Option.setText, .{});
     pub const selected = bridge.accessor(Option.getSelected, Option.setSelected, .{});
     pub const defaultSelected = bridge.accessor(Option.getDefaultSelected, null, .{});

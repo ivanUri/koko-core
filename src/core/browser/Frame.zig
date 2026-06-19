@@ -1258,8 +1258,6 @@ fn frameHeaderDoneCallback(response: HttpClient.Response) !bool {
         self.url = try self.arena.dupeZ(u8, response_url);
         const url_origin = try URL.getOrigin(self.arena, self.url);
         try self.applySandboxOrigin(url_origin);
-    } else {
-        try self.js.setOrigin(self.origin);
     }
 
     // After any redirect, drop the original method/body/header so a later

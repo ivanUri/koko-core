@@ -54,6 +54,10 @@ pub fn rekey(
 ) bool {
     const kv = self.identity_map.fetchRemove(old_ptr) orelse return false;
 
+    var hs: js.HandleScope = undefined;
+    hs.initWithIsolateHandle(isolate);
+    defer hs.deinit();
+
     if (v8.v8__Global__Get(&kv.value, isolate)) |obj| {
         if (v8.v8__Object__GetAlignedPointerFromInternalField(@ptrCast(obj), 0)) |tao_raw| {
             const tao: *TaggedOpaque = @ptrCast(@alignCast(tao_raw));

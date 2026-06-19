@@ -249,11 +249,13 @@ pub fn setOrigin(self: *Context, key: ?[]const u8) !void {
     const isolate = env.isolate;
 
     if (comptime IS_DEBUG) {
-        // A frame starts off with an opaque origin. After navigation, setOrigin
-        // is called. This is the only time setOrigin should be called for that
-        // frame. Therefore, when setOrigin is called, the previous origin should
-        // have been opaque and its rc should have been 1.
-        assert(self.origin.rc == 1, "Ref opaque origin", .{ .rc = self.origin.rc });
+        // A frame starts off with an opaque origin. The first setOrigin call must
+        // release that opaque origin (not stored in Page.origins). Redirects may
+        // call setOrigin again after a real origin is already installed.
+        const is_opaque = self.page.origins.get(self.origin.key) == null;
+        if (is_opaque) {
+            assert(self.origin.rc == 1, "Ref opaque origin", .{ .rc = self.origin.rc });
+        }
     }
 
     const origin = try self.page.getOrCreateOrigin(key);

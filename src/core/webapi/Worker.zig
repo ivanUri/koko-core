@@ -25,6 +25,7 @@ const EventTarget = @import("EventTarget.zig");
 const MessageEvent = @import("event/MessageEvent.zig");
 const ErrorEvent = @import("event/ErrorEvent.zig");
 const WorkerGlobalScope = @import("WorkerGlobalScope.zig");
+const MessagePort = @import("MessagePort.zig");
 
 const log = @import("../../support/log.zig");
 const Execution = js.Execution;
@@ -206,9 +207,45 @@ fn loadInitialScript(self: *Worker, script: []const u8) !void {
     };
 
     self._bootstrap_complete = true;
-    try self.flushPendingInboundMessages();
     ls.local.runMacrotasks();
+    // Queue parent delivery for the next macrotask turn so Worker() can return
+    // and onmessage handlers can be assigned first.
+    try self.scheduleDeferredParentFlush();
 }
+
+fn scheduleDeferredParentFlush(self: *Worker) !void {
+    const frame = self._frame;
+    const arena = try frame.getArena(.tiny, "Worker.deferFlush");
+    errdefer frame.releaseArena(arena);
+
+    const callback = try arena.create(DeferFlushCallback);
+    callback.* = .{ .worker = self, .arena = arena };
+
+    try frame.js.scheduler.add(callback, DeferFlushCallback.run, 0, .{
+        .name = "Worker.deferFlush",
+        .low_priority = false,
+        .finalizer = DeferFlushCallback.cancelled,
+    });
+}
+
+const DeferFlushCallback = struct {
+    worker: *Worker,
+    arena: Allocator,
+
+    fn cancelled(ctx: *anyopaque) void {
+        const self: *DeferFlushCallback = @ptrCast(@alignCast(ctx));
+        self.worker._frame.releaseArena(self.arena);
+    }
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *DeferFlushCallback = @ptrCast(@alignCast(ctx));
+        defer self.worker._frame.releaseArena(self.arena);
+
+        try self.worker.flushPendingInboundMessages();
+        pumpAfterWorkerMessage(self.worker._frame);
+        return null;
+    }
+};
 
 fn httpErrorCallback(ctx: *anyopaque, err: anyerror) void {
     const self: *Worker = @ptrCast(@alignCast(ctx));
@@ -262,7 +299,7 @@ pub fn terminate(self: *Worker) void {
 }
 
 // Posts a message from the frame to the worker.
-pub fn postMessage(self: *Worker, data: js.Value) !void {
+pub fn postMessage(self: *Worker, data: js.Value, transfer: ?[]js.Value) !void {
     const message_id = self._debug_nextMessageId();
     if (comptime IS_DEBUG) {
         log.info(.browser, "worker postMessage to worker", .{
@@ -270,17 +307,25 @@ pub fn postMessage(self: *Worker, data: js.Value) !void {
             .message_id = message_id,
         });
     }
-    try self._worker_scope.receiveMessage(data, message_id);
+
+    const transferred_ports = if (transfer) |list|
+        try MessagePort.processTransferList(list, &self._frame.js.execution, &self._worker_scope.js.execution, self._arena)
+    else
+        &[_]*MessagePort{};
+
+    try self._worker_scope.receiveMessage(data, message_id, transferred_ports);
 }
 
 // Called internally by WorkerGlobalScope when it wants to post a message to us
-pub fn receiveMessage(self: *Worker, data: js.Value, message_id: u64) !void {
+pub fn receiveMessage(self: *Worker, data: js.Value, message_id: u64, ports: []const *MessagePort) !void {
     if (!self._bootstrap_complete) {
         const cloned_data = try self.cloneMessageToFrame(data);
+        const ports_copy = try self._arena.dupe(*MessagePort, ports);
 
         try self._pending_inbound_messages.append(self._arena, .{
             .message_id = message_id,
             .data = cloned_data,
+            .ports = ports_copy,
         });
 
         if (comptime IS_DEBUG) {
@@ -293,7 +338,7 @@ pub fn receiveMessage(self: *Worker, data: js.Value, message_id: u64) !void {
         return;
     }
 
-    try self.enqueueInboundMessage(data, message_id);
+    try self.enqueueInboundMessage(data, message_id, ports);
 }
 
 pub fn getOnMessage(self: *const Worker) ?js.Function.Global {
@@ -344,15 +389,18 @@ fn _debug_schedulerQueueLen(_: *Worker, scheduler: anytype) usize {
     return 0;
 }
 
-fn enqueueInboundTempMessage(self: *Worker, cloned_data: js.Value.Temp, message_id: u64) !void {
+fn enqueueInboundTempMessage(self: *Worker, cloned_data: js.Value.Temp, message_id: u64, ports: []const *MessagePort) !void {
     const frame = self._frame;
     const message_arena = try frame.getArena(.tiny, "Worker.receiveMessage");
     errdefer frame.releaseArena(message_arena);
+
+    const ports_copy = try message_arena.dupe(*MessagePort, ports);
 
     const callback = try message_arena.create(ReceiveMessageCallback);
     callback.* = .{
         .worker = self,
         .data = cloned_data,
+        .ports = ports_copy,
         .arena = message_arena,
         .message_id = message_id,
     };
@@ -366,7 +414,9 @@ fn enqueueInboundTempMessage(self: *Worker, cloned_data: js.Value.Temp, message_
         });
     }
 
-    try self._worker_scope.js.scheduler.add(callback, ReceiveMessageCallback.run, 0, .{
+    // Worker→page messages must run on the parent frame scheduler so the
+    // Worker object's message handlers execute in the document realm.
+    try self._frame.js.scheduler.add(callback, ReceiveMessageCallback.run, 0, .{
         .name = "Worker.receiveMessage",
         .low_priority = false,
         .finalizer = ReceiveMessageCallback.cancelled,
@@ -376,17 +426,20 @@ fn enqueueInboundTempMessage(self: *Worker, cloned_data: js.Value.Temp, message_
 fn cloneMessageToFrame(self: *Worker, data: js.Value) !js.Value.Temp {
     // Worker->page messages must deserialize into the parent frame's realm so
     // `data instanceof Array` and other intrinsics match the main document.
-    var ls: js.Local.Scope = undefined;
-    self._frame.js.localScope(&ls);
-    defer ls.deinit();
+    var source_ls: js.Local.Scope = undefined;
+    self._worker_scope.js.localScope(&source_ls);
+    defer source_ls.deinit();
+    var target_ls: js.Local.Scope = undefined;
+    self._frame.js.localScope(&target_ls);
+    defer target_ls.deinit();
 
-    const cloned = try data.structuredCloneTo(&ls.local);
+    const cloned = try data.structuredCloneTo(&target_ls.local);
     return try cloned.temp();
 }
 
-fn enqueueInboundMessage(self: *Worker, data: js.Value, message_id: u64) !void {
+fn enqueueInboundMessage(self: *Worker, data: js.Value, message_id: u64, ports: []const *MessagePort) !void {
     const cloned_data = try self.cloneMessageToFrame(data);
-    try self.enqueueInboundTempMessage(cloned_data, message_id);
+    try self.enqueueInboundTempMessage(cloned_data, message_id, ports);
 }
 
 fn flushPendingInboundMessages(self: *Worker) !void {
@@ -398,7 +451,7 @@ fn flushPendingInboundMessages(self: *Worker) !void {
                 .queue_len = self._pending_inbound_messages.items.len,
             });
         }
-        try self.enqueueInboundTempMessage(pending.data, pending.message_id);
+        try self.enqueueInboundTempMessage(pending.data, pending.message_id, pending.ports);
     }
     self._pending_inbound_messages.clearRetainingCapacity();
 }
@@ -414,10 +467,12 @@ fn releasePendingInboundMessages(self: *Worker) void {
 const PendingInboundMessage = struct {
     message_id: u64,
     data: js.Value.Temp,
+    ports: []const *MessagePort,
 };
 
 const ReceiveMessageCallback = struct {
     data: anyerror!js.Value.Temp,
+    ports: []const *MessagePort,
     arena: Allocator,
     worker: *Worker,
     message_id: u64,
@@ -475,6 +530,7 @@ const ReceiveMessageCallback = struct {
 
         const event = (try MessageEvent.initTrusted(comptime .wrap("message"), .{
             .data = .{ .value = data },
+            .ports = self.ports,
             .bubbles = false,
             .cancelable = false,
         }, frame._page)).asEvent();

@@ -15,6 +15,7 @@
 const std = @import("std");
 
 const js = @import("../../js/js.zig");
+const Frame = @import("../../browser/Frame.zig");
 const Page = @import("../../browser/Page.zig");
 
 const Event = @import("../Event.zig");
@@ -30,11 +31,13 @@ _proto: *Event,
 _data: ?Data = null,
 _origin: []const u8 = "",
 _source: ?*Window = null,
+_ports: []const *MessagePort = &.{},
 
 const MessageEventOptions = struct {
     data: ?Data = null,
     origin: ?[]const u8 = null,
     source: ?*Window = null,
+    ports: []const *MessagePort = &.{},
 };
 
 pub const Data = union(enum) {
@@ -70,6 +73,7 @@ fn initWithTrusted(arena: Allocator, typ: String, opts_: ?Options, trusted: bool
             ._data = opts.data,
             ._origin = if (opts.origin) |str| try arena.dupe(u8, str) else "",
             ._source = opts.source,
+            ._ports = opts.ports,
         },
     );
 
@@ -108,12 +112,13 @@ pub fn getOrigin(self: *const MessageEvent) []const u8 {
     return self._origin;
 }
 
-pub fn getSource(self: *const MessageEvent) ?*Window {
-    return self._source;
+pub fn getSource(self: *const MessageEvent, frame: *Frame) ?Window.Access {
+    const source = self._source orelse return null;
+    return Window.Access.init(frame.window, source);
 }
 
-pub fn getPorts(_: *const MessageEvent) []*MessagePort {
-    return &.{};
+pub fn getPorts(self: *const MessageEvent) []*MessagePort {
+    return @constCast(self._ports);
 }
 
 pub const JsApi = struct {

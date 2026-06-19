@@ -33,6 +33,7 @@ const Event = @import("Event.zig");
 const EventTarget = @import("EventTarget.zig");
 const ErrorEvent = @import("event/ErrorEvent.zig");
 const MessageEvent = @import("event/MessageEvent.zig");
+const MessagePort = @import("MessagePort.zig");
 const MediaQueryList = @import("css/MediaQueryList.zig");
 const storage = @import("storage/storage.zig");
 const Element = @import("../dom/Element.zig");
@@ -195,12 +196,23 @@ pub fn getPerformance(self: *Window) *Performance {
     return &self._performance;
 }
 
+fn getOriginStorageBucket(self: *Window) *storage.Bucket {
+    const frame = self._frame;
+    const origin = frame.origin orelse "null";
+    return frame._session.storage_shed.getOrPut(
+        frame._session.browser.app.allocator,
+        origin,
+    ) catch {
+        return &self._storage_bucket;
+    };
+}
+
 pub fn getLocalStorage(self: *Window) *storage.Lookup {
-    return &self._storage_bucket.local;
+    return &self.getOriginStorageBucket().local;
 }
 
 pub fn getSessionStorage(self: *Window) *storage.Lookup {
-    return &self._storage_bucket.session;
+    return &self.getOriginStorageBucket().session;
 }
 
 pub fn getOrigin(self: *const Window) []const u8 {
@@ -576,23 +588,41 @@ pub fn close(self: *Window) void {
     };
 }
 
-pub fn postMessage(self: *Window, message: js.Value.Temp, target_origin: ?[]const u8, frame: *Frame) !void {
+pub fn postMessage(self: *Window, message: js.Value.Temp, target_origin: ?[]const u8, transfer: ?[]js.Value, frame: *Frame) !void {
     // For now, we ignore targetOrigin checking and just dispatch the message
     // In a full implementation, we would validate the origin
     _ = target_origin;
 
     const target_frame = self._frame;
-    const source_window = target_frame.js.getIncumbent().window;
+    const source_window = frame.window;
 
     const arena = try target_frame.getArena(.medium, "Window.postMessage");
     errdefer target_frame.releaseArena(arena);
+
+    const transferred_ports = if (transfer) |list|
+        try MessagePort.processTransferList(list, &frame.js.execution, &target_frame.js.execution, arena)
+    else
+        &[_]*MessagePort{};
+
+    // Clone from the sender realm into the target realm.
+    const cloned_message = blk: {
+        var source_ls: js.Local.Scope = undefined;
+        frame.js.localScope(&source_ls);
+        defer source_ls.deinit();
+        var target_ls: js.Local.Scope = undefined;
+        target_frame.js.localScope(&target_ls);
+        defer target_ls.deinit();
+        const cloned = try message.local(&source_ls.local).structuredCloneTo(&target_ls.local);
+        break :blk try cloned.temp();
+    };
 
     // Origin should be the source window's origin (where the message came from)
     const origin = try source_window._location.getOrigin(&frame.js.execution);
     const callback = try arena.create(PostMessageCallback);
     callback.* = .{
         .arena = arena,
-        .message = message,
+        .message = cloned_message,
+        .ports = transferred_ports,
         .frame = target_frame,
         .source = source_window,
         .origin = try arena.dupe(u8, origin),
@@ -603,6 +633,10 @@ pub fn postMessage(self: *Window, message: js.Value.Temp, target_origin: ?[]cons
         .low_priority = false,
         .finalizer = PostMessageCallback.cancelled,
     });
+
+    target_frame._session.browser.runMacrotasks() catch |err| {
+        log.warn(.browser, "postMessage pump", .{ .err = err });
+    };
 }
 
 pub fn btoa(_: *const Window, input: js.String.OneByte, frame: *Frame) ![]const u8 {
@@ -811,6 +845,7 @@ const PostMessageCallback = struct {
     arena: Allocator,
     origin: []const u8,
     message: js.Value.Temp,
+    ports: []const *MessagePort,
 
     fn deinit(self: *PostMessageCallback) void {
         self.frame.releaseArena(self.arena);
@@ -818,6 +853,7 @@ const PostMessageCallback = struct {
 
     fn cancelled(ctx: *anyopaque) void {
         const self: *PostMessageCallback = @ptrCast(@alignCast(ctx));
+        self.message.release();
         self.deinit();
     }
 
@@ -829,16 +865,25 @@ const PostMessageCallback = struct {
         const window = frame.window;
 
         const event_target = window.asEventTarget();
-        if (frame._event_manager.hasDirectListeners(event_target, "message", window._on_message)) {
+        const has_listeners = frame._event_manager.hasDirectListeners(event_target, "message", window._on_message);
+
+        if (has_listeners) {
             const event = (try MessageEvent.initTrusted(comptime .wrap("message"), .{
                 .data = .{ .value = self.message },
                 .origin = self.origin,
                 .source = self.source,
+                .ports = self.ports,
                 .bubbles = false,
                 .cancelable = false,
             }, frame._page)).asEvent();
             try frame._event_manager.dispatchDirect(event_target, event, window._on_message, .{ .context = "window.postMessage" });
+        } else {
+            self.message.release();
         }
+
+        frame._session.browser.runMacrotasks() catch |err| {
+            log.warn(.browser, "postMessage dispatch pump", .{ .err = err });
+        };
 
         return null;
     }
@@ -1036,8 +1081,8 @@ pub const JsApi = struct {
 const CrossOriginWindow = struct {
     window: *Window,
 
-    pub fn postMessage(self: *CrossOriginWindow, message: js.Value.Temp, target_origin: ?[]const u8, frame: *Frame) !void {
-        return self.window.postMessage(message, target_origin, frame);
+    pub fn postMessage(self: *CrossOriginWindow, message: js.Value.Temp, target_origin: ?[]const u8, transfer: ?[]js.Value, frame: *Frame) !void {
+        return self.window.postMessage(message, target_origin, transfer, frame);
     }
 
     pub fn getTop(self: *CrossOriginWindow, frame: *Frame) Access {

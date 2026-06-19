@@ -182,26 +182,7 @@ pub fn cloneFragment(self: *DocumentFragment, deep: bool, frame: *Frame) !*Node 
 }
 
 pub fn isEqualNode(self: *DocumentFragment, other: *DocumentFragment) bool {
-    var self_iter = self.asNode().childrenIterator();
-    var other_iter = other.asNode().childrenIterator();
-
-    while (true) {
-        const self_child = self_iter.next();
-        const other_child = other_iter.next();
-
-        if ((self_child == null) != (other_child == null)) {
-            return false;
-        }
-
-        if (self_child == null) {
-            // We've reached the end
-            return true;
-        }
-
-        if (!self_child.?.isEqualNode(other_child.?)) {
-            return false;
-        }
-    }
+    return self.asNode().isEqualChildren(other.asNode());
 }
 
 pub const JsApi = struct {

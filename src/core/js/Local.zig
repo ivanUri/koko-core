@@ -178,12 +178,27 @@ pub fn compileAndRun(self: *const Local, src: []const u8, name: ?[]const u8) !js
     defer v8.v8__ScriptCompiler__Source__DESTRUCT(&script_comp_source);
 
     // Compile the script
+    var compile_try_catch: js.TryCatch = undefined;
+    compile_try_catch.init(self);
+    defer compile_try_catch.deinit();
+
     const v8_script = v8.v8__ScriptCompiler__Compile(
         self.handle,
         &script_comp_source,
         v8.kNoCompileOptions,
         v8.kNoCacheNoReason,
-    ) orelse return error.CompilationError;
+    ) orelse {
+        if (compile_try_catch.hasCaught()) {
+            if (compile_try_catch.caught(self.ctx.call_arena)) |caught| {
+                log.warn(.frame, "Script compilation error", .{
+                    .name = name orelse "anonymous",
+                    .exception = caught.exception,
+                    .line = caught.line,
+                });
+            }
+        }
+        return error.CompilationError;
+    };
 
     // Run the script
     var try_catch: js.TryCatch = undefined;
@@ -192,7 +207,17 @@ pub fn compileAndRun(self: *const Local, src: []const u8, name: ?[]const u8) !js
 
     const result = v8.v8__Script__Run(v8_script, self.handle) orelse {
         if (try_catch.hasCaught()) {
-            log.warn(.frame, "Script execution error isolated", .{});
+            if (try_catch.caught(self.ctx.call_arena)) |caught| {
+                log.warn(.frame, "Script execution error isolated", .{
+                    .name = name orelse "anonymous",
+                    .exception = caught.exception,
+                    .line = caught.line,
+                });
+            } else {
+                log.warn(.frame, "Script execution error isolated", .{
+                    .name = name orelse "anonymous",
+                });
+            }
         }
         return error.JsException;
     };

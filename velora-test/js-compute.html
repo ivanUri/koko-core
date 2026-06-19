@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Velora bench — js-compute</title>
+</head>
+<body>
+  <h1>JS compute fixture</h1>
+  <script>
+    window.__benchRun = function (name) {
+      const t0 = performance.now();
+      if (name === "json-loop") {
+        let x = 0;
+        for (let i = 0; i < 5000; i += 1) {
+          const obj = { i, items: [i, i + 1, i + 2], nested: { v: i * 2 } };
+          x += JSON.parse(JSON.stringify(obj)).i;
+        }
+        return { name, ms: performance.now() - t0, checksum: x };
+      }
+      if (name === "hash-loop") {
+        let h = 2166136261;
+        for (let i = 0; i < 200000; i += 1) {
+          h ^= i;
+          h = Math.imul(h, 16777619);
+        }
+        return { name, ms: performance.now() - t0, checksum: h >>> 0 };
+      }
+      if (name === "dom-query") {
+        document.querySelectorAll("[data-bench]");
+        return { name, ms: performance.now() - t0 };
+      }
+      throw new Error("unknown bench: " + name);
+    };
+  </script>
+  <div data-bench="0"></div>
+</body>
+</html>

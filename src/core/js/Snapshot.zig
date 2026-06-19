@@ -332,8 +332,6 @@ fn countExternalReferences() comptime_int {
     // +1 for unknownWindowPropertyCallback used on Window's global template
     count += 1;
 
-    const wpt_extensions_enabled = @import("build_config").wpt_extensions;
-
     inline for (JsApis) |JsApi| {
         if (@hasDecl(JsApi, "constructor")) {
             count += 1;
@@ -348,17 +346,13 @@ fn countExternalReferences() comptime_int {
             const value = @field(JsApi, d.name);
             const T = @TypeOf(value);
             if (T == bridge.Accessor) {
-                if (value.wpt_only and wpt_extensions_enabled == false) {
-                    continue;
-                }
+                if (value.wpt_only) continue;
                 count += 1;
                 if (value.setter != null) {
                     count += 1;
                 }
             } else if (T == bridge.Function) {
-                if (value.wpt_only and wpt_extensions_enabled == false) {
-                    continue;
-                }
+                if (value.wpt_only) continue;
                 count += 1;
             } else if (T == bridge.Iterator) {
                 count += 1;
@@ -400,8 +394,6 @@ fn collectExternalReferences() [countExternalReferences()]isize {
     references[idx] = @bitCast(@intFromPtr(&bridge.unknownWindowPropertyCallback));
     idx += 1;
 
-    const wpt_extensions_enabled = @import("build_config").wpt_extensions;
-
     inline for (JsApis) |JsApi| {
         if (@hasDecl(JsApi, "constructor")) {
             references[idx] = @bitCast(@intFromPtr(JsApi.constructor.func));
@@ -418,9 +410,7 @@ fn collectExternalReferences() [countExternalReferences()]isize {
             const value = @field(JsApi, d.name);
             const T = @TypeOf(value);
             if (T == bridge.Accessor) {
-                if (value.wpt_only and wpt_extensions_enabled == false) {
-                    continue;
-                }
+                if (value.wpt_only) continue;
 
                 references[idx] = @bitCast(@intFromPtr(value.getter));
                 idx += 1;
@@ -429,9 +419,7 @@ fn collectExternalReferences() [countExternalReferences()]isize {
                     idx += 1;
                 }
             } else if (T == bridge.Function) {
-                if (value.wpt_only and wpt_extensions_enabled == false) {
-                    continue;
-                }
+                if (value.wpt_only) continue;
                 references[idx] = @bitCast(@intFromPtr(value.func));
                 idx += 1;
             } else if (T == bridge.Iterator) {
@@ -605,8 +593,6 @@ fn attachClass(comptime JsApi: type, isolate: *v8.Isolate, template: *const v8.F
     const declarations = @typeInfo(JsApi).@"struct".decls;
     var has_named_index_getter = false;
 
-    const wpt_extensions_enabled = @import("build_config").wpt_extensions;
-
     inline for (declarations) |d| {
         const name: [:0]const u8 = d.name;
         const value = @field(JsApi, name);
@@ -614,9 +600,7 @@ fn attachClass(comptime JsApi: type, isolate: *v8.Isolate, template: *const v8.F
 
         switch (definition) {
             bridge.Accessor => {
-                if (value.wpt_only and wpt_extensions_enabled == false) {
-                    continue;
-                }
+                if (value.wpt_only) continue;
 
                 const js_name = v8.v8__String__NewFromUtf8(isolate, name.ptr, v8.kNormal, @intCast(name.len));
                 const getter_signature = if (value.static) null else signature;
@@ -660,9 +644,7 @@ fn attachClass(comptime JsApi: type, isolate: *v8.Isolate, template: *const v8.F
                 }
             },
             bridge.Function => {
-                if (value.wpt_only and wpt_extensions_enabled == false) {
-                    continue;
-                }
+                if (value.wpt_only) continue;
 
                 // For non-static functions, use the signature to validate the receiver
                 const func_signature = if (value.static) null else signature;
