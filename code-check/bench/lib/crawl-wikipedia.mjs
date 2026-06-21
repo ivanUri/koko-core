@@ -8,6 +8,7 @@ import { arch, cpus, hostname, platform, release } from "node:os";
 import { execSync } from "node:child_process";
 import { WebSocket } from "ws";
 
+import { Browser } from "../../../sdk/dist/index.js";
 import { ProcessMonitor } from "./process-monitor.mjs";
 
 const require = createRequire(import.meta.url);
@@ -379,8 +380,8 @@ export async function crawlVelora(queue, opts) {
                 "--log-level", opts.logLevel,
                 "--browser-profile", opts.browserProfile,
                 "--http-timeout", String(opts.timeoutMs),
-                "--automation", opts.automation ?? "fast",
             ];
+            if (opts.automation) args.push("--automation", opts.automation);
             const proc = spawn(veloraBin, args, { cwd: repoRoot, stdio: "ignore" });
             monitor.addRootPid(proc.pid);
             if (!monitorStarted) {
@@ -388,17 +389,55 @@ export async function crawlVelora(queue, opts) {
                 monitorStarted = true;
             }
             const endpoint = `http://127.0.0.1:${port}`;
-            const client = await connectCdp(endpoint, 8000);
-            const { targetId } = await client.send("Target.createTarget", { url: "about:blank" });
-            const { sessionId } = await client.send("Target.attachToTarget", { targetId, flatten: true });
-            await client.send("Page.enable", {}, sessionId);
-            await client.send("Runtime.enable", {}, sessionId);
+            await waitFor(`${endpoint}/json/version`, 15_000);
+            const browser = await Browser.connect(endpoint);
+            const page = await browser.newPage();
+            const waitUntil = opts.pageWaitFor === "load" ? "load" : "domcontentloaded";
+            const ttfx = opts.expressions?.ttfx ?? TTFX_EXPR;
+            const extractExpr = opts.expressions?.extract ?? EXTRACT_EXPR;
 
             return {
                 pid: proc.pid,
-                fetch: (item) => fetchPage(client, sessionId, item.url, opts.timeoutMs, opts.mode, opts.expressions, opts.pageWaitFor),
+                fetch: async (item) => {
+                    const t0 = Date.now();
+                    await page.goto(item.url, { waitUntil, timeout: opts.timeoutMs });
+                    const domReadyMs = Date.now() - t0;
+                    if (opts.mode === "html") {
+                        const html = await page.content();
+                        const totalMs = Date.now() - t0;
+                        if (html.length < 500) throw new Error(`empty html (len=${html.length})`);
+                        return {
+                            htmlBytes: html.length,
+                            domReadyMs,
+                            ttfexMs: domReadyMs,
+                            extractMs: 0,
+                            totalMs,
+                        };
+                    }
+                    const ttf0 = Date.now();
+                    const data = await page.extract({
+                        ttfx,
+                        expression: extractExpr,
+                        timeout: opts.timeoutMs,
+                    });
+                    const ttfexMs = Date.now() - t0;
+                    const extractMs = Date.now() - ttf0;
+                    const totalMs = Date.now() - t0;
+                    if (opts.expressions?.validate) {
+                        opts.expressions.validate(data);
+                    } else if (!data.title || (data.linkCount ?? 0) < 1) {
+                        throw new Error(`weak page data: title=${data.title} links=${data.linkCount}`);
+                    }
+                    return {
+                        ...data,
+                        domReadyMs,
+                        ttfexMs,
+                        extractMs,
+                        totalMs,
+                    };
+                },
                 close: async () => {
-                    client.close();
+                    await browser.close().catch(() => undefined);
                     if (proc.exitCode == null) {
                         proc.kill("SIGTERM");
                         await new Promise((r) => proc.once("exit", r));
@@ -423,8 +462,8 @@ export async function crawlVelora(queue, opts) {
         "--log-level", opts.logLevel,
         "--browser-profile", opts.browserProfile,
         "--http-timeout", String(opts.timeoutMs),
-        "--automation", opts.automation ?? "fast",
     ];
+    if (opts.automation) args.push("--automation", opts.automation);
     const proc = spawn(veloraBin, args, { cwd: repoRoot, stdio: "ignore" });
     monitor.addRootPid(proc.pid);
     monitor.start();

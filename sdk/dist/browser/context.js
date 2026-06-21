@@ -1,13 +1,18 @@
 export class BrowserContext {
     browser;
+    pages = new Set();
     constructor(browser) {
         this.browser = browser;
     }
-    newPage() {
-        return this.browser.newPage();
+    async newPage(url = "about:blank") {
+        const page = await this.browser.newPage(url);
+        this.pages.add(page);
+        page.onClose(() => this.pages.delete(page));
+        return page;
     }
     async close() {
-        // Placeholder for future isolated context support once Velora exposes it via CDP.
+        await Promise.all([...this.pages].map((page) => page.close().catch(() => undefined)));
+        this.pages.clear();
     }
 }
 //# sourceMappingURL=context.js.map

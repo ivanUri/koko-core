@@ -20,10 +20,14 @@ export declare class NetworkTracker {
     readonly inflight: Set<string>;
     private cleanup;
     private readonly listeners;
+    private maxRequests;
     constructor(session: CDPSession);
+    setMaxRequests(max: number): void;
     private notify;
     enable(): Promise<void>;
     dispose(): void;
+    /** Clear tracked requests (e.g. at navigation start). */
+    reset(): void;
     waitForIdle(options?: {
         idleMs?: number;
         timeout?: number;
@@ -32,4 +36,5 @@ export declare class NetworkTracker {
     private onResponse;
     private onDone;
     private onFailed;
+    private pruneCompleted;
 }

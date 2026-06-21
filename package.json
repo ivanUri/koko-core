@@ -1,9 +1,18 @@
 {
+  "name": "velora",
+  "private": true,
+  "workspaces": [
+    "sdk"
+  ],
   "dependencies": {
+    "@velora/sdk": "workspace:*",
     "playwright": "^1.60.0",
     "ws": "^8.21.0"
   },
   "scripts": {
+    "build:sdk": "npm run build --workspace=@velora/sdk",
+    "prebench:crawl:wikipedia": "npm run build:sdk",
+    "prebench:compare": "npm run build:sdk",
     "test:fingerprint": "node code-check/suite/runner.mjs",
     "test:fingerprint:remote": "node code-check/suite/runner.mjs --remote",
     "test:fingerprint:browserleaks": "node code-check/suite/runner.mjs --browserleaks",

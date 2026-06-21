@@ -25,5 +25,11 @@ export declare class PageWaiter {
         timeout?: number;
         pollingMs?: number;
     }): Promise<void>;
+    /** Poll until a return-by-value expression is truthy (adaptive interval). */
+    pollUntilTruthy(expression: string, options?: {
+        timeout?: number;
+        label?: string;
+    }): Promise<void>;
+    private pollDomSearch;
     private pollExpression;
 }

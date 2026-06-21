@@ -1,16 +1,41 @@
 import { NavigationError, ProtocolError, TargetClosedError } from "../cdp/errors.js";
 import { PageWaiter } from "./waiter.js";
 import { NetworkTracker } from "./network.js";
+const DEFAULT_TTFX = `(() => {
+  const el = document.querySelector("#firstHeading") || document.querySelector("h1");
+  return el?.textContent?.trim() || null;
+})()`;
+const DEFAULT_EXTRACT = `(() => {
+  const links = document.querySelectorAll('a[href^="/wiki/"]:not([href*=":"])');
+  const title = document.querySelector("#firstHeading")?.textContent?.trim()
+    || document.title.replace(/ - Wikipedia$/, "").trim();
+  return {
+    title,
+    linkCount: links.length,
+    htmlBytes: document.documentElement?.outerHTML?.length ?? 0,
+  };
+})()`;
+const CONTENT_EXPR = `(() => {
+  const html = document.documentElement ? document.documentElement.outerHTML : '';
+  if (/^\\s*<!doctype/i.test(html)) return html;
+  const dt = document.doctype ? new XMLSerializer().serializeToString(document.doctype) : '';
+  return (dt || '<!DOCTYPE html>') + '\\n' + html;
+})()`;
 export class Page {
     session;
     network;
     waiter;
     initialized = false;
     mainFrameId;
+    closeHooks = new Set();
     constructor(session) {
         this.session = session;
         this.network = new NetworkTracker(session);
         this.waiter = new PageWaiter(session, this.network);
+    }
+    /** Register cleanup when page.close() runs (used by Browser/Context). */
+    onClose(hook) {
+        this.closeHooks.add(hook);
     }
     async init() {
         if (this.initialized)
@@ -32,8 +57,8 @@ export class Page {
     }
     async goto(url, options = {}) {
         await this.init();
+        this.network.reset();
         const waitPromise = this.waiter.waitForNavigation(options);
-        // Catch the wait promise eagerly so a navigation failure doesn't surface as unhandled rejection.
         waitPromise.catch(() => undefined);
         const result = await this.session.send("Page.navigate", { url }, options.timeout);
         if (result.errorText) {
@@ -64,14 +89,26 @@ export class Page {
         }
         return result.result?.value;
     }
+    /** Single round-trip HTML snapshot (doctype + outerHTML). */
     async content() {
         await this.init();
-        const domHtml = await this.contentFromDOM().catch(() => undefined);
-        if (domHtml)
-            return domHtml;
-        const html = await this.evaluate("document.documentElement ? document.documentElement.outerHTML : ''");
-        const doctype = await this.evaluate("document.doctype ? new XMLSerializer().serializeToString(document.doctype) : ''").catch(() => "");
-        return withDoctype(html, doctype);
+        return this.evaluate(CONTENT_EXPR);
+    }
+    /**
+     * Crawler helper: wait for a TTFX probe then run a structured extract expression.
+     * Defaults match the Wikipedia crawl benchmark.
+     */
+    async extract(options = {}) {
+        await this.init();
+        const timeout = options.timeout ?? 30_000;
+        const ttfx = options.ttfx ?? DEFAULT_TTFX;
+        const expression = options.expression ?? DEFAULT_EXTRACT;
+        await this.waiter.pollUntilTruthy(ttfx, { timeout, label: "Waiting for extractable content" });
+        const value = await this.evaluate(expression, { timeout });
+        if (!value || typeof value !== "object") {
+            throw new ProtocolError("extract returned invalid payload", { method: "Page.extract" });
+        }
+        return value;
     }
     waitForSelector(selector, options) {
         return this.waiter.waitForSelector(selector, options);
@@ -84,29 +121,12 @@ export class Page {
         if (this.session.targetId)
             await this.session.client.closeTarget(this.session.targetId).catch(() => undefined);
         await this.session.detach().catch(() => undefined);
+        for (const hook of this.closeHooks)
+            hook();
+        this.closeHooks.clear();
     }
-    /** Returns the main-frame id (after first navigation/init). */
     get frameId() {
         return this.mainFrameId;
     }
-    async contentFromDOM() {
-        const doc = await this.session.send("DOM.getDocument", { depth: 0, pierce: false });
-        const root = doc?.root;
-        if (!root?.nodeId)
-            return undefined;
-        const result = await this.session.send("DOM.getOuterHTML", { nodeId: root.nodeId });
-        const html = result.outerHTML;
-        if (!html)
-            return undefined;
-        if (/^\s*<!doctype/i.test(html))
-            return html;
-        const doctype = await this.evaluate("document.doctype ? new XMLSerializer().serializeToString(document.doctype) : ''").catch(() => "");
-        return withDoctype(html, doctype);
-    }
-}
-function withDoctype(html = "", doctype = "") {
-    if (/^\s*<!doctype\s+/i.test(html))
-        return html;
-    return `${doctype || "<!DOCTYPE html>"}\n${html}`;
 }
 //# sourceMappingURL=page.js.map

@@ -8,7 +8,11 @@ export class Browser {
         this.client = client;
     }
     static async connect(endpoint, options = {}) {
-        return new Browser(await CDPClient.connect(endpoint, options));
+        const client = await CDPClient.connect(endpoint, options);
+        if (options.enableTargetTracking !== false) {
+            await client.enableTargetTracking();
+        }
+        return new Browser(client);
     }
     async newSession(url = "about:blank") {
         return this.client.newSession(url);
@@ -16,7 +20,10 @@ export class Browser {
     async newPage(url = "about:blank") {
         const session = await this.client.newSession(url);
         const page = new Page(session);
+        page.onClose(() => this.pages.delete(page));
         await page.init();
+        if (url !== "about:blank")
+            await page.goto(url);
         this.pages.add(page);
         return page;
     }

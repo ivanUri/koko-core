@@ -1,12 +1,18 @@
 import { withTimeout } from "../utils/timeout.js";
+const DEFAULT_MAX_REQUESTS = 2048;
 export class NetworkTracker {
     session;
     requests = new Map();
     inflight = new Set();
     cleanup = [];
     listeners = new Set();
+    maxRequests = DEFAULT_MAX_REQUESTS;
     constructor(session) {
         this.session = session;
+    }
+    setMaxRequests(max) {
+        this.maxRequests = Math.max(64, max);
+        this.pruneCompleted();
     }
     notify() {
         for (const listener of this.listeners)
@@ -20,6 +26,11 @@ export class NetworkTracker {
         for (const off of this.cleanup)
             off();
         this.cleanup = [];
+        this.reset();
+    }
+    /** Clear tracked requests (e.g. at navigation start). */
+    reset() {
+        this.requests.clear();
         this.inflight.clear();
     }
     waitForIdle(options = {}) {
@@ -58,6 +69,7 @@ export class NetworkTracker {
             redirectChain,
         });
         this.inflight.add(event.requestId);
+        this.pruneCompleted();
         this.notify();
     }
     onResponse(event) {
@@ -73,6 +85,7 @@ export class NetworkTracker {
     }
     onDone(requestId) {
         this.inflight.delete(requestId);
+        this.pruneCompleted();
         this.notify();
     }
     onFailed(event) {
@@ -80,7 +93,19 @@ export class NetworkTracker {
         if (request)
             request.failureText = event.errorText;
         this.inflight.delete(event.requestId);
+        this.pruneCompleted();
         this.notify();
+    }
+    pruneCompleted() {
+        if (this.requests.size <= this.maxRequests)
+            return;
+        for (const [id, req] of this.requests) {
+            if (this.inflight.has(id))
+                continue;
+            this.requests.delete(id);
+            if (this.requests.size <= this.maxRequests)
+                break;
+        }
     }
 }
 //# sourceMappingURL=network.js.map

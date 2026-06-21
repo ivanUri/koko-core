@@ -25,24 +25,55 @@ export class PageWaiter {
         await this.network.waitForIdle({ idleMs: options.networkIdleMs, timeout });
     }
     async waitForSelector(selector, options = {}) {
+        const timeout = options.timeout ?? 30_000;
+        const label = `Waiting for selector ${selector}`;
+        if (!options.visible) {
+            await this.pollDomSearch(selector, timeout, label);
+            return;
+        }
         const expression = `(() => {
       const el = document.querySelector(${JSON.stringify(selector)});
       if (!el) return false;
-      if (${options.visible ? "true" : "false"}) {
-        const style = getComputedStyle(el);
-        const rect = el.getBoundingClientRect();
-        return style && style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
-      }
-      return true;
+      const style = getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      return style && style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
     })()`;
-        await this.pollExpression(expression, options.timeout, `Waiting for selector ${selector}`);
+        await this.pollExpression(expression, timeout, label);
     }
     async waitForFunction(fn, options = {}) {
         const source = typeof fn === "function" ? `(${fn.toString()})()` : `(${fn})`;
         await this.pollExpression(source, options.timeout, "Waiting for function", options.pollingMs);
     }
-    async pollExpression(expression, timeout = 30_000, label, pollingMs = 100) {
+    /** Poll until a return-by-value expression is truthy (adaptive interval). */
+    async pollUntilTruthy(expression, options = {}) {
+        await this.pollExpression(expression, options.timeout ?? 30_000, options.label ?? "Waiting for condition");
+    }
+    async pollDomSearch(selector, timeout, label) {
         const started = Date.now();
+        let interval = 16;
+        await withTimeout((async () => {
+            while (true) {
+                const result = await this.session.send("DOM.performSearch", {
+                    query: selector,
+                    includeUserAgentShadowDOM: false,
+                });
+                const searchId = result?.searchId;
+                const count = result?.resultCount ?? 0;
+                if (searchId) {
+                    await this.session.send("DOM.discardSearchResults", { searchId }).catch(() => undefined);
+                }
+                if (count > 0)
+                    return;
+                if (Date.now() - started > timeout)
+                    throw new TimeoutError(label, { timeout });
+                await delay(interval);
+                interval = Math.min(Math.round(interval * 1.4), 100);
+            }
+        })(), { timeout, label });
+    }
+    async pollExpression(expression, timeout = 30_000, label, pollingMs) {
+        const started = Date.now();
+        let interval = pollingMs ?? 16;
         await withTimeout((async () => {
             while (true) {
                 const result = await this.session.send("Runtime.evaluate", {
@@ -59,7 +90,9 @@ export class PageWaiter {
                     return;
                 if (Date.now() - started > timeout)
                     throw new TimeoutError(label, { timeout });
-                await delay(pollingMs);
+                await delay(interval);
+                if (pollingMs == null)
+                    interval = Math.min(Math.round(interval * 1.4), 100);
             }
         })(), { timeout, label });
     }

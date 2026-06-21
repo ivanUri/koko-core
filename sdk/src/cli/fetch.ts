@@ -9,14 +9,16 @@ interface Options {
   waitUntil: "none" | "commit" | "domcontentloaded" | "load" | "networkidle";
   timeout: number;
   logger: boolean;
+  extract: boolean;
 }
 
 function parseArgs(argv: string[]): Options {
   const options: Options = {
     endpoint: process.env.VELORA_CDP || "http://127.0.0.1:9222",
-    waitUntil: "load",
+    waitUntil: "domcontentloaded",
     timeout: 30_000,
     logger: false,
+    extract: false,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -32,6 +34,7 @@ function parseArgs(argv: string[]): Options {
       case "--wait-until": options.waitUntil = next() as Options["waitUntil"]; break;
       case "--timeout": options.timeout = Number(next()); break;
       case "--logger": options.logger = true; break;
+      case "--extract": options.extract = true; break;
       case "--help": usage(0); break;
       default:
         if (arg.startsWith("--")) throw new Error(`Unknown option: ${arg}`);
@@ -47,10 +50,11 @@ function usage(exitCode: number): never {
 
 Options:
   --endpoint <url>       CDP HTTP or WebSocket endpoint (default: VELORA_CDP or http://127.0.0.1:9222)
-  --wait-until <mode>    none | commit | domcontentloaded | load | networkidle
+  --wait-until <mode>    none | commit | domcontentloaded | load | networkidle (default: domcontentloaded)
   --timeout <ms>         Navigation timeout (default: 30000)
-  --output <path>        Write HTML to file instead of stdout
-  --logger              Print protocol logs
+  --output <path>        Write output to file instead of stdout
+  --extract              Print JSON extract payload instead of HTML
+  --logger               Print protocol logs
 `);
   process.exit(exitCode);
 }
@@ -61,9 +65,11 @@ async function main(): Promise<void> {
   try {
     const page = await browser.newPage();
     await page.goto(options.url!, { waitUntil: options.waitUntil, timeout: options.timeout });
-    const html = await page.content();
-    if (options.output) await writeFile(options.output, html);
-    else process.stdout.write(html);
+    const payload = options.extract
+      ? JSON.stringify(await page.extract({ timeout: options.timeout }), null, 2)
+      : await page.content();
+    if (options.output) await writeFile(options.output, payload);
+    else process.stdout.write(payload);
   } finally {
     await browser.close();
   }

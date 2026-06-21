@@ -34,7 +34,8 @@ const defaults = {
     browserProfile: "chrome-macos-catalina",
     chromePath: null,
     sampleIntervalMs: 100,
-    automation: "fast",
+    automation: null,
+    veloraMultiProcess: true,
     pageWaitFor: "domcontentloaded",
 };
 

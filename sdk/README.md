@@ -7,22 +7,40 @@ import { Browser } from "@velora/sdk";
 
 const browser = await Browser.connect("http://127.0.0.1:9222");
 const page = await browser.newPage();
-await page.goto("https://example.com", { waitUntil: "load" });
+await page.goto("https://example.com", { waitUntil: "domcontentloaded" });
 console.log(await page.content());
 await browser.close();
 ```
 
-The SDK is intentionally close to CDP: it provides transport, sessions, browser/page helpers, wait strategies, network tracking and robust HTML extraction while staying lightweight.
+## Performance notes
+
+- `Browser.connect()` enables flattened target tracking by default.
+- `page.content()` uses a single `Runtime.evaluate` round-trip.
+- `page.extract()` is optimized for crawler workloads (TTFX probe + structured extract).
+- `waitForSelector()` uses `DOM.performSearch` when visibility is not required.
+- `NetworkTracker` prunes completed requests and resets on navigation.
 
 ## CLI
 
 ```bash
-VELORA_CDP=http://127.0.0.1:9222 npx velora-fetch https://example.com --wait-until networkidle
+# HTML (default wait: domcontentloaded)
+VELORA_CDP=http://127.0.0.1:9222 npx velora-fetch https://example.com
+
+# Structured extract (JSON)
+VELORA_CDP=http://127.0.0.1:9222 npx velora-fetch https://en.wikipedia.org/wiki/Earth --extract
 ```
 
 ## Modules
 
 - `transport/`: WebSocket CDP transport with request ids, timeout handling and pending rejection on close.
 - `cdp/`: client/session/event/error layer, including flattened session routing.
-- `browser/`: lightweight Browser/Page/Context abstraction plus wait and network tracking.
-- `cli/`: small fetch example built on the SDK, not on Playwright.
+- `browser/`: Browser/Page/Context, wait strategies, network tracking, crawl helpers.
+- `cli/`: `velora-fetch` built on the SDK.
+
+## Build
+
+```bash
+npm run build
+# or from repo root:
+npm run build:sdk
+```

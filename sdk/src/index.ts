@@ -9,9 +9,12 @@ export type { EventHandler, WildcardEventHandler } from "./cdp/events.js";
 export { CDPError, TimeoutError, ProtocolError, NavigationError, TargetClosedError, WebSocketClosedError } from "./cdp/errors.js";
 
 export { Browser } from "./browser/browser.js";
+export type { BrowserConnectOptions } from "./browser/browser.js";
 export { BrowserContext } from "./browser/context.js";
 export { Page } from "./browser/page.js";
-export type { EvaluateOptions } from "./browser/page.js";
+export type { EvaluateOptions, ExtractOptions, ExtractResult } from "./browser/page.js";
+export { createCrawlWorker } from "./browser/crawl.js";
+export type { CrawlItem, CrawlPageResult, CrawlWorker, CrawlWorkerOptions } from "./browser/crawl.js";
 export { PageWaiter } from "./browser/waiter.js";
 export type { GotoWaitOptions, WaitUntil } from "./browser/waiter.js";
 export { NetworkTracker } from "./browser/network.js";

@@ -4,9 +4,10 @@ import { Browser } from "../browser/browser.js";
 function parseArgs(argv) {
     const options = {
         endpoint: process.env.VELORA_CDP || "http://127.0.0.1:9222",
-        waitUntil: "load",
+        waitUntil: "domcontentloaded",
         timeout: 30_000,
         logger: false,
+        extract: false,
     };
     for (let i = 0; i < argv.length; i += 1) {
         const arg = argv[i];
@@ -32,6 +33,9 @@ function parseArgs(argv) {
             case "--logger":
                 options.logger = true;
                 break;
+            case "--extract":
+                options.extract = true;
+                break;
             case "--help":
                 usage(0);
                 break;
@@ -50,10 +54,11 @@ function usage(exitCode) {
 
 Options:
   --endpoint <url>       CDP HTTP or WebSocket endpoint (default: VELORA_CDP or http://127.0.0.1:9222)
-  --wait-until <mode>    none | commit | domcontentloaded | load | networkidle
+  --wait-until <mode>    none | commit | domcontentloaded | load | networkidle (default: domcontentloaded)
   --timeout <ms>         Navigation timeout (default: 30000)
-  --output <path>        Write HTML to file instead of stdout
-  --logger              Print protocol logs
+  --output <path>        Write output to file instead of stdout
+  --extract              Print JSON extract payload instead of HTML
+  --logger               Print protocol logs
 `);
     process.exit(exitCode);
 }
@@ -63,11 +68,13 @@ async function main() {
     try {
         const page = await browser.newPage();
         await page.goto(options.url, { waitUntil: options.waitUntil, timeout: options.timeout });
-        const html = await page.content();
+        const payload = options.extract
+            ? JSON.stringify(await page.extract({ timeout: options.timeout }), null, 2)
+            : await page.content();
         if (options.output)
-            await writeFile(options.output, html);
+            await writeFile(options.output, payload);
         else
-            process.stdout.write(html);
+            process.stdout.write(payload);
     }
     finally {
         await browser.close();

@@ -6,6 +6,7 @@ export { CDPError, TimeoutError, ProtocolError, NavigationError, TargetClosedErr
 export { Browser } from "./browser/browser.js";
 export { BrowserContext } from "./browser/context.js";
 export { Page } from "./browser/page.js";
+export { createCrawlWorker } from "./browser/crawl.js";
 export { PageWaiter } from "./browser/waiter.js";
 export { NetworkTracker } from "./browser/network.js";
 export { captureSessionState, restoreSessionState } from "./browser/session-state.js";

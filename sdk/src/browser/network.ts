@@ -20,13 +20,21 @@ export interface NetworkResponse {
   headers?: Record<string, string>;
 }
 
+const DEFAULT_MAX_REQUESTS = 2048;
+
 export class NetworkTracker {
   readonly requests = new Map<string, NetworkRequest>();
   readonly inflight = new Set<string>();
   private cleanup: Array<() => void> = [];
   private readonly listeners = new Set<IdleListener>();
+  private maxRequests = DEFAULT_MAX_REQUESTS;
 
   constructor(private readonly session: CDPSession) {}
+
+  setMaxRequests(max: number): void {
+    this.maxRequests = Math.max(64, max);
+    this.pruneCompleted();
+  }
 
   private notify(): void {
     for (const listener of this.listeners) listener();
@@ -45,6 +53,12 @@ export class NetworkTracker {
   dispose(): void {
     for (const off of this.cleanup) off();
     this.cleanup = [];
+    this.reset();
+  }
+
+  /** Clear tracked requests (e.g. at navigation start). */
+  reset(): void {
+    this.requests.clear();
     this.inflight.clear();
   }
 
@@ -82,6 +96,7 @@ export class NetworkTracker {
       redirectChain,
     });
     this.inflight.add(event.requestId);
+    this.pruneCompleted();
     this.notify();
   }
 
@@ -98,6 +113,7 @@ export class NetworkTracker {
 
   private onDone(requestId: string): void {
     this.inflight.delete(requestId);
+    this.pruneCompleted();
     this.notify();
   }
 
@@ -105,6 +121,16 @@ export class NetworkTracker {
     const request = this.requests.get(event.requestId);
     if (request) request.failureText = event.errorText;
     this.inflight.delete(event.requestId);
+    this.pruneCompleted();
     this.notify();
+  }
+
+  private pruneCompleted(): void {
+    if (this.requests.size <= this.maxRequests) return;
+    for (const [id, req] of this.requests) {
+      if (this.inflight.has(id)) continue;
+      this.requests.delete(id);
+      if (this.requests.size <= this.maxRequests) break;
+    }
   }
 }
