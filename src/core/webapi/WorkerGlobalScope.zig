@@ -105,6 +105,7 @@ _on_rejection_handled: ?JS.Function.Global = null,
 _on_unhandled_rejection: ?JS.Function.Global = null,
 _on_message: ?JS.Function.Global = null,
 _on_messageerror: ?JS.Function.Global = null,
+_pending_undelivered: std.ArrayListUnmanaged(PendingInboundMessage) = .{},
 _debug_next_message_id: u64 = 1,
 
 _timers: Timers = .{},
@@ -182,6 +183,7 @@ fn enterRealmDead(self: *WorkerGlobalScope) void {
 
 pub fn deinit(self: *WorkerGlobalScope) void {
     self.enterRealmDraining();
+    self.releasePendingUndelivered();
     self._identity.deinit();
     self._script_manager.deinit();
 
@@ -299,6 +301,37 @@ pub fn getOnMessage(self: *const WorkerGlobalScope) ?JS.Function.Global {
 
 pub fn setOnMessage(self: *WorkerGlobalScope, setter: ?FunctionSetter) void {
     self._on_message = getFunctionFromSetter(setter);
+    self.flushPendingUndelivered() catch |err| {
+        log.warn(.browser, "WorkerGlobalScope.flushPendingUndelivered", .{ .err = err });
+    };
+}
+
+pub fn flushPendingUndelivered(self: *WorkerGlobalScope) !void {
+    const target = self.asEventTarget();
+
+    while (self._pending_undelivered.items.len > 0) {
+        if (!self._event_manager.hasDirectListeners(target, "message", self._on_message)) {
+            break;
+        }
+
+        const pending = self._pending_undelivered.orderedRemove(0);
+        const event = (try MessageEvent.initTrusted(comptime .wrap("message"), .{
+            .data = .{ .value = pending.data },
+            .ports = pending.ports,
+            .bubbles = false,
+            .cancelable = false,
+        }, self._page)).asEvent();
+        try self.dispatch(target, event, self._on_message, .{});
+        pumpAfterWorkerMessage(self);
+    }
+}
+
+fn releasePendingUndelivered(self: *WorkerGlobalScope) void {
+    for (self._pending_undelivered.items) |pending| {
+        pending.data.release();
+    }
+    self._pending_undelivered.deinit(self.arena);
+    self._pending_undelivered = .{};
 }
 
 pub fn getOnMessageError(self: *const WorkerGlobalScope) ?JS.Function.Global {
@@ -622,6 +655,12 @@ fn getFunctionFromSetter(setter_: ?FunctionSetter) ?JS.Function.Global {
     };
 }
 
+const PendingInboundMessage = struct {
+    message_id: u64,
+    data: JS.Value.Temp,
+    ports: []const *MessagePort,
+};
+
 const ReceiveMessageCallback = struct {
     data: ?JS.Value.Temp,
     ports: []const *MessagePort,
@@ -670,9 +709,14 @@ const ReceiveMessageCallback = struct {
 
         const on_message = worker_scope._on_message;
 
-        // Check if there are any listeners before creating the event
+        // Queue until onmessage / addEventListener is registered (reCAPTCHA worker setup).
         if (!worker_scope._event_manager.hasDirectListeners(target, "message", on_message)) {
-            self.data.?.release();
+            const ports_copy = try worker_scope.arena.dupe(*MessagePort, self.ports);
+            try worker_scope._pending_undelivered.append(worker_scope.arena, .{
+                .message_id = self.message_id,
+                .data = self.data.?,
+                .ports = ports_copy,
+            });
             return null;
         }
 

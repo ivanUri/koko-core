@@ -34,6 +34,8 @@ const defaults = {
     browserProfile: "chrome-macos-catalina",
     chromePath: null,
     sampleIntervalMs: 100,
+    automation: "fast",
+    pageWaitFor: "domcontentloaded",
 };
 
 function usage() {

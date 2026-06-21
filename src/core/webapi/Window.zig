@@ -75,6 +75,7 @@ _on_pageshow: ?js.Function.Global = null,
 _on_popstate: ?js.Function.Global = null,
 _on_error: ?js.Function.Global = null,
 _on_message: ?js.Function.Global = null,
+_pending_post_messages: std.ArrayListUnmanaged(*PostMessageCallback) = .{},
 _on_rejection_handled: ?js.Function.Global = null,
 _on_unhandled_rejection: ?js.Function.Global = null,
 _current_event: ?*Event = null,
@@ -301,6 +302,43 @@ pub fn getOnMessage(self: *const Window) ?js.Function.Global {
 
 pub fn setOnMessage(self: *Window, setter: ?FunctionSetter) void {
     self._on_message = getFunctionFromSetter(setter);
+    self.flushPendingPostMessages();
+}
+
+/// Deliver window.postMessage events that arrived before any message listener was registered.
+pub fn flushPendingPostMessages(self: *Window) void {
+    const frame = self._frame;
+    const event_target = self.asEventTarget();
+
+    while (self._pending_post_messages.items.len > 0) {
+        if (!frame._event_manager.hasDirectListeners(event_target, "message", self._on_message)) {
+            break;
+        }
+
+        const pending = self._pending_post_messages.orderedRemove(0);
+        PostMessageCallback.dispatch(pending) catch |err| {
+            log.warn(.browser, "pending postMessage dispatch", .{ .err = err });
+            pending.message.release();
+            pending.deinit();
+            continue;
+        };
+        pending.deinit();
+    }
+
+    frame._session.browser.runMacrotasks() catch |err| {
+        log.warn(.browser, "flush pending postMessage pump", .{ .err = err });
+    };
+}
+
+fn queuePendingPostMessage(self: *Window, callback: *PostMessageCallback) !void {
+    const frame = self._frame;
+    const max_pending: usize = 64;
+    while (self._pending_post_messages.items.len >= max_pending) {
+        const dropped = self._pending_post_messages.orderedRemove(0);
+        dropped.message.release();
+        dropped.deinit();
+    }
+    try self._pending_post_messages.append(frame.arena, callback);
 }
 
 pub fn getOnRejectionHandled(self: *const Window) ?js.Function.Global {
@@ -628,6 +666,36 @@ pub fn postMessage(self: *Window, message: js.Value.Temp, target_origin: ?[]cons
         .origin = try arena.dupe(u8, origin),
     };
 
+    // Port-transfer postMessages are dispatched synchronously so the recipient
+    // can wire MessagePort handlers before the sender's stack unwinds (reCAPTCHA
+    // v3 calls grecaptcha.execute from grecaptcha.ready in the same turn).
+    if (transferred_ports.len > 0) {
+        const event_target = target_frame.window.asEventTarget();
+        const has_listeners = target_frame._event_manager.hasDirectListeners(
+            event_target,
+            "message",
+            target_frame.window._on_message,
+        );
+
+        if (!has_listeners) {
+            target_frame.window.queuePendingPostMessage(callback) catch |err| {
+                log.warn(.browser, "queue pending postMessage", .{ .err = err });
+                callback.message.release();
+                callback.deinit();
+            };
+            return;
+        }
+
+        PostMessageCallback.dispatch(callback) catch |err| {
+            log.warn(.browser, "postMessage dispatch", .{ .err = err });
+            callback.message.release();
+            callback.deinit();
+            return;
+        };
+        callback.deinit();
+        return;
+    }
+
     try target_frame.js.scheduler.add(callback, PostMessageCallback.run, 0, .{
         .name = "postMessage",
         .low_priority = false,
@@ -857,32 +925,47 @@ const PostMessageCallback = struct {
         self.deinit();
     }
 
-    fn run(ctx: *anyopaque) !?u32 {
-        const self: *PostMessageCallback = @ptrCast(@alignCast(ctx));
-        defer self.deinit();
-
+    fn dispatch(self: *PostMessageCallback) !void {
         const frame = self.frame;
         const window = frame.window;
-
         const event_target = window.asEventTarget();
-        const has_listeners = frame._event_manager.hasDirectListeners(event_target, "message", window._on_message);
 
-        if (has_listeners) {
-            const event = (try MessageEvent.initTrusted(comptime .wrap("message"), .{
-                .data = .{ .value = self.message },
-                .origin = self.origin,
-                .source = self.source,
-                .ports = self.ports,
-                .bubbles = false,
-                .cancelable = false,
-            }, frame._page)).asEvent();
-            try frame._event_manager.dispatchDirect(event_target, event, window._on_message, .{ .context = "window.postMessage" });
-        } else {
-            self.message.release();
-        }
+        const event = (try MessageEvent.initTrusted(comptime .wrap("message"), .{
+            .data = .{ .value = self.message },
+            .origin = self.origin,
+            .source = self.source,
+            .ports = self.ports,
+            .bubbles = false,
+            .cancelable = false,
+        }, frame._page)).asEvent();
+        try frame._event_manager.dispatchDirect(event_target, event, window._on_message, .{ .context = "window.postMessage" });
 
         frame._session.browser.runMacrotasks() catch |err| {
             log.warn(.browser, "postMessage dispatch pump", .{ .err = err });
+        };
+    }
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *PostMessageCallback = @ptrCast(@alignCast(ctx));
+
+        const frame = self.frame;
+        const window = frame.window;
+        const event_target = window.asEventTarget();
+        const has_listeners = frame._event_manager.hasDirectListeners(event_target, "message", window._on_message);
+
+        if (!has_listeners) {
+            window.queuePendingPostMessage(self) catch |err| {
+                log.warn(.browser, "queue pending postMessage", .{ .err = err });
+                self.message.release();
+                self.deinit();
+            };
+            return null;
+        }
+
+        defer self.deinit();
+        self.dispatch() catch |err| {
+            log.warn(.browser, "postMessage dispatch", .{ .err = err });
+            self.message.release();
         };
 
         return null;

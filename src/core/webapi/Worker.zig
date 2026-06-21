@@ -51,6 +51,7 @@ _script_buffer: std.ArrayList(u8) = .empty,
 _http_response: ?HttpClient.Response = null,
 _debug_next_message_id: u64 = 1,
 _pending_inbound_messages: std.ArrayListUnmanaged(PendingInboundMessage) = .{},
+_pending_undelivered: std.ArrayListUnmanaged(PendingInboundMessage) = .{},
 
 // Event handlers
 _on_error: ?js.Function.Global = null,
@@ -347,6 +348,23 @@ pub fn getOnMessage(self: *const Worker) ?js.Function.Global {
 
 pub fn setOnMessage(self: *Worker, setter: ?FunctionSetter) void {
     self._on_message = getFunctionFromSetter(setter);
+    self.flushPendingUndelivered() catch |err| {
+        log.warn(.browser, "Worker.flushPendingUndelivered", .{ .err = err });
+    };
+}
+
+pub fn flushPendingUndelivered(self: *Worker) !void {
+    const frame = self._frame;
+    const target = self.asEventTarget();
+
+    while (self._pending_undelivered.items.len > 0) {
+        if (!frame._event_manager.hasDirectListeners(target, "message", self._on_message)) {
+            break;
+        }
+        const pending = self._pending_undelivered.orderedRemove(0);
+        try self.enqueueInboundTempMessage(pending.data, pending.message_id, pending.ports);
+    }
+    pumpAfterWorkerMessage(frame);
 }
 
 pub fn getOnMessageError(self: *const Worker) ?js.Function.Global {
@@ -462,6 +480,11 @@ fn releasePendingInboundMessages(self: *Worker) void {
     }
     self._pending_inbound_messages.deinit(self._arena);
     self._pending_inbound_messages = .{};
+    for (self._pending_undelivered.items) |pending| {
+        pending.data.release();
+    }
+    self._pending_undelivered.deinit(self._arena);
+    self._pending_undelivered = .{};
 }
 
 const PendingInboundMessage = struct {
@@ -522,9 +545,14 @@ const ReceiveMessageCallback = struct {
 
         const on_message = worker._on_message;
 
-        // Check if there are any listeners before creating the event
+        // Queue until onmessage / addEventListener is registered (reCAPTCHA worker setup).
         if (!frame._event_manager.hasDirectListeners(target, "message", on_message)) {
-            data.release();
+            const ports_copy = try worker._arena.dupe(*MessagePort, self.ports);
+            try worker._pending_undelivered.append(worker._arena, .{
+                .message_id = self.message_id,
+                .data = data,
+                .ports = ports_copy,
+            });
             return null;
         }
 

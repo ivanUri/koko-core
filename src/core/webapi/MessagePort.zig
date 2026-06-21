@@ -32,6 +32,7 @@ _on_message: ?js.Function.Global = null,
 _on_message_error: ?js.Function.Global = null,
 _entangled_port: ?*MessagePort = null,
 _pending_messages: std.ArrayList(js.Value.Temp) = .{},
+_pending_deliveries: std.ArrayList(js.Value.Temp) = .{},
 // The execution context that currently owns this port (updated on transfer).
 _active_exec: *const js.Execution,
 
@@ -151,6 +152,10 @@ fn releasePendingMessages(self: *MessagePort) void {
         message.release();
     }
     self._pending_messages.clearRetainingCapacity();
+    for (self._pending_deliveries.items) |message| {
+        message.release();
+    }
+    self._pending_deliveries.clearRetainingCapacity();
 }
 
 pub fn start(self: *MessagePort) !void {
@@ -178,6 +183,24 @@ pub fn getOnMessage(self: *const MessagePort) ?js.Function.Global {
 
 pub fn setOnMessage(self: *MessagePort, cb: ?js.Function.Global) !void {
     self._on_message = cb;
+    try self.flushPendingDeliveries();
+}
+
+pub fn flushPendingDeliveries(self: *MessagePort) !void {
+    const exec = self._active_exec;
+    const target = self.asEventTarget();
+
+    while (self._pending_deliveries.items.len > 0) {
+        if (!exec.hasDirectListeners(target, "message", self._on_message)) {
+            break;
+        }
+        const message = self._pending_deliveries.orderedRemove(0);
+        try self.enqueueMessage(message, exec);
+    }
+
+    exec.context.page.session.browser.runMacrotasks() catch |err| {
+        log.warn(.browser, "MessagePort flush pump", .{ .err = err });
+    };
 }
 
 pub fn getOnMessageError(self: *const MessagePort) ?js.Function.Global {
@@ -213,12 +236,16 @@ const PostMessageCallback = struct {
                 .source = null,
             }, self.exec.context.page) catch |err| {
                 log.err(.dom, "MessagePort.postMessage", .{ .err = err });
+                self.message.release();
                 return null;
             }).asEvent();
 
             self.exec.dispatch(target, event, self.port._on_message, .{ .context = "MessagePort message" }) catch |err| {
                 log.err(.dom, "MessagePort.postMessage", .{ .err = err });
             };
+        } else {
+            try self.port._pending_deliveries.append(self.exec.arena, self.message);
+            return null;
         }
 
         self.exec.context.page.session.browser.runMacrotasks() catch |err| {

@@ -16,6 +16,7 @@
     "test:site:recaptcha": "node code-check/sites/recaptcha/demo.mjs",
     "test:site:recaptcha:score": "node code-check/sites/recaptcha/score-detector.mjs",
     "test:site:recaptcha:appspot": "node code-check/sites/recaptcha/appspot-v3-scores.mjs",
+    "test:site:recaptcha:2captcha-v3": "node code-check/sites/recaptcha/2captcha-v3-test.mjs",
     "test:site:browserscan": "node code-check/sites/browserscan/scan.mjs",
     "test:feature:webgl": "node code-check/features/webgl/worker.mjs",
     "test:feature:worker": "node code-check/features/worker/simple.mjs",

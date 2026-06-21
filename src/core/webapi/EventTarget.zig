@@ -105,6 +105,13 @@ pub fn addEventListener(self: *EventTarget, typ: []const u8, callback_: ?EventLi
     switch (exec.context.global) {
         inline else => |g| _ = try g._event_manager.register(self, typ, em_callback, options),
     }
+
+    if (std.mem.eql(u8, typ, "message")) {
+        switch (self._type) {
+            .worker_global_scope => |wgs| wgs.flushPendingUndelivered() catch {},
+            else => {},
+        }
+    }
 }
 
 const RemoveEventListenerOptions = union(enum) {

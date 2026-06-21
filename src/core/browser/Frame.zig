@@ -1124,8 +1124,9 @@ pub fn scriptsCompletedLoading(self: *Frame) void {
 pub fn iframeCompletedLoading(self: *Frame, iframe: *IFrame) void {
     self.queueIframeLoad(iframe) catch |err| {
         log.warn(.js, "iframe onload queue", .{ .err = err, .url = iframe._src });
+        // Unblock parent load if we cannot queue the iframe load event.
+        self.pendingLoadCompleted();
     };
-    self.pendingLoadCompleted();
 }
 
 fn queueIframeLoad(self: *Frame, iframe: *IFrame) !void {
@@ -1158,6 +1159,16 @@ fn dispatchIframeLoad(self: *Frame) !void {
         self._event_manager.dispatch(iframe.asNode().asEventTarget(), event) catch |err| {
             log.warn(.js, "iframe onload", .{ .err = err, .url = iframe._src });
         };
+    }
+
+    // Run iframe load handlers (and same-turn subframe script) before the parent
+    // document `load` event — reCAPTCHA v3 posts recaptcha-setup from anchor iframes.
+    self._session.browser.runMacrotasks() catch |err| {
+        log.warn(.browser, "iframe load pump", .{ .err = err });
+    };
+
+    for (to_process.items) |_| {
+        self.pendingLoadCompleted();
     }
 
     to_process.clearRetainingCapacity();

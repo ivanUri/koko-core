@@ -106,6 +106,7 @@ export class CdpClient {
         this.pending = new Map();
         this.eventListeners = new Map();
         this.closed = false;
+        this._sendChain = Promise.resolve();
         ws.addEventListener("close", () => {
             this.closed = true;
             for (const p of this.pending.values()) p.reject(new Error("ws closed"));
@@ -150,6 +151,13 @@ export class CdpClient {
     }
 
     send(method, params = {}, sessionId, timeoutMs = 30000) {
+        const run = () => this._send(method, params, sessionId, timeoutMs);
+        const p = this._sendChain.then(run, run);
+        this._sendChain = p.catch(() => {});
+        return p;
+    }
+
+    _send(method, params = {}, sessionId, timeoutMs = 30000) {
         if (this.closed) return Promise.reject(new Error(`ws closed before ${method}`));
         const id = this.nextId++;
         const payload = { id, method, params };
@@ -192,25 +200,20 @@ export async function connectCdp(endpoint, timeoutMs = 10000) {
     return new CdpClient(ws);
 }
 
-export async function fetchPage(client, sessionId, url, timeoutMs, mode, expr = {}) {
+export async function fetchPage(client, sessionId, url, timeoutMs, mode, expr = {}, pageWaitFor = "domcontentloaded") {
     const ttfxExpr = expr.ttfx ?? TTFX_EXPR;
     const extractExpr = expr.extract ?? EXTRACT_EXPR;
     const t0 = Date.now();
-    const loadOnce = new Promise((res) => {
-        const off = client.onEvent("Page.loadEventFired", sessionId, () => {
+    const readyOnce = new Promise((res) => {
+        const event = pageWaitFor === "load" ? "Page.loadEventFired" : "Page.domContentEventFired";
+        const off = client.onEvent(event, sessionId, () => {
             off();
-            res("load");
-        });
-    });
-    const domOnce = new Promise((res) => {
-        const off = client.onEvent("Page.domContentEventFired", sessionId, () => {
-            off();
-            res("dom");
+            res();
         });
     });
     const nav = await client.send("Page.navigate", { url }, sessionId, timeoutMs);
     if (nav.errorText) throw new Error(`navigate: ${nav.errorText}`);
-    await Promise.race([domOnce, loadOnce, delay(Math.min(timeoutMs, 12000))]);
+    await Promise.race([readyOnce, delay(Math.min(timeoutMs, 12000))]);
     const domReadyMs = Date.now() - t0;
 
     let ttfexMs = domReadyMs;
@@ -361,53 +364,110 @@ export async function crawlVelora(queue, opts) {
     }
 
     const parallelism = Math.max(1, Math.min(opts.concurrency, queue.length));
+    const multiProcess = opts.veloraMultiProcess === true;
     const monitor = new ProcessMonitor({ label: "velora", intervalMs: opts.sampleIntervalMs ?? 100 });
     const wallStart = Date.now();
-    let monitorStarted = false;
 
-    const results = await runPool(queue, parallelism, async (workerId) => {
-        const port = await getFreePort();
-        const args = [
-            "serve",
-            "--host", "127.0.0.1",
-            "--port", String(port),
-            "--log-level", opts.logLevel,
-            "--browser-profile", opts.browserProfile,
-            "--http-timeout", String(opts.timeoutMs),
-        ];
-        const proc = spawn(veloraBin, args, { cwd: repoRoot, stdio: "ignore" });
-        monitor.addRootPid(proc.pid);
-        if (!monitorStarted) {
-            monitor.start();
-            monitorStarted = true;
-        }
+    if (multiProcess) {
+        let monitorStarted = false;
+        const results = await runPool(queue, parallelism, async (workerId) => {
+            const port = await getFreePort();
+            const args = [
+                "serve",
+                "--host", "127.0.0.1",
+                "--port", String(port),
+                "--log-level", opts.logLevel,
+                "--browser-profile", opts.browserProfile,
+                "--http-timeout", String(opts.timeoutMs),
+                "--automation", opts.automation ?? "fast",
+            ];
+            const proc = spawn(veloraBin, args, { cwd: repoRoot, stdio: "ignore" });
+            monitor.addRootPid(proc.pid);
+            if (!monitorStarted) {
+                monitor.start();
+                monitorStarted = true;
+            }
+            const endpoint = `http://127.0.0.1:${port}`;
+            const client = await connectCdp(endpoint, 8000);
+            const { targetId } = await client.send("Target.createTarget", { url: "about:blank" });
+            const { sessionId } = await client.send("Target.attachToTarget", { targetId, flatten: true });
+            await client.send("Page.enable", {}, sessionId);
+            await client.send("Runtime.enable", {}, sessionId);
+
+            return {
+                pid: proc.pid,
+                fetch: (item) => fetchPage(client, sessionId, item.url, opts.timeoutMs, opts.mode, opts.expressions, opts.pageWaitFor),
+                close: async () => {
+                    client.close();
+                    if (proc.exitCode == null) {
+                        proc.kill("SIGTERM");
+                        await new Promise((r) => proc.once("exit", r));
+                    }
+                },
+            };
+        });
+        const resources = monitor.stop(queue.length, parallelism);
+        return summarize(results, Date.now() - wallStart, parallelism, {
+            engine: "velora",
+            resources,
+            parallelismModel: "multi-process",
+            architectureNote: "Velora: N isolated velora serve processes (1 tab each). RSS sums worker trees.",
+        }, opts.benchmarkClass);
+    }
+
+    const port = await getFreePort();
+    const args = [
+        "serve",
+        "--host", "127.0.0.1",
+        "--port", String(port),
+        "--log-level", opts.logLevel,
+        "--browser-profile", opts.browserProfile,
+        "--http-timeout", String(opts.timeoutMs),
+        "--automation", opts.automation ?? "fast",
+    ];
+    const proc = spawn(veloraBin, args, { cwd: repoRoot, stdio: "ignore" });
+    monitor.addRootPid(proc.pid);
+    monitor.start();
+
+    try {
         const endpoint = `http://127.0.0.1:${port}`;
         const client = await connectCdp(endpoint, 8000);
-        const { targetId } = await client.send("Target.createTarget", { url: "about:blank" });
-        const { sessionId } = await client.send("Target.attachToTarget", { targetId, flatten: true });
-        await client.send("Page.enable", {}, sessionId);
-        await client.send("Runtime.enable", {}, sessionId);
+        const workers = [];
+        for (let workerId = 0; workerId < parallelism; workerId += 1) {
+            const { browserContextId } = await client.send("Target.createBrowserContext", {});
+            const { targetId } = await client.send("Target.createTarget", {
+                url: "about:blank",
+                browserContextId,
+            });
+            const { sessionId } = await client.send("Target.attachToTarget", { targetId, flatten: true });
+            await client.send("Page.enable", {}, sessionId);
+            await client.send("Runtime.enable", {}, sessionId);
+            workers.push({ browserContextId, sessionId });
+        }
 
-        return {
-            pid: proc.pid,
-            fetch: (item) => fetchPage(client, sessionId, item.url, opts.timeoutMs, opts.mode, opts.expressions),
-            close: async () => {
-                client.close();
-                if (proc.exitCode == null) {
-                    proc.kill("SIGTERM");
-                    await new Promise((r) => proc.once("exit", r));
-                }
-            },
-        };
-    });
-
-    const resources = monitor.stop(queue.length, parallelism);
-    return summarize(results, Date.now() - wallStart, parallelism, {
-        engine: "velora",
-        resources,
-        parallelismModel: "multi-process",
-        architectureNote: "Velora: N isolated velora serve processes (1 tab each). RSS sums worker trees.",
-    }, opts.benchmarkClass);
+        const results = await runPool(queue, parallelism, async (workerId) => {
+            const { browserContextId, sessionId } = workers[workerId];
+            return {
+                fetch: (item) => fetchPage(client, sessionId, item.url, opts.timeoutMs, opts.mode, opts.expressions, opts.pageWaitFor),
+                close: async () => {
+                    await client.send("Target.disposeBrowserContext", { browserContextId }).catch(() => {});
+                },
+            };
+        });
+        client.close();
+        const resources = monitor.stop(queue.length, parallelism);
+        return summarize(results, Date.now() - wallStart, parallelism, {
+            engine: "velora",
+            resources,
+            parallelismModel: "multi-session-single-process",
+            architectureNote: "Velora: N browser contexts (1 tab each) in 1 velora serve process; shared V8 isolate + HttpClient.",
+        }, opts.benchmarkClass);
+    } finally {
+        if (proc.exitCode == null) {
+            proc.kill("SIGTERM");
+            await new Promise((r) => proc.once("exit", r));
+        }
+    }
 }
 
 function resolveChromePath(explicit) {
@@ -446,7 +506,7 @@ export async function crawlChromium(queue, opts) {
             await client.send("Page.enable", {}, sessionId);
             await client.send("Runtime.enable", {}, sessionId);
             return {
-                fetch: (item) => fetchPage(client, sessionId, item.url, opts.timeoutMs, opts.mode, opts.expressions),
+                fetch: (item) => fetchPage(client, sessionId, item.url, opts.timeoutMs, opts.mode, opts.expressions, opts.pageWaitFor),
                 close: async () => {
                     await client.send("Target.closeTarget", { targetId }).catch(() => {});
                 },

@@ -336,7 +336,7 @@ pub fn preloadImport(self: *ScriptManagerBase, url: [:0]const u8, referrer: []co
         return;
     }
     errdefer _ = self.imported_modules.remove(url);
-    const owned_url = try self.allocator.dupe(u8, url);
+    const owned_url = try self.allocator.dupeZ(u8, url);
     gop.key_ptr.* = owned_url;
     errdefer if (self.imported_modules.fetchRemove(owned_url)) |kv| {
         self.allocator.free(kv.key);
@@ -348,7 +348,7 @@ pub fn preloadImport(self: *ScriptManagerBase, url: [:0]const u8, referrer: []co
     const script = try arena.create(Script);
     script.* = .{
         .arena = arena,
-        .url = url,
+        .url = owned_url,
         .node = .{},
         .manager = self,
         .complete = false,
@@ -382,11 +382,11 @@ pub fn preloadImport(self: *ScriptManagerBase, url: [:0]const u8, referrer: []co
     self.client.request(.{
         .ctx = script,
         .params = .{
-            .url = url,
+            .url = owned_url,
             .method = .GET,
             .frame_id = self.owner.frameId(),
             .loader_id = self.owner.loaderId(),
-            .headers = try self.getHeaders(url, .script),
+            .headers = try self.getHeaders(owned_url, .script),
             .cookie_jar = &session.cookie_jar,
             .cookie_origin = self.owner.url(),
             .resource_type = .script,
@@ -748,7 +748,11 @@ pub const Script = struct {
             },
             .import => {
                 manager.async_scripts.remove(&self.node);
-                const entry = manager.imported_modules.getPtr(self.url).?;
+                const entry = manager.imported_modules.getPtr(self.url) orelse {
+                    log.warn(.http, "module fetch done but entry missing", .{ .url = self.url });
+                    self.deinit();
+                    return;
+                };
                 log.debug(.js, "module fetch", .{ .url = self.url, .ptr = @intFromPtr(entry), .from = @tagName(entry.state), .to = "fetched" });
                 entry.state = .{ .done = self };
                 entry.buffer = self.source.remote;

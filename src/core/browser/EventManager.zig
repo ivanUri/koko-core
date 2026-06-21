@@ -70,6 +70,19 @@ pub fn register(self: *EventManager, target: *EventTarget, typ: []const u8, call
         // `apply_ignore` field of DispatchOpts
         try self.ignore_list.append(self.base.arena, listener);
     }
+
+    if (listener.typ.eql(comptime .wrap("message"))) {
+        switch (target._type) {
+            .window => target._type.window.flushPendingPostMessages(),
+            .worker => target._type.worker.flushPendingUndelivered() catch |err| {
+                log.warn(.browser, "Worker.flushPendingUndelivered", .{ .err = err });
+            },
+            .message_port => target._type.message_port.flushPendingDeliveries() catch |err| {
+                log.warn(.browser, "MessagePort.flushPendingDeliveries", .{ .err = err });
+            },
+            else => {},
+        }
+    }
 }
 
 pub fn remove(self: *EventManager, target: *EventTarget, typ: []const u8, callback: Callback, use_capture: bool) void {
