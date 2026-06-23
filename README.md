@@ -136,7 +136,25 @@ await browser.close();
 ### Fetch a Page from the CLI
 
 ```bash
-VELORA_CDP=http://127.0.0.1:9222 npx velora-fetch https://example.com --wait-until networkidle
+VELORA_CDP=http://127.0.0.1:9222 npx velora-fetch https://example.com
+```
+
+### Search (SDK)
+
+```ts
+await page.search("https://www.bing.com/", "velora browser", { waitUntil: "domcontentloaded" });
+```
+
+### MVP site coverage
+
+| Site | Status | Test |
+|------|--------|------|
+| Wikipedia crawl | Stable | `npm run bench:crawl:wikipedia` |
+| Bing / DuckDuckGo | Stable | SDK `page.search()` |
+| Google SERP | Beta | Often blocked by `/sorry` anti-bot — see `docs/tls-impersonate.md` |
+
+```bash
+npm run test:site:google   # exit 0 = SERP OK; exit 1 = blocked_sorry (engine OK); exit 2 = engine fail
 ```
 
 ## Use Cases
@@ -197,6 +215,7 @@ The Velora SDK is a lightweight TypeScript layer for working with the runtime ov
 - Network tracking
 - Session state capture and restore
 - Robust HTML extraction
+- `page.type()`, `page.press()`, `page.search()` for form-based search flows
 
 See `sdk/README.md` for SDK-specific usage.
 

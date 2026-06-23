@@ -21,6 +21,7 @@ const reflect = @import("../browser/reflect.zig");
 const Node = @import("Node.zig");
 const CSS = @import("../webapi/CSS.zig");
 const ShadowRoot = @import("../webapi/ShadowRoot.zig");
+const IFrame = @import("../webapi/element/html/IFrame.zig");
 const EventTarget = @import("../webapi/EventTarget.zig");
 const collections = @import("../webapi/collections.zig");
 const Selector = @import("../webapi/selector/Selector.zig");
@@ -1338,66 +1339,421 @@ fn dimensionsAfterTransform(width: f64, height: f64, transform: ?[]const u8) str
     };
 }
 
-fn getLayoutOffset(self: *Element, frame: *Frame) struct { top: f64, left: f64 } {
+const LayoutSize = struct { width: f64, height: f64 };
+const LayoutOrigin = struct { top: f64, left: f64 };
+
+/// Size `html`/`body` in child browsing contexts to the hosting `<iframe>`.
+/// Uses attribute/stylesheet dimensions only — never `getBoundingClientRect`,
+/// which would re-enter layout while child root size is still resolving.
+fn hostingIframeClientSize(frame: *Frame) ?LayoutSize {
+    if (frame._hosting_iframe_layout_size) |cached| {
+        return .{ .width = cached.width, .height = cached.height };
+    }
+
+    const parent = frame.parent orelse return null;
+    const root = parent.document.asNode();
+    var stack: std.ArrayList(*Node) = .empty;
+    stack.append(frame.call_arena, root) catch return null;
+
+    while (stack.items.len > 0) {
+        const node = stack.pop() orelse break;
+        if (node.is(IFrame)) |iframe| {
+            if (iframe._window) |window| {
+                if (window._frame == frame) {
+                    const dims = iframe.asElement().getElementDimensions(parent);
+                    if (dims.width > 0 and dims.height > 0) {
+                        frame._hosting_iframe_layout_size = .{
+                            .width = dims.width,
+                            .height = dims.height,
+                        };
+                        return .{ .width = dims.width, .height = dims.height };
+                    }
+                }
+            }
+        }
+
+        if (node.is(Element)) |element| {
+            if (frame._element_shadow_roots.get(element)) |shadow_root| {
+                var shadow_child = shadow_root.asNode().lastChild();
+                while (shadow_child) |c| {
+                    stack.append(frame.call_arena, c) catch {};
+                    shadow_child = c.previousSibling();
+                }
+            }
+        }
+
+        var child = node.lastChild();
+        while (child) |c| {
+            stack.append(frame.call_arena, c) catch {};
+            child = c.previousSibling();
+        }
+    }
+    return null;
+}
+
+const LayoutPositionKind = enum { static, relative, absolute, fixed };
+
+fn layoutPositionKind(self: *Element, frame: *Frame) LayoutPositionKind {
+    if (readLayoutPropertyRaw(self, frame, "position")) |pos| {
+        if (std.ascii.eqlIgnoreCase(pos, "absolute")) return .absolute;
+        if (std.ascii.eqlIgnoreCase(pos, "fixed")) return .fixed;
+        if (std.ascii.eqlIgnoreCase(pos, "relative")) return .relative;
+    }
+    return .static;
+}
+
+fn isPositionedAncestor(self: *Element, frame: *Frame) bool {
+    return layoutPositionKind(self, frame) != .static;
+}
+
+fn offsetParentElement(self: *Element, frame: *Frame) ?*Element {
+    var current = self.asNode().parentElement();
+    while (current) |el| {
+        if (isPositionedAncestor(el, frame)) return el;
+        if (el.getTag() == .body) return el;
+        current = el.asNode().parentElement();
+    }
+    return null;
+}
+
+fn rootLayoutSize(frame: *Frame) LayoutSize {
+    _ = frame;
+    return .{ .width = 1920.0, .height = 1080.0 };
+}
+
+fn rootLayoutSizeForHitTest(frame: *Frame) LayoutSize {
+    if (hostingIframeClientSize(frame)) |iframe_size| return iframe_size;
+    return rootLayoutSize(frame);
+}
+
+fn parentLayoutSizeForHitTest(self: *Element, frame: *Frame) LayoutSize {
+    const parent = self.asNode().parentElement() orelse return rootLayoutSizeForHitTest(frame);
+    return elementLayoutSizeShallowForHitTest(parent, frame);
+}
+
+fn elementLayoutSizeShallowForHitTest(self: *Element, frame: *Frame) LayoutSize {
+    const parent_size = parentLayoutSizeForHitTest(self, frame);
+    var width: f64 = 5.0;
+    var height: f64 = 5.0;
+
+    if (readLayoutPropertyRaw(self, frame, "width")) |raw| {
+        if (parseLayoutDimension(raw, parent_size.width)) |w| width = w;
+    }
+    if (readLayoutPropertyRaw(self, frame, "height")) |raw| {
+        if (parseLayoutDimension(raw, parent_size.height)) |h| height = h;
+    }
+
+    const tag = self.getTag();
+    if (tag == .html or tag == .body) {
+        if (width == 5.0 or height == 5.0) {
+            const root = rootLayoutSizeForHitTest(frame);
+            if (width == 5.0) width = root.width;
+            if (height == 5.0) height = root.height;
+        }
+    } else if (tag == .img or tag == .iframe) {
+        if (self.getAttributeSafe(comptime .wrap("width"))) |w| {
+            width = std.fmt.parseFloat(f64, w) catch width;
+        }
+        if (self.getAttributeSafe(comptime .wrap("height"))) |h| {
+            height = std.fmt.parseFloat(f64, h) catch height;
+        }
+    }
+
+    return .{ .width = @max(width, 0), .height = @max(height, 0) };
+}
+
+fn getElementDimensionsForHitTest(self: *Element, frame: *Frame) struct { width: f64, height: f64 } {
+    const parent_size = parentLayoutSizeForHitTest(self, frame);
+    var width: f64 = 5.0;
+    var height: f64 = 5.0;
+
+    if (readLayoutPropertyRaw(self, frame, "width")) |raw| {
+        if (parseLayoutDimension(raw, parent_size.width)) |w| width = w;
+    }
+    if (readLayoutPropertyRaw(self, frame, "height")) |raw| {
+        if (parseLayoutDimension(raw, parent_size.height)) |h| height = h;
+    }
+
+    const tag = self.getTag();
+    if (tag == .html or tag == .body) {
+        if (width == 5.0 or height == 5.0) {
+            const root = rootLayoutSizeForHitTest(frame);
+            if (width == 5.0) width = root.width;
+            if (height == 5.0) height = root.height;
+        }
+    } else if (tag == .img or tag == .iframe) {
+        if (self.getAttributeSafe(comptime .wrap("width"))) |w| {
+            width = std.fmt.parseFloat(f64, w) catch width;
+        }
+        if (self.getAttributeSafe(comptime .wrap("height"))) |h| {
+            height = std.fmt.parseFloat(f64, h) catch height;
+        }
+    }
+
+    return .{ .width = @max(width, 0), .height = @max(height, 0) };
+}
+
+fn getMarginInsetForHitTest(self: *Element, frame: *Frame) struct { top: f64, left: f64 } {
     var top: f64 = 0;
     var left: f64 = 0;
+    const parent_size = parentLayoutSizeForHitTest(self, frame);
     if (getLayoutPropertyValue(self, "margin-top", frame)) |v| {
-        if (CSS.parseDimension(v)) |parsed| top += parsed;
+        if (parseLayoutDimension(v, parent_size.height)) |parsed| top = parsed;
     }
     if (getLayoutPropertyValue(self, "margin-left", frame)) |v| {
-        if (CSS.parseDimension(v)) |parsed| left += parsed;
-    }
-    if (getLayoutPropertyValue(self, "top", frame)) |v| {
-        if (CSS.parseDimension(v)) |parsed| top += parsed;
-    }
-    if (getLayoutPropertyValue(self, "left", frame)) |v| {
-        if (CSS.parseDimension(v)) |parsed| left += parsed;
+        if (parseLayoutDimension(v, parent_size.width)) |parsed| left = parsed;
     }
     return .{ .top = top, .left = left };
+}
+
+fn getPositionOffsetForHitTest(self: *Element, frame: *Frame) struct { top: f64, left: f64 } {
+    var top: f64 = 0;
+    var left: f64 = 0;
+    const parent_size = parentLayoutSizeForHitTest(self, frame);
+    if (getLayoutPropertyValue(self, "top", frame)) |v| {
+        if (parseLayoutDimension(v, parent_size.height)) |parsed| top = parsed;
+    }
+    if (getLayoutPropertyValue(self, "left", frame)) |v| {
+        if (parseLayoutDimension(v, parent_size.width)) |parsed| left = parsed;
+    }
+    return .{ .top = top, .left = left };
+}
+
+fn flowOffsetAmongSiblingsForHitTest(self: *Element, frame: *Frame) struct { top: f64, left: f64 } {
+    const parent_node = self.asNode().parentNode() orelse return .{ .top = 0, .left = 0 };
+    const parent_el = parent_node.is(Element) orelse return .{ .top = 0, .left = 0 };
+    const horizontal = parentUsesHorizontalFlow(parent_el, frame);
+
+    var top: f64 = 0;
+    var left: f64 = 0;
+
+    var sibling = parent_node.firstChild();
+    while (sibling) |s| {
+        if (s == self.asNode()) break;
+        if (s.is(Element)) |sib| {
+            if (!sib.checkVisibilityCached(null, frame)) continue;
+            const dims = sib.getElementDimensionsForHitTest(frame);
+            const margin = getMarginInsetForHitTest(sib, frame);
+            if (horizontal) {
+                left += dims.width + margin.left;
+            } else {
+                top += dims.height + margin.top;
+            }
+        }
+        sibling = s.nextSibling();
+    }
+
+    return .{ .top = top, .left = left };
+}
+
+fn computeLayoutOriginForHitTest(self: *Element, frame: *Frame) LayoutOrigin {
+    return computeLayoutOriginForHitTestDepth(self, frame, 0);
+}
+
+fn computeLayoutOriginForHitTestDepth(self: *Element, frame: *Frame, depth: usize) LayoutOrigin {
+    if (depth > 64) return .{ .top = 0, .left = 0 };
+    if (self.getTag() == .html) return .{ .top = 0, .left = 0 };
+
+    const pos_kind = layoutPositionKind(self, frame);
+    if (pos_kind == .absolute or pos_kind == .fixed) {
+        const container = offsetParentElement(self, frame) orelse self.asNode().parentElement() orelse {
+            const margin = getMarginInsetForHitTest(self, frame);
+            const pos = getPositionOffsetForHitTest(self, frame);
+            return .{ .top = margin.top + pos.top, .left = margin.left + pos.left };
+        };
+        const base = computeLayoutOriginForHitTestDepth(container, frame, depth + 1);
+        const pos = getPositionOffsetForHitTest(self, frame);
+        return .{ .top = base.top + pos.top, .left = base.left + pos.left };
+    }
+
+    const parent = self.asNode().parentElement() orelse {
+        if (shadowTreeHost(self.asNode()) != null) return .{ .top = 0, .left = 0 };
+        const margin = getMarginInsetForHitTest(self, frame);
+        return .{ .top = margin.top, .left = margin.left };
+    };
+
+    const base = computeLayoutOriginForHitTestDepth(parent, frame, depth + 1);
+    const flow = flowOffsetAmongSiblingsForHitTest(self, frame);
+    const margin = getMarginInsetForHitTest(self, frame);
+    return .{
+        .top = base.top + flow.top + margin.top,
+        .left = base.left + flow.left + margin.left,
+    };
+}
+
+/// Flow-based geometry for synthetic pointer activation only. Page script keeps
+/// the legacy tree-position `getBoundingClientRect` (Turnstile / reCAPTCHA).
+pub fn getActivationBoundingClientRect(self: *Element, frame: *Frame) DOMRect {
+    if (!self.checkVisibilityCached(null, frame)) {
+        return .{ ._x = 0, ._y = 0, ._width = 0, ._height = 0 };
+    }
+
+    const dims = self.getElementDimensionsForHitTest(frame);
+    if (dims.width == 0.0 and dims.height == 0.0) {
+        return .{ ._x = 0, ._y = 0, ._width = 0, ._height = 0 };
+    }
+
+    const scroll_x = @as(f64, @floatFromInt(frame.window.getScrollX()));
+    const scroll_y = @as(f64, @floatFromInt(frame.window.getScrollY()));
+    const local = computeLayoutOriginForHitTest(self, frame);
+
+    if (shadowTreeHost(self.asNode())) |host| {
+        const host_rect = host.getActivationBoundingClientRect(frame);
+        return .{
+            ._x = host_rect._x + local.left,
+            ._y = host_rect._y + local.top,
+            ._width = dims.width,
+            ._height = dims.height,
+        };
+    }
+
+    return .{
+        ._x = local.left - scroll_x,
+        ._y = local.top - scroll_y,
+        ._width = dims.width,
+        ._height = dims.height,
+    };
+}
+
+fn parentLayoutSize(self: *Element, frame: *Frame) LayoutSize {
+    const parent = self.asNode().parentElement() orelse return rootLayoutSize(frame);
+    return elementLayoutSizeShallow(parent, frame);
+}
+
+fn readLayoutPropertyRaw(self: *Element, frame: *Frame, property_name: []const u8) ?[]const u8 {
+    if (self.getStyle(frame)) |style| {
+        const value = style.asCSSStyleDeclaration().getPropertyValue(property_name, frame);
+        if (value.len > 0) return value;
+    }
+    return frame._style_manager.getLayoutProperty(self, property_name);
+}
+
+fn parseLayoutDimension(value: []const u8, parent_size: f64) ?f64 {
+    const trimmed = std.mem.trim(u8, value, &std.ascii.whitespace);
+    if (trimmed.len == 0) return null;
+    if (std.mem.endsWith(u8, trimmed, "%")) {
+        const num = std.fmt.parseFloat(f64, trimmed[0 .. trimmed.len - 1]) catch return null;
+        return parent_size * num / 100.0;
+    }
+    return CSS.parseDimension(trimmed);
+}
+
+fn getMarginInset(self: *Element, frame: *Frame) struct { top: f64, left: f64 } {
+    var top: f64 = 0;
+    var left: f64 = 0;
+    const parent_size = parentLayoutSize(self, frame);
+    if (getLayoutPropertyValue(self, "margin-top", frame)) |v| {
+        if (parseLayoutDimension(v, parent_size.height)) |parsed| top = parsed;
+    }
+    if (getLayoutPropertyValue(self, "margin-left", frame)) |v| {
+        if (parseLayoutDimension(v, parent_size.width)) |parsed| left = parsed;
+    }
+    return .{ .top = top, .left = left };
+}
+
+fn getPositionOffset(self: *Element, frame: *Frame) struct { top: f64, left: f64 } {
+    var top: f64 = 0;
+    var left: f64 = 0;
+    const parent_size = parentLayoutSize(self, frame);
+    if (getLayoutPropertyValue(self, "top", frame)) |v| {
+        if (parseLayoutDimension(v, parent_size.height)) |parsed| top = parsed;
+    }
+    if (getLayoutPropertyValue(self, "left", frame)) |v| {
+        if (parseLayoutDimension(v, parent_size.width)) |parsed| left = parsed;
+    }
+    return .{ .top = top, .left = left };
+}
+
+fn getLayoutOffset(self: *Element, frame: *Frame) struct { top: f64, left: f64 } {
+    const margin = getMarginInset(self, frame);
+    const pos = getPositionOffset(self, frame);
+    return .{ .top = margin.top + pos.top, .left = margin.left + pos.left };
+}
+
+fn parentUsesHorizontalFlow(parent: *Element, frame: *Frame) bool {
+    if (readLayoutPropertyRaw(parent, frame, "display")) |display| {
+        if (std.mem.indexOf(u8, display, "flex") != null) {
+            if (readLayoutPropertyRaw(parent, frame, "flex-direction")) |dir| {
+                return std.mem.startsWith(u8, dir, "row");
+            }
+            return true;
+        }
+        if (std.ascii.eqlIgnoreCase(display, "inline") or
+            std.ascii.eqlIgnoreCase(display, "inline-block"))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Resolve width/height for one element without recursing through
+/// `getElementDimensions` (prevents parent/child layout cycles).
+fn elementLayoutSizeShallow(self: *Element, frame: *Frame) LayoutSize {
+    const parent_size = parentLayoutSize(self, frame);
+    var width: f64 = 5.0;
+    var height: f64 = 5.0;
+
+    if (readLayoutPropertyRaw(self, frame, "width")) |raw| {
+        if (parseLayoutDimension(raw, parent_size.width)) |w| width = w;
+    }
+    if (readLayoutPropertyRaw(self, frame, "height")) |raw| {
+        if (parseLayoutDimension(raw, parent_size.height)) |h| height = h;
+    }
+
+    const tag = self.getTag();
+    if (tag == .html or tag == .body) {
+        if (width == 5.0 or height == 5.0) {
+            const root = rootLayoutSize(frame);
+            if (width == 5.0) width = root.width;
+            if (height == 5.0) height = root.height;
+        }
+    } else if (tag == .img or tag == .iframe) {
+        if (self.getAttributeSafe(comptime .wrap("width"))) |w| {
+            width = std.fmt.parseFloat(f64, w) catch width;
+        }
+        if (self.getAttributeSafe(comptime .wrap("height"))) |h| {
+            height = std.fmt.parseFloat(f64, h) catch height;
+        }
+    }
+
+    return .{ .width = @max(width, 0), .height = @max(height, 0) };
+}
+
+fn layoutDimensionFromProperty(self: *Element, frame: *Frame, property_name: []const u8, axis: enum { width, height }) ?f64 {
+    const parent_size = parentLayoutSize(self, frame);
+    const basis = switch (axis) {
+        .width => parent_size.width,
+        .height => parent_size.height,
+    };
+
+    if (readLayoutPropertyRaw(self, frame, property_name)) |value| {
+        return parseLayoutDimension(value, basis);
+    }
+    return null;
+}
+
+/// Shadow-tree nodes are not linked under the host in the light DOM, so
+/// offset them by the host's rect (Turnstile closed shadow + iframe).
+fn shadowTreeHost(node: *Node) ?*Element {
+    var current: ?*Node = node;
+    while (current) |n| {
+        const parent = n._parent orelse break;
+        if (parent.is(ShadowRoot)) |shadow_root| return shadow_root._host;
+        current = parent;
+    }
+    return null;
 }
 
 fn getElementDimensions(self: *Element, frame: *Frame) struct { width: f64, height: f64 } {
     var width: f64 = 5.0;
     var height: f64 = 5.0;
-    var width_set = false;
-    var height_set = false;
 
-    if (self.getStyle(frame)) |style| {
-        const decl = style.asCSSStyleDeclaration();
-        if (CSS.parseDimension(decl.getPropertyValue("width", frame))) |w| {
-            width = w;
-            width_set = true;
-        }
-        if (CSS.parseDimension(decl.getPropertyValue("height", frame))) |h| {
-            height = h;
-            height_set = true;
-        }
-    }
-
-    if (!width_set) {
-        if (frame._style_manager.getLayoutProperty(self, "width")) |w| {
-            if (CSS.parseDimension(w)) |parsed| {
-                width = parsed;
-                width_set = true;
-            }
-        }
-    }
-    if (!height_set) {
-        if (frame._style_manager.getLayoutProperty(self, "height")) |h| {
-            if (CSS.parseDimension(h)) |parsed| {
-                height = parsed;
-                height_set = true;
-            }
-        }
-    }
+    if (layoutDimensionFromProperty(self, frame, "width", .width)) |w| width = w;
+    if (layoutDimensionFromProperty(self, frame, "height", .height)) |h| height = h;
 
     if (width == 5.0 or height == 5.0) {
         const tag = self.getTag();
-
-        // Root containers get large default size to contain descendant positions.
-        // With calculateDocumentPosition using linear depth scaling (100px per level),
-        // even very deep trees (100 levels) stay within 10,000px.
-        // 100M pixels is plausible for very long documents.
         if (tag == .html or tag == .body) {
             if (width == 5.0) width = 1920.0;
             if (height == 5.0) height = 100_000_000.0;
@@ -1407,6 +1763,14 @@ fn getElementDimensions(self: *Element, frame: *Frame) struct { width: f64, heig
             }
             if (self.getAttributeSafe(comptime .wrap("height"))) |h| {
                 height = std.fmt.parseFloat(f64, h) catch height;
+            }
+        } else if (tag == .svg) {
+            const parent_size = parentLayoutSize(self, frame);
+            if (self.getAttributeSafe(comptime .wrap("width"))) |w| {
+                if (parseLayoutDimension(w, parent_size.width)) |parsed| width = parsed;
+            }
+            if (self.getAttributeSafe(comptime .wrap("height"))) |h| {
+                if (parseLayoutDimension(h, parent_size.height)) |parsed| height = parsed;
             }
         }
     }
@@ -1459,13 +1823,26 @@ pub fn getBoundingClientRectForVisible(self: *Element, frame: *Frame) DOMRect {
         };
     }
 
+    const scroll_x = @as(f64, @floatFromInt(frame.window.getScrollX()));
+    const scroll_y = @as(f64, @floatFromInt(frame.window.getScrollY()));
     const offset = getLayoutOffset(self, frame);
     const y = calculateDocumentPosition(self.asNode()) + offset.top;
-    const x = offset.left;
+
+    if (shadowTreeHost(self.asNode())) |host| {
+        const host_rect = host.getBoundingClientRectForVisible(frame);
+        const local_x = calculateSiblingPosition(self.asNode()) + offset.left;
+        const local_y = calculateDocumentPosition(self.asNode()) + offset.top;
+        return .{
+            ._x = host_rect._x + local_x,
+            ._y = host_rect._y + local_y,
+            ._width = dims.width,
+            ._height = dims.height,
+        };
+    }
 
     return .{
-        ._x = x,
-        ._y = y,
+        ._x = offset.left - scroll_x,
+        ._y = y - scroll_y,
         ._width = dims.width,
         ._height = dims.height,
     };
@@ -1675,16 +2052,79 @@ pub fn clone(self: *Element, deep: bool, frame: *Frame) !*Node {
     return node;
 }
 
-pub fn scrollIntoViewIfNeeded(_: *const Element, center_if_needed: ?bool) void {
-    _ = center_if_needed;
+const ScrollBlockAlign = enum { start, center, end, nearest };
+
+fn scrollBlockFromOpts(opts: ?ScrollIntoViewOpts) ScrollBlockAlign {
+    if (opts) |o| switch (o) {
+        .align_to_top => |top| return if (top) .start else .end,
+        .obj => return .center,
+    };
+    return .start;
 }
 
-const ScrollIntoViewOpts = union {
+pub fn scrollIntoViewIfNeeded(self: *Element, center_if_needed: ?bool, frame: *Frame) !void {
+    const rect = self.getBoundingClientRect(frame);
+    const vp_h = @as(f64, @floatFromInt(frame.identityProfile().screen.height));
+    const vp_w = @as(f64, @floatFromInt(frame.identityProfile().screen.width));
+    if (rect.getTop() >= 0 and rect.getBottom() <= vp_h and
+        rect.getLeft() >= 0 and rect.getRight() <= vp_w)
+    {
+        return;
+    }
+    const block: ScrollBlockAlign = if (center_if_needed orelse false) .center else .nearest;
+    try scrollIntoViewWithBlock(self, block, frame);
+}
+
+const ScrollIntoViewOpts = union(enum) {
     align_to_top: bool,
     obj: js.Object,
 };
-pub fn scrollIntoView(_: *const Element, opts: ?ScrollIntoViewOpts) void {
-    _ = opts;
+
+pub fn scrollIntoView(self: *Element, opts: ?ScrollIntoViewOpts, frame: *Frame) !void {
+    try scrollIntoViewWithBlock(self, scrollBlockFromOpts(opts), frame);
+}
+
+fn scrollIntoViewWithBlock(self: *Element, block: ScrollBlockAlign, frame: *Frame) !void {
+    const rect = self.getBoundingClientRect(frame);
+    const scroll_x = @as(f64, @floatFromInt(frame.window.getScrollX()));
+    const scroll_y = @as(f64, @floatFromInt(frame.window.getScrollY()));
+    const vp_h = @as(f64, @floatFromInt(frame.identityProfile().screen.height));
+    const vp_w = @as(f64, @floatFromInt(frame.identityProfile().screen.width));
+
+    var target_y: f64 = scroll_y;
+    var target_x: f64 = scroll_x;
+
+    switch (block) {
+        .start => {
+            target_y = rect.getTop() + scroll_y;
+            target_x = rect.getLeft() + scroll_x;
+        },
+        .center => {
+            target_y = rect.getTop() + scroll_y + rect.getHeight() / 2 - vp_h / 2;
+            target_x = rect.getLeft() + scroll_x + rect.getWidth() / 2 - vp_w / 2;
+        },
+        .end => {
+            target_y = rect.getTop() + scroll_y + rect.getHeight() - vp_h;
+            target_x = rect.getLeft() + scroll_x + rect.getWidth() - vp_w;
+        },
+        .nearest => {
+            if (rect.getTop() < 0) {
+                target_y = rect.getTop() + scroll_y;
+            } else if (rect.getBottom() > vp_h) {
+                target_y = rect.getTop() + scroll_y + rect.getHeight() - vp_h;
+            }
+            if (rect.getLeft() < 0) {
+                target_x = rect.getLeft() + scroll_x;
+            } else if (rect.getRight() > vp_w) {
+                target_x = rect.getLeft() + scroll_x + rect.getWidth() - vp_w;
+            }
+        },
+    }
+
+    try frame.window.scrollTo(.{ .opts = .{
+        .top = @intCast(@max(@as(i32, @intFromFloat(target_y)), 0)),
+        .left = @intCast(@max(@as(i32, @intFromFloat(target_x)), 0)),
+    } }, null, frame);
 }
 
 pub fn format(self: *Element, writer: *std.Io.Writer) !void {

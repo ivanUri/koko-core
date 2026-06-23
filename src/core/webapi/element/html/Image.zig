@@ -1,12 +1,19 @@
 const std = @import("std");
 const js = @import("../../../js/js.zig");
 const Frame = @import("../../../browser/Frame.zig");
+const HttpClient = @import("../../../browser/HttpClient.zig");
+const URL = @import("../../../browser/URL.zig");
+const Event = @import("../../Event.zig");
 const Node = @import("../../../dom/Node.zig");
 const Element = @import("../../../dom/Element.zig");
 const HtmlElement = @import("../Html.zig");
 
 const Image = @This();
 _proto: *HtmlElement,
+_loading: bool = false,
+_complete: bool = false,
+_failed: bool = false,
+_load_url: ?[:0]const u8 = null,
 
 pub fn constructor(w_: ?u32, h_: ?u32, frame: *Frame) !*Image {
     const node = try frame.createElementNS(.html, "img", null);
@@ -118,12 +125,10 @@ pub fn getNaturalHeight(_: *const Image) u32 {
     return 0;
 }
 
-pub fn getComplete(_: *const Image) bool {
-    // Per spec, complete is true when: no src/srcset, src is empty,
-    // image is fully available, or image is broken (with no pending request).
-    // Since we never fetch images, they are in the "broken" state, which has
-    // complete=true. This is consistent with naturalWidth/naturalHeight=0.
-    return true;
+pub fn getComplete(self: *const Image) bool {
+    const src = self.asConstElement().getAttributeSafe(comptime .wrap("src")) orelse return true;
+    if (src.len == 0) return true;
+    return !self._loading;
 }
 
 /// Used in `Page.nodeIsReady`.
@@ -134,12 +139,115 @@ pub fn imageAddedCallback(self: *Image, frame: *Frame) !void {
     }
 
     const element = self.asElement();
-    // Exit if src not set.
     const src = element.getAttributeSafe(comptime .wrap("src")) orelse return;
     if (src.len == 0) return;
 
-    try frame.queueLoad(self._proto);
+    const scratch = try frame.getArena(.small, "Image.load");
+    const resolved = try URL.resolve(scratch, frame.base(), src, .{ .encoding = frame.charset });
+    const owned_url = try frame.arena.dupeZ(u8, resolved);
+
+    if (self._loading) {
+        if (self._load_url) |prev| {
+            if (std.mem.eql(u8, prev, owned_url)) return;
+        }
+    } else if (self._complete) {
+        if (self._load_url) |prev| {
+            if (std.mem.eql(u8, prev, owned_url)) return;
+        }
+    }
+
+    self._loading = true;
+    self._complete = false;
+    self._failed = false;
+    self._load_url = owned_url;
+
+    const arena = scratch;
+    const load = try arena.create(ImageLoad);
+    load.* = .{
+        .image = self,
+        .frame = frame,
+        .arena = arena,
+    };
+
+    const session = frame._session;
+    const http_client = &session.browser.http_client;
+    var headers = try http_client.newHeaders();
+    try frame.headersForRequest(&headers, .{
+        .request_url = owned_url,
+        .resource_type = .image,
+    });
+
+    try http_client.request(.{
+        .ctx = load,
+        .params = .{
+            .url = owned_url,
+            .method = .GET,
+            .frame_id = frame._frame_id,
+            .loader_id = frame._loader_id,
+            .headers = headers,
+            .cookie_jar = &session.cookie_jar,
+            .cookie_origin = frame.url,
+            .resource_type = .image,
+            .notification = session.notification,
+        },
+        .header_callback = ImageLoad.headerCallback,
+        .data_callback = ImageLoad.dataCallback,
+        .done_callback = ImageLoad.doneCallback,
+        .error_callback = ImageLoad.errorCallback,
+    });
 }
+
+const ImageLoad = struct {
+    image: *Image,
+    frame: *Frame,
+    arena: std.mem.Allocator,
+    status: u16 = 0,
+
+    fn headerCallback(response: HttpClient.Response) !bool {
+        const self: *ImageLoad = @ptrCast(@alignCast(response.ctx));
+        self.status = response.status() orelse 0;
+        return true;
+    }
+
+    fn dataCallback(_: HttpClient.Response, _: []const u8) !void {}
+
+    fn doneCallback(ctx: *anyopaque) !void {
+        const self: *ImageLoad = @ptrCast(@alignCast(ctx));
+        defer self.finish();
+
+        const ok = self.status >= 200 and self.status <= 299;
+        self.image._loading = false;
+        self.image._complete = true;
+        self.image._failed = !ok;
+
+        if (ok) {
+            try self.frame.queueLoad(self.image._proto);
+        } else {
+            try self.dispatchError();
+        }
+    }
+
+    fn errorCallback(ctx: *anyopaque, _: anyerror) void {
+        const self: *ImageLoad = @ptrCast(@alignCast(ctx));
+        self.image._loading = false;
+        self.image._complete = true;
+        self.image._failed = true;
+        self.dispatchError() catch {};
+        self.finish();
+    }
+
+    fn dispatchError(self: *ImageLoad) !void {
+        const html = self.image._proto;
+        if (html.hasAttributeFunction(.onerror, self.frame)) {
+            const event = try Event.initTrusted(comptime .wrap("error"), .{}, self.frame._page);
+            try self.frame._event_manager.dispatch(html.asEventTarget(), event);
+        }
+    }
+
+    fn finish(self: *ImageLoad) void {
+        self.frame.releaseArena(self.arena);
+    }
+};
 
 pub const JsApi = struct {
     pub const bridge = js.Bridge(Image);

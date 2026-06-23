@@ -1,4 +1,5 @@
 import { NavigationError, ProtocolError, TargetClosedError } from "../cdp/errors.js";
+import { delay } from "../utils/timeout.js";
 import { PageWaiter } from "./waiter.js";
 import { NetworkTracker } from "./network.js";
 const DEFAULT_TTFX = `(() => {
@@ -116,6 +117,55 @@ export class Page {
     waitForFunction(fn, options) {
         return this.waiter.waitForFunction(fn, options);
     }
+    async type(selector, text, options = {}) {
+        await this.init();
+        const timeout = options.timeout ?? 30_000;
+        await this.waitForSelector(selector, { timeout });
+        const clearFirst = options.clear !== false;
+        await this.evaluate(`(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el || !('value' in el)) throw new Error('type: not an input element');
+      if (${clearFirst ? "true" : "false"}) el.value = '';
+      el.focus();
+      el.value = ${JSON.stringify(text)};
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`, { timeout });
+    }
+    async press(key, options = {}) {
+        await this.init();
+        const timeout = options.timeout ?? 30_000;
+        const spec = keySpec(key);
+        await this.session.send("Input.dispatchKeyEvent", {
+            type: "keyDown",
+            key: spec.key,
+            code: spec.code,
+            windowsVirtualKeyCode: spec.vk,
+            nativeVirtualKeyCode: spec.vk,
+        }, timeout);
+        await this.session.send("Input.dispatchKeyEvent", {
+            type: "keyUp",
+            key: spec.key,
+            code: spec.code,
+            windowsVirtualKeyCode: spec.vk,
+            nativeVirtualKeyCode: spec.vk,
+        }, timeout);
+    }
+    async search(searchPageUrl, query, options = {}) {
+        await this.init();
+        const timeout = options.timeout ?? 30_000;
+        const inputSelector = options.inputSelector ?? 'textarea[name="q"], input[name="q"]';
+        const waitUntil = options.waitUntil ?? "domcontentloaded";
+        await this.goto(searchPageUrl, { waitUntil: "load", timeout });
+        if (options.settleMs)
+            await delay(options.settleMs);
+        const nav = this.waiter.waitForNavigation({ waitUntil, timeout, networkIdleMs: options.networkIdleMs });
+        nav.catch(() => undefined);
+        await this.type(inputSelector, query, { timeout });
+        await this.press("Enter", { timeout });
+        await nav;
+    }
     async close() {
         this.network.dispose();
         if (this.session.targetId)
@@ -127,6 +177,20 @@ export class Page {
     }
     get frameId() {
         return this.mainFrameId;
+    }
+}
+function keySpec(key) {
+    switch (key) {
+        case "Enter": return { key: "Enter", code: "Enter", vk: 13 };
+        case "Tab": return { key: "Tab", code: "Tab", vk: 9 };
+        case "Escape": return { key: "Escape", code: "Escape", vk: 27 };
+        case "Backspace": return { key: "Backspace", code: "Backspace", vk: 8 };
+        default:
+            if (key.length === 1) {
+                const upper = key.toUpperCase();
+                return { key, code: `Key${upper}`, vk: upper.charCodeAt(0) };
+            }
+            return { key, code: key, vk: 0 };
     }
 }
 //# sourceMappingURL=page.js.map

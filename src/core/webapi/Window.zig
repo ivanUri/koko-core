@@ -666,10 +666,12 @@ pub fn postMessage(self: *Window, message: js.Value.Temp, target_origin: ?[]cons
         .origin = try arena.dupe(u8, origin),
     };
 
-    // Port-transfer postMessages are dispatched synchronously so the recipient
-    // can wire MessagePort handlers before the sender's stack unwinds (reCAPTCHA
-    // v3 calls grecaptcha.execute from grecaptcha.ready in the same turn).
-    if (transferred_ports.len > 0) {
+    const cross_browsing_context = frame != target_frame;
+
+    // Port-transfer and cross-browsing-context postMessages are dispatched
+    // synchronously so the recipient can react before the sender's stack
+    // unwinds (reCAPTCHA v3, Cloudflare Turnstile token delivery).
+    if (transferred_ports.len > 0 or cross_browsing_context) {
         const event_target = target_frame.window.asEventTarget();
         const has_listeners = target_frame._event_manager.hasDirectListeners(
             event_target,
@@ -1169,7 +1171,7 @@ const CrossOriginWindow = struct {
     }
 
     pub fn getTop(self: *CrossOriginWindow, frame: *Frame) Access {
-        return self.window.getParent(frame);
+        return self.window.getTop(frame);
     }
 
     pub fn getParent(self: *CrossOriginWindow, frame: *Frame) Access {

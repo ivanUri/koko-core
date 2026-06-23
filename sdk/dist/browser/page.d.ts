@@ -19,6 +19,17 @@ export interface ExtractResult {
     htmlBytes?: number;
     [key: string]: unknown;
 }
+export interface TypeOptions {
+    timeout?: number;
+    clear?: boolean;
+}
+export interface PressOptions {
+    timeout?: number;
+}
+export interface SearchOptions extends GotoWaitOptions {
+    inputSelector?: string;
+    settleMs?: number;
+}
 export declare class Page {
     readonly session: CDPSession;
     readonly network: NetworkTracker;
@@ -47,6 +58,9 @@ export declare class Page {
         timeout?: number;
         pollingMs?: number;
     }): Promise<void>;
+    type(selector: string, text: string, options?: TypeOptions): Promise<void>;
+    press(key: string, options?: PressOptions): Promise<void>;
+    search(searchPageUrl: string, query: string, options?: SearchOptions): Promise<void>;
     close(): Promise<void>;
     get frameId(): string | undefined;
 }

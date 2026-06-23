@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const build_config = @import("build_config");
 
 const c = @cImport({
     @cInclude("curl/curl.h");
@@ -212,6 +213,8 @@ pub const CurlOption = enum(c.CURLoption) {
     http_get = c.CURLOPT_HTTPGET,
     http_header = c.CURLOPT_HTTPHEADER,
     cookie = c.CURLOPT_COOKIE,
+    cookielist = c.CURLOPT_COOKIELIST,
+    referer = c.CURLOPT_REFERER,
     private = c.CURLOPT_PRIVATE,
     proxy_user_pwd = c.CURLOPT_PROXYUSERPWD,
     user_pwd = c.CURLOPT_USERPWD,
@@ -225,7 +228,36 @@ pub const CurlOption = enum(c.CURLoption) {
     upload = c.CURLOPT_UPLOAD,
     opensocket_function = c.CURLOPT_OPENSOCKETFUNCTION,
     opensocket_data = c.CURLOPT_OPENSOCKETDATA,
+    http_version = c.CURLOPT_HTTP_VERSION,
+    ssl_cipher_list = c.CURLOPT_SSL_CIPHER_LIST,
+    ssl_ec_curves = c.CURLOPT_SSL_EC_CURVES,
+    // curl-impersonate extensions (lexiforest fork)
+    ssl_enable_alps = 1002,
+    ssl_cert_compression = 11003,
+    ssl_permute_extensions = 1007,
+    http2_pseudo_headers_order = 11005,
+    http2_settings = 11006,
+    http2_window_update = 1008,
+    stream_weight = 239,
+    stream_exclusive = 1013,
+    tls_grease = 1011,
+    tls_signed_cert_timestamps = 1015,
+    ech = 10325,
 };
+
+/// Prefer HTTP/2 over TLS (Chrome-like ALPN).
+pub const HTTP_VERSION_2TLS: c_long = c.CURL_HTTP_VERSION_2TLS;
+
+/// Chrome 120-ish cipher suite order for BoringSSL/libcurl.
+pub const CHROME_CIPHER_LIST: [:0]const u8 =
+    "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:" ++
+    "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:" ++
+    "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:" ++
+    "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:" ++
+    "ECDHE-RSA-AES128-SHA:ECDHE-RSA-AES256-SHA:" ++
+    "AES128-GCM-SHA256:AES256-GCM-SHA384:AES128-SHA:AES256-SHA";
+
+pub const CHROME_EC_CURVES: [:0]const u8 = "X25519:P-256:P-384:P-521";
 
 pub const CurlMOption = enum(c.CURLMoption) {
     max_host_connections = c.CURLMOPT_MAX_HOST_CONNECTIONS,
@@ -583,6 +615,16 @@ pub fn curl_easy_perform(easy: *Curl) Error!void {
     try errorCheck(c.curl_easy_perform(easy));
 }
 
+extern fn curl_easy_impersonate(
+    easy: *Curl,
+    target: [*:0]const u8,
+    default_headers: c_int,
+) CurlCode;
+
+pub fn setImpersonate(easy: *Curl, target: [:0]const u8, default_headers: bool) Error!void {
+    try errorCheck(curl_easy_impersonate(easy, target.ptr, if (default_headers) 1 else 0));
+}
+
 pub fn curl_easy_setopt(easy: *Curl, comptime option: CurlOption, value: anytype) Error!void {
     const opt: c.CURLoption = @intFromEnum(option);
     const code = switch (option) {
@@ -611,6 +653,14 @@ pub fn curl_easy_setopt(easy: *Curl, comptime option: CurlOption, value: anytype
         .follow_location,
         .post_field_size,
         .connect_only,
+        .http_version,
+        .ssl_enable_alps,
+        .ssl_permute_extensions,
+        .http2_window_update,
+        .stream_weight,
+        .stream_exclusive,
+        .tls_grease,
+        .tls_signed_cert_timestamps,
         => blk: {
             const n: c_long = switch (@typeInfo(@TypeOf(value))) {
                 .comptime_int, .int => @intCast(value),
@@ -625,9 +675,17 @@ pub fn curl_easy_setopt(easy: *Curl, comptime option: CurlOption, value: anytype
         .accept_encoding,
         .custom_request,
         .cookie,
+        .cookielist,
+        .referer,
         .user_pwd,
         .proxy_user_pwd,
         .copy_post_fields,
+        .ssl_cipher_list,
+        .ssl_ec_curves,
+        .ssl_cert_compression,
+        .http2_pseudo_headers_order,
+        .http2_settings,
+        .ech,
         => blk: {
             const s: ?[*]const u8 = value;
             break :blk c.curl_easy_setopt(easy, opt, s);
@@ -973,6 +1031,15 @@ pub fn curl_ws_meta(easy: *Curl) ?WsFrameMeta {
     return WsFrameMeta.from(ptr);
 }
 
+const ImpersonateWs = struct {
+    // curl 8.15 headers omit this; vendor/curl-impersonate/curl_ws_stub.c provides it.
+    extern fn curl_ws_start_frame(easy: *Curl, flags: c_uint, frame_len: CurlOffT) CurlCode;
+};
+
 pub fn curl_ws_start_frame(easy: *Curl, frame_type: WsFrameType, size: CurlOffT) Error!void {
-    try errorCheck(c.curl_ws_start_frame(easy, frame_type.toInt(), size));
+    if (comptime build_config.curl_impersonate) {
+        try errorCheck(ImpersonateWs.curl_ws_start_frame(easy, frame_type.toInt(), size));
+    } else {
+        try errorCheck(c.curl_ws_start_frame(easy, frame_type.toInt(), size));
+    }
 }

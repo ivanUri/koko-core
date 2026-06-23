@@ -95,15 +95,15 @@ fn dispatchMouseEvent(cmd: *CDP.Command) !void {
         .mousePressed => {
             const bc = cmd.browser_context orelse return;
             const frame = bc.session.currentFrame() orelse return;
-            try frame.triggerMousePress(params.x, params.y);
+            frame.stashCdpMousePress(params.x, params.y);
         },
         .mouseReleased => {
             const bc = cmd.browser_context orelse return;
             const frame = bc.session.currentFrame() orelse return;
-            try frame.triggerMouseRelease(params.x, params.y);
+            try frame.scheduleCdpMouseRelease(params.x, params.y);
         },
     }
-    // result already sent
+    // result already sent; press/release run on the next scheduler tick
 }
 
 // https://chromedevtools.github.io/devtools-protocol/tot/Input/#method-insertText

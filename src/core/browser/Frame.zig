@@ -54,6 +54,7 @@ const KeyboardEvent = @import("../webapi/event/KeyboardEvent.zig");
 const MouseEvent = @import("../webapi/event/MouseEvent.zig");
 
 const HttpClient = @import("HttpClient.zig");
+const build_config = @import("build_config");
 const FingerprintProfile = @import("../fingerprint/Profile.zig");
 const ProfileStore = @import("../fingerprint/ProfileStore.zig");
 const NavigatorState = @import("../webapi/NavigatorState.zig");
@@ -286,6 +287,16 @@ workers: std.ArrayList(*Worker) = .{},
 
 // Press-half state for split CDP mouse press/release sequences.
 _input_press_hit: ?InputHit = null,
+
+// Coordinates for CDP mouse press/release deferred until both halves arrive.
+_cdp_mouse_press_stash: ?struct { x: f64, y: f64 } = null,
+_cdp_mouse_pending_x: f64 = 0,
+_cdp_mouse_pending_y: f64 = 0,
+_cdp_mouse_release_x: f64 = 0,
+_cdp_mouse_release_y: f64 = 0,
+
+// Cached hosting `<iframe>` client size for child-frame hit-test layout.
+_hosting_iframe_layout_size: ?struct { width: f64, height: f64 } = null,
 
 // DOM version used to invalidate cached state of "live" collections
 version: usize = 0,
@@ -613,26 +624,105 @@ pub fn getTitle(self: *Frame) !?[]const u8 {
 pub const HeadersForRequestOpts = struct {
     request_url: ?[:0]const u8 = null,
     resource_type: HttpClient.RequestParams.ResourceType = .fetch,
+    /// Explicit Referer URL (without the "Referer: " prefix). Used by navigate()
+    /// where self.url may already point at the destination.
+    referer: ?[]const u8 = null,
+    /// Document origin before this navigation (for Sec-Fetch-Site). navigate()
+    /// updates self.origin before headers are built. Only meaningful when
+    /// `is_document_navigation` is true.
+    prior_origin: ?[]const u8 = null,
+    is_document_navigation: bool = false,
 };
+
+const document_accept_header =
+    "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7";
+
+fn refererHeaderForRequest(self: *Frame, opts: HeadersForRequestOpts) ![:0]const u8 {
+    if (opts.referer) |explicit| {
+        if (explicit.len == 0) return "";
+        return try std.mem.concatWithSentinel(self.arena, u8, &.{ "Referer: ", explicit }, 0);
+    }
+    if (self.referer_header == null) {
+        if (std.mem.startsWith(u8, self.url, "http") and
+            (opts.request_url == null or !std.mem.eql(u8, self.url, opts.request_url.?)))
+        {
+            self.referer_header = try std.mem.concatWithSentinel(self.arena, u8, &.{ "Referer: ", self.url }, 0);
+        } else {
+            self.referer_header = "";
+        }
+    }
+    return self.referer_header.?;
+}
 
 // Add common subresource/navigation headers (Referer, Origin, Sec-Fetch-*, client hints).
 pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: HeadersForRequestOpts) !void {
-    const referer = blk: {
-        if (self.referer_header == null) {
-            if (std.mem.startsWith(u8, self.url, "http")) {
-                self.referer_header = try std.mem.concatWithSentinel(self.arena, u8, &.{ "Referer: ", self.url }, 0);
-            } else {
-                self.referer_header = "";
-            }
-        }
-        break :blk self.referer_header.?;
-    };
+    const identity = self._session.browser.app.config.profile.identityPtr();
+    const http_client = &self._session.browser.http_client;
+    const profile_headers = &http_client.network.config.http_headers;
 
+    if (comptime build_config.curl_impersonate) {
+        const request_url = opts.request_url orelse return;
+        if (!std.mem.startsWith(u8, request_url, "http")) return;
+
+        const is_document = opts.resource_type == .document;
+
+        try headers.add(profile_headers.sec_ch_ua_header);
+
+        const mobile_hdr = try std.fmt.allocPrintSentinel(
+            self.arena,
+            "Sec-Ch-Ua-Mobile: {s}",
+            .{if (identity.ua_mobile) "?1" else "?0"},
+            0,
+        );
+        try headers.add(mobile_hdr);
+
+        const platform_hdr = try std.fmt.allocPrintSentinel(
+            self.arena,
+            "Sec-Ch-Ua-Platform: \"{s}\"",
+            .{identity.ua_data_platform},
+            0,
+        );
+        try headers.add(platform_hdr);
+
+        if (is_document and std.mem.startsWith(u8, request_url, "https://")) {
+            try headers.add("Upgrade-Insecure-Requests: 1");
+        }
+
+        try headers.add(http_client.getUserAgentHeader());
+        try headers.add(if (is_document) document_accept_header else "Accept: */*");
+
+        const site = secFetchSite(self, request_url, opts.is_document_navigation, opts.prior_origin);
+        const mode = secFetchMode(opts.resource_type);
+        const dest = secFetchDest(opts.resource_type);
+
+        const site_hdr = try std.fmt.allocPrintSentinel(self.arena, "Sec-Fetch-Site: {s}", .{site}, 0);
+        try headers.add(site_hdr);
+
+        const mode_hdr = try std.fmt.allocPrintSentinel(self.arena, "Sec-Fetch-Mode: {s}", .{mode}, 0);
+        try headers.add(mode_hdr);
+
+        if (is_document) {
+            try headers.add("Sec-Fetch-User: ?1");
+        }
+
+        const dest_hdr = try std.fmt.allocPrintSentinel(self.arena, "Sec-Fetch-Dest: {s}", .{dest}, 0);
+        try headers.add(dest_hdr);
+
+        try headers.add("Accept-Encoding: gzip, deflate, br");
+        try headers.add(profile_headers.accept_language_header);
+
+        // Referer via CURLOPT_REFERER (configureConn) — not in this list.
+
+        if (!is_document) {
+            try self.appendOriginHeader(headers);
+        }
+        return;
+    }
+
+    const referer = try refererHeaderForRequest(self, opts);
     if (referer.len > 0) {
         try headers.add(referer);
     }
-
-    const identity = self._session.browser.app.config.profile.identityPtr();
 
     const mobile_hdr = try std.fmt.allocPrintSentinel(
         self.arena,
@@ -653,12 +743,16 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
     if (opts.request_url) |request_url| {
         if (!std.mem.startsWith(u8, request_url, "http")) return;
 
-        try headers.add("Accept: */*");
-        try self.appendOriginHeader(headers);
+        const is_document = opts.resource_type == .document;
+        try headers.add(if (is_document) document_accept_header else "Accept: */*");
+
+        if (!is_document) {
+            try self.appendOriginHeader(headers);
+        }
 
         const dest = secFetchDest(opts.resource_type);
         const mode = secFetchMode(opts.resource_type);
-        const site = secFetchSite(self, request_url);
+        const site = secFetchSite(self, request_url, opts.is_document_navigation, opts.prior_origin);
 
         const dest_hdr = try std.fmt.allocPrintSentinel(self.arena, "Sec-Fetch-Dest: {s}", .{dest}, 0);
         try headers.add(dest_hdr);
@@ -668,6 +762,13 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
 
         const site_hdr = try std.fmt.allocPrintSentinel(self.arena, "Sec-Fetch-Site: {s}", .{site}, 0);
         try headers.add(site_hdr);
+
+        if (is_document) {
+            try headers.add("Sec-Fetch-User: ?1");
+            if (std.mem.startsWith(u8, request_url, "https://")) {
+                try headers.add("Upgrade-Insecure-Requests: 1");
+            }
+        }
     }
 }
 
@@ -690,20 +791,35 @@ fn secFetchDest(resource_type: HttpClient.RequestParams.ResourceType) []const u8
     return switch (resource_type) {
         .document => "document",
         .script => "script",
-        .fetch, .xhr => "empty",
+        .image => "image",
+        .fetch, .xhr, .beacon => "empty",
     };
 }
 
 fn secFetchMode(resource_type: HttpClient.RequestParams.ResourceType) []const u8 {
     return switch (resource_type) {
         .document => "navigate",
-        .script => "no-cors",
+        .script, .beacon, .image => "no-cors",
         .fetch, .xhr => "cors",
     };
 }
 
-fn secFetchSite(frame: *Frame, request_url: [:0]const u8) []const u8 {
-    if (frame.isSameOrigin(request_url)) return "same-origin";
+fn secFetchSite(
+    _frame: *Frame,
+    request_url: [:0]const u8,
+    is_document_navigation: bool,
+    prior_origin: ?[]const u8,
+) []const u8 {
+    if (is_document_navigation) {
+        const origin = prior_origin orelse return "none";
+        if (!std.mem.startsWith(u8, request_url, origin)) return "cross-site";
+        if (std.mem.eql(u8, URL.getHost(request_url), URL.getHost(origin))) return "same-origin";
+        return "cross-site";
+    }
+
+    const origin = _frame.origin orelse return "none";
+    if (!std.mem.startsWith(u8, request_url, origin)) return "cross-site";
+    if (std.mem.eql(u8, URL.getHost(request_url), URL.getHost(origin))) return "same-origin";
     return "cross-site";
 }
 
@@ -865,6 +981,16 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
 
     const http_client = &session.browser.http_client;
 
+    const prior_url = self.url;
+    const prior_origin = opts.prior_origin orelse self.origin;
+    const nav_referer: ?[:0]const u8 = blk: {
+        if (opts.referer) |ref| break :blk try self.arena.dupeZ(u8, ref);
+        if (std.mem.startsWith(u8, prior_url, "http") and !std.mem.eql(u8, prior_url, request_url)) {
+            break :blk prior_url;
+        }
+        break :blk null;
+    };
+
     self.url = try self.arena.dupeZ(u8, request_url);
     const url_origin = try URL.getOrigin(self.arena, self.url);
     try self.applySandboxOrigin(url_origin);
@@ -882,10 +1008,13 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
     if (opts.header) |hdr| {
         try headers.add(hdr);
     }
-    if (opts.referer) |ref| {
-        const ref_header = try std.mem.concatWithSentinel(self.arena, u8, &.{ "Referer: ", ref }, 0);
-        try headers.add(ref_header);
-    }
+    try self.headersForRequest(&headers, .{
+        .request_url = self.url,
+        .resource_type = .document,
+        .referer = nav_referer,
+        .prior_origin = prior_origin,
+        .is_document_navigation = true,
+    });
 
     // A root navigation issued against a pending Page (i.e. one allocated by
     // Session.initiateRootNavigation) flags both the notification and the
@@ -927,6 +1056,7 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
             .cookie_jar = &session.cookie_jar,
             .cookie_origin = self.url,
             .resource_type = .document,
+            .referer = nav_referer,
             .notification = self._session.notification,
             .protect_from_abort = is_pending_root,
             .skip_cache = opts.force,
@@ -1029,6 +1159,14 @@ fn scheduleNavigationWithArena(originator: *Frame, arena: Allocator, request_url
     var nav_opts = opts;
     if (nav_opts.referer == null and std.mem.startsWith(u8, originator.url, "http")) {
         nav_opts.referer = try arena.dupe(u8, originator.url);
+    }
+    if (nav_opts.prior_origin == null) {
+        if (originator.origin) |o| {
+            nav_opts.prior_origin = try arena.dupe(u8, o);
+        } else if (nav_opts.referer) |ref| {
+            const ref_z = try std.fmt.allocPrintSentinel(arena, "{s}", .{ref}, 0);
+            nav_opts.prior_origin = try URL.getOrigin(arena, ref_z);
+        }
     }
 
     const qn = try arena.create(QueuedNavigation);
@@ -1300,6 +1438,12 @@ fn frameHeaderDoneCallback(response: HttpClient.Response) !bool {
         // "navigating" to about:blank, in which case this notification has
         // already been sent
         self.markRealmReadyForPublication();
+
+        // Subframe: headers are the publication point — drain any microtasks
+        // queued while the realm was `.initializing` (widget iframes).
+        if (self.parent != null) {
+            self._session.browser.env.runMicrotasks(.unknown);
+        }
 
         // Commit point for a pending root navigation. Publish only after the
         // pending frame has final URL/origin/location and is marked realm-ready;
@@ -3921,7 +4065,7 @@ pub fn parseHtmlAsChildren(self: *Frame, node: *Node, html: []const u8) !void {
 
 /// Fire deferred subresource/lifecycle callbacks for every descendant of
 /// `subtree_root` (the root itself is excluded, as callers handle it via
-/// `nodeIsReady`). This bridges the gap where iframes/scripts/links/styles
+/// `nodeIsReady`). This bridges the gap where iframes/scripts/links/styles/images
 /// are introduced as descendants — either through `innerHTML` parsing or by
 /// moving an already-built subtree into a connected parent — and would
 /// otherwise never see their AddedCallback fire.
@@ -3974,6 +4118,11 @@ fn nodeIsReady(self: *Frame, comptime from_parser: bool, node: *Node) !void {
         style.styleAddedCallback(self) catch |err| {
             log.err(.frame, "frame.nodeIsReady", .{ .err = err, .element = "style", .type = self._type });
             return error.StyleLoadError;
+        };
+    } else if (node.is(Element.Html.Image)) |image| {
+        image.imageAddedCallback(self) catch |err| {
+            log.err(.frame, "frame.nodeIsReady", .{ .err = err, .element = "img", .type = self._type, .url = self.url });
+            return err;
         };
     }
 }
@@ -4105,6 +4254,8 @@ pub const NavigateOpts = struct {
     // anchor click / form submit / location.href navigations carry a Referer.
     // null on CDP Page.navigate (address-bar) and Page.reload — matches Chrome.
     referer: ?[]const u8 = null,
+    // scheduleNavigationWithArena copies the originator's origin here for Sec-Fetch-Site.
+    prior_origin: ?[]const u8 = null,
     force: bool = false,
     kind: NavigationKind = .{ .push = null },
 };
@@ -4254,11 +4405,44 @@ pub fn triggerMouseClick(self: *Frame, x: f64, y: f64) !void {
 }
 
 pub fn triggerMousePress(self: *Frame, x: f64, y: f64) !void {
-    try @import("InputController.zig").dispatchPointerDownAt(self, x, y);
+    try @import("InputController.zig").dispatchPointerDownAtCdp(self, x, y);
 }
 
 pub fn triggerMouseRelease(self: *Frame, x: f64, y: f64) !void {
-    try @import("InputController.zig").dispatchPointerUpAt(self, x, y);
+    try @import("InputController.zig").dispatchPointerUpAtCdp(self, x, y);
+}
+
+/// Record CDP `mousePressed` coordinates; activation runs on `mouseReleased`.
+pub fn stashCdpMousePress(self: *Frame, x: f64, y: f64) void {
+    self._cdp_mouse_press_stash = .{ .x = x, .y = y };
+}
+
+/// Queue the paired press+release after both CDP halves have been acknowledged.
+pub fn scheduleCdpMouseRelease(self: *Frame, x: f64, y: f64) !void {
+    const press_x = if (self._cdp_mouse_press_stash) |p| p.x else x;
+    const press_y = if (self._cdp_mouse_press_stash) |p| p.y else y;
+    self._cdp_mouse_press_stash = null;
+    self._cdp_mouse_pending_x = press_x;
+    self._cdp_mouse_pending_y = press_y;
+    self._cdp_mouse_release_x = x;
+    self._cdp_mouse_release_y = y;
+    try self.js.scheduler.add(self, struct {
+        fn run(ctx: *anyopaque) !?u32 {
+            const frame: *Frame = @ptrCast(@alignCast(ctx));
+            const InputController = @import("InputController.zig");
+            try InputController.dispatchPointerDownAtCdp(
+                frame,
+                frame._cdp_mouse_pending_x,
+                frame._cdp_mouse_pending_y,
+            );
+            try InputController.dispatchPointerUpAtCdp(
+                frame,
+                frame._cdp_mouse_release_x,
+                frame._cdp_mouse_release_y,
+            );
+            return null;
+        }
+    }.run, 0, .{ .name = "input.mouseClick" });
 }
 
 // callback when the "click" event reaches the frame.

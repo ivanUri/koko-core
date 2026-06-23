@@ -174,6 +174,17 @@ pub fn schedulerSuppressed(self: *const Execution) bool {
     };
 }
 
+/// Child browsing contexts (iframe / subframe). Root pages stay gated until
+/// `markRealmReadyForPublication`; subframes may run microtasks while
+/// `.initializing` so cross-origin widget iframes (e.g. Cloudflare Turnstile)
+/// are not starved between `navigate()` and response headers.
+pub fn isChildFrame(self: *const Execution) bool {
+    return switch (self.context.global) {
+        .frame => |f| f.parent != null,
+        .worker => false,
+    };
+}
+
 pub fn canEnterJs(self: *const Execution, mode: JsEntryMode) bool {
     // Circuit breaker: if the scheduler was suppressed due to runaway
     // microtask execution, no JS entry is legal regardless of realm state.
@@ -181,7 +192,14 @@ pub fn canEnterJs(self: *const Execution, mode: JsEntryMode) bool {
     const st = self.realmState();
     return switch (mode) {
         .strict_active => st == .active,
-        .allow_draining => st == .active or st == .draining,
+        .allow_draining => blk: {
+            if (st == .active or st == .draining) break :blk true;
+            // Subframe navigations bump to `.initializing` until headers land.
+            // Allow microtask enqueue/checkpoint so promise reactions and
+            // widget bootstrap are not dropped (Turnstile / reCAPTCHA iframes).
+            if (st == .initializing and self.isChildFrame()) break :blk true;
+            break :blk false;
+        },
     };
 }
 

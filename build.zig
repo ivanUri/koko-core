@@ -48,6 +48,7 @@ pub fn build(b: *Build) !void {
     opts.addOption([]const u8, "version", version_string);
     opts.addOption([]const u8, "version_encoded", version_encoded);
     opts.addOption(?[]const u8, "snapshot_path", snapshot_path);
+    opts.addOption(bool, "curl_impersonate", hasCurlImpersonate(b));
     const enable_tsan = b.option(bool, "tsan", "Enable Thread Sanitizer") orelse false;
     const enable_asan = b.option(bool, "asan", "Enable Address Sanitizer") orelse false;
     const enable_csan = b.option(std.zig.SanitizeC, "csan", "Enable C Sanitizers");
@@ -318,8 +319,45 @@ fn linkSqlite(b: *Build, mod: *Build.Module, enable_csan: ?std.zig.SanitizeC, is
     mod.linkLibrary(lib);
 }
 
+const curl_impersonate_lib = "vendor/curl-impersonate/libcurl-impersonate.a";
+const curl_impersonate_ngtcp2 = "vendor/curl-impersonate/libngtcp2_crypto_ossl.a";
+
+fn hasCurlImpersonate(b: *Build) bool {
+    const path = b.pathFromRoot(curl_impersonate_lib);
+    b.build_root.handle.access(path, .{}) catch return false;
+    return true;
+}
+
+fn linkCurlImpersonate(b: *Build, mod: *Build.Module, is_tsan: bool) !void {
+    const curl_dep = b.dependency("curl", .{});
+    mod.addIncludePath(curl_dep.path("include"));
+
+    mod.addObjectFile(b.path(curl_impersonate_lib));
+    mod.addObjectFile(b.path(curl_impersonate_ngtcp2));
+    mod.addCSourceFile(.{
+        .file = b.path("vendor/curl-impersonate/curl_ws_stub.c"),
+        .flags = &.{"-DHAVE_CONFIG_H"},
+    });
+    mod.addIncludePath(curl_dep.path("lib"));
+
+    const libidn2 = buildLibidn2(b, mod.resolved_target.?, mod.optimize.?, is_tsan);
+    mod.linkLibrary(libidn2);
+
+    mod.linkSystemLibrary("iconv", .{});
+    mod.linkSystemLibrary("icucore", .{});
+
+    mod.addSystemFrameworkPath(.{ .cwd_relative = "/System/Library/Frameworks" });
+    mod.linkFramework("CoreFoundation", .{});
+    mod.linkFramework("CoreServices", .{});
+    mod.linkFramework("SystemConfiguration", .{});
+}
+
 fn linkCurl(b: *Build, mod: *Build.Module, is_tsan: bool) !void {
     const target = mod.resolved_target.?;
+
+    if (target.result.os.tag == .macos and hasCurlImpersonate(b)) {
+        return linkCurlImpersonate(b, mod, is_tsan);
+    }
 
     const curl = buildCurl(b, target, mod.optimize.?, is_tsan);
     mod.linkLibrary(curl);

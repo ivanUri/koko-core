@@ -224,6 +224,8 @@ pub fn requestIntercept(bc: *CDP.BrowserContext, intercept: *const Notification.
             .xhr => "XHR",
             .document => "Document",
             .fetch => "Fetch",
+            .beacon => "Ping",
+            .image => "Image",
         },
         .networkId = &id.toRequestId(request), // matches the Network REQ-ID
     }, .{ .session_id = session_id });
@@ -450,6 +452,8 @@ pub fn requestAuthRequired(bc: *CDP.BrowserContext, intercept: *const Notificati
             .xhr => "XHR",
             .document => "Document",
             .fetch => "Fetch",
+            .beacon => "Ping",
+            .image => "Image",
         },
         .authChallenge = .{
             .origin = "", // TODO get origin, could be the proxy address for example.

@@ -549,6 +549,11 @@ pub const Jar = struct {
                 continue;
             }
 
+            // Google sets SG_SS via bot-scoring JS; sending it back triggers /sorry.
+            if (std.mem.eql(u8, cookie.name, "SG_SS")) {
+                continue;
+            }
+
             // we have a match!
             if (first) {
                 if (opts.prefix) |prefix| {

@@ -22,6 +22,7 @@ const CookieJar = @import("../webapi/storage/Cookie.zig").Jar;
 
 const http = @import("../../runtime/network/http.zig");
 const Network = @import("../../runtime/network/Network.zig");
+const build_config = @import("build_config");
 const Robots = @import("../../runtime/network/Robots.zig");
 const timestamp = @import("../../support/datetime.zig").timestamp;
 
@@ -297,9 +298,17 @@ pub fn changeProxy(self: *Client, proxy: ?[:0]const u8) !void {
 }
 
 pub fn newHeaders(self: *const Client) !http.Headers {
+    if (comptime build_config.curl_impersonate) {
+        // headersForRequest builds the full Chrome-ordered header set.
+        return http.Headers.initEmpty();
+    }
     const headers = &self.network.config.http_headers;
     const ua_header = self.user_agent_header_override orelse headers.user_agent_header;
     return http.Headers.init(ua_header, headers.sec_ch_ua_header, headers.accept_language_header);
+}
+
+pub fn getUserAgentHeader(self: *const Client) [:0]const u8 {
+    return self.user_agent_header_override orelse self.network.config.http_headers.user_agent_header;
 }
 
 pub fn getUserAgent(self: *const Client) [:0]const u8 {
@@ -308,7 +317,19 @@ pub fn getUserAgent(self: *const Client) [:0]const u8 {
 
 const AbortOpts = struct {
     scope: enum { normal, full } = .normal,
+    /// When true, in-flight `.document` transfers for the frame are left alone.
+    /// Used when `location.href` is scheduled mid-parse: aborting the document
+    /// transfer inside an HTTP data_callback cannot run frame done/error handlers
+    /// reentrantly (see `Transfer.kill`), which would strand parse in
+    /// `.html_streaming`.
+    skip_document: bool = false,
 };
+
+fn shouldAbortTransfer(params: *const RequestParams, opts: AbortOpts) bool {
+    if (opts.scope != .full and params.protect_from_abort) return false;
+    if (opts.skip_document and params.resource_type == .document) return false;
+    return true;
+}
 
 pub fn abort(self: *Client) void {
     self._abort(true, 0, .{ .scope = .full });
@@ -369,11 +390,9 @@ fn _abort(self: *Client, comptime abort_all: bool, frame_id: u32, opts: AbortOpt
             const params = transfer.req.params;
             if (comptime abort_all) {
                 transfer.kill();
-            } else if (params.frame_id == frame_id) {
-                if (opts.scope == .full or !params.protect_from_abort) {
-                    q.remove(node);
-                    transfer.kill();
-                }
+            } else if (params.frame_id == frame_id and shouldAbortTransfer(&params, opts)) {
+                q.remove(node);
+                transfer.kill();
             }
         }
     }
@@ -409,10 +428,8 @@ fn abortConnections(list: std.DoublyLinkedList, comptime abort_all: bool, frame_
                 const params = transfer.req.params;
                 if (comptime abort_all) {
                     transfer.kill();
-                } else if (params.frame_id == frame_id) {
-                    if (opts.scope == .full or !params.protect_from_abort) {
-                        transfer.kill();
-                    }
+                } else if (params.frame_id == frame_id and shouldAbortTransfer(&params, opts)) {
+                    transfer.kill();
                 }
             },
             .websocket => |ws| {
@@ -946,12 +963,17 @@ pub const RequestParams = struct {
     // the flag in failure paths.
     protect_from_abort: bool = false,
     skip_cache: bool = false,
+    /// Document navigation referer URL (without header prefix). With curl-impersonate
+    /// default headers, Referer is set via CURLOPT_REFERER so JA4/H2 fingerprint stays chrome120.
+    referer: ?[:0]const u8 = null, // null-terminated for CURLOPT_REFERER
 
     pub const ResourceType = enum {
         document,
         xhr,
         script,
         fetch,
+        beacon,
+        image,
 
         // Allowed Values: Document, Stylesheet, Image, Media, Font, Script,
         // TextTrack, XHR, Fetch, Prefetch, EventSource, WebSocket, Manifest,
@@ -963,6 +985,8 @@ pub const RequestParams = struct {
                 .xhr => "XHR",
                 .script => "Script",
                 .fetch => "Fetch",
+                .beacon => "Ping",
+                .image => "Image",
             };
         }
     };
@@ -1261,22 +1285,38 @@ pub const Transfer = struct {
 
         var header_list = req.params.headers;
         try conn.secretHeaders(&header_list, &client.network.config.http_headers);
-        try conn.setHeaders(&header_list);
 
-        // Add cookies from cookie jar.
-        if (try self.req.getCookieString()) |cookies| {
+        if (comptime build_config.curl_impersonate) {
+            try conn.clearInternalCookies();
+            if (try self.req.getCookieString()) |cookies| {
+                const cookie_hdr = try std.fmt.allocPrintSentinel(
+                    req.params.arena,
+                    "Cookie: {s}",
+                    .{cookies},
+                    0,
+                );
+                try header_list.add(cookie_hdr);
+            }
+        } else if (try self.req.getCookieString()) |cookies| {
             try conn.setCookies(@ptrCast(cookies.ptr));
         }
+
+        try conn.setHeaders(&header_list);
 
         conn.transport = .{ .http = self };
         conn.origin = switch (req.params.resource_type) {
             .document => .frame_navigation,
-            .fetch, .xhr, .script => .unknown,
+            .fetch, .xhr, .script, .beacon, .image => .unknown,
         };
 
         // Per-request timeout override (e.g. XHR timeout)
         if (req.params.timeout_ms > 0) {
             try conn.setTimeout(req.params.timeout_ms);
+        }
+
+        if (comptime build_config.curl_impersonate) {
+            try conn.setReferer(req.params.referer);
+            try http.Connection.applyChrome120Transport(conn);
         }
 
         // add credentials

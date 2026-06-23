@@ -1,5 +1,6 @@
 import type { CDPSession } from "../cdp/session.js";
 import { NavigationError, ProtocolError, TargetClosedError } from "../cdp/errors.js";
+import { delay } from "../utils/timeout.js";
 import type { GotoWaitOptions } from "./waiter.js";
 import { PageWaiter } from "./waiter.js";
 import { NetworkTracker } from "./network.js";
@@ -22,6 +23,20 @@ export interface ExtractResult {
   linkCount?: number;
   htmlBytes?: number;
   [key: string]: unknown;
+}
+
+export interface TypeOptions {
+  timeout?: number;
+  clear?: boolean;
+}
+
+export interface PressOptions {
+  timeout?: number;
+}
+
+export interface SearchOptions extends GotoWaitOptions {
+  inputSelector?: string;
+  settleMs?: number;
 }
 
 const DEFAULT_TTFX = `(() => {
@@ -150,6 +165,59 @@ export class Page {
     return this.waiter.waitForFunction(fn, options);
   }
 
+  async type(selector: string, text: string, options: TypeOptions = {}): Promise<void> {
+    await this.init();
+    const timeout = options.timeout ?? 30_000;
+    await this.waitForSelector(selector, { timeout });
+    const clearFirst = options.clear !== false;
+    await this.evaluate(`(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el || !('value' in el)) throw new Error('type: not an input element');
+      if (${clearFirst ? "true" : "false"}) el.value = '';
+      el.focus();
+      el.value = ${JSON.stringify(text)};
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`, { timeout });
+  }
+
+  async press(key: string, options: PressOptions = {}): Promise<void> {
+    await this.init();
+    const timeout = options.timeout ?? 30_000;
+    const spec = keySpec(key);
+    await this.session.send("Input.dispatchKeyEvent", {
+      type: "keyDown",
+      key: spec.key,
+      code: spec.code,
+      windowsVirtualKeyCode: spec.vk,
+      nativeVirtualKeyCode: spec.vk,
+    }, timeout);
+    await this.session.send("Input.dispatchKeyEvent", {
+      type: "keyUp",
+      key: spec.key,
+      code: spec.code,
+      windowsVirtualKeyCode: spec.vk,
+      nativeVirtualKeyCode: spec.vk,
+    }, timeout);
+  }
+
+  async search(searchPageUrl: string, query: string, options: SearchOptions = {}): Promise<void> {
+    await this.init();
+    const timeout = options.timeout ?? 30_000;
+    const inputSelector = options.inputSelector ?? 'textarea[name="q"], input[name="q"]';
+    const waitUntil = options.waitUntil ?? "domcontentloaded";
+
+    await this.goto(searchPageUrl, { waitUntil: "load", timeout });
+    if (options.settleMs) await delay(options.settleMs);
+
+    const nav = this.waiter.waitForNavigation({ waitUntil, timeout, networkIdleMs: options.networkIdleMs });
+    nav.catch(() => undefined);
+    await this.type(inputSelector, query, { timeout });
+    await this.press("Enter", { timeout });
+    await nav;
+  }
+
   async close(): Promise<void> {
     this.network.dispose();
     if (this.session.targetId) await this.session.client.closeTarget(this.session.targetId).catch(() => undefined);
@@ -160,5 +228,20 @@ export class Page {
 
   get frameId(): string | undefined {
     return this.mainFrameId;
+  }
+}
+
+function keySpec(key: string): { key: string; code: string; vk: number } {
+  switch (key) {
+    case "Enter": return { key: "Enter", code: "Enter", vk: 13 };
+    case "Tab": return { key: "Tab", code: "Tab", vk: 9 };
+    case "Escape": return { key: "Escape", code: "Escape", vk: 27 };
+    case "Backspace": return { key: "Backspace", code: "Backspace", vk: 8 };
+    default:
+      if (key.length === 1) {
+        const upper = key.toUpperCase();
+        return { key, code: `Key${upper}`, vk: upper.charCodeAt(0) };
+      }
+      return { key, code: key, vk: 0 };
   }
 }

@@ -18,6 +18,7 @@ const posix = std.posix;
 const Config = @import("../Config.zig");
 const libcurl = @import("../../support/sys/libcurl.zig");
 const IpFilter = @import("IpFilter.zig");
+const build_config = @import("build_config");
 
 const log = @import("../../support/log.zig");
 const assert = @import("../../support/assert.zig").assert;
@@ -54,6 +55,10 @@ pub const Header = struct {
 
 pub const Headers = struct {
     headers: ?*libcurl.CurlSList,
+
+    pub fn initEmpty() Headers {
+        return .{ .headers = null };
+    }
 
     pub fn init(
         user_agent: [:0]const u8,
@@ -363,8 +368,18 @@ pub const Connection = struct {
         try libcurl.curl_easy_setopt(self._easy, .http_header, headers.headers);
     }
 
+    pub fn clearInternalCookies(self: *const Connection) !void {
+        // Drop cookies libcurl auto-stored from prior responses on this easy handle.
+        // Velora uses CookieJar + a single consolidated Cookie header (Chrome behavior).
+        try libcurl.curl_easy_setopt(self._easy, .cookielist, "ALL");
+    }
+
     pub fn setCookies(self: *const Connection, cookies: [*c]const u8) !void {
         try libcurl.curl_easy_setopt(self._easy, .cookie, cookies);
+    }
+
+    pub fn setReferer(self: *const Connection, referer: ?[:0]const u8) !void {
+        try libcurl.curl_easy_setopt(self._easy, .referer, if (referer) |r| r.ptr else null);
     }
 
     pub fn setPrivate(self: *const Connection, ptr: *anyopaque) !void {
@@ -429,6 +444,10 @@ pub const Connection = struct {
         self.transport = .none;
         self.origin = .unknown;
 
+        if (build_config.curl_impersonate) {
+            try self.clearInternalCookies();
+        }
+
         // timeouts
         try libcurl.curl_easy_setopt(self._easy, .timeout_ms, config.httpTimeout());
         try libcurl.curl_easy_setopt(self._easy, .connect_timeout_ms, config.httpConnectTimeout());
@@ -436,7 +455,15 @@ pub const Connection = struct {
         // compression, don't remove this. CloudFront will send gzip content
         // even if we don't support it, and then it won't be decompressed.
         // empty string means: use whatever's available
-        try libcurl.curl_easy_setopt(self._easy, .accept_encoding, "");
+        if (!build_config.curl_impersonate) {
+            try libcurl.curl_easy_setopt(self._easy, .accept_encoding, "");
+        }
+
+        if (!build_config.curl_impersonate) {
+            try libcurl.curl_easy_setopt(self._easy, .http_version, libcurl.HTTP_VERSION_2TLS);
+            try libcurl.curl_easy_setopt(self._easy, .ssl_cipher_list, libcurl.CHROME_CIPHER_LIST.ptr);
+            try libcurl.curl_easy_setopt(self._easy, .ssl_ec_curves, libcurl.CHROME_EC_CURVES.ptr);
+        }
 
         // proxy
         const http_proxy = config.httpProxy();
@@ -484,6 +511,18 @@ pub const Connection = struct {
             try libcurl.curl_easy_setopt(self._easy, .opensocket_function, opensocketCallback);
             try libcurl.curl_easy_setopt(self._easy, .opensocket_data, @constCast(filter));
         }
+
+        if (build_config.curl_impersonate) {
+            try self.applyChrome120Transport();
+        }
+    }
+
+    pub fn applyChrome120Transport(self: *const Connection) !void {
+        const easy = self._easy;
+        // curl_easy_impersonate sets the Chrome 120 TLS/JA4 + HTTP/2 fingerprint.
+        // Must run after CA/proxy/timeouts — those CURLOPTs can clobber the SSL ctx.
+        try libcurl.setImpersonate(easy, "chrome120", false);
+        try libcurl.curl_easy_setopt(easy, .accept_encoding, "");
     }
 
     fn discardBody(_: [*]const u8, count: usize, len: usize, _: ?*anyopaque) usize {

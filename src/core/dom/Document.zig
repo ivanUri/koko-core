@@ -683,7 +683,8 @@ pub fn replaceChildren(self: *Document, nodes: []const Node.NodeOrText, frame: *
 
 pub fn elementFromPoint(self: *Document, x: f64, y: f64, frame: *Frame) !?*Element {
     // Traverse document in depth-first order to find the topmost (last in document order)
-    // element that contains the point (x, y)
+    // element that contains the point (x, y). Descend into shadow roots (open or
+    // closed) so hit-testing reaches embedded widget iframes (Cloudflare Turnstile).
     var topmost: ?*Element = null;
 
     const root = self.asNode();
@@ -697,6 +698,14 @@ pub fn elementFromPoint(self: *Document, x: f64, y: f64, frame: *Frame) !?*Eleme
                 const rect = element.getBoundingClientRectForVisible(frame);
                 if (x >= rect.getLeft() and x <= rect.getRight() and y >= rect.getTop() and y <= rect.getBottom()) {
                     topmost = element;
+                }
+            }
+
+            if (frame._element_shadow_roots.get(element)) |shadow_root| {
+                var shadow_child = shadow_root.asNode().lastChild();
+                while (shadow_child) |c| {
+                    try stack.append(frame.call_arena, c);
+                    shadow_child = c.previousSibling();
                 }
             }
         }

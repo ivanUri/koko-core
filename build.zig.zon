@@ -27,8 +27,9 @@
             .hash = "boringssl-0.1.0-VtJeWehMAAA4RNnwRnzEvKcS9rjsR1QVRw1uJrwXxmVK",
         },
         .curl = .{
-            .url = "https://github.com/curl/curl/releases/download/curl-8_18_0/curl-8.18.0.tar.gz",
-            .hash = "N-V-__8AALp9QAGn6CCHZ6fK_FfMyGtG824LSHYHHasM3w-y",
+            // Match libcurl-impersonate 8.15.0-IMPERSONATE (CURLOPT/header drift breaks TLS JA3).
+            .url = "https://github.com/curl/curl/releases/download/curl-8_15_0/curl-8.15.0.tar.gz",
+            .hash = "N-V-__8AAHGgPwH1XE5mB7bNofrDyBE5VWADWmBRlFQaVXWU",
         },
         .sqlite3 = .{
             .url = "https://github.com/allyourcodebase/sqlite3/archive/8f840560eae88ab66668c6827c64ffbd0d74ef37.tar.gz",

@@ -119,6 +119,12 @@ fn addRawRule(self: *StyleManager, selector_text: []const u8, block_text: []cons
             props.margin_left = try self.arena.dupe(u8, val);
         } else if (std.ascii.eqlIgnoreCase(name, "transform")) {
             props.transform = try self.arena.dupe(u8, val);
+        } else if (std.ascii.eqlIgnoreCase(name, "position")) {
+            props.position = try self.arena.dupe(u8, val);
+        } else if (std.ascii.eqlIgnoreCase(name, "flex-direction")) {
+            props.flex_direction = try self.arena.dupe(u8, val);
+        } else if (std.ascii.eqlIgnoreCase(name, "display") and props.display == null) {
+            props.display = try self.arena.dupe(u8, val);
         }
     }
 
@@ -588,6 +594,12 @@ pub fn getLayoutProperty(self: *StyleManager, el: *Element, property_name: []con
                     props.margin_left
                 else if (std.ascii.eqlIgnoreCase(prop, "transform"))
                     props.transform
+                else if (std.ascii.eqlIgnoreCase(prop, "position"))
+                    props.position
+                else if (std.ascii.eqlIgnoreCase(prop, "flex-direction"))
+                    props.flex_direction
+                else if (std.ascii.eqlIgnoreCase(prop, "display"))
+                    props.display
                 else
                     null;
                 if (value == null) continue;
@@ -858,6 +870,9 @@ const VisibilityProperties = struct {
     margin_top: ?[]const u8 = null,
     margin_left: ?[]const u8 = null,
     transform: ?[]const u8 = null,
+    position: ?[]const u8 = null,
+    flex_direction: ?[]const u8 = null,
+    display: ?[]const u8 = null,
 
     // return true if any field in VisibilityProperties is not null
     fn isRelevant(self: VisibilityProperties) bool {
@@ -871,7 +886,10 @@ const VisibilityProperties = struct {
             self.left != null or
             self.margin_top != null or
             self.margin_left != null or
-            self.transform != null;
+            self.transform != null or
+            self.position != null or
+            self.flex_direction != null or
+            self.display != null;
     }
 };
 

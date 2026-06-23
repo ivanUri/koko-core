@@ -9,6 +9,12 @@ const browser = await Browser.connect("http://127.0.0.1:9222");
 const page = await browser.newPage();
 await page.goto("https://example.com", { waitUntil: "domcontentloaded" });
 console.log(await page.content());
+
+// Form-style search: type + Enter (not address-bar SERP navigate)
+await page.type('textarea[name="q"]', "velora browser");
+await page.press("Enter");
+// or: await page.search("https://www.bing.com/", "velora browser");
+
 await browser.close();
 ```
 
@@ -19,6 +25,7 @@ await browser.close();
 - `page.extract()` is optimized for crawler workloads (TTFX probe + structured extract).
 - `waitForSelector()` uses `DOM.performSearch` when visibility is not required.
 - `NetworkTracker` prunes completed requests and resets on navigation.
+- `page.type()` / `page.press()` / `page.search()` avoid `form.submit()` context-destroy races.
 
 ## CLI
 

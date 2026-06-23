@@ -15,6 +15,8 @@ const std = @import("std");
 
 const js = @import("../js/js.zig");
 const Frame = @import("../browser/Frame.zig");
+const URL = @import("../browser/URL.zig");
+const HttpClient = @import("../browser/HttpClient.zig");
 const NavigatorState = @import("NavigatorState.zig");
 
 const PluginArray = @import("PluginArray.zig");
@@ -226,6 +228,69 @@ pub fn canShare(_: *const Navigator, _: ?js.Value) bool {
     return false;
 }
 
+const BeaconSink = struct {
+    fn headerCallback(_: HttpClient.Response) anyerror!bool {
+        return true;
+    }
+    fn dataCallback(_: HttpClient.Response, _: []const u8) anyerror!void {}
+    fn doneCallback(_: *anyopaque) anyerror!void {}
+    fn errorCallback(_: *anyopaque, _: anyerror) void {}
+};
+
+var beacon_sink: BeaconSink = .{};
+
+pub fn sendBeacon(_: *const Navigator, url_val: js.Value, data_val: ?js.Value, frame: *Frame) !bool {
+    const arena = frame.arena;
+    const url_input = try url_val.toStringSlice();
+    const resolved = try URL.resolve(arena, frame.url, url_input, .{});
+    const url = try arena.dupeZ(u8, resolved);
+
+    var body: ?[]const u8 = null;
+    var content_type: ?[]const u8 = null;
+    if (data_val) |dv| {
+        if (!dv.isUndefined() and !dv.isNull()) {
+            if (dv.isString()) |_| {
+                body = try dv.toStringSlice();
+                content_type = "text/plain;charset=UTF-8";
+            }
+        }
+    }
+
+    const session = frame._session;
+    const http_client = &session.browser.http_client;
+    var headers = try http_client.newHeaders();
+    if (content_type) |ct| {
+        const hdr = try std.fmt.allocPrintSentinel(arena, "Content-Type: {s}", .{ct}, 0);
+        try headers.add(hdr);
+    }
+    try frame.headersForRequest(&headers, .{
+        .request_url = url,
+        .resource_type = .beacon,
+    });
+
+    http_client.request(.{
+        .ctx = @ptrCast(&beacon_sink),
+        .params = .{
+            .url = url,
+            .method = .POST,
+            .headers = headers,
+            .body = body,
+            .frame_id = frame._frame_id,
+            .loader_id = frame._loader_id,
+            .cookie_jar = &session.cookie_jar,
+            .cookie_origin = frame.url,
+            .resource_type = .beacon,
+            .notification = session.notification,
+        },
+        .header_callback = BeaconSink.headerCallback,
+        .data_callback = BeaconSink.dataCallback,
+        .done_callback = BeaconSink.doneCallback,
+        .error_callback = BeaconSink.errorCallback,
+    }) catch return false;
+
+    return true;
+}
+
 pub fn getBattery(_: *const Navigator, frame: *Frame) !js.Promise {
     const battery = try BatteryManager.init(frame);
     return frame.js.local.?.resolvePromise(battery);
@@ -356,6 +421,7 @@ pub const JsApi = struct {
     pub const oscpu = bridge.accessor(Navigator.getOscpu, null, .{});
     pub const share = bridge.function(Navigator.share, .{ .dom_exception = true });
     pub const canShare = bridge.function(Navigator.canShare, .{});
+    pub const sendBeacon = bridge.function(Navigator.sendBeacon, .{});
 };
 
 const testing = @import("../../testing/testing.zig");

@@ -793,13 +793,13 @@ pub fn cloneNode(self: *Node, deep_: ?bool, frame: *Frame) CloneError!*Node {
                 .processing_instruction => |pi| frame.createProcessingInstruction(pi._target, data),
             };
         },
-        .element => |el| return el.clone(deep, frame),
+        .element => |el| return el.clone(deep, frame) catch return error.CloneError,
         .document => return error.NotSupported,
         .document_type => |dt| {
             const cloned = dt.clone(frame) catch return error.CloneError;
             return cloned.asNode();
         },
-        .document_fragment => |frag| return frag.cloneFragment(deep, frame),
+        .document_fragment => |frag| return frag.cloneFragment(deep, frame) catch return error.CloneError,
         .attribute => |attr| {
             const cloned = attr.clone(frame) catch return error.CloneError;
             return cloned._proto;

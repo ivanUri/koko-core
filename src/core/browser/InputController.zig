@@ -29,6 +29,7 @@ const IS_DEBUG = builtin.mode == .Debug;
 
 const primary_button_mask: u16 = 1;
 const default_ready_timeout_ms: u32 = 15_000;
+const cdp_ready_timeout_ms: u32 = 2_000;
 const nearest_activation_max_dist: f64 = 200.0;
 
 /// Browser-style pointer activation at viewport coordinates in `root_frame`.
@@ -45,15 +46,37 @@ pub fn dispatchActivationOnElement(element: *Element, frame: *Frame) !void {
 
 /// Press half of a primary-button activation (CDP `mousePressed`).
 pub fn dispatchPointerDownAt(root_frame: *Frame, x: f64, y: f64) !void {
-    const hit = (try waitForActivationHit(root_frame, x, y, default_ready_timeout_ms)) orelse return;
-    root_frame._input_press_hit = hit;
-    try dispatchPointerOver(hit);
-    try dispatchPointerDown(hit);
+    try dispatchPointerDownAtOpts(root_frame, x, y, default_ready_timeout_ms);
+}
+
+/// CDP path — caller already waited for widgets; avoid blocking the transport.
+pub fn dispatchPointerDownAtCdp(root_frame: *Frame, x: f64, y: f64) !void {
+    try dispatchPointerDownAtOpts(root_frame, x, y, cdp_ready_timeout_ms);
 }
 
 /// Release half of a primary-button activation (CDP `mouseReleased`).
 pub fn dispatchPointerUpAt(root_frame: *Frame, x: f64, y: f64) !void {
-    const hit = root_frame._input_press_hit orelse (try waitForActivationHit(root_frame, x, y, default_ready_timeout_ms)) orelse return;
+    try dispatchPointerUpAtOpts(root_frame, x, y, default_ready_timeout_ms);
+}
+
+/// CDP path — paired with `dispatchPointerDownAtCdp`.
+pub fn dispatchPointerUpAtCdp(root_frame: *Frame, x: f64, y: f64) !void {
+    try dispatchPointerUpAtOpts(root_frame, x, y, cdp_ready_timeout_ms);
+}
+
+fn dispatchPointerDownAtOpts(root_frame: *Frame, x: f64, y: f64, timeout_ms: u32) !void {
+    const hit = (try waitForActivationHit(root_frame, x, y, timeout_ms)) orelse return;
+    const effective = resolveEffectiveHit(hit);
+    root_frame._input_press_hit = effective;
+    try dispatchPointerOver(effective);
+    try dispatchPointerDown(effective);
+}
+
+fn dispatchPointerUpAtOpts(root_frame: *Frame, x: f64, y: f64, timeout_ms: u32) !void {
+    const hit = root_frame._input_press_hit orelse blk: {
+        const raw = (try waitForActivationHit(root_frame, x, y, timeout_ms)) orelse return;
+        break :blk resolveEffectiveHit(raw);
+    };
     root_frame._input_press_hit = null;
     try dispatchPointerUpAndClick(hit);
 }
@@ -68,17 +91,50 @@ pub fn makeHitForElement(element: *Element, frame: *Frame) Frame.InputHit {
 }
 
 fn dispatchActivationOnTarget(hit: Frame.InputHit) !void {
-    try dispatchPointerOver(hit);
-    try dispatchPointerDown(hit);
-    try dispatchPointerUpAndClick(hit);
+    const effective = resolveEffectiveHit(hit);
+    try dispatchPointerOver(effective);
+    try dispatchPointerDown(effective);
+    try dispatchPointerUpAndClick(effective);
+}
+
+fn resolveEffectiveHit(hit: Frame.InputHit) Frame.InputHit {
+    return redirectIframeHit(hit) catch |err| blk: {
+        if (comptime IS_DEBUG) {
+            log.debug(.frame, "iframe hit redirect failed", .{ .err = err });
+        }
+        break :blk hit;
+    };
+}
+
+/// If the hit landed on a parent-frame iframe element, re-target the child
+/// browsing context (Turnstile / reCAPTCHA widget iframes).
+fn redirectIframeHit(hit: Frame.InputHit) !Frame.InputHit {
+    if (hit.element.getTag() != .iframe) return hit;
+    return (try refineIframeHit(hit)) orelse hit;
 }
 
 fn waitForActivationHit(root_frame: *Frame, x: f64, y: f64, timeout_ms: u32) !?Frame.InputHit {
+    const fast = timeout_ms <= cdp_ready_timeout_ms;
+    // CDP split press/release must not block the transport on widget polling.
+    if (fast) {
+        if (try resolveHitOnce(root_frame, x, y, true)) |hit| {
+            if (isActionableHit(hit, root_frame)) {
+                logActivation(hit);
+                return hit;
+            }
+        }
+        if (try resolveHitOnce(root_frame, x, y, true)) |hit| {
+            logActivation(hit);
+            return hit;
+        }
+        return null;
+    }
+
     var timer = try std.time.Timer.start();
     var runner = try root_frame._session.runner(.{});
 
     while (true) {
-        if (try resolveHitOnce(root_frame, x, y)) |hit| {
+        if (try resolveHitOnce(root_frame, x, y, false)) |hit| {
             if (isActionableHit(hit, root_frame)) {
                 logActivation(hit);
                 return hit;
@@ -87,7 +143,7 @@ fn waitForActivationHit(root_frame: *Frame, x: f64, y: f64, timeout_ms: u32) !?F
 
         const elapsed: u32 = @intCast(timer.read() / std.time.ns_per_ms);
         if (elapsed >= timeout_ms) {
-            if (try resolveHitOnce(root_frame, x, y)) |hit| {
+            if (try resolveHitOnce(root_frame, x, y, false)) |hit| {
                 logActivation(hit);
                 return hit;
             }
@@ -99,10 +155,10 @@ fn waitForActivationHit(root_frame: *Frame, x: f64, y: f64, timeout_ms: u32) !?F
     }
 }
 
-fn resolveHitOnce(root_frame: *Frame, x: f64, y: f64) !?Frame.InputHit {
+fn resolveHitOnce(root_frame: *Frame, x: f64, y: f64, fast: bool) !?Frame.InputHit {
     const raw = (try root_frame.hitTestForInput(x, y)) orelse return null;
     const pierced_iframe = raw.element.getTag() == .iframe or raw.frame != root_frame;
-    const refined = try refineInputHit(raw);
+    const refined = try refineInputHit(raw, fast);
     if (pierced_iframe and refined.frame == root_frame and refined.element.getTag() != .iframe) {
         return null;
     }
@@ -110,7 +166,11 @@ fn resolveHitOnce(root_frame: *Frame, x: f64, y: f64) !?Frame.InputHit {
 }
 
 fn isActionableHit(hit: Frame.InputHit, root_frame: *Frame) bool {
-    _ = root_frame;
+    // Widget iframe (Turnstile / reCAPTCHA): accept any elementFromPoint hit in
+    // the child browsing context, including bare div/span markup without roles.
+    if (hit.frame != root_frame) {
+        return hit.element.getTag() != .iframe;
+    }
     if (isStructuralContainer(hit.element)) return false;
     return isActivationTarget(hit.element, hit.frame);
 }
@@ -121,6 +181,8 @@ fn logActivation(hit: Frame.InputHit) void {
         .tag = hit.element.getTag(),
         .role = hit.element.getAttributeSafe(comptime .wrap("role")),
         .id = hit.element.getAttributeSafe(comptime .wrap("id")),
+        .class = hit.element.getAttributeSafe(comptime .wrap("class")),
+        .has_listeners = hasPointerActivationListeners(hit.element, hit.frame),
         .x = hit.client_x,
         .y = hit.client_y,
     });
@@ -134,26 +196,156 @@ fn logActivation(hit: Frame.InputHit) void {
     }
 }
 
-fn refineInputHit(hit: Frame.InputHit) !Frame.InputHit {
+fn isDecorativeCaptchaBranding(element: *Element) bool {
+    if (element.getTag() == .svg) return true;
+    if (element.getAttributeSafe(comptime .wrap("role"))) |role| {
+        if (std.ascii.eqlIgnoreCase(role, "img")) return true;
+    }
+    return false;
+}
+
+fn refineInputHit(hit: Frame.InputHit, fast: bool) !Frame.InputHit {
+    return refineInputHitDepth(hit, fast, 0);
+}
+
+fn refineInputHitDepth(hit: Frame.InputHit, fast: bool, depth: u8) !Frame.InputHit {
     if (hit.element.getTag() == .iframe) {
-        if (try refineIframeHit(hit)) |child_hit| return child_hit;
+        if (try refineIframeHit(hit)) |child_hit| return refineInputHitDepth(child_hit, fast, depth);
         return hit;
     }
 
-    if (isActivationTarget(hit.element, hit.frame) and !isStructuralContainer(hit.element)) {
-        return centerHitOnElement(hit);
-    }
-
-    if (try findBestActivationTarget(hit.frame, hit.client_x, hit.client_y)) |better| {
-        return centerHitOnElement(.{
-            .element = better,
+    if (findDescendantIframe(hit.element, hit.frame)) |iframe| {
+        return refineInputHitDepth(.{
+            .element = iframe,
             .frame = hit.frame,
             .client_x = hit.client_x,
             .client_y = hit.client_y,
-        });
+        }, fast, depth);
+    }
+
+    if (isCaptchaWidgetFrame(hit.frame) and isDecorativeCaptchaBranding(hit.element) and depth < 4) {
+        const shifted_x = @max(hit.client_x - 30.0, 2.0);
+        if (shifted_x + 1.0 < hit.client_x) {
+            if (try hit.frame.hitTestForInput(shifted_x, hit.client_y)) |shifted| {
+                return refineInputHitDepth(shifted, fast, depth + 1);
+            }
+        }
+    }
+
+    if (isActivationTarget(hit.element, hit.frame) and !isStructuralContainer(hit.element)) {
+        if (!(isCaptchaWidgetFrame(hit.frame) and isDecorativeCaptchaBranding(hit.element))) {
+            return centerHitOnElement(hit);
+        }
+    }
+
+    if (isCaptchaWidgetFrame(hit.frame)) {
+        if (findWidgetCheckboxTarget(hit.frame, hit.client_x, hit.client_y)) |widget| {
+            return centerHitOnElement(.{
+                .element = widget,
+                .frame = hit.frame,
+                .client_x = hit.client_x,
+                .client_y = hit.client_y,
+            });
+        }
+        if (isDecorativeCaptchaBranding(hit.element)) {
+            if (try findBestActivationTarget(hit.frame, hit.client_x, hit.client_y)) |better| {
+                if (!isDecorativeCaptchaBranding(better)) {
+                    return centerHitOnElement(.{
+                        .element = better,
+                        .frame = hit.frame,
+                        .client_x = hit.client_x,
+                        .client_y = hit.client_y,
+                    });
+                }
+            }
+        }
+        if (isStructuralContainer(hit.element)) return hit;
+    }
+
+    if (!fast) {
+        if (try findBestActivationTarget(hit.frame, hit.client_x, hit.client_y)) |better| {
+            return centerHitOnElement(.{
+                .element = better,
+                .frame = hit.frame,
+                .client_x = hit.client_x,
+                .client_y = hit.client_y,
+            });
+        }
     }
 
     return hit;
+}
+
+fn findDescendantIframe(element: *Element, frame: *Frame) ?*Element {
+    const root = element.asNode();
+    var stack: std.ArrayList(*Node) = .empty;
+    stack.append(frame.call_arena, root) catch return null;
+
+    while (stack.items.len > 0) {
+        const node = stack.pop() orelse break;
+        if (node.is(Element)) |el| {
+            if (el.getTag() == .iframe) return el;
+
+            if (frame._element_shadow_roots.get(el)) |shadow_root| {
+                var shadow_child = shadow_root.asNode().lastChild();
+                while (shadow_child) |c| {
+                    stack.append(frame.call_arena, c) catch {};
+                    shadow_child = c.previousSibling();
+                }
+            }
+        }
+
+        var child = node.lastChild();
+        while (child) |c| {
+            stack.append(frame.call_arena, c) catch {};
+            child = c.previousSibling();
+        }
+    }
+    return null;
+}
+
+fn isCaptchaWidgetFrame(frame: *Frame) bool {
+    if (std.mem.indexOf(u8, frame.url, "challenges.cloudflare.com") != null) return true;
+    if (std.mem.indexOf(u8, frame.url, "google.com/recaptcha") != null) return true;
+    if (std.mem.indexOf(u8, frame.url, "recaptcha.net") != null) return true;
+    return false;
+}
+
+const WidgetCheckboxCtx = struct {
+    best: ?*Element = null,
+    best_priority: u8 = 0,
+};
+
+fn widgetCheckboxPriority(element: *Element, frame: *Frame) ?u8 {
+    if (isStructuralContainer(element)) return null;
+    if (!element.checkVisibilityCached(null, frame)) return null;
+
+    if (element.getAttributeSafe(comptime .wrap("role"))) |role| {
+        if (std.ascii.eqlIgnoreCase(role, "checkbox")) return 4;
+    }
+    if (element.getAttributeSafe(comptime .wrap("aria-label"))) |label| {
+        if (label.len > 0) return 3;
+    }
+    if (isWidgetLikeElement(element)) return 2;
+    if (hasPointerActivationListeners(element, frame)) return 1;
+    return null;
+}
+
+fn collectWidgetCheckboxTarget(element: *Element, frame: *Frame, ctx_ptr: *anyopaque) void {
+    const ctx: *WidgetCheckboxCtx = @ptrCast(@alignCast(ctx_ptr));
+    const priority = widgetCheckboxPriority(element, frame) orelse return;
+    if (priority > ctx.best_priority) {
+        ctx.best = element;
+        ctx.best_priority = priority;
+    }
+}
+
+fn findWidgetCheckboxTarget(frame: *Frame, x: f64, y: f64) ?*Element {
+    _ = x;
+    _ = y;
+    var ctx = WidgetCheckboxCtx{};
+    walkElements(frame, collectWidgetCheckboxTarget, &ctx, 120);
+    return ctx.best;
 }
 
 fn refineIframeHit(hit: Frame.InputHit) !?Frame.InputHit {
@@ -164,22 +356,26 @@ fn refineIframeHit(hit: Frame.InputHit) !?Frame.InputHit {
         return null;
     }
 
-    const rect = hit.element.getBoundingClientRectForVisible(hit.frame);
+    const rect = hit.element.getActivationBoundingClientRect(hit.frame);
     const child_x = hit.client_x - rect.getLeft();
     const child_y = hit.client_y - rect.getTop();
 
-    const better = try findBestActivationTarget(child_frame, child_x, child_y) orelse return null;
-    return centerHitOnElement(.{
-        .element = better,
-        .frame = child_frame,
-        .client_x = child_x,
-        .client_y = child_y,
-    });
+    // Match Frame.hitTestForInput / resolveInputHit — elementFromPoint pierces
+    // nested documents; heuristic activation search misses widget markup.
+    if (try child_frame.hitTestForInput(child_x, child_y)) |child_hit| {
+        return child_hit;
+    }
+    return null;
 }
 
 fn centerHitOnElement(hit: Frame.InputHit) Frame.InputHit {
-    const rect = hit.element.getBoundingClientRectForVisible(hit.frame);
+    const rect = hit.element.getActivationBoundingClientRect(hit.frame);
     if (rect.getWidth() <= 0 and rect.getHeight() <= 0) return hit;
+    if (hit.client_x >= rect.getLeft() and hit.client_x <= rect.getRight() and
+        hit.client_y >= rect.getTop() and hit.client_y <= rect.getBottom())
+    {
+        return hit;
+    }
     return .{
         .element = hit.element,
         .frame = hit.frame,
@@ -197,11 +393,14 @@ fn isStructuralContainer(element: *Element) bool {
 
 fn isActivationTarget(element: *Element, frame: *Frame) bool {
     if (isStructuralContainer(element)) return false;
+    return isInteractiveActivationTarget(element, frame);
+}
 
+fn isInteractiveActivationTarget(element: *Element, frame: *Frame) bool {
     const html_el = element.is(Element.Html) orelse return false;
 
     switch (element.getTag()) {
-        .button, .summary, .details, .select, .textarea => return true,
+        .button, .summary, .details, .select, .textarea, .label => return true,
         .anchor, .area => return element.getAttributeSafe(comptime .wrap("href")) != null,
         .input => {
             if (element.is(Element.Html.Input)) |input| {
@@ -216,28 +415,110 @@ fn isActivationTarget(element: *Element, frame: *Frame) bool {
         if (interactive.isInteractiveRole(role)) return true;
     }
 
+    if (element.getAttributeSafe(comptime .wrap("aria-label"))) |label| {
+        if (label.len > 0) return true;
+    }
+
+    if (isWidgetLikeElement(element)) return true;
+
+    if (hasPointerActivationListeners(element, frame)) return true;
+
     // iframe tabindex defaults to 0 but activation must pierce into the child frame.
     if (html_el.getTabIndex() >= 0 and element.getTag() != .iframe) return true;
 
-    _ = frame;
+    return false;
+}
+
+fn isWidgetLikeElement(element: *Element) bool {
+    if (element.getAttributeSafe(comptime .wrap("id"))) |id| {
+        if (containsWidgetToken(id)) return true;
+    }
+    if (element.getAttributeSafe(comptime .wrap("class"))) |class_attr| {
+        if (containsWidgetToken(class_attr)) return true;
+    }
+    return false;
+}
+
+fn containsWidgetToken(text: []const u8) bool {
+    var buf: [128]u8 = undefined;
+    if (text.len > buf.len) return false;
+    const lower = std.ascii.lowerString(&buf, text);
+    const tokens = [_][]const u8{ "checkbox", "ctp-", "cb-", "label", "turnstile", "recaptcha" };
+    for (tokens) |token| {
+        if (std.mem.indexOf(u8, lower, token) != null) return true;
+    }
+    return false;
+}
+
+fn hasPointerActivationListeners(element: *Element, frame: *Frame) bool {
+    const html_el = element.is(Element.Html) orelse return false;
+    const target = html_el.asEventTarget();
+    const target_ptr = @intFromPtr(target);
+
+    inline for (.{
+        .onclick,
+        .onmousedown,
+        .onmouseup,
+        .onpointerdown,
+        .onpointerup,
+    }) |handler| {
+        if (frame._event_target_attr_listeners.contains(.{ .target = target, .handler = handler })) {
+            return true;
+        }
+    }
+
+    var it = frame._event_manager.base.lookup.iterator();
+    while (it.next()) |entry| {
+        if (entry.key_ptr.event_target != target_ptr) continue;
+        const type_name = entry.key_ptr.type_string.str();
+        if (std.mem.eql(u8, type_name, "click") or
+            std.mem.eql(u8, type_name, "mousedown") or
+            std.mem.eql(u8, type_name, "mouseup") or
+            std.mem.eql(u8, type_name, "pointerdown") or
+            std.mem.eql(u8, type_name, "pointerup"))
+        {
+            return true;
+        }
+    }
     return false;
 }
 
 fn findBestActivationTarget(frame: *Frame, x: f64, y: f64) !?*Element {
     if (findInteractiveElementAt(frame, x, y)) |el| return el;
+    if (findListenerElementAt(frame, x, y)) |el| return el;
     if (findNearestInteractiveElement(frame, x, y)) |el| return el;
-    return findSmallestActivationTarget(frame);
+    if (findNearestListenerElement(frame, x, y)) |el| return el;
+    if (findSmallestActivationTarget(frame)) |el| return el;
+    return findSmallestListenerTarget(frame);
 }
 
-fn walkElements(frame: *Frame, cb: *const fn (*Element, *Frame, *anyopaque) void, ctx: *anyopaque) void {
+fn walkElements(
+    frame: *Frame,
+    cb: *const fn (*Element, *Frame, *anyopaque) void,
+    ctx: *anyopaque,
+    max_nodes: ?usize,
+) void {
     const root = frame.document.asNode();
     var stack: std.ArrayList(*Node) = .empty;
     stack.append(frame.call_arena, root) catch return;
+    var visited: usize = 0;
 
     while (stack.items.len > 0) {
+        if (max_nodes) |limit| {
+            if (visited >= limit) return;
+        }
+        visited += 1;
         const node = stack.pop() orelse break;
         if (node.is(Element)) |element| {
             cb(element, frame, ctx);
+
+            if (frame._element_shadow_roots.get(element)) |shadow_root| {
+                var shadow_child = shadow_root.asNode().lastChild();
+                while (shadow_child) |c| {
+                    stack.append(frame.call_arena, c) catch {};
+                    shadow_child = c.previousSibling();
+                }
+            }
         }
 
         var child = node.lastChild();
@@ -260,7 +541,7 @@ fn collectInteractiveAt(element: *Element, frame: *Frame, ctx_ptr: *anyopaque) v
     if (!element.checkVisibilityCached(null, frame)) return;
     if (!isActivationTarget(element, frame)) return;
 
-    const rect = element.getBoundingClientRectForVisible(frame);
+    const rect = element.getActivationBoundingClientRect(frame);
     const w = @max(rect.getWidth(), 0);
     const h = @max(rect.getHeight(), 0);
     if (w <= 0 or h <= 0) return;
@@ -280,7 +561,36 @@ fn collectInteractiveAt(element: *Element, frame: *Frame, ctx_ptr: *anyopaque) v
 
 fn findInteractiveElementAt(frame: *Frame, x: f64, y: f64) ?*Element {
     var ctx = CollectInteractiveCtx{ .x = x, .y = y };
-    walkElements(frame, collectInteractiveAt, &ctx);
+    walkElements(frame, collectInteractiveAt, &ctx, null);
+    return ctx.best;
+}
+
+fn collectListenerAt(element: *Element, frame: *Frame, ctx_ptr: *anyopaque) void {
+    const ctx: *CollectInteractiveCtx = @ptrCast(@alignCast(ctx_ptr));
+    if (!element.checkVisibilityCached(null, frame)) return;
+    if (!hasPointerActivationListeners(element, frame) and !isWidgetLikeElement(element)) return;
+
+    const rect = element.getActivationBoundingClientRect(frame);
+    const w = @max(rect.getWidth(), 0);
+    const h = @max(rect.getHeight(), 0);
+    if (w <= 0 or h <= 0) return;
+
+    if (ctx.x < rect.getLeft() or ctx.x > rect.getRight() or
+        ctx.y < rect.getTop() or ctx.y > rect.getBottom())
+    {
+        return;
+    }
+
+    const area = w * h;
+    if (area < ctx.best_area) {
+        ctx.best = element;
+        ctx.best_area = area;
+    }
+}
+
+fn findListenerElementAt(frame: *Frame, x: f64, y: f64) ?*Element {
+    var ctx = CollectInteractiveCtx{ .x = x, .y = y };
+    walkElements(frame, collectListenerAt, &ctx, null);
     return ctx.best;
 }
 
@@ -296,7 +606,7 @@ fn collectNearestInteractive(element: *Element, frame: *Frame, ctx_ptr: *anyopaq
     if (!element.checkVisibilityCached(null, frame)) return;
     if (!isActivationTarget(element, frame)) return;
 
-    const rect = element.getBoundingClientRectForVisible(frame);
+    const rect = element.getActivationBoundingClientRect(frame);
     const w = @max(rect.getWidth(), 1);
     const h = @max(rect.getHeight(), 1);
     const cx = rect.getLeft() + w / 2;
@@ -314,7 +624,34 @@ fn collectNearestInteractive(element: *Element, frame: *Frame, ctx_ptr: *anyopaq
 
 fn findNearestInteractiveElement(frame: *Frame, x: f64, y: f64) ?*Element {
     var ctx = NearestInteractiveCtx{ .x = x, .y = y };
-    walkElements(frame, collectNearestInteractive, &ctx);
+    walkElements(frame, collectNearestInteractive, &ctx, null);
+    return ctx.best;
+}
+
+fn collectNearestListener(element: *Element, frame: *Frame, ctx_ptr: *anyopaque) void {
+    const ctx: *NearestInteractiveCtx = @ptrCast(@alignCast(ctx_ptr));
+    if (!element.checkVisibilityCached(null, frame)) return;
+    if (!hasPointerActivationListeners(element, frame) and !isWidgetLikeElement(element)) return;
+
+    const rect = element.getActivationBoundingClientRect(frame);
+    const w = @max(rect.getWidth(), 1);
+    const h = @max(rect.getHeight(), 1);
+    const cx = rect.getLeft() + w / 2;
+    const cy = rect.getTop() + h / 2;
+    const dx = ctx.x - cx;
+    const dy = ctx.y - cy;
+    const dist = @sqrt(dx * dx + dy * dy);
+    if (dist > nearest_activation_max_dist) return;
+
+    if (dist < ctx.best_dist) {
+        ctx.best = element;
+        ctx.best_dist = dist;
+    }
+}
+
+fn findNearestListenerElement(frame: *Frame, x: f64, y: f64) ?*Element {
+    var ctx = NearestInteractiveCtx{ .x = x, .y = y };
+    walkElements(frame, collectNearestListener, &ctx, null);
     return ctx.best;
 }
 
@@ -328,7 +665,7 @@ fn collectSmallestActivation(element: *Element, frame: *Frame, ctx_ptr: *anyopaq
     if (!element.checkVisibilityCached(null, frame)) return;
     if (!isActivationTarget(element, frame)) return;
 
-    const rect = element.getBoundingClientRectForVisible(frame);
+    const rect = element.getActivationBoundingClientRect(frame);
     const area = @max(rect.getWidth(), 1) * @max(rect.getHeight(), 1);
     if (area < ctx.best_area) {
         ctx.best = element;
@@ -338,7 +675,31 @@ fn collectSmallestActivation(element: *Element, frame: *Frame, ctx_ptr: *anyopaq
 
 fn findSmallestActivationTarget(frame: *Frame) ?*Element {
     var ctx = SmallestActivationCtx{};
-    walkElements(frame, collectSmallestActivation, &ctx);
+    walkElements(frame, collectSmallestActivation, &ctx, null);
+    return ctx.best;
+}
+
+const SmallestListenerCtx = struct {
+    best: ?*Element = null,
+    best_area: f64 = std.math.inf(f64),
+};
+
+fn collectSmallestListener(element: *Element, frame: *Frame, ctx_ptr: *anyopaque) void {
+    const ctx: *SmallestListenerCtx = @ptrCast(@alignCast(ctx_ptr));
+    if (!element.checkVisibilityCached(null, frame)) return;
+    if (!hasPointerActivationListeners(element, frame)) return;
+
+    const rect = element.getActivationBoundingClientRect(frame);
+    const area = @max(rect.getWidth(), 1) * @max(rect.getHeight(), 1);
+    if (area < ctx.best_area) {
+        ctx.best = element;
+        ctx.best_area = area;
+    }
+}
+
+fn findSmallestListenerTarget(frame: *Frame) ?*Element {
+    var ctx = SmallestListenerCtx{};
+    walkElements(frame, collectSmallestListener, &ctx, null);
     return ctx.best;
 }
 
@@ -486,7 +847,7 @@ test "InputController: refines html container to checkbox child" {
         .frame = frame,
         .client_x = 24,
         .client_y = 24,
-    });
+    }, false);
 
     try testing.expectEqualStrings("cb", hit.element.getAttributeSafe(comptime .wrap("id")).?);
     try testing.expect(isActivationTarget(hit.element, frame));

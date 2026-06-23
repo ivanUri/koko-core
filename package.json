@@ -13,6 +13,7 @@
     "build:sdk": "npm run build --workspace=@velora/sdk",
     "prebench:crawl:wikipedia": "npm run build:sdk",
     "prebench:compare": "npm run build:sdk",
+    "pretest:site:google": "npm run build:sdk",
     "test:fingerprint": "node code-check/suite/runner.mjs",
     "test:fingerprint:remote": "node code-check/suite/runner.mjs --remote",
     "test:fingerprint:browserleaks": "node code-check/suite/runner.mjs --browserleaks",
@@ -26,6 +27,14 @@
     "test:site:recaptcha:score": "node code-check/sites/recaptcha/score-detector.mjs",
     "test:site:recaptcha:appspot": "node code-check/sites/recaptcha/appspot-v3-scores.mjs",
     "test:site:recaptcha:2captcha-v3": "node code-check/sites/recaptcha/2captcha-v3-test.mjs",
+    "pretest:site:turnstile:local": "npm run build:sdk",
+    "test:site:turnstile:local": "node code-check/sites/recaptcha/run-turnstile-local-test.mjs",
+    "test:site:turnstile:local:interactive": "node code-check/sites/recaptcha/run-turnstile-local-test.mjs --interactive",
+    "test:site:turnstile:demo": "node code-check/sites/recaptcha/turnstile-test.mjs",
+    "pretest:site:turnstile:2captcha": "npm run build:sdk",
+    "test:site:turnstile:2captcha": "node code-check/sites/recaptcha/turnstile-2captcha-demo-check.mjs",
+    "test:site:turnstile:2captcha:cdp": "node code-check/sites/recaptcha/turnstile-2captcha-cdp-check.mjs",
+    "test:site:turnstile:activation-log": "node code-check/sites/recaptcha/turnstile-activation-log.mjs",
     "test:site:browserscan": "node code-check/sites/browserscan/scan.mjs",
     "test:feature:webgl": "node code-check/features/webgl/worker.mjs",
     "test:feature:worker": "node code-check/features/worker/simple.mjs",
@@ -40,6 +49,10 @@
     "bench:crawl:wikipedia:publish": "npm run bench:crawl:wikipedia && npm run bench:crawl:wikipedia:report",
     "bench:crawl:hn": "node code-check/bench/crawl-hn-compare.mjs",
     "bench:crawl:hn:report": "node code-check/bench/render-crawl-report.mjs --input code-check/tmp/benchmarks/crawl-hn.json --output-prefix crawl-hn",
-    "bench:crawl:hn:publish": "npm run bench:crawl:hn && npm run bench:crawl:hn:report"
+    "bench:crawl:hn:publish": "npm run bench:crawl:hn && npm run bench:crawl:hn:report",
+    "prebench:density:sweep": "npm run build:sdk",
+    "bench:density:sweep": "node code-check/bench/density-sweep.mjs",
+    "bench:density:report": "node code-check/bench/render-density-report.mjs",
+    "bench:density:publish": "npm run bench:density:sweep && npm run bench:density:report"
   }
 }

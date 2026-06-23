@@ -62,6 +62,7 @@ pub fn fetch(_: *App, browser: *Browser, url: [:0]const u8, opts: FetchOpts) !vo
     if (opts.click_selector) |selector| {
         log.debug(.app, "fetch click start", .{ .url = url, .selector = selector });
         const el = try runner.waitForSelector(selector, opts.wait_ms);
+        try el.scrollIntoViewIfNeeded(true, active_frame);
         const rect = el.getBoundingClientRect(active_frame);
         const x = rect.getLeft() + @as(f64, @floatFromInt(opts.click_offset_x));
         const y = rect.getTop() + (@as(f64, @floatFromInt(opts.click_offset_y orelse 0)) + if (opts.click_offset_y == null) rect.getHeight() / 2 else 0);
