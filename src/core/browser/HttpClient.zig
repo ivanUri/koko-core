@@ -1112,6 +1112,8 @@ pub const RequestParams = struct {
     /// Document navigation referer URL (without header prefix). With curl-impersonate
     /// default headers, Referer is set via CURLOPT_REFERER so JA4/H2 fingerprint stays chrome120.
     referer: ?[:0]const u8 = null, // null-terminated for CURLOPT_REFERER
+    /// Guest Chrome omnibox search sends zero Cookie on sei=/sg_ss= document hops.
+    omit_cookies: bool = false,
 
     pub const ResourceType = enum {
         document,
@@ -1162,6 +1164,7 @@ pub const Request = struct {
     shutdown_callback: ?ShutdownCallback = null,
 
     pub fn getCookieString(self: *Request) !?[:0]const u8 {
+        if (self.params.omit_cookies) return null;
         const jar = self.params.cookie_jar orelse return null;
         var aw: std.Io.Writer.Allocating = .init(self.params.arena);
         try jar.forRequest(self.params.url, &aw.writer, .{

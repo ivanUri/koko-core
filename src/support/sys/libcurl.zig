@@ -251,8 +251,8 @@ pub const CurlOption = enum(c.CURLoption) {
 };
 
 /// Chrome guest QUIC transport params (quic.browserleaks.com h3_text baseline).
-/// Real Chrome also emits extra GREASE params (see quic-probe); curl adds one GREASE by default.
-/// Chrome guest adds two extra GREASE TPs plus numeric id 984832 (quic.browserleaks.com).
+/// Real Chrome: GREASE|GREASE|984832; curl-impersonate chrome146: GREASE only.
+/// Do not pass via CURLOPT_QUIC_TRANSPORT_PARAMETERS — it forces http/1.1 on this libcurl build.
 pub const CHROME_QUIC_TRANSPORT_PARAMS: [:0]const u8 = "1:65536;6:262144;7:100;51:1;GREASE;GREASE;984832";
 pub const CHROME_HTTP3_PSEUDO_HEADERS_ORDER: [:0]const u8 = "m,a,s,p";
 

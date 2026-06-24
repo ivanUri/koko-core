@@ -533,7 +533,8 @@ pub const Connection = struct {
         try libcurl.setImpersonate(easy, target, false);
         if (!config.profile.isFirefox()) {
             try applyChromeTlsKnobs(easy);
-            // Guest Chrome search SERP is served over HTTP/3 (see www.google.com.har).
+            // Guest Chrome search SERP prefers HTTP/3 (see www.google.com.har).
+            // Keep h2 fallback until curl-impersonate h3_hash matches Chrome (quic-probe).
             try libcurl.curl_easy_setopt(easy, .http_version, libcurl.HTTP_VERSION_3);
         }
         try libcurl.curl_easy_setopt(easy, .accept_encoding, "");
@@ -541,14 +542,13 @@ pub const Connection = struct {
 
     fn applyChromeTlsKnobs(easy: *libcurl.Curl) !void {
         if (!build_config.curl_impersonate) return;
-        // Mirror curl_chrome136+ wrapper flags; chrome146 bundles these in --impersonate
-        // but re-applying after curl_easy_reset / verify opts keeps BoringSSL behavior stable.
+        // chrome146 --impersonate already sets TLS/QUIC fingerprints. Re-apply only
+        // TLS knobs that survive curl_easy_reset without breaking HTTP/3:
+        //   - CURLOPT_HTTP3_PSEUDO_HEADERS_ORDER → curl_easy_perform error 43
+        //   - CURLOPT_QUIC_TRANSPORT_PARAMETERS → forces http/1.1 fallback (quic-probe)
         try libcurl.curl_easy_setopt(easy, .ssl_enable_alps, 1);
         try libcurl.curl_easy_setopt(easy, .tls_grease, 1);
         try libcurl.curl_easy_setopt(easy, .ssl_permute_extensions, 1);
-        // Best-effort HTTP/3 knobs (unsupported values are ignored on this libcurl build).
-        libcurl.curlEasySetoptOptional(easy, .http3_pseudo_headers_order, libcurl.CHROME_HTTP3_PSEUDO_HEADERS_ORDER.ptr);
-        libcurl.curlEasySetoptOptional(easy, .quic_transport_parameters, libcurl.CHROME_QUIC_TRANSPORT_PARAMS.ptr);
     }
 
     /// Kept for call sites that only hold a Connection pointer.

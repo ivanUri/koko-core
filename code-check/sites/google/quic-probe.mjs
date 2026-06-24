@@ -156,7 +156,8 @@ async function main() {
         conclusion: rows.find((r) => r.label === "real-chrome-h3")?.h3_hash &&
             rows.find((r) => r.label === "curl-chrome146-h3")?.h3_hash !==
                 rows.find((r) => r.label === "real-chrome-h3")?.h3_hash
-            ? "curl-impersonate QUIC transport params differ from real Chrome (h3_hash / GREASE). Velora inherits curl stack."
+            ? "curl-impersonate QUIC: Chrome sends GREASE|GREASE|984832; curl/Velora send GREASE only. " +
+              "Do NOT set CURLOPT_QUIC_TRANSPORT_PARAMETERS or CURLOPT_HTTP3_PSEUDO_HEADERS_ORDER after impersonate — breaks H3."
             : "no_quic_gap_detected",
     };
 
