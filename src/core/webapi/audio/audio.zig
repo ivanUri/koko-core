@@ -10,6 +10,8 @@ const Frame = @import("../../browser/Frame.zig");
 const EventTarget = @import("../EventTarget.zig");
 const Event = @import("../Event.zig");
 const OfflineAudioCompletionEvent = @import("../event/OfflineAudioCompletionEvent.zig");
+const FingerprintSeed = @import("../../fingerprint/FingerprintSeed.zig");
+const AudioIntelligent = @import("../../fingerprint/AudioIntelligent.zig");
 
 pub fn registerTypes() []const type {
     return &.{
@@ -32,6 +34,9 @@ pub fn registerTypes() []const type {
 const AudioContextState = struct {
     sample_rate: f64,
     owner: ?*AudioContext = null,
+    probe: AudioIntelligent.ProbeState = .{},
+    baseline_samples: ?[]const f32 = null,
+    baseline_freq: ?[]const f32 = null,
 };
 
 const RenderSource = union(enum) {
@@ -41,6 +46,18 @@ const RenderSource = union(enum) {
     analyser: *AnalyserNode,
     compressor: *DynamicsCompressorNode,
 };
+
+fn finalizeProbeFromInput(node: ?*AudioNode) void {
+    var current = node;
+    while (current) |n| {
+        switch (n._source) {
+            .compressor => |c| n._state.probe.recordCompressorThreshold(c._threshold.getValue()),
+            .gain => |g| n._state.probe.recordGain(g._gain.getValue()),
+            else => {},
+        }
+        current = n._input;
+    }
+}
 
 const AudioConnectDestination = union(enum) {
     node: *AudioNode,
@@ -309,6 +326,16 @@ const AnalyserNode = struct {
 
     pub fn getFloatFrequencyData(self: *const AnalyserNode, arr: js.TypedArray(f32)) void {
         const values = @constCast(arr.values);
+        if (self._node._state.probe.matchesStandardProbe()) {
+            if (self._node._state.baseline_freq) |baseline| {
+                const count = @min(values.len, baseline.len);
+                @memcpy(values[0..count], baseline[0..count]);
+                if (count < values.len) {
+                    @memset(values[count..], -std.math.inf(f32));
+                }
+                return;
+            }
+        }
         const render_data = self._render_data orelse {
             for (values) |*value| {
                 value.* = -std.math.inf(f32);
@@ -437,12 +464,15 @@ const OscillatorNode = struct {
 
     pub fn setType(self: *OscillatorNode, v: []const u8) void {
         self._type = v;
+        self._node._state.probe.recordOscillatorType(v);
     }
 
     pub fn start(self: *OscillatorNode, when: ?f64) void {
         log.info(.js, "OscillatorNode.start", .{ .when = when orelse 0, .type = self._type, .frequency = self._frequency.getValue() });
         self._start_time = when orelse 0;
         self._started = true;
+        self._node._state.probe.recordOscillatorStart();
+        self._node._state.probe.recordOscillatorFrequency(self._frequency.getValue());
     }
 
     pub fn stop(self: *OscillatorNode, when: ?f64) void {
@@ -559,6 +589,7 @@ const DynamicsCompressorNode = struct {
 
     fn render(self: *DynamicsCompressorNode, output: *AudioRenderData, sample_rate: f64) void {
         _ = sample_rate;
+        self._node._state.probe.recordCompressorThreshold(self._threshold.getValue());
         log.info(.js, "DynamicsCompressorNode.render.begin", .{ .threshold = self._threshold.getValue(), .ratio = self._ratio.getValue(), .attack = self._attack.getValue(), .has_input = self._node._input != null });
         self._node.renderInput(output, self._node._state.sample_rate);
         const threshold = @as(f32, @floatCast(@abs(self._threshold.getValue()) / 100.0));
@@ -687,6 +718,7 @@ const GainNode = struct {
 
     fn render(self: *GainNode, output: *AudioRenderData, sample_rate: f64) void {
         _ = sample_rate;
+        self._node._state.probe.recordGain(self._gain.getValue());
         self._node.renderInput(output, self._node._state.sample_rate);
         const gain = @as(f32, @floatCast(self._gain.getValue()));
         for (output.left, output.right) |*left, *right| {
@@ -947,6 +979,12 @@ fn leadingUniqueSum(channel: []const f32, count: usize) f32 {
     return sum;
 }
 
+fn applySessionAudioSeed(channel: []f32, count: usize, seed: u64) void {
+    if (count == 0) return;
+    channel[0] += FingerprintSeed.audioOffset(seed, 0);
+    if (count > 1) channel[1] += FingerprintSeed.audioOffset(seed, 1);
+}
+
 fn normalizeLeadingUniqueSum(channel: []f32, count: usize) void {
     if (count == 0) return;
 
@@ -1089,6 +1127,22 @@ pub const AudioContext = struct {
     fn renderOffline(self: *AudioContext, frame: *Frame, length: u32, channels: u32) !*AudioBuffer {
         log.info(.js, "AudioContext.renderOffline.begin", .{ .length = length, .sample_rate = self.getSampleRate() });
 
+        if (AudioIntelligent.shouldUseBaseline(self._state.probe, frame)) {
+            if (self._state.baseline_samples) |samples| {
+                const buffer = try AudioBuffer.create(channels, length, self._state.sample_rate, frame);
+                const buf_len: usize = @intCast(length);
+                const count = @min(buf_len, samples.len);
+                @memcpy(buffer.channelSlice(0)[0..count], samples[0..count]);
+                if (count < buf_len) {
+                    @memset(buffer.channelSlice(0)[count..buf_len], 0);
+                }
+                if (channels > 1) {
+                    @memset(buffer.channelSlice(1)[0..buf_len], 0);
+                }
+                return buffer;
+            }
+        }
+
         const render_data = try self.createRenderData(frame, length);
 
         if (self._destination._node._input) |input| {
@@ -1160,6 +1214,7 @@ pub const AudioContext = struct {
             }
         }
 
+        applySessionAudioSeed(buffer.channelSlice(0), @min(buf_len, 100), frame._session.fingerprint_seed);
         normalizeLeadingUniqueSum(buffer.channelSlice(0), @min(buf_len, 100));
 
         const buf_sample_100 = if (length > 100) buffer.channelSlice(0)[100] else 0;
@@ -1272,7 +1327,12 @@ pub const OfflineAudioContext = struct {
 
     pub fn constructor(channels: u32, length: u32, sample_rate: f64, frame: *Frame) !*OfflineAudioContext {
         log.info(.js, "OfflineAudioContext.constructor", .{ .channels = channels, .length = length, .sample_rate = sample_rate });
-        const state = try frame._factory.create(AudioContextState{ .sample_rate = sample_rate, .owner = null });
+        var state = try frame._factory.create(AudioContextState{ .sample_rate = sample_rate, .owner = null });
+        if (AudioIntelligent.baseline(frame)) |bl| {
+            state.baseline_samples = bl.samples;
+            state.baseline_freq = bl.freq;
+        }
+        state.probe.recordOffline(channels, length, sample_rate);
         const destination = try AudioContext.createDestination(state, frame);
         const listener = try AudioContext.createListener(frame);
         const inner_ctx = try AudioContext.initWithState(state, destination, listener, frame);
@@ -1357,6 +1417,8 @@ pub const OfflineAudioContext = struct {
                 const d: *TaskData = @ptrCast(@alignCast(ctx));
                 var ls: js.Local.Scope = undefined;
                 d.frame.js.localScope(&ls);
+
+                finalizeProbeFromInput(d.ctx._ctx.getDestination()._node._input);
 
                 const buf = d.ctx._ctx.renderOffline(d.frame, d.ctx._length, d.ctx._channels) catch |err| {
                     log.err(.js, "OfflineAudioContext.startRendering.error", .{ .err = err });

@@ -27,7 +27,7 @@
             .hash = "boringssl-0.1.0-VtJeWehMAAA4RNnwRnzEvKcS9rjsR1QVRw1uJrwXxmVK",
         },
         .curl = .{
-            // Match libcurl-impersonate 8.15.0-IMPERSONATE (CURLOPT/header drift breaks TLS JA3).
+            // Match vendored libcurl-impersonate v2.0.0a5 (8.15.0-IMPERSONATE; CURLOPT/header drift breaks TLS JA3).
             .url = "https://github.com/curl/curl/releases/download/curl-8_15_0/curl-8.15.0.tar.gz",
             .hash = "N-V-__8AAHGgPwH1XE5mB7bNofrDyBE5VWADWmBRlFQaVXWU",
         },

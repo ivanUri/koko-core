@@ -53,6 +53,10 @@ pub fn init(allocator: std.mem.Allocator, app: *App, writer: *std.io.Writer) !*S
 pub fn deinit(self: *Self) void {
     if (self.app.config.cookieJarFile()) |cookie_jar_path| {
         @import("../../runtime/cookies.zig").saveToFile(&self.session.cookie_jar, cookie_jar_path);
+        var storage_buf: [512]u8 = undefined;
+        if (std.fmt.bufPrint(&storage_buf, "{s}.storage.json", .{cookie_jar_path})) |storage_path| {
+            @import("../../runtime/session_persist.zig").saveStorage(self.session, storage_path);
+        } else |_| {}
     }
 
     self.node_registry.deinit();

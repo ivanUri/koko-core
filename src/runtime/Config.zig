@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const ProfileStore = @import("../core/fingerprint/ProfileStore.zig");
+const ProfileRotation = @import("../core/fingerprint/ProfileRotation.zig");
 const log = @import("../support/log.zig");
 const builtin = @import("builtin");
 
@@ -89,8 +90,10 @@ const CommonOptions = .{
     .{ .name = "web_bot_auth_domain", .type = ?[]const u8 },
     .{ .name = "user_agent", .type = ?[]const u8 },
     .{ .name = "browser_profile", .type = ?[]const u8 },
+    .{ .name = "browser_profile_pool", .type = ?[]const u8 },
     .{ .name = "block_private_networks", .type = bool },
     .{ .name = "block_cidrs", .type = ?[]const u8 },
+    .{ .name = "google_chrome_transport", .type = bool },
     .{ .name = "cookie", .type = ?[]const u8 },
     .{ .name = "cookie_jar", .type = ?[]const u8 },
     .{ .name = "storage_engine", .type = ?Storage.EngineType },
@@ -193,7 +196,9 @@ pub fn init(allocator: Allocator, exec_name: []const u8, mode: Mode) !Config {
         .profile = undefined,
         .http_headers = undefined,
     };
-    config.profile = try ProfileStore.resolve(config.browserProfile());
+    const picked_profile = try config.resolveBrowserProfileName(allocator);
+    defer if (picked_profile) |name| allocator.free(name);
+    config.profile = try ProfileStore.resolve(picked_profile orelse config.browserProfile());
     errdefer config.profile.deinit();
     config.http_headers = try HttpHeaders.init(allocator, &config);
     return config;
@@ -320,6 +325,19 @@ pub fn browserProfile(self: *const Config) ?[]const u8 {
     };
 }
 
+pub fn browserProfilePool(self: *const Config) ?[]const u8 {
+    return switch (self.mode) {
+        inline .serve, .fetch, .mcp => |opts| opts.browser_profile_pool,
+        .help, .version => null,
+    };
+}
+
+fn resolveBrowserProfileName(self: *const Config, allocator: Allocator) !?[]const u8 {
+    const pool = self.browserProfilePool() orelse return null;
+    if (self.browserProfile() != null) return null;
+    return try ProfileRotation.pickFromPool(allocator, pool, std.crypto.random);
+}
+
 pub fn httpCacheDir(self: *const Config) ?[]const u8 {
     return switch (self.mode) {
         inline .serve, .fetch, .mcp => |opts| opts.http_cache_dir,
@@ -336,7 +354,7 @@ pub fn cookieFile(self: *const Config) ?[]const u8 {
 
 pub fn cookieJarFile(self: *const Config) ?[]const u8 {
     return switch (self.mode) {
-        inline .fetch, .mcp => |opts| opts.cookie_jar,
+        inline .serve, .fetch, .mcp => |opts| opts.cookie_jar,
         else => null,
     };
 }
@@ -378,6 +396,13 @@ pub fn blockPrivateNetworks(self: *const Config) bool {
 pub fn blockCidrs(self: *const Config) ?[]const u8 {
     return switch (self.mode) {
         inline .serve, .fetch, .mcp => |opts| opts.block_cidrs,
+        else => unreachable,
+    };
+}
+
+pub fn googleChromeTransport(self: *const Config) bool {
+    return switch (self.mode) {
+        inline .serve, .fetch, .mcp => |opts| opts.google_chrome_transport,
         else => unreachable,
     };
 }
@@ -521,6 +546,12 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\                resources, redirects, etc.).
         \\                Defaults to false.
         \\
+        \\--google-chrome-transport
+        \\                Route google.com/search document navigations through real
+        \\                Chrome network (scripts/chrome-google-transport.mjs).
+        \\                Bypasses curl QUIC fingerprint gap for Google SERP.
+        \\                Defaults to false.
+        \\
         \\--block-cidrs
         \\                Additional CIDR ranges to block, comma-separated.
         \\                Prefix with '-' to allow (exempt from blocking).
@@ -577,9 +608,22 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\                Filter out too verbose logs per scope:
         \\                http, unknown_prop, event, ...
         \\
+        \\--browser-profile
+        \\                Browser fingerprint profile: velora (default), chrome-macos-sonoma,
+        \\                chrome-windows-11, chrome-macos-catalina, or path/to/custom.json.
+        \\                Antidetect profiles align User-Agent, Sec-CH-UA, navigator, and TLS.
+        \\
+        \\--browser-profile-pool
+        \\                Comma-separated profile names; picks one at random when --browser-profile
+        \\                is omitted. E.g. chrome-macos-sonoma,chrome-windows-11
+        \\
+        \\--cookie-jar
+        \\                Save cookies (and localStorage snapshot) to this path on exit.
+        \\                Works with serve, fetch, and mcp. Pair with --cookie to restore session.
+        \\
         \\--user-agent    Override the User-Agent header entirely
         \\                User-Agent mustn't impersonate other browser.
-        \\                Any value containing "Mozilla" is forbidden.
+        \\                Any value containing "Mozilla" is forbidden (unless antidetect profile).
         \\                The browser will continue to send Sec-Ch-Ua header.
         \\                Incompatible with --user-agent-suffix
         \\

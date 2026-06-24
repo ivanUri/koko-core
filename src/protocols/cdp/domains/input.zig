@@ -90,8 +90,20 @@ fn dispatchMouseEvent(cmd: *CDP.Command) !void {
 
     try cmd.sendResult(null, .{});
 
+    const InputController = @import("../../../core/browser/InputController.zig");
+    const HumanInput = @import("../../../core/browser/HumanInput.zig");
+
     switch (params.type) {
-        .mouseMoved, .mouseWheel => return,
+        .mouseMoved => {
+            const bc = cmd.browser_context orelse return;
+            const frame = bc.session.currentFrame() orelse return;
+            try InputController.dispatchPointerMoveAt(frame, params.x, params.y);
+        },
+        .mouseWheel => {
+            const bc = cmd.browser_context orelse return;
+            const frame = bc.session.currentFrame() orelse return;
+            try HumanInput.wheelScroll(frame, 120, .{ .steps = 4, .step_delay_ms = 8 });
+        },
         .mousePressed => {
             const bc = cmd.browser_context orelse return;
             const frame = bc.session.currentFrame() orelse return;

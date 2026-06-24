@@ -19,17 +19,19 @@ The same `/sorry` page appears on **Playwright Chrome headless** from the same I
 
 HTTP stack: [`src/runtime/network/http.zig`](../src/runtime/network/http.zig) via libcurl.
 
+On macOS arm64, Velora links vendored [lexiforest/curl-impersonate](https://github.com/lexiforest/curl-impersonate) **v2.0.0a5** (`vendor/curl-impersonate/`, `curl 8.15.0-IMPERSONATE`, profile max `chrome146`).
+
 ## Spike procedure
 
-1. Install [curl-impersonate](https://github.com/lwthiker/curl-impersonate) (chrome120 profile).
+1. Use vendored binaries under `vendor/curl-impersonate/` (or install the same release).
 2. From the same machine/IP:
 
 ```bash
 # Default curl — expect /sorry or redirect
-curl -sI "https://www.google.com/search?q=test&hl=en" -A "Mozilla/5.0 ... Chrome/120..."
+curl -sI "https://www.google.com/search?q=test&hl=en" -A "Mozilla/5.0 ... Chrome/146..."
 
 # curl-impersonate — compare status/location
-curl_chrome120 -sI "https://www.google.com/search?q=test&hl=en"
+vendor/curl-impersonate/curl_chrome146 -sI "https://www.google.com/search?q=test&hl=en"
 ```
 
 3. If impersonate passes and default curl fails → TLS hypothesis confirmed.

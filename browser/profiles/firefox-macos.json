@@ -1,0 +1,118 @@
+{
+  "version": 1,
+  "id": "firefox-macos",
+  "mode": "antidetect",
+  "browserFamily": "firefox",
+  "personaId": "macos_sonoma_intel",
+  "transport": {
+    "impersonate": "firefox147"
+  },
+  "navigator": {
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:147.0) Gecko/20100101 Firefox/147.0",
+    "platform": "MacIntel",
+    "languages": [
+      "en-US",
+      "en"
+    ],
+    "hardwareConcurrency": 8,
+    "deviceMemory": 8,
+    "maxTouchPoints": 0,
+    "vendor": "",
+    "pdfViewerEnabled": true,
+    "appVersion": "5.0 (Macintosh)"
+  },
+  "userAgentData": {
+    "brands": [
+      {
+        "brand": "Firefox",
+        "version": "147"
+      },
+      {
+        "brand": "Not:A-Brand",
+        "version": "99"
+      }
+    ],
+    "platform": "macOS",
+    "platformVersion": "15.0.0",
+    "architecture": "arm",
+    "bitness": "64",
+    "uaFullVersion": "147.0.0.0",
+    "mobile": false
+  },
+  "plugins": [],
+  "screen": {
+    "width": 1440,
+    "height": 900,
+    "availWidth": 1440,
+    "availHeight": 869,
+    "devicePixelRatio": 1,
+    "colorDepth": 30,
+    "pixelDepth": 30,
+    "touch": false
+  },
+  "window": {
+    "innerWidth": 1440,
+    "innerHeight": 844,
+    "outerWidth": 1442,
+    "outerHeight": 900
+  },
+  "webgl": {
+    "version": "WebGL 1.0",
+    "vendor": "Mozilla",
+    "renderer": "Apple M1, or similar",
+    "shadingLanguageVersion": "WebGL GLSL ES 1.0",
+    "unmaskedVendor": "Apple",
+    "unmaskedRenderer": "Apple M1",
+    "maxTextureSize": 16384,
+    "maxCubeMapTextureSize": 16384,
+    "maxRenderbufferSize": 16384,
+    "maxVertexAttribs": 16,
+    "maxVertexUniformVectors": 4096,
+    "maxVaryingVectors": 30,
+    "maxCombinedTextureImageUnits": 32,
+    "maxVertexTextureImageUnits": 16,
+    "maxTextureImageUnits": 16,
+    "maxFragmentUniformVectors": 1024,
+    "maxDrawBuffers": 8,
+    "maxTextureMaxAnisotropy": 16,
+    "maxViewportDims": [
+      16384,
+      16384
+    ],
+    "aliasedLineWidthRange": [
+      1,
+      1
+    ],
+    "aliasedPointSizeRange": [
+      1,
+      1024
+    ],
+    "extensions": [
+      "ANGLE_instanced_arrays",
+      "EXT_blend_minmax",
+      "EXT_color_buffer_half_float",
+      "EXT_float_blend",
+      "EXT_frag_depth",
+      "EXT_shader_texture_lod",
+      "EXT_sRGB",
+      "EXT_texture_filter_anisotropic",
+      "OES_element_index_uint",
+      "OES_fbo_render_mipmap",
+      "OES_standard_derivatives",
+      "OES_texture_float",
+      "OES_texture_float_linear",
+      "OES_texture_half_float",
+      "OES_texture_half_float_linear",
+      "OES_vertex_array_object",
+      "WEBGL_color_buffer_float",
+      "WEBGL_compressed_texture_s3tc",
+      "WEBGL_debug_renderer_info",
+      "WEBGL_debug_shaders",
+      "WEBGL_depth_texture",
+      "WEBGL_draw_buffers",
+      "WEBGL_lose_context"
+    ]
+  },
+  "timezone": "Asia/Saigon",
+  "locale": "en-US"
+}

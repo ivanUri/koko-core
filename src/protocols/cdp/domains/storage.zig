@@ -131,10 +131,11 @@ pub fn setCdpCookie(cookie_jar: *CookieJar, param: CdpCookie) !void {
     if (param.partitionKey != null) {
         log.warn(.not_implemented, "partition key", .{ .src = "setCdpCookie" });
     }
-    // Still reject unsupported features
-    if (param.priority != .Medium or param.sameParty != null or param.sourceScheme != null) {
-        return error.NotImplemented;
-    }
+    // Chrome Network.getAllCookies includes metadata we do not persist (priority,
+    // sourceScheme, sameParty). Ignore so Network.setCookies round-trips work.
+    _ = param.priority;
+    _ = param.sameParty;
+    _ = param.sourceScheme;
 
     var arena = std.heap.ArenaAllocator.init(cookie_jar.allocator);
     errdefer arena.deinit();

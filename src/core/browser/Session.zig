@@ -27,10 +27,12 @@ const Frame = @import("Frame.zig");
 const Page = @import("Page.zig");
 pub const Runner = @import("Runner.zig");
 const Browser = @import("Browser.zig");
+const ClientHints = @import("../fingerprint/ClientHints.zig");
 const Notification = @import("../../runtime/Notification.zig");
 const QueuedNavigation = Frame.QueuedNavigation;
 
 const log = @import("../../support/log.zig");
+const FingerprintSeed = @import("../fingerprint/FingerprintSeed.zig");
 const ArenaPool = App.ArenaPool;
 const Allocator = std.mem.Allocator;
 const IS_DEBUG = builtin.mode == .Debug;
@@ -52,6 +54,7 @@ navigation: Navigation,
 storage_shed: storage.Shed,
 notification: *Notification,
 cookie_jar: storage.Cookie.Jar,
+fingerprint_seed: u64 = 0,
 
 // Shared allocator. Used by Session itself and borrowed by Pages.
 arena_pool: *ArenaPool,
@@ -85,6 +88,9 @@ _deferred_commit_pending: bool = false,
 frame_id_gen: u32 = 0,
 loader_id_gen: u32 = 0,
 
+/// Origins that sent `Accept-CH` for UA client hints (high-entropy hints enabled).
+_client_hints_origins: ClientHints.OriginSet = .empty,
+
 pub fn init(self: *Session, browser: *Browser, notification: *Notification) !void {
     const allocator = browser.app.allocator;
     const arena_pool = browser.arena_pool;
@@ -103,7 +109,25 @@ pub fn init(self: *Session, browser: *Browser, notification: *Notification) !voi
         .notification = notification,
         .fc_identity_pool = .init(allocator),
         .cookie_jar = storage.Cookie.Jar.init(allocator),
+        .fingerprint_seed = FingerprintSeed.sessionSeed(
+            browser.app.config.profile.id,
+            @intCast(std.time.nanoTimestamp()),
+        ),
     };
+}
+
+/// Record `Accept-CH` from a response so subsequent requests to the same origin
+/// include high-entropy UA client hints (Chrome behavior after page 1).
+pub fn processAcceptClientHints(
+    self: *Session,
+    response_url: [:0]const u8,
+    header_iter: *@import("../../runtime/network/http.zig").HeaderIterator,
+) !void {
+    return ClientHints.processAcceptHeaders(&self._client_hints_origins, self.arena, response_url, header_iter);
+}
+
+pub fn clientHintsEnabledForUrl(self: *const Session, allocator: Allocator, url: [:0]const u8) bool {
+    return ClientHints.enabledForUrl(&self._client_hints_origins, allocator, url);
 }
 
 pub fn deinit(self: *Session) void {
@@ -114,6 +138,7 @@ pub fn deinit(self: *Session) void {
         self.removePage();
     }
     self.cookie_jar.deinit();
+    self._client_hints_origins.deinit(self.arena);
 
     // Force V8 to flush any remaining weak callbacks while
     // fc_identity_pool is still alive. Identity structs allocated from

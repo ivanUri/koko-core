@@ -13,6 +13,7 @@
 
 const std = @import("std");
 const FingerprintProfile = @import("../../fingerprint/Profile.zig");
+const MeasureTextIntelligent = @import("../../fingerprint/MeasureTextIntelligent.zig");
 const js = @import("../../js/js.zig");
 const Frame = @import("../../browser/Frame.zig");
 
@@ -29,14 +30,37 @@ _font_size: f64 = 10.0,
 _text_length: usize = 0,
 _text_hash: u32 = 0,
 _font_hash: u32 = 0,
+_uses_baseline: bool = false,
+_abl: f64 = 0,
+_abr: f64 = 0,
+_aba: f64 = 0,
+_abd: f64 = 0,
+_fbba: f64 = 0,
+_fbbd: f64 = 0,
 
 pub fn init(text: []const u8, font: []const u8, frame: *Frame) !*TextMetrics {
     const font_size = parseFontSize(font);
-    const width = estimateTextWidth(text, font, font_size, frame.identityProfile());
-
-    // Generate hashes for deterministic variations
     const text_hash = simpleHash(text);
     const font_hash = simpleHash(font);
+
+    if (MeasureTextIntelligent.lookup(frame, font, text)) |bl| {
+        return frame._factory.create(TextMetrics{
+            ._width = bl.width,
+            ._font_size = font_size,
+            ._text_length = text.len,
+            ._text_hash = text_hash,
+            ._font_hash = font_hash,
+            ._uses_baseline = true,
+            ._abl = bl.actual_bounding_box_left,
+            ._abr = bl.actual_bounding_box_right,
+            ._aba = bl.actual_bounding_box_ascent,
+            ._abd = bl.actual_bounding_box_descent,
+            ._fbba = bl.font_bounding_box_ascent,
+            ._fbbd = bl.font_bounding_box_descent,
+        });
+    }
+
+    const width = estimateTextWidth(text, font, font_size, frame.identityProfile());
 
     return frame._factory.create(TextMetrics{
         ._width = width,
@@ -203,31 +227,38 @@ fn metricValue(self: *const TextMetrics, base: f64, hash: u32) f64 {
 }
 
 pub fn getWidth(self: *const TextMetrics) f64 {
+    if (self._uses_baseline) return self._width;
     const combined_hash = self._text_hash ^ self._font_hash;
     return metricValue(self, self._width, combined_hash);
 }
 
 fn getActualBoundingBoxLeft(self: *const TextMetrics) f64 {
+    if (self._uses_baseline) return self._abl;
     return metricValue(self, 0.0, self._text_hash);
 }
 
 fn getActualBoundingBoxRight(self: *const TextMetrics) f64 {
+    if (self._uses_baseline) return self._abr;
     return metricValue(self, self._width, self._text_hash +% 1);
 }
 
 pub fn getActualBoundingBoxAscent(self: *const TextMetrics) f64 {
+    if (self._uses_baseline) return self._aba;
     return metricValue(self, self._font_size * 0.75, self._font_hash);
 }
 
 pub fn getActualBoundingBoxDescent(self: *const TextMetrics) f64 {
+    if (self._uses_baseline) return self._abd;
     return metricValue(self, self._font_size * 0.25, self._font_hash +% 1);
 }
 
 fn getFontBoundingBoxAscent(self: *const TextMetrics) f64 {
+    if (self._uses_baseline) return self._fbba;
     return metricValue(self, self._font_size * 0.8, self._font_hash +% 2);
 }
 
 fn getFontBoundingBoxDescent(self: *const TextMetrics) f64 {
+    if (self._uses_baseline) return self._fbbd;
     return metricValue(self, self._font_size * 0.2, self._font_hash +% 3);
 }
 

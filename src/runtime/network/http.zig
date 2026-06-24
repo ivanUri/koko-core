@@ -222,10 +222,13 @@ pub const AuthChallenge = struct {
 
 pub const ResponseHead = struct {
     pub const MAX_CONTENT_TYPE_LEN = 64;
+    pub const MAX_PROTOCOL_LEN = 16;
 
     status: u16,
     url: [*c]const u8,
     redirect_count: u32,
+    _protocol_len: usize = 0,
+    _protocol: [MAX_PROTOCOL_LEN]u8 = undefined,
     _content_type_len: usize = 0,
     _content_type: [MAX_CONTENT_TYPE_LEN]u8 = undefined,
     // this is normally an empty list, but if the response is being injected
@@ -239,6 +242,11 @@ pub const ResponseHead = struct {
             return null;
         }
         return self._content_type[0..self._content_type_len];
+    }
+
+    pub fn protocol(self: *const ResponseHead) ?[]const u8 {
+        if (self._protocol_len == 0) return null;
+        return self._protocol[0..self._protocol_len];
     }
 };
 
@@ -513,16 +521,39 @@ pub const Connection = struct {
         }
 
         if (build_config.curl_impersonate) {
-            try self.applyChrome120Transport();
+            try self.applyProfileTransport(config);
         }
     }
 
-    pub fn applyChrome120Transport(self: *const Connection) !void {
+    /// Apply curl-impersonate profile + Chrome TLS knobs (GREASE, ALPS, ext permutation).
+    /// Must be the last SSL-affecting setup before curl_easy_perform.
+    pub fn applyProfileTransport(self: *const Connection, config: *const Config) !void {
         const easy = self._easy;
-        // curl_easy_impersonate sets the Chrome 120 TLS/JA4 + HTTP/2 fingerprint.
-        // Must run after CA/proxy/timeouts — those CURLOPTs can clobber the SSL ctx.
-        try libcurl.setImpersonate(easy, "chrome120", false);
+        const target = config.profile.transport.impersonate;
+        try libcurl.setImpersonate(easy, target, false);
+        if (!config.profile.isFirefox()) {
+            try applyChromeTlsKnobs(easy);
+            // Guest Chrome search SERP is served over HTTP/3 (see www.google.com.har).
+            try libcurl.curl_easy_setopt(easy, .http_version, libcurl.HTTP_VERSION_3);
+        }
         try libcurl.curl_easy_setopt(easy, .accept_encoding, "");
+    }
+
+    fn applyChromeTlsKnobs(easy: *libcurl.Curl) !void {
+        if (!build_config.curl_impersonate) return;
+        // Mirror curl_chrome136+ wrapper flags; chrome146 bundles these in --impersonate
+        // but re-applying after curl_easy_reset / verify opts keeps BoringSSL behavior stable.
+        try libcurl.curl_easy_setopt(easy, .ssl_enable_alps, 1);
+        try libcurl.curl_easy_setopt(easy, .tls_grease, 1);
+        try libcurl.curl_easy_setopt(easy, .ssl_permute_extensions, 1);
+        // Best-effort HTTP/3 knobs (unsupported values are ignored on this libcurl build).
+        libcurl.curlEasySetoptOptional(easy, .http3_pseudo_headers_order, libcurl.CHROME_HTTP3_PSEUDO_HEADERS_ORDER.ptr);
+        libcurl.curlEasySetoptOptional(easy, .quic_transport_parameters, libcurl.CHROME_QUIC_TRANSPORT_PARAMS.ptr);
+    }
+
+    /// Kept for call sites that only hold a Connection pointer.
+    pub fn applyChrome120Transport(self: *const Connection, config: *const Config) !void {
+        try self.applyProfileTransport(config);
     }
 
     fn discardBody(_: [*]const u8, count: usize, len: usize, _: ?*anyopaque) usize {
@@ -574,6 +605,20 @@ pub const Connection = struct {
         var count: c_long = undefined;
         try libcurl.curl_easy_getinfo(self._easy, .redirect_count, &count);
         return @intCast(count);
+    }
+
+    /// Maps libcurl CURLINFO_HTTP_VERSION to Chrome DevTools protocol strings.
+    pub fn httpProtocolLabel(self: *const Connection) []const u8 {
+        var ver: c_long = 0;
+        libcurl.curl_easy_getinfo(self._easy, .negotiated_http_version, &ver) catch return "unknown";
+        // Use numeric literals — @cImport enum values have tripped switch lowering before.
+        return switch (ver) {
+            30, 31 => "h3",
+            3, 4, 5 => "h2",
+            2 => "http/1.1",
+            1 => "http/1.0",
+            else => "unknown",
+        };
     }
 
     pub fn getConnectHeader(self: *const Connection, name: [:0]const u8, index: usize) ?HeaderValue {

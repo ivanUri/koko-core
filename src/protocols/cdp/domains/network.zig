@@ -317,6 +317,8 @@ pub fn httpResponseHeaderDone(arena: Allocator, bc: *CDP.BrowserContext, msg: *c
         .frameId = &id.toFrameId(req.params.frame_id),
         .requestId = &id.toRequestId(req),
         .loaderId = &id.toLoaderId(req.params.loader_id),
+        .type = req.params.resource_type.string(),
+        .request = RequestWriter.init(req),
         .response = ResponseWriter.init(arena, msg.response),
         .hasExtraInfo = false, // TODO change after adding Network.responseReceivedExtraInfo
     }, .{ .session_id = session_id });
@@ -383,7 +385,11 @@ pub const RequestWriter = struct {
             }
             if (try request.getCookieString()) |cookies| {
                 try jws.objectField("Cookie");
-                try jws.write(cookies[0 .. cookies.len - 1]);
+                try jws.write(cookies);
+            }
+            if (request.params.referer) |referer| {
+                try jws.objectField("Referer");
+                try jws.write(referer);
             }
             try jws.endObject();
         }
@@ -421,6 +427,11 @@ const ResponseWriter = struct {
 
             try jws.objectField("statusText");
             try jws.write(@as(std.http.Status, @enumFromInt(status)).phrase() orelse "Unknown");
+        }
+
+        if (response.protocol()) |protocol| {
+            try jws.objectField("protocol");
+            try jws.write(protocol);
         }
 
         {

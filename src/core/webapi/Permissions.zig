@@ -33,7 +33,13 @@ _pad: bool = false,
 const QueryDescriptor = struct {
     name: []const u8,
 };
-// We always report 'prompt' (the default safe value — neither granted nor denied).
+fn defaultPermissionState(name: []const u8) []const u8 {
+    // macOS Chrome defaults for common probes.
+    if (std.mem.eql(u8, name, "notifications")) return "denied";
+    if (std.mem.eql(u8, name, "geolocation")) return "prompt";
+    return "prompt";
+}
+
 pub fn query(_: *const Permissions, qd: QueryDescriptor, frame: *Frame) !js.Promise {
     const arena = try frame.getArena(.tiny, "PermissionStatus");
     errdefer frame.releaseArena(arena);
@@ -41,7 +47,7 @@ pub fn query(_: *const Permissions, qd: QueryDescriptor, frame: *Frame) !js.Prom
     const status = try arena.create(PermissionStatus);
     status.* = .{
         ._arena = arena,
-        ._state = "prompt",
+        ._state = defaultPermissionState(qd.name),
         ._name = try arena.dupe(u8, qd.name),
     };
     return frame.js.local.?.resolvePromise(status);

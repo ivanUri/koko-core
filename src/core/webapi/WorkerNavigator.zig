@@ -46,7 +46,7 @@ pub fn getUserAgent(_: *const WorkerNavigator, page: *Page) []const u8 {
     return page.navigatorState().userAgent(&page.session.browser.http_client);
 }
 
-pub fn getLanguages(_: *const WorkerNavigator, page: *Page) [2][]const u8 {
+pub fn getLanguages(_: *const WorkerNavigator, page: *Page) []const []const u8 {
     return page.navigatorState().languages();
 }
 

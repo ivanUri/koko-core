@@ -11,7 +11,7 @@ pub fn getEffectiveType(_: *const NetworkInformation) []const u8 {
 }
 
 pub fn getDownlink(_: *const NetworkInformation) f64 {
-    return 10.0;
+    return 7.85;
 }
 
 pub fn getRtt(_: *const NetworkInformation) f64 {

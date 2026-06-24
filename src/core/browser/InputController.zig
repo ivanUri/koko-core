@@ -24,6 +24,8 @@ const log = @import("../../support/log.zig");
 const MouseEvent = @import("../webapi/event/MouseEvent.zig");
 const PointerEvent = @import("../webapi/event/PointerEvent.zig");
 const String = @import("../../support/string.zig").String;
+const HumanInput = @import("HumanInput.zig");
+const WheelEvent = @import("../webapi/event/WheelEvent.zig");
 
 const IS_DEBUG = builtin.mode == .Debug;
 
@@ -65,6 +67,7 @@ pub fn dispatchPointerUpAtCdp(root_frame: *Frame, x: f64, y: f64) !void {
 }
 
 fn dispatchPointerDownAtOpts(root_frame: *Frame, x: f64, y: f64, timeout_ms: u32) !void {
+    try HumanInput.movePointerTo(root_frame, x, y, .{ .steps = 8, .step_delay_ms = 4 });
     const hit = (try waitForActivationHit(root_frame, x, y, timeout_ms)) orelse return;
     const effective = resolveEffectiveHit(hit);
     root_frame._input_press_hit = effective;
@@ -92,9 +95,39 @@ pub fn makeHitForElement(element: *Element, frame: *Frame) Frame.InputHit {
 
 fn dispatchActivationOnTarget(hit: Frame.InputHit) !void {
     const effective = resolveEffectiveHit(hit);
+    try HumanInput.movePointerTo(effective.frame, effective.client_x, effective.client_y, .{});
     try dispatchPointerOver(effective);
     try dispatchPointerDown(effective);
     try dispatchPointerUpAndClick(effective);
+}
+
+/// Pointer/mouse move at viewport coordinates (no button press).
+pub fn dispatchPointerMoveAt(root_frame: *Frame, x: f64, y: f64) !void {
+    const hit = (try resolveHitOnce(root_frame, x, y, true)) orelse {
+        root_frame._last_pointer_x = x;
+        root_frame._last_pointer_y = y;
+        return;
+    };
+    const base = baseEventOpts(hit);
+    try dispatchPointerEvent(hit, comptime .wrap("pointermove"), base, 0.0);
+    try dispatchMouseEvent(hit, comptime .wrap("mousemove"), base);
+    root_frame._last_pointer_x = x;
+    root_frame._last_pointer_y = y;
+}
+
+/// Wheel event at viewport coordinates.
+pub fn dispatchWheelAt(root_frame: *Frame, x: f64, y: f64, delta_y: f64) !void {
+    const hit = (try resolveHitOnce(root_frame, x, y, true)) orelse return;
+    const wheel = try WheelEvent.init("wheel", .{
+        .bubbles = true,
+        .cancelable = true,
+        .composed = true,
+        .clientX = x,
+        .clientY = y,
+        .deltaY = delta_y,
+        .deltaMode = WheelEvent.DOM_DELTA_PIXEL,
+    }, hit.frame);
+    try hit.frame._event_manager.dispatch(hit.element.asEventTarget(), wheel.asEvent());
 }
 
 fn resolveEffectiveHit(hit: Frame.InputHit) Frame.InputHit {

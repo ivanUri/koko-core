@@ -36,6 +36,9 @@ expires: ?f64,
 secure: bool = false,
 http_only: bool = false,
 same_site: SameSite = .none,
+/// Minimum `Jar.document_nav_generation` before this cookie is attached to HTTP
+/// requests. New cookies commit on the *next* document navigation (Chrome behavior).
+available_from_nav: u64 = 0,
 
 pub const SameSite = enum {
     strict,
@@ -445,6 +448,8 @@ pub fn appliesTo(self: *const Cookie, url: *const PreparedUri, same_site: bool, 
 pub const Jar = struct {
     allocator: Allocator,
     cookies: std.ArrayList(Cookie),
+    /// Incremented at the start of each document navigation (see `beginDocumentNavigation`).
+    document_nav_generation: u64 = 0,
 
     pub fn init(allocator: Allocator) Jar {
         return .{
@@ -467,6 +472,11 @@ pub const Jar = struct {
         self.cookies.clearRetainingCapacity();
     }
 
+    /// Call when a document navigation begins, before the HTTP request is issued.
+    pub fn beginDocumentNavigation(self: *Jar) void {
+        self.document_nav_generation +%= 1;
+    }
+
     pub fn add(
         self: *Jar,
         cookie: Cookie,
@@ -474,42 +484,50 @@ pub const Jar = struct {
         /// Checks if addition comes from HTTP request or JS context.
         comptime is_http: bool,
     ) !void {
-        const is_expired = isCookieExpired(&cookie, request_time);
+        var c = cookie;
+        // Chrome commits Set-Cookie on the next document navigation (+1). SG_SS is
+        // withheld longer so it is not attached during sei=/sg_ss= redirect hops.
+        c.available_from_nav = if (std.mem.eql(u8, c.name, "SG_SS"))
+            self.document_nav_generation + 3
+        else
+            self.document_nav_generation + 1;
+
+        const is_expired = isCookieExpired(&c, request_time);
         defer if (is_expired) {
-            cookie.deinit();
+            c.deinit();
         };
 
         if (self.cookies.items.len >= max_jar_size) {
             return error.CookieJarQuotaExceeded;
         }
-        if (cookie.value.len > max_cookie_size) {
+        if (c.value.len > max_cookie_size) {
             return error.CookieSizeExceeded;
         }
 
-        for (self.cookies.items, 0..) |*c, i| {
+        for (self.cookies.items, 0..) |*existing, i| {
             // We're only looking for the equal one.
-            if (areCookiesEqual(&cookie, c) == false) {
+            if (areCookiesEqual(&c, existing) == false) {
                 continue;
             }
 
             // RFC 6265bis 5.7.2: a non-HTTP API (e.g. document.cookie) must
             // not replace an HttpOnly cookie.
-            if (c.http_only and is_http == false) {
-                if (is_expired == false) cookie.deinit();
+            if (existing.http_only and is_http == false) {
+                if (is_expired == false) c.deinit();
                 return;
             }
 
-            c.deinit();
+            existing.deinit();
             if (is_expired) {
                 _ = self.cookies.swapRemove(i);
             } else {
-                self.cookies.items[i] = cookie;
+                self.cookies.items[i] = c;
             }
             return;
         }
 
         if (!is_expired) {
-            try self.cookies.append(self.allocator, cookie);
+            try self.cookies.append(self.allocator, c);
         }
     }
 
@@ -532,8 +550,11 @@ pub const Jar = struct {
         is_navigation: bool = true,
         prefix: ?[]const u8 = null,
         origin_url: ?[:0]const u8 = null,
+        /// Active document navigation generation; defaults to `Jar.document_nav_generation`.
+        nav_generation: ?u64 = null,
     };
     pub fn forRequest(self: *Jar, target_url: [:0]const u8, writer: anytype, opts: LookupOpts) !void {
+        const nav_generation = opts.nav_generation orelse self.document_nav_generation;
         const target = PreparedUri{
             .host = URL.getHostname(target_url),
             .path = URL.getPathname(target_url),
@@ -548,9 +569,11 @@ pub const Jar = struct {
             if (!cookie.appliesTo(&target, same_site, opts.is_navigation, opts.is_http)) {
                 continue;
             }
-
-            // Google sets SG_SS via bot-scoring JS; sending it back triggers /sorry.
-            if (std.mem.eql(u8, cookie.name, "SG_SS")) {
+            if (opts.is_http and nav_generation < cookie.available_from_nav) {
+                continue;
+            }
+            // Chromium does not attach SG_SS to document navigations (only XHR/beacon).
+            if (opts.is_http and opts.is_navigation and std.mem.eql(u8, cookie.name, "SG_SS")) {
                 continue;
             }
 
@@ -789,6 +812,44 @@ test "Jar: add limit" {
         .expires = null,
         .value = "v",
     }, now, true));
+}
+
+test "Jar: cookies commit on next document navigation" {
+    const now = std.time.timestamp();
+    var jar = Jar.init(testing.allocator);
+    defer jar.deinit();
+
+    jar.beginDocumentNavigation(); // generation 1
+    try jar.add(try Cookie.parse(testing.allocator, test_url, "AEC=1"), now, true);
+    try jar.add(try Cookie.parse(testing.allocator, test_url, "SG_SS=botflag"), now, false);
+
+    jar.beginDocumentNavigation(); // generation 2 — next nav, HTTP cookies committed
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    try jar.forRequest(test_url, buf.writer(testing.allocator), .{
+        .is_http = true,
+        .is_navigation = true,
+        .nav_generation = jar.document_nav_generation,
+    });
+    try testing.expectEqualStrings("AEC=1", buf.items);
+
+    jar.beginDocumentNavigation(); // generation 3 — SG_SS still withheld
+    buf.clearRetainingCapacity();
+    try jar.forRequest(test_url, buf.writer(testing.allocator), .{
+        .is_http = true,
+        .is_navigation = false,
+        .nav_generation = jar.document_nav_generation,
+    });
+    try testing.expectEqualStrings("AEC=1", buf.items);
+
+    jar.beginDocumentNavigation(); // generation 4 — SG_SS committed for subresources
+    buf.clearRetainingCapacity();
+    try jar.forRequest(test_url, buf.writer(testing.allocator), .{
+        .is_http = true,
+        .is_navigation = false,
+        .nav_generation = jar.document_nav_generation,
+    });
+    try testing.expectEqualStrings("AEC=1; SG_SS=botflag", buf.items);
 }
 
 test "Jar: forRequest" {

@@ -48,11 +48,11 @@ pub const JsApi = struct {
     pub const pageLeft = bridge.accessor(VisualViewport.getPageLeft, null, .{});
     pub const pageTop = bridge.accessor(VisualViewport.getPageTop, null, .{});
     pub fn getWidth(_: *const VisualViewport, frame: *Frame) u32 {
-        return frame.identityProfile().screen.width;
+        return frame.identityProfile().window.inner_width;
     }
 
     pub fn getHeight(_: *const VisualViewport, frame: *Frame) u32 {
-        return frame.identityProfile().screen.height;
+        return frame.identityProfile().window.inner_height;
     }
 
     pub const width = bridge.accessor(getWidth, null, .{});

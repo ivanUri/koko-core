@@ -228,7 +228,8 @@ pub fn getLocation(self: *const Window) *Location {
     return self._location;
 }
 
-pub fn getChrome(self: *Window) *Chrome {
+pub fn getChrome(self: *Window) ?*Chrome {
+    if (self._frame.loadedProfile().isFirefox()) return null;
     return &self._chrome;
 }
 
@@ -1028,7 +1029,7 @@ pub const JsApi = struct {
     pub const sessionStorage = bridge.accessor(Window.getSessionStorage, null, .{});
     pub const origin = bridge.accessor(Window.getOrigin, null, .{});
     pub const location = bridge.accessor(Window.getLocation, Window.setLocation, .{ .deletable = false });
-    pub const chrome = bridge.accessor(Window.getChrome, null, .{});
+    pub const chrome = bridge.accessor(Window.getChrome, null, .{ .null_as_undefined = true });
     pub const history = bridge.accessor(Window.getHistory, null, .{});
     pub const navigation = bridge.accessor(Window.getNavigation, null, .{});
     pub const crypto = bridge.accessor(Window.getCrypto, null, .{});
@@ -1085,19 +1086,19 @@ pub const JsApi = struct {
     pub const isSecureContext = bridge.attribute(false, .{});
 
     pub fn getInnerWidth(_: *const Window, frame: *Frame) u32 {
-        return frame.identityProfile().screen.width;
+        return frame.identityProfile().window.inner_width;
     }
 
     pub fn getInnerHeight(_: *const Window, frame: *Frame) u32 {
-        return frame.identityProfile().screen.height;
+        return frame.identityProfile().window.inner_height;
     }
 
     pub fn getOuterWidth(_: *const Window, frame: *Frame) u32 {
-        return frame.identityProfile().screen.width;
+        return frame.identityProfile().window.outer_width;
     }
 
     pub fn getOuterHeight(_: *const Window, frame: *Frame) u32 {
-        return frame.identityProfile().screen.height;
+        return frame.identityProfile().window.outer_height;
     }
 
     pub fn getDevicePixelRatio(_: *const Window, frame: *Frame) f64 {

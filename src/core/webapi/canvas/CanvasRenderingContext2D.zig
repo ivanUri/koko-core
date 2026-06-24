@@ -22,6 +22,9 @@ const Canvas = @import("../element/html/Canvas.zig");
 const CanvasGradient = @import("CanvasGradient.zig");
 const ImageData = @import("../ImageData.zig");
 const TextMetrics = @import("TextMetrics.zig");
+const FingerprintSeed = @import("../../fingerprint/FingerprintSeed.zig");
+const NativeCanvas = @import("../../fingerprint/NativeCanvas.zig");
+const CanvasIntelligent = @import("../../fingerprint/CanvasIntelligent.zig");
 
 /// This class doesn't implement a `constructor`.
 /// It can be obtained with a call to `HTMLCanvasElement#getContext`.
@@ -46,6 +49,7 @@ _arc: ?struct {
     end: f64,
     ccw: bool,
 } = null,
+_probe: CanvasIntelligent.ProbeState = .{},
 
 pub fn getCanvas(self: *const CanvasRenderingContext2D) *Canvas {
     return self._canvas;
@@ -119,6 +123,21 @@ pub fn getImageData(
 
     // Create ImageData with requested dimensions
     const image_data = try ImageData.init(@intCast(sw), @intCast(sh), null, frame);
+
+    if (CanvasIntelligent.shouldUseImageDataBaseline(self._probe, frame)) |baseline| {
+        if (sx == 0 and sy == 0 and sw == 2 and sh == 2 and baseline.len >= 16) {
+            const local = frame.js.local orelse return image_data;
+            const data_ref = image_data._data.local(local);
+            const view: *const js.v8.ArrayBufferView = @ptrCast(data_ref.handle);
+            const array_buffer = js.v8.v8__ArrayBufferView__Buffer(view) orelse return image_data;
+            const backing_store_ptr = js.v8.v8__ArrayBuffer__GetBackingStore(array_buffer);
+            const backing_store_handle = js.v8.std__shared_ptr__v8__BackingStore__get(&backing_store_ptr) orelse return image_data;
+            const data_bytes: [*]u8 = @ptrCast(@alignCast(js.v8.v8__BackingStore__Data(backing_store_handle)));
+            const copy_len = @min(baseline.len, 16);
+            @memcpy(data_bytes[0..copy_len], baseline[0..copy_len]);
+            return image_data;
+        }
+    }
 
     // If no pixel buffer exists, return empty (transparent) ImageData
     const buffer = self._canvas._pixel_buffer orelse return image_data;
@@ -206,6 +225,17 @@ pub fn arc(self: *CanvasRenderingContext2D, x: f64, y: f64, radius: f64, start_a
         .ccw = ccw orelse false,
     };
 }
+pub fn ellipse(
+    _: *CanvasRenderingContext2D,
+    _: f64,
+    _: f64,
+    _: f64,
+    _: f64,
+    _: f64,
+    _: f64,
+    _: f64,
+    _: ?bool,
+) void {}
 pub fn arcTo(_: *CanvasRenderingContext2D, _: f64, _: f64, _: f64, _: f64, _: f64) void {}
 pub fn rect(_: *CanvasRenderingContext2D, _: f64, _: f64, _: f64, _: f64) void {}
 
@@ -230,6 +260,7 @@ pub fn fill(self: *CanvasRenderingContext2D, frame: *Frame) !void {
 
     const buffer = try canvas.getOrCreatePixelBuffer(frame);
     applyBlinkLowEntropyPattern(buffer, self._fill_style);
+    self._probe.recordLowEntropyArc(self._canvas.getWidth(), self._canvas.getHeight());
     self._arc = null;
 }
 
@@ -240,9 +271,27 @@ pub fn fillText(self: *CanvasRenderingContext2D, text: []const u8, x: f64, y: f6
 
     if (text.len == 0) return;
 
-    const metrics = try TextMetrics.init(text, self._font, frame);
+    self._probe.recordFillText(
+        self._canvas.getWidth(),
+        self._canvas.getHeight(),
+        self._font,
+        text,
+        x,
+        y,
+    );
+
     const buffer = try self._canvas.getOrCreatePixelBuffer(frame);
-    try rasterizeText(buffer, text, x, y, metrics, self._fill_style);
+
+    if (NativeCanvas.useNativeText(frame)) {
+        NativeCanvas.fillText(buffer, text, x, y, self._font, self._fill_style, frame) catch {
+            const metrics = try TextMetrics.init(text, self._font, frame);
+            try rasterizeText(buffer, text, x, y, metrics, self._fill_style, frame);
+        };
+        return;
+    }
+
+    const metrics = try TextMetrics.init(text, self._font, frame);
+    try rasterizeText(buffer, text, x, y, metrics, self._fill_style, frame);
 }
 
 pub fn strokeText(self: *CanvasRenderingContext2D, text: []const u8, x: f64, y: f64, max_width: ?f64, frame: *Frame) !void {
@@ -262,6 +311,7 @@ fn rasterizeText(
     y: f64,
     metrics: *const TextMetrics,
     fill_style: color.RGBA,
+    frame: *Frame,
 ) !void {
     const baseline_y = y - metrics.getActualBoundingBoxAscent();
     const glyph_height = @max(1.0, metrics._font_size);
@@ -276,7 +326,8 @@ fn rasterizeText(
     while (byte_index < text.len) {
         const glyph_len = nextGlyphLength(text, byte_index);
         const segment = text[byte_index .. byte_index + glyph_len];
-        const segment_hash = hashBytes(segment);
+        const seed = frame._session.fingerprint_seed;
+        const segment_hash = hashBytes(segment, seed);
         const gx = x + glyph_width * @as(f64, @floatFromInt(glyph_index));
         drawGlyph(buffer, gx, baseline_y, glyph_width, glyph_height, segment_hash, glyphCategory(segment), fill_style);
         byte_index += glyph_len;
@@ -362,13 +413,13 @@ fn drawGlyph(
     }
 }
 
-fn hashBytes(bytes: []const u8) u32 {
+fn hashBytes(bytes: []const u8, seed: u64) u32 {
     var hash: u32 = 2166136261;
     for (bytes) |byte| {
         hash ^= byte;
         hash *%= 16777619;
     }
-    return hash;
+    return FingerprintSeed.mixHash(hash, seed);
 }
 pub fn createLinearGradient(
     _: *CanvasRenderingContext2D,
@@ -449,7 +500,10 @@ pub const JsApi = struct {
     pub const quadraticCurveTo = bridge.function(CanvasRenderingContext2D.quadraticCurveTo, .{ .noop = true });
     pub const bezierCurveTo = bridge.function(CanvasRenderingContext2D.bezierCurveTo, .{ .noop = true });
     pub const arc = bridge.function(CanvasRenderingContext2D.arc, .{});
+    pub const ellipse = bridge.function(CanvasRenderingContext2D.ellipse, .{ .noop = true });
     pub const arcTo = bridge.function(CanvasRenderingContext2D.arcTo, .{ .noop = true });
+    pub const shadowBlur = bridge.property(0.0, .{ .template = false, .readonly = false });
+    pub const shadowColor = bridge.property("rgba(0, 0, 0, 0)", .{ .template = false, .readonly = false });
     pub const rect = bridge.function(CanvasRenderingContext2D.rect, .{ .noop = true });
     pub const fill = bridge.function(CanvasRenderingContext2D.fill, .{});
     pub const stroke = bridge.function(CanvasRenderingContext2D.stroke, .{ .noop = true });

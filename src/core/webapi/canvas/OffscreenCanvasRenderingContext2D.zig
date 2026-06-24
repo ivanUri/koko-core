@@ -113,6 +113,17 @@ pub fn lineTo(_: *OffscreenCanvasRenderingContext2D, _: f64, _: f64) void {}
 pub fn quadraticCurveTo(_: *OffscreenCanvasRenderingContext2D, _: f64, _: f64, _: f64, _: f64) void {}
 pub fn bezierCurveTo(_: *OffscreenCanvasRenderingContext2D, _: f64, _: f64, _: f64, _: f64, _: f64, _: f64) void {}
 pub fn arc(_: *OffscreenCanvasRenderingContext2D, _: f64, _: f64, _: f64, _: f64, _: f64, _: ?bool) void {}
+pub fn ellipse(
+    _: *OffscreenCanvasRenderingContext2D,
+    _: f64,
+    _: f64,
+    _: f64,
+    _: f64,
+    _: f64,
+    _: f64,
+    _: f64,
+    _: ?bool,
+) void {}
 pub fn arcTo(_: *OffscreenCanvasRenderingContext2D, _: f64, _: f64, _: f64, _: f64, _: f64) void {}
 pub fn rect(_: *OffscreenCanvasRenderingContext2D, _: f64, _: f64, _: f64, _: f64) void {}
 pub fn fill(_: *OffscreenCanvasRenderingContext2D) void {}
@@ -203,7 +214,10 @@ pub const JsApi = struct {
     pub const quadraticCurveTo = bridge.function(OffscreenCanvasRenderingContext2D.quadraticCurveTo, .{ .noop = true });
     pub const bezierCurveTo = bridge.function(OffscreenCanvasRenderingContext2D.bezierCurveTo, .{ .noop = true });
     pub const arc = bridge.function(OffscreenCanvasRenderingContext2D.arc, .{ .noop = true });
+    pub const ellipse = bridge.function(OffscreenCanvasRenderingContext2D.ellipse, .{ .noop = true });
     pub const arcTo = bridge.function(OffscreenCanvasRenderingContext2D.arcTo, .{ .noop = true });
+    pub const shadowBlur = bridge.property(0.0, .{ .template = false, .readonly = false });
+    pub const shadowColor = bridge.property("rgba(0, 0, 0, 0)", .{ .template = false, .readonly = false });
     pub const rect = bridge.function(OffscreenCanvasRenderingContext2D.rect, .{ .noop = true });
     pub const fill = bridge.function(OffscreenCanvasRenderingContext2D.fill, .{ .noop = true });
     pub const stroke = bridge.function(OffscreenCanvasRenderingContext2D.stroke, .{ .noop = true });

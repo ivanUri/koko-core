@@ -243,10 +243,31 @@ pub const CurlOption = enum(c.CURLoption) {
     tls_grease = 1011,
     tls_signed_cert_timestamps = 1015,
     ech = 10325,
+    http3_pseudo_headers_order = c.CURLOPT_HTTP3_PSEUDO_HEADERS_ORDER,
+    http3_settings = c.CURLOPT_HTTP3_SETTINGS,
+    quic_transport_parameters = c.CURLOPT_QUIC_TRANSPORT_PARAMETERS,
+    http3_sig_hash_algs = c.CURLOPT_HTTP3_SIG_HASH_ALGS,
+    http3_tls_extension_order = c.CURLOPT_HTTP3_TLS_EXTENSION_ORDER,
 };
+
+/// Chrome guest QUIC transport params (quic.browserleaks.com h3_text baseline).
+/// Real Chrome also emits extra GREASE params (see quic-probe); curl adds one GREASE by default.
+/// Chrome guest adds two extra GREASE TPs plus numeric id 984832 (quic.browserleaks.com).
+pub const CHROME_QUIC_TRANSPORT_PARAMS: [:0]const u8 = "1:65536;6:262144;7:100;51:1;GREASE;GREASE;984832";
+pub const CHROME_HTTP3_PSEUDO_HEADERS_ORDER: [:0]const u8 = "m,a,s,p";
 
 /// Prefer HTTP/2 over TLS (Chrome-like ALPN).
 pub const HTTP_VERSION_2TLS: c_long = c.CURL_HTTP_VERSION_2TLS;
+/// Prefer HTTP/3 with fallback to HTTP/2 (Chrome guest SERP uses h3).
+pub const HTTP_VERSION_3: c_long = c.CURL_HTTP_VERSION_3;
+
+/// Negotiated HTTP version values returned by CURLINFO_HTTP_VERSION.
+pub const HTTP_VERSION_NONE: c_long = c.CURL_HTTP_VERSION_NONE;
+pub const HTTP_VERSION_1_0: c_long = c.CURL_HTTP_VERSION_1_0;
+pub const HTTP_VERSION_1_1: c_long = c.CURL_HTTP_VERSION_1_1;
+pub const HTTP_VERSION_2: c_long = c.CURL_HTTP_VERSION_2;
+pub const HTTP_VERSION_2_PRIOR_KNOWLEDGE: c_long = c.CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE;
+pub const HTTP_VERSION_3ONLY: c_long = c.CURL_HTTP_VERSION_3ONLY;
 
 /// Chrome 120-ish cipher suite order for BoringSSL/libcurl.
 pub const CHROME_CIPHER_LIST: [:0]const u8 =
@@ -269,6 +290,7 @@ pub const CurlInfo = enum(c.CURLINFO) {
     redirect_count = c.CURLINFO_REDIRECT_COUNT,
     response_code = c.CURLINFO_RESPONSE_CODE,
     connect_code = c.CURLINFO_HTTP_CONNECTCODE,
+    negotiated_http_version = c.CURLINFO_HTTP_VERSION,
 };
 
 pub const Error = error{
@@ -685,6 +707,11 @@ pub fn curl_easy_setopt(easy: *Curl, comptime option: CurlOption, value: anytype
         .ssl_cert_compression,
         .http2_pseudo_headers_order,
         .http2_settings,
+        .http3_pseudo_headers_order,
+        .http3_settings,
+        .quic_transport_parameters,
+        .http3_sig_hash_algs,
+        .http3_tls_extension_order,
         .ech,
         => blk: {
             const s: ?[*]const u8 = value;
@@ -801,6 +828,14 @@ pub fn curl_easy_setopt(easy: *Curl, comptime option: CurlOption, value: anytype
     try errorCheck(code);
 }
 
+/// Like curl_easy_setopt but ignores UnknownOption / BadFunctionArgument (optional knobs).
+pub fn curlEasySetoptOptional(easy: *Curl, comptime option: CurlOption, value: anytype) void {
+    curl_easy_setopt(easy, option, value) catch |err| switch (err) {
+        error.UnknownOption, error.BadFunctionArgument => {},
+        else => |e| std.debug.panic("curl_easy_setopt({s}): {s}", .{ @tagName(option), @errorName(e) }),
+    };
+}
+
 pub fn curl_easy_getinfo(easy: *Curl, comptime info: CurlInfo, out: anytype) Error!void {
     if (@typeInfo(@TypeOf(out)) != .pointer) {
         @compileError("curl_easy_getinfo out must be a pointer, got " ++ @typeName(@TypeOf(out)));
@@ -815,6 +850,7 @@ pub fn curl_easy_getinfo(easy: *Curl, comptime info: CurlInfo, out: anytype) Err
         .response_code,
         .connect_code,
         .redirect_count,
+        .negotiated_http_version,
         => blk: {
             const p: *c_long = out;
             break :blk c.curl_easy_getinfo(easy, inf, p);

@@ -33,33 +33,9 @@ pub const MimeTypeArray = struct {
     pub const IteratorValue = GenericIterator(MimeTypeIterator, null);
 
     pub fn ensureChrome(self: *MimeTypeArray, frame: *Frame) !void {
+        _ = frame;
         if (self._initialized) return;
-        const pdf_plugin_mime = try frame.arena.create(MimeType);
-        pdf_plugin_mime.* = .{
-            ._type = "application/x-google-chrome-pdf",
-            ._suffixes = "pdf",
-            ._description = "Portable Document Format",
-            ._enabled_plugin = undefined,
-        };
-        const pdf_viewer_mime = try frame.arena.create(MimeType);
-        pdf_viewer_mime.* = .{
-            ._type = "application/pdf",
-            ._suffixes = "pdf",
-            ._description = "Portable Document Format",
-            ._enabled_plugin = undefined,
-        };
-        const items = try frame.arena.alloc(*MimeType, 2);
-        items[0] = pdf_plugin_mime;
-        items[1] = pdf_viewer_mime;
-        self._items = items;
         self._initialized = true;
-    }
-
-    pub fn linkPlugins(self: *MimeTypeArray, plugins: []const *Plugin) void {
-        if (self._items.len >= 2 and plugins.len >= 2) {
-            self._items[0]._enabled_plugin = plugins[0];
-            self._items[1]._enabled_plugin = plugins[1];
-        }
     }
 
     pub fn getLength(self: *const MimeTypeArray) u32 {
@@ -143,34 +119,39 @@ const std = @import("std");
 pub fn ensureChrome(self: *PluginArray, frame: *Frame) !void {
     if (self._initialized) return;
 
-    try self._mime_types.ensureChrome(frame);
+    const specs = frame._session.browser.app.config.profile.plugins;
+    if (specs.len == 0) {
+        self._initialized = true;
+        return;
+    }
 
-    const pdf_plugin = try frame.arena.create(Plugin);
-    pdf_plugin.* = .{
-        ._name = "Chrome PDF Plugin",
-        ._filename = "internal-pdf-viewer",
-        ._description = "Portable Document Format",
-        ._mime_types = &.{},
-    };
-    const pdf_viewer = try frame.arena.create(Plugin);
-    pdf_viewer.* = .{
-        ._name = "Chrome PDF Viewer",
-        ._filename = "mhjfbmdgcfjbbpaeojofohoefgiehjai",
-        ._description = "Portable Document Format",
-        ._mime_types = &.{},
-    };
+    const mime_items = try frame.arena.alloc(*MimeType, specs.len);
+    for (specs, 0..) |spec, i| {
+        const mime = try frame.arena.create(MimeType);
+        mime.* = .{
+            ._type = spec.mime_type,
+            ._suffixes = spec.mime_suffixes,
+            ._description = spec.description,
+            ._enabled_plugin = undefined,
+        };
+        mime_items[i] = mime;
+    }
+    self._mime_types._items = mime_items;
+    self._mime_types._initialized = true;
 
-    const plugin_mimes = try frame.arena.alloc(*MimeType, 2);
-    plugin_mimes[0] = self._mime_types._items[0];
-    plugin_mimes[1] = self._mime_types._items[1];
-    pdf_plugin._mime_types = plugin_mimes[0..1];
-    pdf_viewer._mime_types = plugin_mimes[1..2];
-
-    const plugins = try frame.arena.alloc(*Plugin, 2);
-    plugins[0] = pdf_plugin;
-    plugins[1] = pdf_viewer;
-    self._plugins = plugins;
-    self._mime_types.linkPlugins(plugins);
+    const plugin_items = try frame.arena.alloc(*Plugin, specs.len);
+    for (specs, 0..) |spec, i| {
+        const plugin = try frame.arena.create(Plugin);
+        plugin.* = .{
+            ._name = spec.name,
+            ._filename = spec.filename,
+            ._description = spec.description,
+            ._mime_types = mime_items[i .. i + 1],
+        };
+        mime_items[i]._enabled_plugin = plugin;
+        plugin_items[i] = plugin;
+    }
+    self._plugins = plugin_items;
     self._initialized = true;
 }
 

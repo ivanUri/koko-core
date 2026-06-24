@@ -81,6 +81,15 @@ pub fn build(b: *Build) !void {
         try linkCurl(b, mod, enable_tsan);
         try linkHtml5Ever(b, mod);
         try linkWebRtc(b, mod, enable_tsan);
+        if (target.result.os.tag == .macos) {
+            mod.addSystemFrameworkPath(.{ .cwd_relative = "/System/Library/Frameworks" });
+            mod.linkFramework("CoreGraphics", .{});
+            mod.linkFramework("CoreText", .{});
+            mod.addCSourceFile(.{
+                .file = b.path("vendor/canvas_text_macos.c"),
+                .flags = &.{},
+            });
+        }
 
         break :blk mod;
     };
@@ -106,11 +115,14 @@ pub fn build(b: *Build) !void {
         // browser
         const exe = b.addExecutable(.{
             .name = "velora",
+            // Zig 0.15.2: LLVM+Debug SIGSEGV in lowerDebugType; native+Debug SIGSEGV in updateLazySymbol.
+            // Strip debug info in Debug builds to avoid LLVM debug-type recursion.
             .use_llvm = true,
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/adapters/cli/main.zig"),
                 .target = target,
                 .optimize = optimize,
+                .strip = true,
                 .sanitize_c = enable_csan,
                 .sanitize_thread = enable_tsan,
                 .imports = &.{
@@ -320,7 +332,8 @@ fn linkSqlite(b: *Build, mod: *Build.Module, enable_csan: ?std.zig.SanitizeC, is
 }
 
 const curl_impersonate_lib = "vendor/curl-impersonate/libcurl-impersonate.a";
-const curl_impersonate_ngtcp2 = "vendor/curl-impersonate/libngtcp2_crypto_ossl.a";
+const curl_impersonate_dylib = "vendor/curl-impersonate/libcurl-impersonate.dylib";
+const curl_impersonate_include = "vendor/curl-impersonate/include";
 
 fn hasCurlImpersonate(b: *Build) bool {
     const path = b.pathFromRoot(curl_impersonate_lib);
@@ -328,12 +341,26 @@ fn hasCurlImpersonate(b: *Build) bool {
     return true;
 }
 
+fn hasCurlImpersonateDylib(b: *Build) bool {
+    const path = b.pathFromRoot(curl_impersonate_dylib);
+    b.build_root.handle.access(path, .{}) catch return false;
+    return true;
+}
+
 fn linkCurlImpersonate(b: *Build, mod: *Build.Module, is_tsan: bool) !void {
     const curl_dep = b.dependency("curl", .{});
+    // Prefer vendor impersonate headers (CURLOPT_IMPERSONATE, GREASE, ALPS, …).
+    mod.addIncludePath(b.path(curl_impersonate_include));
     mod.addIncludePath(curl_dep.path("include"));
 
-    mod.addObjectFile(b.path(curl_impersonate_lib));
-    mod.addObjectFile(b.path(curl_impersonate_ngtcp2));
+    // Prefer dylib: linking the 29MB static archive into the V8 exe can SIGSEGV Zig's linker.
+    if (hasCurlImpersonateDylib(b)) {
+        mod.addLibraryPath(b.path("vendor/curl-impersonate"));
+        mod.addRPath(b.path("vendor/curl-impersonate"));
+        mod.linkSystemLibrary("curl-impersonate", .{});
+    } else {
+        mod.addObjectFile(b.path(curl_impersonate_lib));
+    }
     mod.addCSourceFile(.{
         .file = b.path("vendor/curl-impersonate/curl_ws_stub.c"),
         .flags = &.{"-DHAVE_CONFIG_H"},

@@ -58,7 +58,7 @@ pub fn getUserAgent(_: *const Navigator, frame: *Frame) []const u8 {
     return frame.navigatorState().userAgent(&frame._session.browser.http_client);
 }
 
-pub fn getLanguages(_: *const Navigator, frame: *Frame) [2][]const u8 {
+pub fn getLanguages(_: *const Navigator, frame: *Frame) []const []const u8 {
     return frame.navigatorState().languages();
 }
 

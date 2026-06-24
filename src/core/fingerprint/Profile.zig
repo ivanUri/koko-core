@@ -2,6 +2,8 @@ const std = @import("std");
 
 pub const PersonaId = enum {
     macos_catalina_intel,
+    macos_sonoma_intel,
+    windows_11_intel,
 };
 
 pub const ScreenProfile = struct {
@@ -13,6 +15,14 @@ pub const ScreenProfile = struct {
     color_depth: u8,
     pixel_depth: u8,
     touch: bool,
+};
+
+/// Viewport chrome — distinct from screen.* (full display).
+pub const WindowProfile = struct {
+    inner_width: u32,
+    inner_height: u32,
+    outer_width: u32,
+    outer_height: u32,
 };
 
 pub const WebGLProfile = struct {
@@ -61,9 +71,21 @@ pub const IdentityProfile = struct {
     ua_full_version: []const u8 = "1.0.0.0",
     ua_mobile: bool = false,
     screen: ScreenProfile,
+    window: WindowProfile,
     webgl: WebGLProfile,
     fonts: []const []const u8,
 };
+
+pub fn defaultWindowForScreen(screen: ScreenProfile) WindowProfile {
+    const inner_w = @min(screen.width, 1280);
+    const inner_h = @min(screen.height, 720);
+    return .{
+        .inner_width = inner_w,
+        .inner_height = inner_h,
+        .outer_width = inner_w + 2,
+        .outer_height = inner_h + 80,
+    };
+}
 
 const macos_catalina_intel_languages = [_][]const u8{ "en-US", "en" };
 const macos_catalina_intel_webgl_extensions = [_][]const u8{
@@ -166,6 +188,16 @@ pub const macos_catalina_intel = IdentityProfile{
         .pixel_depth = 24,
         .touch = false,
     },
+    .window = defaultWindowForScreen(.{
+        .width = 1920,
+        .height = 1080,
+        .avail_width = 1920,
+        .avail_height = 1040,
+        .device_pixel_ratio = 1.0,
+        .color_depth = 24,
+        .pixel_depth = 24,
+        .touch = false,
+    }),
     .webgl = .{
         .version = "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
         .vendor = "WebKit",

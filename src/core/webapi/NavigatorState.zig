@@ -40,11 +40,12 @@ pub fn platform(self: *const NavigatorState) []const u8 {
 }
 
 pub fn language(self: *const NavigatorState) []const u8 {
+    if (self.profile.languages.len == 0) return "en-US";
     return self.profile.languages[0];
 }
 
-pub fn languages(self: *const NavigatorState) [2][]const u8 {
-    return .{ self.profile.languages[0], self.profile.languages[1] };
+pub fn languages(self: *const NavigatorState) []const []const u8 {
+    return self.profile.languages;
 }
 
 pub fn onLine(_: *const NavigatorState) bool {

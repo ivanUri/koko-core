@@ -42,6 +42,7 @@ pub const CacheLayer = @import("../../runtime/network/layer/CacheLayer.zig");
 pub const RobotsLayer = @import("../../runtime/network/layer/RobotsLayer.zig");
 pub const WebBotAuthLayer = @import("../../runtime/network/layer/WebBotAuthLayer.zig");
 pub const InterceptionLayer = @import("../../runtime/network/layer/InterceptionLayer.zig");
+const GoogleChromeTransport = @import("GoogleChromeTransport.zig");
 
 // This is loosely tied to a browser Page. Loading all the <scripts>, doing
 // XHR requests, and loading imports all happens through here. Sine the app
@@ -64,6 +65,9 @@ rtc_active: usize = 0,
 
 // Count of active http requests
 http_active: usize = 0,
+
+// Real Chrome document fetches (Phase 2b); polled from tick(), not CDP stack.
+chrome_jobs: std.DoublyLinkedList = .{},
 
 // Our curl multi handle.
 handles: http.Handles,
@@ -378,6 +382,7 @@ fn clearProtectInConnList(list: std.DoublyLinkedList, frame_id: u32) void {
 // Written this way so that both abort and abortFrame can share the same code
 // but abort can avoid the frame_id check at comptime.
 fn _abort(self: *Client, comptime abort_all: bool, frame_id: u32, opts: AbortOpts) void {
+    abortChromeJobs(self, abort_all, frame_id, opts);
     abortConnections(self.in_use, abort_all, frame_id, opts);
     abortConnections(self.ready_queue, abort_all, frame_id, opts);
 
@@ -443,6 +448,7 @@ fn abortConnections(list: std.DoublyLinkedList, comptime abort_all: bool, frame_
 }
 
 pub fn tick(self: *Client, timeout_ms: u32) !PerformStatus {
+    processChromeJobs(self);
     while (self.queue.popFirst()) |queue_node| {
         const conn = self.network.getConnection() orelse {
             self.queue.prepend(queue_node);
@@ -474,6 +480,146 @@ pub fn request(self: *Client, req: Request) !void {
         self.deinitRequest(our_req);
         return err;
     };
+}
+
+/// Google search document hop via real Chrome network (HTTP/3). Completes on tick().
+pub fn requestChromeTransport(self: *Client, req: Request) !void {
+    var our_req = req;
+    our_req.params.request_id = self.incrReqId();
+
+    const arena = try self.network.app.arena_pool.acquire(.small, "ChromeTransport.arena");
+    our_req.params.arena = arena;
+
+    const async_job = GoogleChromeTransport.AsyncJob.spawn(arena, our_req.params.url, our_req.params.headers) catch |err| {
+        our_req.error_callback(our_req.ctx, err);
+        self.network.app.arena_pool.release(arena);
+        return err;
+    };
+
+    const job = try self.allocator.create(ChromeJob);
+    job.* = .{
+        .req = our_req,
+        .async_job = async_job,
+    };
+    self.chrome_jobs.append(&job.node);
+    self.http_active += 1;
+
+    job.req.params.notification.dispatch(.http_request_start, &.{ .request = &job.req });
+}
+
+const ChromeJob = struct {
+    node: std.DoublyLinkedList.Node = .{},
+    req: Request,
+    async_job: *GoogleChromeTransport.AsyncJob,
+
+    fn deinit(self: *ChromeJob, client: *Client) void {
+        self.async_job.deinit(client.allocator);
+        client.deinitRequest(self.req);
+        client.allocator.destroy(self);
+    }
+};
+
+fn abortChromeJobs(self: *Client, comptime abort_all: bool, frame_id: u32, opts: AbortOpts) void {
+    var n = self.chrome_jobs.first;
+    while (n) |node| {
+        const next = node.next;
+        const job: *ChromeJob = @fieldParentPtr("node", node);
+        const params = &job.req.params;
+        if (comptime abort_all) {
+            self.chrome_jobs.remove(node);
+            self.http_active -= 1;
+            job.async_job.aborted = true;
+            job.req.error_callback(job.req.ctx, error.Abort);
+            job.deinit(self);
+        } else if (params.frame_id == frame_id and shouldAbortTransfer(params, opts)) {
+            self.chrome_jobs.remove(node);
+            self.http_active -= 1;
+            job.async_job.aborted = true;
+            job.req.error_callback(job.req.ctx, error.Abort);
+            job.deinit(self);
+        }
+        n = next;
+    }
+}
+
+fn processChromeJobs(self: *Client) void {
+    var n = self.chrome_jobs.first;
+    while (n) |node| {
+        const next = node.next;
+        const job: *ChromeJob = @fieldParentPtr("node", node);
+        const poll = job.async_job.poll();
+        switch (poll) {
+            .running => {},
+            .aborted => {
+                self.chrome_jobs.remove(node);
+                self.http_active -= 1;
+                job.deinit(self);
+            },
+            .err => |err| {
+                self.chrome_jobs.remove(node);
+                self.http_active -= 1;
+                job.req.params.notification.dispatch(.http_request_fail, &.{
+                    .request = &job.req,
+                    .err = err,
+                });
+                job.req.error_callback(job.req.ctx, err);
+                job.deinit(self);
+            },
+            .document => |doc| {
+                self.chrome_jobs.remove(node);
+                self.http_active -= 1;
+                completeChromeJob(job, doc) catch |err| {
+                    job.req.params.notification.dispatch(.http_request_fail, &.{
+                        .request = &job.req,
+                        .err = err,
+                    });
+                    job.req.error_callback(job.req.ctx, err);
+                };
+                job.deinit(self);
+            },
+        }
+        n = next;
+    }
+}
+
+fn completeChromeJob(job: *ChromeJob, doc: GoogleChromeTransport.Document) !void {
+    const arena = job.req.params.arena;
+    const body = try arena.dupe(u8, doc.body);
+    const content_type = try arena.dupe(u8, doc.content_type);
+    const final_url = try arena.dupeZ(u8, doc.final_url);
+    const headers = try arena.alloc(http.Header, 1);
+    headers[0] = .{ .name = "content-type", .value = content_type };
+
+    var fulfilled = FulfilledResponse{
+        .status = doc.status,
+        .url = final_url,
+        .headers = headers,
+        .body = body,
+        .protocol = doc.protocol,
+    };
+    const response = Response.fromFulfilled(job.req.ctx, &fulfilled);
+
+    job.req.params.notification.dispatch(.http_response_header_done, &.{
+        .request = &job.req,
+        .response = &response,
+    });
+
+    // Buffer body for CDP Network.getResponseBody before header_callback runs
+    // commitPendingPage (which clears captured_responses on the root hop).
+    job.req.params.notification.dispatch(.http_response_data, &.{
+        .data = body,
+        .request = &job.req,
+    });
+    try job.req.data_callback(response, body);
+
+    const proceed = try job.req.header_callback(response);
+    if (!proceed) return error.Abort;
+
+    job.req.params.notification.dispatch(.http_request_done, &.{
+        .request = &job.req,
+        .content_length = body.len,
+    });
+    try job.req.done_callback(job.req.ctx);
 }
 
 const SyncContext = struct {
@@ -1039,6 +1185,7 @@ pub const FulfilledResponse = struct {
     url: [:0]const u8,
     headers: []const http.Header,
     body: ?[]const u8,
+    protocol: ?[]const u8 = null,
 
     pub fn contentType(self: *const FulfilledResponse) ?[]const u8 {
         for (self.headers) |hdr| {
@@ -1099,6 +1246,14 @@ pub const Response = struct {
         return switch (self.inner) {
             .transfer => |t| if (t.response_header) |rh| rh.redirect_count else null,
             .cached, .fulfilled => 0,
+        };
+    }
+
+    pub fn protocol(self: Response) ?[]const u8 {
+        return switch (self.inner) {
+            .transfer => |t| if (t.response_header) |*rh| rh.protocol() else null,
+            .cached => null,
+            .fulfilled => |f| f.protocol,
         };
     }
 
@@ -1316,7 +1471,6 @@ pub const Transfer = struct {
 
         if (comptime build_config.curl_impersonate) {
             try conn.setReferer(req.params.referer);
-            try http.Connection.applyChrome120Transport(conn);
         }
 
         // add credentials
@@ -1326,6 +1480,11 @@ pub const Transfer = struct {
             } else {
                 try conn.setCredentials(creds);
             }
+        }
+
+        // TLS impersonate must be last — CURLOPT_SSL_* / verify / cookie opts can clobber SSL ctx.
+        if (comptime build_config.curl_impersonate) {
+            try http.Connection.applyProfileTransport(conn, client.network.config);
         }
     }
 
@@ -1354,11 +1513,18 @@ pub const Transfer = struct {
         else
             try conn.getResponseCode();
 
+        const proto = conn.httpProtocolLabel();
         self.response_header = .{
             .url = url,
             .status = status,
             .redirect_count = self._redirect_count,
         };
+        {
+            const hdr = &self.response_header.?;
+            const len = @min(proto.len, ResponseHead.MAX_PROTOCOL_LEN);
+            hdr._protocol_len = len;
+            @memcpy(hdr._protocol[0..len], proto[0..len]);
+        }
 
         if (conn.getResponseHeader("content-type", 0)) |ct| {
             var hdr = &self.response_header.?;

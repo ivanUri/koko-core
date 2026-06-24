@@ -23,6 +23,7 @@ const WebGLRenderingContext = @import("../../canvas/WebGLRenderingContext.zig");
 const OffscreenCanvas = @import("../../canvas/OffscreenCanvas.zig");
 const PixelBuffer = @import("../../canvas/PixelBuffer.zig").PixelBuffer;
 const PngEncoder = @import("../../canvas/PngEncoder.zig");
+const CanvasIntelligent = @import("../../../fingerprint/CanvasIntelligent.zig");
 
 const Execution = js.Execution;
 
@@ -54,6 +55,18 @@ pub fn setWidth(self: *Canvas, value: u32, frame: *Frame) !void {
     // Reset pixel buffer when dimensions change (Chromium behavior)
     if (old_width != value) {
         self._pixel_buffer = null;
+        notifyProbeDimensions(self);
+    }
+}
+
+fn notifyProbeDimensions(self: *Canvas) void {
+    if (self._cached) |cached| {
+        switch (cached) {
+            .@"2d" => |ctx| {
+                ctx._probe.recordDimensions(self.getWidth(), self.getHeight());
+            },
+            else => {},
+        }
     }
 }
 
@@ -70,6 +83,7 @@ pub fn setHeight(self: *Canvas, value: u32, frame: *Frame) !void {
     // Reset pixel buffer when dimensions change (Chromium behavior)
     if (old_height != value) {
         self._pixel_buffer = null;
+        notifyProbeDimensions(self);
     }
 }
 
@@ -147,6 +161,23 @@ pub fn toDataURL(
     if (!use_png) {
         // JPEG not yet implemented, fallback to PNG
         // TODO: Implement JPEG encoder in Phase 5 if needed
+    }
+
+    if (self._cached) |cached| {
+        switch (cached) {
+            .@"2d" => |ctx| {
+                const w = self.getWidth();
+                const h = self.getHeight();
+                if (w == 75 and h == 75) {
+                    if (CanvasIntelligent.consumeCanvas75DataUrl(&ctx._probe, frame)) |url| {
+                        return url;
+                    }
+                } else if (CanvasIntelligent.shouldUseDataUrlBaseline(ctx._probe, frame)) |url| {
+                    return url;
+                }
+            },
+            else => {},
+        }
     }
 
     const buffer = try self.getOrCreatePixelBuffer(frame);

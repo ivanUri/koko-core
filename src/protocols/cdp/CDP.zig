@@ -110,8 +110,17 @@ pub fn init(
     });
 }
 
+fn persistSessionState(session: *Session, config: *const @import("../../runtime/Config.zig")) void {
+    const jar_path = config.cookieJarFile() orelse return;
+    @import("../../runtime/cookies.zig").saveToFile(&session.cookie_jar, jar_path);
+    var storage_buf: [512]u8 = undefined;
+    const storage_path = std.fmt.bufPrint(&storage_buf, "{s}.storage.json", .{jar_path}) catch return;
+    @import("../../runtime/session_persist.zig").saveStorage(session, storage_path);
+}
+
 pub fn deinit(self: *CDP) void {
     if (self.browser_context) |*bc| {
+        persistSessionState(bc.session, self.app.config);
         bc.deinit();
     }
     self.browser.deinit();
@@ -505,6 +514,11 @@ pub const BrowserContext = struct {
         if (cdp.app.config.cookieFile()) |cookie_path| {
             @import("../../runtime/cookies.zig").loadFromFile(session, cookie_path);
         }
+        if (cdp.app.config.cookieJarFile()) |jar_path| {
+            const storage_path = try std.fmt.allocPrint(allocator, "{s}.storage.json", .{jar_path});
+            defer allocator.free(storage_path);
+            @import("../../runtime/session_persist.zig").loadStorage(session, storage_path);
+        }
 
         const browser = &cdp.browser;
         const inspector_session = browser.env.inspector.?.startSession(self);
@@ -849,8 +863,11 @@ pub const BrowserContext = struct {
 
         const key = keyFromRequestReq(msg.request);
         const resp = self.captured_responses.getPtr(key) orelse {
-            assert(false, "onHttpResponseData missing captured response", .{});
-            unreachable;
+            log.warn(.cdp, "http response data without captured headers", .{
+                .loader_id = msg.request.params.loader_id,
+                .request_id = msg.request.params.request_id,
+            });
+            return;
         };
 
         return resp.data.appendSlice(arena, msg.data);

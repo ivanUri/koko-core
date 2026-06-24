@@ -355,7 +355,24 @@ fn _createContext(self: *Env, global: anytype, params: ContextParams) !*Context 
     self.contexts[count] = context;
     self.context_count = count + 1;
 
+    installTrustedTypesEvalShim(context);
+
     return context;
+}
+
+/// Chrome unwraps TrustedScript before calling the intrinsic eval. V8's builtin
+/// eval does not; Google's SGS bootstrap probes `eval(policy.createScript("1"))===1`.
+fn installTrustedTypesEvalShim(context: *Context) void {
+    var ls: js.Local.Scope = undefined;
+    context.localScope(&ls);
+    defer ls.deinit();
+
+    const src =
+        \\(function(){var o=globalThis.eval;globalThis.eval=function(c){try{if(typeof trustedTypes!=="undefined"&&trustedTypes.isScript&&trustedTypes.isScript(c))c=c.toString()}catch(e){}return o.call(globalThis,c)}})();
+    ;
+    ls.local.eval(src, "trusted-types-eval-shim") catch |err| {
+        log.warn(.js, "trusted-types eval shim", .{ .err = err });
+    };
 }
 
 pub fn destroyContext(self: *Env, context: *Context) void {

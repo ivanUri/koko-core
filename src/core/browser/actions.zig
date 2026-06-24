@@ -20,6 +20,7 @@ const MouseEvent = @import("../webapi/event/MouseEvent.zig");
 const KeyboardEvent = @import("../webapi/event/KeyboardEvent.zig");
 const Frame = @import("Frame.zig");
 const Session = @import("Session.zig");
+const HumanInput = @import("HumanInput.zig");
 
 fn dispatchInputAndChangeEvents(el: *Element, frame: *Frame) !void {
     const input_evt: *Event = try .initTrusted(comptime .wrap("input"), .{ .bubbles = true }, frame._page);
@@ -144,23 +145,29 @@ pub fn fill(node: *DOMNode, text: []const u8, frame: *Frame) !void {
         @import("../../support/log.zig").err(.app, "fill focus failed", .{ .err = err });
     };
 
-    if (el.is(Element.Html.Input)) |input| {
-        input.setValue(text, frame) catch |err| {
-            @import("../../support/log.zig").err(.app, "fill input failed", .{ .err = err });
-            return error.ActionFailed;
-        };
-    } else if (el.is(Element.Html.TextArea)) |textarea| {
-        textarea.setValue(text, frame) catch |err| {
-            @import("../../support/log.zig").err(.app, "fill textarea failed", .{ .err = err });
-            return error.ActionFailed;
-        };
-    } else if (el.is(Element.Html.Select)) |select| {
+    if (el.is(Element.Html.Select)) |select| {
         select.setValue(text, frame) catch |err| {
             @import("../../support/log.zig").err(.app, "fill select failed", .{ .err = err });
             return error.ActionFailed;
         };
-    } else {
-        return error.InvalidNodeType;
+        try dispatchInputAndChangeEvents(el, frame);
+        return;
+    }
+
+    var acc = try std.ArrayList(u8).initCapacity(frame.call_arena, text.len);
+    for (text) |ch| {
+        try acc.append(frame.call_arena, ch);
+        if (el.is(Element.Html.Input)) |input| {
+            try input.setValue(acc.items, frame);
+        } else if (el.is(Element.Html.TextArea)) |textarea| {
+            try textarea.setValue(acc.items, frame);
+        } else {
+            return error.InvalidNodeType;
+        }
+        var buf: [4]u8 = undefined;
+        const key_len = std.unicode.utf8Encode(ch, &buf) catch continue;
+        try press(node, buf[0..key_len], frame);
+        std.Thread.sleep(HumanInput.charDelay(ch) * std.time.ns_per_ms);
     }
 
     try dispatchInputAndChangeEvents(el, frame);
@@ -188,6 +195,10 @@ pub fn scroll(node: ?*DOMNode, x: ?i32, y: ?i32, frame: *Frame) !void {
             @import("../../support/log.zig").err(.app, "dispatch scroll event failed", .{ .err = err });
         };
     } else {
+        const delta_y: f64 = if (y) |val| @floatFromInt(val) else 0;
+        if (delta_y != 0) {
+            try HumanInput.wheelScroll(frame, delta_y, .{});
+        }
         frame.window.scrollTo(.{ .x = x orelse 0 }, y, frame) catch |err| {
             @import("../../support/log.zig").err(.app, "scroll failed", .{ .err = err });
             return error.ActionFailed;

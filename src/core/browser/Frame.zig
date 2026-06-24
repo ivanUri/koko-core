@@ -54,8 +54,10 @@ const KeyboardEvent = @import("../webapi/event/KeyboardEvent.zig");
 const MouseEvent = @import("../webapi/event/MouseEvent.zig");
 
 const HttpClient = @import("HttpClient.zig");
+const http = @import("../../runtime/network/http.zig");
 const build_config = @import("build_config");
 const FingerprintProfile = @import("../fingerprint/Profile.zig");
+const HttpProfile = @import("../fingerprint/HttpProfile.zig");
 const ProfileStore = @import("../fingerprint/ProfileStore.zig");
 const NavigatorState = @import("../webapi/NavigatorState.zig");
 
@@ -215,6 +217,12 @@ _slotchange_delivery_task_owner: RealmLifecycleKernel.TaskOwner = .{ .realm_id =
 _performance_observers: std.ArrayList(*PerformanceObserver) = .{},
 _performance_delivery_scheduled: bool = false,
 
+_speech_voices_ready: bool = false,
+_speech_voices_load_scheduled: bool = false,
+_speech_voices: []?*@import("../webapi/speech/SpeechSynthesis.zig").SpeechSynthesisVoice = &.{},
+
+_trusted_types_mapping: ?JS.Value.Global = null,
+
 /// Active RTCPeerConnection instances owned by this frame.
 _rtc_peer_connections: std.ArrayList(*@import("../webapi/rtc_bindings.zig").RTCPeerConnectionJs) = .{},
 
@@ -287,6 +295,9 @@ workers: std.ArrayList(*Worker) = .{},
 
 // Press-half state for split CDP mouse press/release sequences.
 _input_press_hit: ?InputHit = null,
+_last_pointer_x: f64 = 120,
+_last_pointer_y: f64 = 120,
+_automation_scrubbed: bool = false,
 
 // Coordinates for CDP mouse press/release deferred until both halves arrive.
 _cdp_mouse_press_stash: ?struct { x: f64, y: f64 } = null,
@@ -632,10 +643,40 @@ pub const HeadersForRequestOpts = struct {
     /// `is_document_navigation` is true.
     prior_origin: ?[]const u8 = null,
     is_document_navigation: bool = false,
+    /// Guest Chrome omnibox search omits Sec-Fetch-User.
+    omit_sec_fetch_user: bool = false,
 };
 
-const document_accept_header =
-    "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7";
+fn isGoogleSearchUrl(url: []const u8) bool {
+    return std.mem.indexOf(u8, url, "google.com/search") != null;
+}
+
+/// Guest Chrome omnibox + in-search client redirects (sei=, sg_ss=) share headers.
+fn isGoogleSearchFlow(prior_url: []const u8, request_url: []const u8, reason: NavigateReason) bool {
+    if (!isGoogleSearchUrl(request_url)) return false;
+    if (reason == .address_bar) return true;
+    return isGoogleSearchUrl(prior_url);
+}
+
+/// Guest HAR first document hop already carries `sei=` (Chrome injects before network).
+fn appendGoogleSeiIfMissing(allocator: Allocator, url: []const u8) ![:0]const u8 {
+    if (std.mem.indexOf(u8, url, "sei=") != null) return try allocator.dupeZ(u8, url);
+    var rand: [16]u8 = undefined;
+    std.crypto.random.bytes(&rand);
+    const enc = std.base64.url_safe_no_pad.Encoder;
+    var sei_buf: [32]u8 = undefined;
+    const sei = sei_buf[0..enc.calcSize(rand.len)];
+    _ = enc.encode(sei, &rand);
+    const sep: []const u8 = if (std.mem.indexOf(u8, url, "?") != null) "&" else "?";
+    return try std.fmt.allocPrintSentinel(allocator, "{s}{s}sei={s}", .{ url, sep, sei }, 0);
+}
+
+fn googleOmniboxReferer(allocator: Allocator, url: []const u8) ![:0]const u8 {
+    const q_pos = std.mem.indexOf(u8, url, "q=") orelse return try allocator.dupeZ(u8, url);
+    const q_start = q_pos + 2;
+    const q_end = std.mem.indexOfPos(u8, url, q_start, "&") orelse url.len;
+    return try std.fmt.allocPrintSentinel(allocator, "https://www.google.com/search?q={s}", .{url[q_start..q_end]}, 0);
+}
 
 fn refererHeaderForRequest(self: *Frame, opts: HeadersForRequestOpts) ![:0]const u8 {
     if (opts.referer) |explicit| {
@@ -659,117 +700,48 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
     const identity = self._session.browser.app.config.profile.identityPtr();
     const http_client = &self._session.browser.http_client;
     const profile_headers = &http_client.network.config.http_headers;
+    const request_url = opts.request_url orelse return;
+
+    const static = HttpProfile.StaticHeaders{
+        .user_agent_header = http_client.getUserAgentHeader(),
+        .sec_ch_ua_header = profile_headers.sec_ch_ua_header,
+        .accept_language_header = profile_headers.accept_language_header,
+    };
+
+    const origin = if (opts.resource_type != .document)
+        try self.requestOrigin()
+    else
+        null;
+
+    const ctx = HttpProfile.RequestContext{
+        .request_url = request_url,
+        .resource_type = opts.resource_type,
+        .frame_origin = self.origin,
+        .prior_origin = opts.prior_origin,
+        .is_document_navigation = opts.is_document_navigation,
+        .origin = origin,
+    };
 
     if (comptime build_config.curl_impersonate) {
-        const request_url = opts.request_url orelse return;
-        if (!std.mem.startsWith(u8, request_url, "http")) return;
-
-        const is_document = opts.resource_type == .document;
-
-        try headers.add(profile_headers.sec_ch_ua_header);
-
-        const mobile_hdr = try std.fmt.allocPrintSentinel(
-            self.arena,
-            "Sec-Ch-Ua-Mobile: {s}",
-            .{if (identity.ua_mobile) "?1" else "?0"},
-            0,
-        );
-        try headers.add(mobile_hdr);
-
-        const platform_hdr = try std.fmt.allocPrintSentinel(
-            self.arena,
-            "Sec-Ch-Ua-Platform: \"{s}\"",
-            .{identity.ua_data_platform},
-            0,
-        );
-        try headers.add(platform_hdr);
-
-        if (is_document and std.mem.startsWith(u8, request_url, "https://")) {
-            try headers.add("Upgrade-Insecure-Requests: 1");
-        }
-
-        try headers.add(http_client.getUserAgentHeader());
-        try headers.add(if (is_document) document_accept_header else "Accept: */*");
-
-        const site = secFetchSite(self, request_url, opts.is_document_navigation, opts.prior_origin);
-        const mode = secFetchMode(opts.resource_type);
-        const dest = secFetchDest(opts.resource_type);
-
-        const site_hdr = try std.fmt.allocPrintSentinel(self.arena, "Sec-Fetch-Site: {s}", .{site}, 0);
-        try headers.add(site_hdr);
-
-        const mode_hdr = try std.fmt.allocPrintSentinel(self.arena, "Sec-Fetch-Mode: {s}", .{mode}, 0);
-        try headers.add(mode_hdr);
-
-        if (is_document) {
-            try headers.add("Sec-Fetch-User: ?1");
-        }
-
-        const dest_hdr = try std.fmt.allocPrintSentinel(self.arena, "Sec-Fetch-Dest: {s}", .{dest}, 0);
-        try headers.add(dest_hdr);
-
-        try headers.add("Accept-Encoding: gzip, deflate, br");
-        try headers.add(profile_headers.accept_language_header);
-
-        // Referer via CURLOPT_REFERER (configureConn) — not in this list.
-
-        if (!is_document) {
-            try self.appendOriginHeader(headers);
+        const profile = self.loadedProfile();
+        if (profile.isFirefox()) {
+            try HttpProfile.appendFirefoxHeaders(headers, self.arena, &static, ctx);
+        } else {
+            const full_hints = opts.resource_type == .document or
+                self._session.clientHintsEnabledForUrl(self.arena, request_url);
+            const chrome_opts = HttpProfile.ChromeHeadersOpts{
+                .full_client_hints = full_hints,
+                .brands = profile.http.brands,
+                .color_scheme = profile.http.prefers_color_scheme,
+                .omit_sec_fetch_user = opts.omit_sec_fetch_user,
+            };
+            try HttpProfile.appendChromeHeaders(headers, self.arena, identity, &static, ctx, chrome_opts);
         }
         return;
     }
 
     const referer = try refererHeaderForRequest(self, opts);
-    if (referer.len > 0) {
-        try headers.add(referer);
-    }
-
-    const mobile_hdr = try std.fmt.allocPrintSentinel(
-        self.arena,
-        "Sec-Ch-Ua-Mobile: {s}",
-        .{if (identity.ua_mobile) "?1" else "?0"},
-        0,
-    );
-    try headers.add(mobile_hdr);
-
-    const platform_hdr = try std.fmt.allocPrintSentinel(
-        self.arena,
-        "Sec-Ch-Ua-Platform: \"{s}\"",
-        .{identity.ua_data_platform},
-        0,
-    );
-    try headers.add(platform_hdr);
-
-    if (opts.request_url) |request_url| {
-        if (!std.mem.startsWith(u8, request_url, "http")) return;
-
-        const is_document = opts.resource_type == .document;
-        try headers.add(if (is_document) document_accept_header else "Accept: */*");
-
-        if (!is_document) {
-            try self.appendOriginHeader(headers);
-        }
-
-        const dest = secFetchDest(opts.resource_type);
-        const mode = secFetchMode(opts.resource_type);
-        const site = secFetchSite(self, request_url, opts.is_document_navigation, opts.prior_origin);
-
-        const dest_hdr = try std.fmt.allocPrintSentinel(self.arena, "Sec-Fetch-Dest: {s}", .{dest}, 0);
-        try headers.add(dest_hdr);
-
-        const mode_hdr = try std.fmt.allocPrintSentinel(self.arena, "Sec-Fetch-Mode: {s}", .{mode}, 0);
-        try headers.add(mode_hdr);
-
-        const site_hdr = try std.fmt.allocPrintSentinel(self.arena, "Sec-Fetch-Site: {s}", .{site}, 0);
-        try headers.add(site_hdr);
-
-        if (is_document) {
-            try headers.add("Sec-Fetch-User: ?1");
-            if (std.mem.startsWith(u8, request_url, "https://")) {
-                try headers.add("Upgrade-Insecure-Requests: 1");
-            }
-        }
-    }
+    try HttpProfile.appendFallbackHeaders(headers, self.arena, identity, &static, ctx, referer);
 }
 
 // Origin for WebSocket upgrade and other callers that only need the origin token.
@@ -785,42 +757,6 @@ fn requestOrigin(self: *Frame) ![]const u8 {
         return (try URL.getOrigin(self.arena, self.url)) orelse "null";
     }
     return "null";
-}
-
-fn secFetchDest(resource_type: HttpClient.RequestParams.ResourceType) []const u8 {
-    return switch (resource_type) {
-        .document => "document",
-        .script => "script",
-        .image => "image",
-        .fetch, .xhr, .beacon => "empty",
-    };
-}
-
-fn secFetchMode(resource_type: HttpClient.RequestParams.ResourceType) []const u8 {
-    return switch (resource_type) {
-        .document => "navigate",
-        .script, .beacon, .image => "no-cors",
-        .fetch, .xhr => "cors",
-    };
-}
-
-fn secFetchSite(
-    _frame: *Frame,
-    request_url: [:0]const u8,
-    is_document_navigation: bool,
-    prior_origin: ?[]const u8,
-) []const u8 {
-    if (is_document_navigation) {
-        const origin = prior_origin orelse return "none";
-        if (!std.mem.startsWith(u8, request_url, origin)) return "cross-site";
-        if (std.mem.eql(u8, URL.getHost(request_url), URL.getHost(origin))) return "same-origin";
-        return "cross-site";
-    }
-
-    const origin = _frame.origin orelse return "none";
-    if (!std.mem.startsWith(u8, request_url, origin)) return "cross-site";
-    if (std.mem.eql(u8, URL.getHost(request_url), URL.getHost(origin))) return "same-origin";
-    return "cross-site";
 }
 
 pub fn getArena(self: *Frame, size_or_bucket: anytype, debug: []const u8) !Allocator {
@@ -867,8 +803,15 @@ pub fn lookupBlobUrl(self: *Frame, url: []const u8) ?*Blob {
 pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !void {
     assert(self._load_state == .waiting, "frame.renavigate", .{});
     const session = self._session;
+    session.cookie_jar.beginDocumentNavigation();
     self._load_state = .parsing;
     self.bumpRealmNavigationEpoch();
+    self.window._performance.recordNavigationStart();
+    if (!self.loadedProfile().isFirefox()) {
+        const nav_start = self.window._performance._timing.navigation_start;
+        self.window._chrome.recordNavigationStart(nav_start);
+    }
+    @import("../fingerprint/AutomationScrub.zig").applyOnce(self);
 
     const req_id = self._session.browser.http_client.nextReqId();
     log.info(.frame, "navigate", .{
@@ -982,16 +925,39 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
     const http_client = &session.browser.http_client;
 
     const prior_url = self.url;
-    const prior_origin = opts.prior_origin orelse self.origin;
+    // Root queued navigations (location.href → sg_ss) run on a fresh pending frame
+    // whose url is not the originator yet; use scheduleNavigation referer as prior.
+    const flow_prior_url = blk: {
+        if (isGoogleSearchUrl(prior_url)) break :blk prior_url;
+        if (opts.referer) |ref| {
+            if (isGoogleSearchUrl(ref)) break :blk ref;
+        }
+        break :blk prior_url;
+    };
+    var effective_url: [:0]const u8 = request_url;
+    if (opts.reason == .address_bar and isGoogleSearchUrl(request_url)) {
+        effective_url = try appendGoogleSeiIfMissing(self.arena, request_url);
+    }
+
+    var prior_origin = opts.prior_origin orelse self.origin;
+    var omnibox_referer: ?[]const u8 = opts.referer;
+    const google_search_flow = isGoogleSearchFlow(flow_prior_url, effective_url, opts.reason);
+    if (google_search_flow) {
+        if (prior_origin == null) {
+            prior_origin = try self.arena.dupe(u8, "https://www.google.com");
+        }
+        // Always q-only referer (guest HAR); scheduleNavigation may pass full sei URL.
+        omnibox_referer = try googleOmniboxReferer(self.arena, effective_url);
+    }
     const nav_referer: ?[:0]const u8 = blk: {
-        if (opts.referer) |ref| break :blk try self.arena.dupeZ(u8, ref);
-        if (std.mem.startsWith(u8, prior_url, "http") and !std.mem.eql(u8, prior_url, request_url)) {
+        if (omnibox_referer) |ref| break :blk try self.arena.dupeZ(u8, ref);
+        if (std.mem.startsWith(u8, prior_url, "http") and !std.mem.eql(u8, prior_url, effective_url)) {
             break :blk prior_url;
         }
         break :blk null;
     };
 
-    self.url = try self.arena.dupeZ(u8, request_url);
+    self.url = try self.arena.dupeZ(u8, effective_url);
     const url_origin = try URL.getOrigin(self.arena, self.url);
     try self.applySandboxOrigin(url_origin);
 
@@ -1014,6 +980,7 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
         .referer = nav_referer,
         .prior_origin = prior_origin,
         .is_document_navigation = true,
+        .omit_sec_fetch_user = google_search_flow,
     });
 
     // A root navigation issued against a pending Page (i.e. one allocated by
@@ -1044,6 +1011,31 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
 
     session.navigation._current_navigation_kind = opts.kind;
 
+    if (google_search_flow and session.browser.app.config.googleChromeTransport()) {
+        return http_client.requestChromeTransport(.{
+            .ctx = self,
+            .params = .{
+                .url = self.url,
+                .frame_id = self._frame_id,
+                .loader_id = self._loader_id,
+                .method = opts.method,
+                .headers = headers,
+                .body = opts.body,
+                .cookie_jar = &session.cookie_jar,
+                .cookie_origin = if (std.mem.startsWith(u8, prior_url, "http")) prior_url else self.url,
+                .resource_type = .document,
+                .referer = nav_referer,
+                .notification = self._session.notification,
+                .protect_from_abort = is_pending_root,
+                .skip_cache = opts.force,
+            },
+            .header_callback = frameHeaderDoneCallback,
+            .data_callback = frameDataCallback,
+            .done_callback = frameDoneCallback,
+            .error_callback = frameErrorCallback,
+        });
+    }
+
     http_client.request(.{
         .ctx = self,
         .params = .{
@@ -1054,7 +1046,7 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
             .headers = headers,
             .body = opts.body,
             .cookie_jar = &session.cookie_jar,
-            .cookie_origin = self.url,
+            .cookie_origin = if (std.mem.startsWith(u8, prior_url, "http")) prior_url else self.url,
             .resource_type = .document,
             .referer = nav_referer,
             .notification = self._session.notification,
@@ -1340,6 +1332,11 @@ pub fn documentIsComplete(self: *Frame) void {
     }
 
     self._load_state = .complete;
+    self.window._performance.recordDocumentComplete();
+    if (!self.loadedProfile().isFirefox()) {
+        const load_end = self.window._performance._timing.load_event_end;
+        self.window._chrome.recordDocumentComplete(load_end);
+    }
     self._documentIsComplete() catch |err| switch (err) {
         error.JsException => {}, // already logged
         else => log.err(.frame, "document is complete", .{ .err = err, .type = self._type, .url = self.url }),
@@ -1432,6 +1429,9 @@ fn frameHeaderDoneCallback(response: HttpClient.Response) !bool {
             .type = self._type,
         });
     }
+
+    var accept_iter = response.headerIterator();
+    try self._session.processAcceptClientHints(response.url(), &accept_iter);
 
     if (self._navigated_options) |_| {
         // _navigated_options will be null in special short-circuit cases, like

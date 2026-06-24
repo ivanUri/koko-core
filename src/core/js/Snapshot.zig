@@ -635,7 +635,8 @@ fn attachClass(comptime JsApi: type, isolate: *v8.Isolate, template: *const v8.F
                 if (value.static) {
                     v8.v8__Template__SetAccessorProperty(@ptrCast(template), js_name, getter_callback, setter_callback, attribute);
                 } else {
-                    v8.v8__ObjectTemplate__SetAccessorProperty__Config(prototype, &.{
+                    // Namespace objects (own_properties) expose accessors as own props too.
+                    v8.v8__ObjectTemplate__SetAccessorProperty__Config(member_template, &.{
                         .key = js_name,
                         .getter = getter_callback,
                         .setter = setter_callback,

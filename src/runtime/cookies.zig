@@ -79,6 +79,10 @@ fn _loadFromFile(session: *Session, path: []const u8) !void {
             log.warn(.app, "invalid cookie", .{ .name = jc.name, .err = err });
             continue;
         };
+        // Restored session cookies are immediately eligible (unlike live Set-Cookie).
+        if (jar.cookies.items.len > 0) {
+            jar.cookies.items[jar.cookies.items.len - 1].available_from_nav = jar.document_nav_generation;
+        }
         loaded += 1;
     }
 
