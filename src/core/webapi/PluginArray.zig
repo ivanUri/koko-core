@@ -98,8 +98,8 @@ pub const MimeTypeArray = struct {
         };
 
         pub const length = bridge.accessor(MimeTypeArray.getLength, null, .{});
-        pub const @"[int]" = bridge.indexed(MimeTypeArray.getAtIndex, MimeTypeArray.getIndexes, .{ .null_as_undefined = true });
-        pub const @"[str]" = bridge.namedIndexed(MimeTypeArray.getByName, null, null, MimeTypeArray.getNamedKeys, .{ .null_as_undefined = true });
+        pub const @"[int]" = bridge.indexed(MimeTypeArray.getAtIndex, MimeTypeArray.getIndexes, .{ .null_as_undefined = true, .enumerable = true });
+        pub const @"[str]" = bridge.namedIndexed(MimeTypeArray.getByName, null, null, MimeTypeArray.getNamedKeys, .{ .null_as_undefined = true, .enumerable = true });
         pub const item = bridge.function(_item, .{});
         fn _item(self: *const MimeTypeArray, index: i32) ?*MimeType {
             if (index < 0) return null;
@@ -116,6 +116,15 @@ pub const ValueIterator = GenericIterator(Iterator, null);
 
 const std = @import("std");
 
+const chrome_mime_types = [_]struct {
+    type: []const u8,
+    suffixes: []const u8,
+    description: []const u8,
+}{
+    .{ .type = "application/pdf", .suffixes = "pdf", .description = "Portable Document Format" },
+    .{ .type = "text/pdf", .suffixes = "pdf", .description = "Portable Document Format" },
+};
+
 pub fn ensureChrome(self: *PluginArray, frame: *Frame) !void {
     if (self._initialized) return;
 
@@ -125,12 +134,12 @@ pub fn ensureChrome(self: *PluginArray, frame: *Frame) !void {
         return;
     }
 
-    const mime_items = try frame.arena.alloc(*MimeType, specs.len);
-    for (specs, 0..) |spec, i| {
+    const mime_items = try frame.arena.alloc(*MimeType, chrome_mime_types.len);
+    for (chrome_mime_types, 0..) |spec, i| {
         const mime = try frame.arena.create(MimeType);
         mime.* = .{
-            ._type = spec.mime_type,
-            ._suffixes = spec.mime_suffixes,
+            ._type = spec.type,
+            ._suffixes = spec.suffixes,
             ._description = spec.description,
             ._enabled_plugin = undefined,
         };
@@ -142,15 +151,19 @@ pub fn ensureChrome(self: *PluginArray, frame: *Frame) !void {
     const plugin_items = try frame.arena.alloc(*Plugin, specs.len);
     for (specs, 0..) |spec, i| {
         const plugin = try frame.arena.create(Plugin);
+        const mime_idx: usize = if (std.mem.eql(u8, spec.mime_type, "text/pdf")) 1 else 0;
         plugin.* = .{
             ._name = spec.name,
             ._filename = spec.filename,
             ._description = spec.description,
-            ._mime_types = mime_items[i .. i + 1],
+            ._mime_types = mime_items[mime_idx .. mime_idx + 1],
         };
-        mime_items[i]._enabled_plugin = plugin;
         plugin_items[i] = plugin;
     }
+
+    mime_items[0]._enabled_plugin = plugin_items[0];
+    mime_items[1]._enabled_plugin = plugin_items[0];
+
     self._plugins = plugin_items;
     self._initialized = true;
 }
@@ -283,8 +296,8 @@ pub const Plugin = struct {
         pub const description = bridge.accessor(Plugin.getDescription, null, .{});
         pub const version = bridge.accessor(Plugin.getVersion, null, .{});
         pub const length = bridge.accessor(Plugin.getLength, null, .{});
-        pub const @"[int]" = bridge.indexed(Plugin.getAtIndex, Plugin.getIndexes, .{ .null_as_undefined = true });
-        pub const @"[str]" = bridge.namedIndexed(Plugin.getByName, null, null, Plugin.getNamedKeys, .{ .null_as_undefined = true });
+        pub const @"[int]" = bridge.indexed(Plugin.getAtIndex, Plugin.getIndexes, .{ .null_as_undefined = true, .enumerable = true });
+        pub const @"[str]" = bridge.namedIndexed(Plugin.getByName, null, null, Plugin.getNamedKeys, .{ .null_as_undefined = true, .enumerable = true });
         pub const item = bridge.function(_item, .{});
         fn _item(self: *const Plugin, index: i32) ?*MimeType {
             if (index < 0) return null;
@@ -344,8 +357,8 @@ pub const JsApi = struct {
 
     pub const length = bridge.accessor(PluginArray.getLength, null, .{});
     pub const refresh = bridge.function(PluginArray.refresh, .{});
-    pub const @"[int]" = bridge.indexed(PluginArray.getAtIndex, PluginArray.getIndexes, .{ .null_as_undefined = true });
-    pub const @"[str]" = bridge.namedIndexed(PluginArray.getByName, null, null, PluginArray.getNamedKeys, .{ .null_as_undefined = true });
+    pub const @"[int]" = bridge.indexed(PluginArray.getAtIndex, PluginArray.getIndexes, .{ .null_as_undefined = true, .enumerable = true });
+    pub const @"[str]" = bridge.namedIndexed(PluginArray.getByName, null, null, PluginArray.getNamedKeys, .{ .null_as_undefined = true, .enumerable = true });
     pub const item = bridge.function(_item, .{});
     fn _item(self: *const PluginArray, index: i32) ?*Plugin {
         if (index < 0) return null;

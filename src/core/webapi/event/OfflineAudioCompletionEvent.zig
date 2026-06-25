@@ -12,12 +12,14 @@ _proto: *Event,
 _rendered_buffer: *AudioBuffer,
 
 pub fn initTrusted(rendered_buffer: *AudioBuffer, frame: *Frame) !*OfflineAudioCompletionEvent {
-    const arena = try frame.getArena(.tiny, "OfflineAudioCompletionEvent");
-    errdefer frame.releaseArena(arena);
+    return initTrustedOnArena(rendered_buffer, frame);
+}
+
+pub fn initTrustedOnArena(rendered_buffer: *AudioBuffer, frame: *Frame) !*OfflineAudioCompletionEvent {
     const typ = String.wrap("complete");
 
     const event = try frame._factory.event(
-        arena,
+        frame.arena,
         typ,
         OfflineAudioCompletionEvent{
             ._proto = undefined,

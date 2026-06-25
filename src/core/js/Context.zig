@@ -296,6 +296,32 @@ pub fn addIdentity(self: *Context, ptr: usize) !IdentityResult {
     };
 }
 
+/// Install `ctx.local` while the context is already entered (native microtasks).
+/// Does not call `Context::Enter` — only adds a HandleScope for locals.
+pub const InstalledLocal = struct {
+    scope: js.Local.Scope,
+    prev: ?*const js.Local,
+
+    pub fn install(ctx: *Context) InstalledLocal {
+        var self: InstalledLocal = .{ .scope = undefined, .prev = ctx.local };
+        js.HandleScope.init(&self.scope.handle_scope, ctx.isolate);
+        const handle_ptr = v8.v8__Global__Get(&ctx.handle, ctx.isolate.handle).?;
+        self.scope.local = .{
+            .ctx = ctx,
+            .isolate = ctx.isolate,
+            .handle = @ptrCast(handle_ptr),
+            .call_arena = ctx.call_arena,
+        };
+        ctx.local = &self.scope.local;
+        return self;
+    }
+
+    pub fn deinit(self: *InstalledLocal, ctx: *Context) void {
+        ctx.local = self.prev;
+        self.scope.handle_scope.deinit();
+    }
+};
+
 // Any operation on the context have to be made from a local.
 pub fn localScope(self: *Context, ls: *js.Local.Scope) void {
     const isolate = self.isolate;
@@ -1233,6 +1259,10 @@ pub fn queueSlotchangeDelivery(self: *Context) !void {
 // associated to a Context - they are just functions to execute in an Isolate.
 // But for these Context microtasks, we want to (a) make sure the context isn't
 // being shut down and (b) that it's entered.
+pub fn queueMicrotaskCallback(self: *Context, callback: anytype) void {
+    self.enqueueMicrotask(callback);
+}
+
 fn enqueueMicrotask(self: *Context, callback: anytype) void {
     self.execution.validateJsEntry(.allow_draining, .microtask_checkpoint) catch return;
     // Use context-specific microtask queue instead of isolate queue
@@ -1245,6 +1275,28 @@ fn enqueueMicrotask(self: *Context, callback: anytype) void {
             callback(ctx);
         }
     }.run, self);
+}
+
+/// Run `callback` on the context microtask queue after the current sync turn.
+/// `entry` must live until the microtask runs (frame arena is typical).
+pub const NativeMicrotask = struct {
+    ctx: *Context,
+    userdata: *anyopaque,
+    callback: *const fn (*Context, *anyopaque) void,
+};
+
+pub fn queueMicrotaskNative(self: *Context, entry: *NativeMicrotask) void {
+    self.execution.validateJsEntry(.allow_draining, .microtask_checkpoint) catch return;
+    entry.ctx = self;
+    v8.v8__MicrotaskQueue__EnqueueMicrotask(self.microtask_queue, self.isolate.handle, struct {
+        fn run(data: ?*anyopaque) callconv(.c) void {
+            const e: *NativeMicrotask = @ptrCast(@alignCast(data.?));
+            var hs: js.HandleScope = undefined;
+            const entered = e.ctx.enter(&hs) orelse return;
+            defer entered.exit();
+            e.callback(e.ctx, e.userdata);
+        }
+    }.run, entry);
 }
 
 // There's an assumption here: the js.Function will be alive when microtasks are

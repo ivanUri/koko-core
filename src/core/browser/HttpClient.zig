@@ -21,6 +21,7 @@ const Notification = @import("../../runtime/Notification.zig");
 const CookieJar = @import("../webapi/storage/Cookie.zig").Jar;
 
 const http = @import("../../runtime/network/http.zig");
+const libcurl = @import("../../support/sys/libcurl.zig");
 const Network = @import("../../runtime/network/Network.zig");
 const build_config = @import("build_config");
 const Robots = @import("../../runtime/network/Robots.zig");
@@ -43,6 +44,7 @@ pub const RobotsLayer = @import("../../runtime/network/layer/RobotsLayer.zig");
 pub const WebBotAuthLayer = @import("../../runtime/network/layer/WebBotAuthLayer.zig");
 pub const InterceptionLayer = @import("../../runtime/network/layer/InterceptionLayer.zig");
 const GoogleChromeTransport = @import("GoogleChromeTransport.zig");
+const CurlCliTransport = @import("CurlCliTransport.zig");
 
 // This is loosely tied to a browser Page. Loading all the <scripts>, doing
 // XHR requests, and loading imports all happens through here. Sine the app
@@ -93,6 +95,10 @@ queue: std.DoublyLinkedList = .{},
 // we can unify the two queues. But HTTP is being changed a lot right now, and
 // I'm trying to minimize the surface area.
 ready_queue: std.DoublyLinkedList = .{},
+
+// Google sg_ss= document hops stall in curl-impersonate multi; queued here and
+// completed via blocking curl_easy_perform once performing == false.
+sync_easy_queue: std.DoublyLinkedList = .{},
 
 // The main app allocator
 allocator: Allocator,
@@ -355,7 +361,12 @@ pub fn abortFrame(self: *Client, frame_id: u32, opts: AbortOpts) void {
 pub fn clearProtectForFrame(self: *Client, frame_id: u32) void {
     clearProtectInConnList(self.in_use, frame_id);
     clearProtectInConnList(self.ready_queue, frame_id);
-    var n = self.queue.first;
+    clearProtectInTransferQueue(self.queue, frame_id);
+    clearProtectInTransferQueue(self.sync_easy_queue, frame_id);
+}
+
+fn clearProtectInTransferQueue(list: std.DoublyLinkedList, frame_id: u32) void {
+    var n = list.first;
     while (n) |node| : (n = node.next) {
         const transfer: *Transfer = @fieldParentPtr("_node", node);
         if (transfer.req.params.frame_id == frame_id) {
@@ -386,25 +397,13 @@ fn _abort(self: *Client, comptime abort_all: bool, frame_id: u32, opts: AbortOpt
     abortConnections(self.in_use, abort_all, frame_id, opts);
     abortConnections(self.ready_queue, abort_all, frame_id, opts);
 
-    {
-        var q = &self.queue;
-        var n = q.first;
-        while (n) |node| {
-            n = node.next;
-            const transfer: *Transfer = @fieldParentPtr("_node", node);
-            const params = transfer.req.params;
-            if (comptime abort_all) {
-                transfer.kill();
-            } else if (params.frame_id == frame_id and shouldAbortTransfer(&params, opts)) {
-                q.remove(node);
-                transfer.kill();
-            }
-        }
-    }
+    abortTransferQueue(&self.queue, abort_all, frame_id, opts);
+    abortTransferQueue(&self.sync_easy_queue, abort_all, frame_id, opts);
 
     if (comptime abort_all) {
         self.queue = .{};
         self.ready_queue = .{};
+        self.sync_easy_queue = .{};
     }
 
     if (comptime IS_DEBUG and abort_all) {
@@ -420,6 +419,26 @@ fn _abort(self: *Client, comptime abort_all: bool, frame_id: u32, opts: AbortOpt
             leftover += 1;
         }
         std.debug.assert(self.http_active == leftover);
+    }
+}
+
+fn abortTransferQueue(
+    q: *std.DoublyLinkedList,
+    comptime abort_all: bool,
+    frame_id: u32,
+    opts: AbortOpts,
+) void {
+    var n = q.first;
+    while (n) |node| {
+        n = node.next;
+        const transfer: *Transfer = @fieldParentPtr("_node", node);
+        const params = transfer.req.params;
+        if (comptime abort_all) {
+            transfer.kill();
+        } else if (params.frame_id == frame_id and shouldAbortTransfer(&params, opts)) {
+            q.remove(node);
+            transfer.kill();
+        }
     }
 }
 
@@ -449,6 +468,7 @@ fn abortConnections(list: std.DoublyLinkedList, comptime abort_all: bool, frame_
 
 pub fn tick(self: *Client, timeout_ms: u32) !PerformStatus {
     processChromeJobs(self);
+    drainSyncEasyQueue(self);
     while (self.queue.popFirst()) |queue_node| {
         const conn = self.network.getConnection() orelse {
             self.queue.prepend(queue_node);
@@ -708,6 +728,18 @@ pub fn syncRequest(self: *Client, allocator: Allocator, params: RequestParams) !
 // cases, the interceptor is expected to call resume to continue the transfer
 // or transfer.abort() to abort it.
 fn process(self: *Client, transfer: *Transfer) !void {
+    if (shouldSyncEasyPerform(transfer)) {
+        if (self.performing) {
+            self.sync_easy_queue.append(&transfer._node);
+            return;
+        }
+        if (self.network.getConnection()) |conn| {
+            return self.makeSyncEasyRequest(conn, transfer);
+        }
+        self.queue.append(&transfer._node);
+        return;
+    }
+
     // libcurl doesn't allow recursive calls, if we're in a `perform()` operation
     // then we _have_ to queue this.
     if (self.performing == false) {
@@ -769,7 +801,100 @@ pub fn restoreOriginalProxy(self: *Client) !void {
     self.use_proxy = self.http_proxy != null;
 }
 
+fn shouldSyncEasyPerform(transfer: *const Transfer) bool {
+    if (comptime !build_config.curl_impersonate) return false;
+    const req = &transfer.req;
+    return req.params.resource_type == .document and
+        std.mem.indexOf(u8, req.params.url, "sg_ss=") != null;
+}
+
+fn drainSyncEasyQueue(self: *Client) void {
+    while (self.sync_easy_queue.popFirst()) |node| {
+        const transfer: *Transfer = @fieldParentPtr("_node", node);
+        const conn = self.network.getConnection() orelse {
+            self.sync_easy_queue.prepend(node);
+            break;
+        };
+        self.makeSyncEasyRequest(conn, transfer) catch |err| {
+            transfer.req.error_callback(transfer.req.ctx, err);
+            transfer.deinit();
+        };
+    }
+}
+
+fn makeSyncEasyRequest(self: *Client, conn: *http.Connection, transfer: *Transfer) !void {
+    defer self.releaseConn(conn);
+
+    if (comptime IS_DEBUG) {
+        log.debug(.http, "sg_ss curl cli transport", .{ .url = transfer.req.params.url });
+    }
+
+    if (transfer.req.start_callback) |cb| {
+        try cb(Response.fromTransfer(transfer));
+    }
+
+    const doc = CurlCliTransport.fetchSgSsDocument(transfer.req.params.arena, transfer.req.params.url, transfer.req.params.headers) catch |err| {
+        transfer.requestFailed(err, true);
+        transfer.deinit();
+        return;
+    };
+
+    try completeCliDocument(transfer, doc);
+    transfer.deinit();
+}
+
+fn completeCliDocument(transfer: *Transfer, doc: CurlCliTransport.Document) !void {
+    const arena = transfer.req.params.arena;
+    transfer.url = doc.final_url;
+
+    const injected = try arena.alloc(http.Header, 1);
+    injected[0] = .{ .name = "content-type", .value = doc.content_type };
+
+    transfer.response_header = .{
+        .url = doc.final_url,
+        .status = doc.status,
+        .redirect_count = 0,
+        ._injected_headers = injected,
+    };
+    if (doc.protocol) |p| {
+        const len = @min(p.len, ResponseHead.MAX_PROTOCOL_LEN);
+        transfer.response_header.?._protocol_len = len;
+        @memcpy(transfer.response_header.?._protocol[0..len], p[0..len]);
+    }
+    const ct = doc.content_type;
+    const ct_len = @min(ct.len, ResponseHead.MAX_CONTENT_TYPE_LEN);
+    transfer.response_header.?._content_type_len = ct_len;
+    @memcpy(transfer.response_header.?._content_type[0..ct_len], ct[0..ct_len]);
+
+    transfer._performing = true;
+    defer transfer._performing = false;
+
+    const proceed = transfer.req.header_callback(Response.fromTransfer(transfer)) catch |err| {
+        log.err(.http, "header_callback", .{ .err = err, .req = transfer });
+        return err;
+    };
+    if (!proceed or transfer.aborted) {
+        transfer.requestFailed(error.Abort, true);
+        return error.Abort;
+    }
+    transfer._header_done_called = true;
+
+    if (doc.body.len > 0) {
+        try transfer.req.data_callback(Response.fromTransfer(transfer), doc.body);
+        if (transfer.aborted) {
+            transfer.requestFailed(error.Abort, true);
+            return error.Abort;
+        }
+    }
+
+    try transfer.req.done_callback(transfer.req.ctx);
+}
+
 fn makeRequest(self: *Client, conn: *http.Connection, transfer: *Transfer) anyerror!void {
+    if (shouldSyncEasyPerform(transfer)) {
+        return self.makeSyncEasyRequest(conn, transfer);
+    }
+
     {
         // Reset per-response state for retries (auth challenge, queue).
         const auth = transfer._auth_challenge;
@@ -829,9 +954,31 @@ fn perform(self: *Client, timeout_ms: c_int) anyerror!PerformStatus {
         self.releaseConn(conn);
     }
 
-    while (self.ready_queue.popFirst()) |node| {
-        const conn: *http.Connection = @fieldParentPtr("node", node);
-        try self.trackConn(conn);
+    // Connections scheduled while curl_multi_perform is active land in
+    // ready_queue. Promote them into the multi handle and re-drive curl;
+    // otherwise the transfer never starts (e.g. Google sg_ss root nav).
+    var active = running;
+    promote: while (true) {
+        var promoted = false;
+        while (self.ready_queue.popFirst()) |node| {
+            const conn: *http.Connection = @fieldParentPtr("node", node);
+            try self.trackConn(conn);
+            promoted = true;
+            if (comptime IS_DEBUG) {
+                const url = switch (conn.transport) {
+                    .http => |t| t.req.params.url,
+                    else => "?",
+                };
+                log.debug(.http, "ready_queue promote", .{ .url = url });
+            }
+        }
+        if (!promoted) break :promote;
+        self.performing = true;
+        defer self.performing = false;
+        active = try self.handles.perform();
+        if (try self.processMessages()) {
+            return .normal;
+        }
     }
 
     // We're potentially going to block for a while until we get data. Process
@@ -841,21 +988,37 @@ fn perform(self: *Client, timeout_ms: c_int) anyerror!PerformStatus {
     }
 
     var status = PerformStatus.normal;
-    if (self.cdp_client) |cdp_client| {
-        var wait_fds = [_]http.WaitFd{.{
-            .fd = cdp_client.socket,
-            .events = .{ .pollin = true },
-            .revents = .{},
-        }};
-        try self.handles.poll(&wait_fds, timeout_ms);
-        if (wait_fds[0].revents.pollin or wait_fds[0].revents.pollpri or wait_fds[0].revents.pollout) {
-            status = .cdp_socket;
+    const should_poll = self.cdp_client != null or active > 0 or self.http_active > 0;
+    if (should_poll) {
+        if (self.cdp_client) |cdp_client| {
+            var wait_fds = [_]http.WaitFd{.{
+                .fd = cdp_client.socket,
+                .events = .{ .pollin = true },
+                .revents = .{},
+            }};
+            try self.handles.poll(&wait_fds, timeout_ms);
+            if (wait_fds[0].revents.pollin or wait_fds[0].revents.pollpri or wait_fds[0].revents.pollout) {
+                status = .cdp_socket;
+            }
+        } else {
+            try self.handles.poll(&.{}, timeout_ms);
         }
-    } else if (running > 0) {
-        try self.handles.poll(&.{}, timeout_ms);
+
+        // Network.zig does perform → poll → perform → completions. Without the
+        // post-poll perform, newly added handles (e.g. Google sg_ss root nav)
+        // never register sockets / receive headers before info_read.
+        if (self.http_active > 0) {
+            self.performing = true;
+            defer self.performing = false;
+            _ = try self.handles.perform();
+            if (try self.processMessages()) {
+                return .normal;
+            }
+        }
     }
 
     _ = try self.processMessages();
+    drainSyncEasyQueue(self);
     return status;
 }
 
@@ -1032,6 +1195,7 @@ pub fn trackConn(self: *Client, conn: *http.Connection) !void {
         self.releaseConn(conn);
         return err;
     };
+    conn.in_multi = true;
 
     switch (conn.transport) {
         .http => self.http_active += 1,
@@ -1054,6 +1218,12 @@ pub fn removeConn(self: *Client, conn: *http.Connection) void {
         .websocket => self.ws_active -= 1,
         else => unreachable,
     }
+    if (!conn.in_multi) {
+        conn.in_multi = false;
+        self.releaseConn(conn);
+        return;
+    }
+    conn.in_multi = false;
     if (self.handles.remove(conn)) {
         self.releaseConn(conn);
     } else |_| {
@@ -1116,6 +1286,8 @@ pub const RequestParams = struct {
     omit_cookies: bool = false,
     /// Google search document hops omit Sec-Fetch-User; disable curl default_headers.
     omit_sec_fetch_user: bool = false,
+    /// Rebuild headers + transport flags after an in-flight HTTP redirect (e.g. google sei=/sg_ss=).
+    redirect_policy_refresh: ?*const fn (ctx: *anyopaque, transfer: *Transfer, prior_url: [:0]const u8) anyerror!void = null,
 
     pub const ResourceType = enum {
         document,
@@ -1428,6 +1600,15 @@ pub const Transfer = struct {
     fn configureConn(self: *Transfer, conn: *http.Connection) anyerror!void {
         const client = self.client;
         const req = &self.req;
+        const network = client.network;
+
+        if (comptime build_config.curl_impersonate) {
+            if (std.mem.indexOf(u8, req.params.url, "sg_ss=") != null) {
+                // Pooled easy handles retain HTTP/3 QUIC state after sei=;
+                // curl_easy_reset + fresh_connect is not enough for sg_ss=.
+                try conn.reinit(network.config, network.ca_blob, network.ip_filter);
+            }
+        }
 
         // Set callbacks and per-client settings on the pooled connection.
         try conn.setWriteCallback(Transfer.dataCallback);
@@ -1461,8 +1642,6 @@ pub const Transfer = struct {
             try conn.setCookies(@ptrCast(cookies.ptr));
         }
 
-        try conn.setHeaders(&header_list);
-
         conn.transport = .{ .http = self };
         conn.origin = switch (req.params.resource_type) {
             .document => .frame_navigation,
@@ -1493,11 +1672,27 @@ pub const Transfer = struct {
             }
         }
 
-        // TLS impersonate must be last — CURLOPT_SSL_* / verify / cookie opts can clobber SSL ctx.
+        // TLS impersonate before HTTP overrides — profile headers must win over chrome146 defaults.
         if (comptime build_config.curl_impersonate) {
             const curl_default_headers = !(req.params.omit_sec_fetch_user and
                 req.params.resource_type == .document);
-            try http.Connection.applyProfileTransport(conn, client.network.config, curl_default_headers);
+            const sg_ss_hop = std.mem.indexOf(u8, req.params.url, "sg_ss=") != null;
+            // Never negotiate HTTP/3 for sg_ss=: multi-kB query stalls in curl-impersonate
+            // QUIC; guest Chrome uses h2 (see capture-and-curl-sgss.mjs).
+            const http_version: http.Connection.ProfileHttpVersion = if (sg_ss_hop) .h2 else .h3;
+            if (sg_ss_hop) try conn.forceFreshConnection();
+            try conn.applyProfileTransportVersion(client.network.config, curl_default_headers, http_version);
+            if (sg_ss_hop) {
+                if (comptime IS_DEBUG) {
+                    log.debug(.http, "sg_ss transport", .{ .http_version = "h2", .fresh_connect = true });
+                }
+            }
+            try conn.setHeaders(&header_list);
+            if (client.network.config.profile.mode == .antidetect) {
+                try conn.setUserAgent(client.getUserAgent());
+            }
+        } else {
+            try conn.setHeaders(&header_list);
         }
     }
 
@@ -1565,6 +1760,7 @@ pub const Transfer = struct {
         const req = &transfer.req;
         const conn = transfer._conn.?;
         const arena = transfer.req.params.arena;
+        const prior_url = transfer.url;
 
         transfer._redirect_count += 1;
         if (transfer._redirect_count > transfer.client.network.config.httpMaxRedirects()) {
@@ -1612,6 +1808,11 @@ pub const Transfer = struct {
         };
 
         try transfer.updateURL(url);
+
+        if (req.params.redirect_policy_refresh) |refresh| {
+            try refresh(req.ctx, transfer, prior_url);
+        }
+
         // 301, 302, 303 → change to GET, drop body.
         // 307, 308 → keep method and body.
         const status = try conn.getResponseCode();
@@ -1767,12 +1968,14 @@ pub const Transfer = struct {
     }
 
     pub fn responseHeaderIterator(self: *Transfer) HeaderIterator {
-        // We always have a real curl request here. We handle injection up in InterceptionLayer.
-        assert(self._conn != null, "Transfer.responseHeaderIterator", .{ .value = self._conn != null });
-        const conn = self._conn.?;
-
-        // If we have a connection, than this is a real curl request and we
-        // iterate through the header that curl maintains.
+        if (self.response_header) |rh| {
+            if (rh._injected_headers.len > 0) {
+                return .{ .list = .{ .list = rh._injected_headers } };
+            }
+        }
+        const conn = self._conn orelse {
+            return .{ .list = .{ .list = &.{} } };
+        };
         return .{ .curl = .{ .conn = conn } };
     }
 

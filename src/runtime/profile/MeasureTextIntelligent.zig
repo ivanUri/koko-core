@@ -1,5 +1,5 @@
 const std = @import("std");
-const Frame = @import("../browser/Frame.zig");
+const Frame = @import("../../core/browser/Frame.zig");
 
 pub const Entry = struct {
     family: []const u8,

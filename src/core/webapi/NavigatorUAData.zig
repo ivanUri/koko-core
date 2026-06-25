@@ -13,7 +13,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const js = @import("../js/js.zig");
-const ProfileStore = @import("../fingerprint/ProfileStore.zig");
+const ProfileStore = @import("../../runtime/profile/ProfileStore.zig");
 
 const NavigatorUAData = @This();
 

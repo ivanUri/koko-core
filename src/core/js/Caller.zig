@@ -291,6 +291,113 @@ pub fn getEnumerator(self: *Caller, comptime T: type, func: anytype, handle: *co
     };
 }
 
+fn makeEnumerableDataDescriptor(local: *const Local, value: js.Value) !js.Value {
+    var desc = local.newObject();
+    _ = try desc.set("value", value, .{});
+    _ = try desc.set("writable", false, .{});
+    _ = try desc.set("enumerable", true, .{});
+    _ = try desc.set("configurable", true, .{});
+    return desc.toValue();
+}
+
+fn resolveIndexValue(comptime T: type, local: *const Local, func: anytype, idx: u32, info: PropertyCallbackInfo, comptime opts: CallOpts) !?js.Value {
+    const F = @TypeOf(func);
+    var args: ParameterTypes(F) = undefined;
+    @field(args, "0") = try TaggedOpaque.fromJS(*T, info.getThis());
+    @field(args, "1") = idx;
+    if (@typeInfo(F).@"fn".params.len == 3) {
+        @field(args, "2") = getGlobalArg(@TypeOf(args.@"2"), local.ctx);
+    }
+    const ret = @call(.auto, func, args);
+
+    const non_error_ret = switch (@typeInfo(@TypeOf(ret))) {
+        .error_union => |eu| blk: {
+            break :blk ret catch |err| {
+                if (isInErrorSet(error.NotHandled, eu.error_set) and err == error.NotHandled) {
+                    return null;
+                }
+                return err;
+            };
+        },
+        else => ret,
+    };
+
+    if (@typeInfo(@TypeOf(non_error_ret)) == .optional and non_error_ret == null) {
+        return null;
+    }
+
+    return try local.zigValueToJs(non_error_ret, opts);
+}
+
+fn resolveNamedIndexValue(comptime T: type, local: *const Local, func: anytype, name: *const v8.Name, info: PropertyCallbackInfo, comptime opts: CallOpts) !?js.Value {
+    const F = @TypeOf(func);
+    var args: ParameterTypes(F) = undefined;
+    @field(args, "0") = try TaggedOpaque.fromJS(*T, info.getThis());
+    @field(args, "1") = try nameToString(local, @TypeOf(args.@"1"), name);
+    if (@typeInfo(F).@"fn".params.len == 3) {
+        @field(args, "2") = getGlobalArg(@TypeOf(args.@"2"), local.ctx);
+    }
+    const ret = @call(.auto, func, args);
+
+    const non_error_ret = switch (@typeInfo(@TypeOf(ret))) {
+        .error_union => |eu| blk: {
+            break :blk ret catch |err| {
+                if (isInErrorSet(error.NotHandled, eu.error_set) and err == error.NotHandled) {
+                    return null;
+                }
+                return err;
+            };
+        },
+        else => ret,
+    };
+
+    if (@typeInfo(@TypeOf(non_error_ret)) == .optional and non_error_ret == null) {
+        return null;
+    }
+
+    return try local.zigValueToJs(non_error_ret, opts);
+}
+
+pub fn getIndexedDescriptor(self: *Caller, comptime T: type, func: anytype, idx: u32, handle: *const v8.PropertyCallbackInfo, comptime opts: CallOpts) void {
+    const local = &self.local;
+
+    var hs: js.HandleScope = undefined;
+    hs.init(local.isolate);
+    defer hs.deinit();
+
+    const info = PropertyCallbackInfo{ .handle = handle };
+    const value = resolveIndexValue(T, local, func, idx, info, opts) catch |err| {
+        handleError(T, @TypeOf(func), local, err, info, opts);
+        return;
+    } orelse return;
+
+    const desc = makeEnumerableDataDescriptor(local, value) catch |err| {
+        handleError(T, @TypeOf(func), local, err, info, opts);
+        return;
+    };
+    info.getReturnValue().set(desc);
+}
+
+pub fn getNamedDescriptor(self: *Caller, comptime T: type, func: anytype, name: *const v8.Name, handle: *const v8.PropertyCallbackInfo, comptime opts: CallOpts) void {
+    const local = &self.local;
+
+    var hs: js.HandleScope = undefined;
+    hs.init(local.isolate);
+    defer hs.deinit();
+
+    const info = PropertyCallbackInfo{ .handle = handle };
+    const value = resolveNamedIndexValue(T, local, func, name, info, opts) catch |err| {
+        handleError(T, @TypeOf(func), local, err, info, opts);
+        return;
+    } orelse return;
+
+    const desc = makeEnumerableDataDescriptor(local, value) catch |err| {
+        handleError(T, @TypeOf(func), local, err, info, opts);
+        return;
+    };
+    info.getReturnValue().set(desc);
+}
+
 fn _getEnumerator(comptime T: type, local: *const Local, func: anytype, info: PropertyCallbackInfo, comptime opts: CallOpts) !u8 {
     const F = @TypeOf(func);
     var args: ParameterTypes(F) = undefined;

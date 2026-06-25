@@ -47,31 +47,42 @@ pub fn main() !void {
 }
 
 fn run(allocator: Allocator, main_arena: Allocator) !void {
-    var args = try Config.parseArgs(main_arena);
-    defer args.deinit(main_arena);
+    // Config must live on the heap: fetch/curl worker threads read app.config
+    // while the main thread is in network.run(). Stack-allocated Config caused
+    // torn reads of profile.policies (segfault in PolicyRegistry.policyEnabled).
+    const config = try allocator.create(Config);
+    try Config.parseArgsInPlace(config, main_arena, allocator);
+    errdefer {
+        config.deinit(allocator);
+        allocator.destroy(config);
+    }
 
-    switch (args.mode) {
+    switch (config.mode) {
         .help => {
-            args.printUsageAndExit(true);
+            config.printUsageAndExit(true);
+            config.deinit(allocator);
+            allocator.destroy(config);
             return std.process.cleanExit();
         },
         .version => {
             var stdout = std.fs.File.stdout().writer(&.{});
             try stdout.interface.print("{s}\n", .{lp.build_config.version});
+            config.deinit(allocator);
+            allocator.destroy(config);
             return std.process.cleanExit();
         },
         else => {},
     }
 
-    if (args.logLevel()) |ll| {
+    if (config.logLevel()) |ll| {
         log.opts.level = ll;
     }
-    if (args.logFormat()) |lf| {
+    if (config.logFormat()) |lf| {
         log.opts.format = lf;
     }
 
     // Set log filter scopes.
-    log.opts.filter_scopes = args.logFilterScopes().items;
+    log.opts.filter_scopes = config.logFilterScopes().items;
 
     // must be installed before any other threads
     const sighandler = try main_arena.create(SigHandler);
@@ -79,19 +90,21 @@ fn run(allocator: Allocator, main_arena: Allocator) !void {
     try sighandler.install();
 
     // _app is global to handle graceful shutdown.
-    var app = try App.init(allocator, &args);
+    var app = try App.init(allocator, config);
     defer app.deinit();
+    defer allocator.destroy(config);
+    defer config.deinit(allocator);
 
     try sighandler.on(lp.Network.stop, .{&app.network});
 
     app.telemetry.record(.{ .run = {} });
 
-    switch (args.mode) {
+    switch (config.mode) {
         .serve => |opts| {
             log.debug(.app, "startup", .{ .mode = "serve", .snapshot = app.snapshot.fromEmbedded() });
             const address = std.net.Address.parseIp(opts.host, opts.port) catch |err| {
                 log.fatal(.app, "invalid server address", .{ .err = err, .host = opts.host, .port = opts.port });
-                return args.printUsageAndExit(false);
+                return config.printUsageAndExit(false);
             };
 
             var server = lp.Server.init(app, address) catch |err| {

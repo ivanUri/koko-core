@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "id": "google-search",
+  "enabledWhen": "antidetect",
+  "match": {
+    "hostSuffix": ["google.com"],
+    "pathContains": ["/search"]
+  },
+  "navigation": {
+    "injectParam": {
+      "name": "sei",
+      "when": "address_bar_in_session"
+    },
+    "referer": "search_q_only",
+    "priorOrigin": "https://www.google.com",
+    "omitCookies": "in_session",
+    "omitSecFetchUser": "in_session",
+    "curlDefaultsOnly": "first_hop",
+    "externalTransport": {
+      "configFlag": "google_chrome_transport",
+      "when": "query_contains",
+      "queryContains": ["sg_ss="]
+    }
+  },
+  "http": {
+    "match": {
+      "hostSuffix": ["google.com"]
+    },
+    "headerPlugin": "x-browser"
+  }
+}

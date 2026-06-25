@@ -27,12 +27,12 @@ const Frame = @import("Frame.zig");
 const Page = @import("Page.zig");
 pub const Runner = @import("Runner.zig");
 const Browser = @import("Browser.zig");
-const ClientHints = @import("../fingerprint/ClientHints.zig");
+const ClientHints = @import("../../runtime/profile/ClientHints.zig");
 const Notification = @import("../../runtime/Notification.zig");
 const QueuedNavigation = Frame.QueuedNavigation;
 
 const log = @import("../../support/log.zig");
-const FingerprintSeed = @import("../fingerprint/FingerprintSeed.zig");
+const FingerprintSeed = @import("../../runtime/profile/FingerprintSeed.zig");
 const ArenaPool = App.ArenaPool;
 const Allocator = std.mem.Allocator;
 const IS_DEBUG = builtin.mode == .Debug;

@@ -283,7 +283,6 @@ pub const SpeechSynthesis = struct {
             pub const name = "SpeechSynthesis";
             pub const prototype_chain = bridge.prototypeChain();
             pub var class_id: bridge.ClassId = undefined;
-            pub const empty_with_no_proto = true;
         };
         pub const pending = bridge.accessor(SpeechSynthesis.getPending, null, .{});
         pub const speaking = bridge.accessor(SpeechSynthesis.getSpeaking, null, .{});

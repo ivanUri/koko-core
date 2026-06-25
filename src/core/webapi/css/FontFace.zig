@@ -18,7 +18,7 @@ const RC = @import("../../../support/rc.zig").RC;
 const js = @import("../../js/js.zig");
 const Page = @import("../../browser/Page.zig");
 const Frame = @import("../../browser/Frame.zig");
-const FingerprintProfile = @import("../../fingerprint/Profile.zig");
+const FingerprintProfile = @import("../../profile/types.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -58,11 +58,12 @@ pub fn getFamily(self: *const FontFace) []const u8 {
     return self._family;
 }
 
-// load() resolves for all families. CreepJS still distinguishes availability via
-// document.fonts.check(); rejecting here surfaces as NetworkError in challenge
-// scripts (e.g. Cloudflare Turnstile) that probe FontFace before check().
+// load() rejects with NetworkError when the family is not in the profile whitelist.
+// CreepJS and document.fonts.check() both use this signal to detect installed fonts.
 pub fn load(self: *FontFace, frame: *Frame) !js.Promise {
-    _ = FingerprintProfile.isFontFamilyAvailable(frame.identityProfile(), self._family);
+    if (!FingerprintProfile.isFontFamilyAvailable(frame.identityProfile(), self._family)) {
+        return frame.js.local.?.rejectPromise(.{ .dom_exception = .{ .err = error.NetworkError } });
+    }
     return frame.js.local.?.resolvePromise(self);
 }
 

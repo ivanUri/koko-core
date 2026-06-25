@@ -47,6 +47,7 @@ const CacheStorage = @import("cache_storage.zig").CacheStorage;
 const SpeechSynthesis = @import("speech/SpeechSynthesis.zig").SpeechSynthesis;
 const TrustedTypePolicyFactory = @import("trusted_types.zig").TrustedTypePolicyFactory;
 const Chrome = @import("Chrome.zig");
+const GoogleCompat = @import("GoogleCompat.zig");
 
 const log = @import("../../support/log.zig");
 const IS_DEBUG = builtin.mode == .Debug;
@@ -81,6 +82,7 @@ _on_unhandled_rejection: ?js.Function.Global = null,
 _current_event: ?*Event = null,
 _location: *Location,
 _chrome: Chrome = .init,
+_google: GoogleCompat = .init,
 _timers: Timers = .{},
 _custom_elements: CustomElementRegistry = .{},
 _indexed_db: IDBFactory = .{},
@@ -231,6 +233,11 @@ pub fn getLocation(self: *const Window) *Location {
 pub fn getChrome(self: *Window) ?*Chrome {
     if (self._frame.loadedProfile().isFirefox()) return null;
     return &self._chrome;
+}
+
+pub fn getGoogle(self: *Window) ?*GoogleCompat {
+    if (!GoogleCompat.shouldExpose(self._frame)) return null;
+    return &self._google;
 }
 
 pub fn setLocation(self: *Window, url: [:0]const u8, frame: *Frame) !void {
@@ -1063,6 +1070,7 @@ pub const JsApi = struct {
     pub const origin = bridge.accessor(Window.getOrigin, null, .{});
     pub const location = bridge.accessor(Window.getLocation, Window.setLocation, .{ .deletable = false });
     pub const chrome = bridge.accessor(Window.getChrome, null, .{ .null_as_undefined = true });
+    pub const google = bridge.accessor(Window.getGoogle, null, .{ .null_as_undefined = true });
     pub const history = bridge.accessor(Window.getHistory, null, .{});
     pub const navigation = bridge.accessor(Window.getNavigation, null, .{});
     pub const crypto = bridge.accessor(Window.getCrypto, null, .{});

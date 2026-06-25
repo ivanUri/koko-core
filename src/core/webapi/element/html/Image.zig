@@ -143,16 +143,23 @@ pub fn imageAddedCallback(self: *Image, frame: *Frame) !void {
     if (src.len == 0) return;
 
     const scratch = try frame.getArena(.small, "Image.load");
+    errdefer frame.releaseArena(scratch);
     const resolved = try URL.resolve(scratch, frame.base(), src, .{ .encoding = frame.charset });
     const owned_url = try frame.arena.dupeZ(u8, resolved);
 
     if (self._loading) {
         if (self._load_url) |prev| {
-            if (std.mem.eql(u8, prev, owned_url)) return;
+            if (std.mem.eql(u8, prev, owned_url)) {
+                frame.releaseArena(scratch);
+                return;
+            }
         }
     } else if (self._complete) {
         if (self._load_url) |prev| {
-            if (std.mem.eql(u8, prev, owned_url)) return;
+            if (std.mem.eql(u8, prev, owned_url)) {
+                frame.releaseArena(scratch);
+                return;
+            }
         }
     }
 

@@ -1417,8 +1417,177 @@ fn offsetParentElement(self: *Element, frame: *Frame) ?*Element {
 }
 
 fn rootLayoutSize(frame: *Frame) LayoutSize {
-    _ = frame;
-    return .{ .width = 1920.0, .height = 1080.0 };
+    const profile = frame.identityProfile();
+    return .{
+        .width = @floatFromInt(profile.window.inner_width),
+        .height = @floatFromInt(profile.window.inner_height),
+    };
+}
+
+const layout_default_size: f64 = 5.0;
+const layout_leaf_block_height: f64 = 20.0;
+
+/// Google Search errsrp grid: width ≈ 56 * cols − 20 (±2px tolerance).
+const google_serp_col_px: f64 = 56.0;
+const google_serp_col_adjust: f64 = 20.0;
+const google_serp_rhs_gap: f64 = 76.0;
+
+fn googleSerpColWidth(cols: u8) f64 {
+    return @as(f64, @floatFromInt(cols)) * google_serp_col_px - google_serp_col_adjust;
+}
+
+fn googleSerpTotalGridCols(viewport_width: f64) u8 {
+    if (viewport_width <= 939.98) return 12;
+    if (viewport_width <= 1163.98) return 16;
+    return 20;
+}
+
+fn googleSerpCenterRhsCols(viewport_width: f64, has_rhs: bool) struct { center: u8, rhs: u8 } {
+    const total = googleSerpTotalGridCols(viewport_width);
+    if (!has_rhs) {
+        const main_cols: u8 = if (total >= 20) 12 else total;
+        return .{ .center = main_cols, .rhs = 0 };
+    }
+    const center_cols = @min(12, @max(8, total - 6));
+    return .{ .center = center_cols, .rhs = total - 1 - center_cols };
+}
+
+fn googleSerpHasRhs(frame: *Frame) bool {
+    if (frame.document.getElementById("rhs", frame) != null) return true;
+    if (frame.document.getElementById("rhs-col", frame) != null) return true;
+    return false;
+}
+
+fn googleSerpRhsId(id: []const u8) bool {
+    return std.mem.eql(u8, id, "rhs") or std.mem.eql(u8, id, "rhs-col");
+}
+
+fn googleSerpGridWidth(self: *Element, frame: *Frame) ?f64 {
+    const id = self.getId();
+    if (id.len == 0) return null;
+    const viewport = rootLayoutSize(frame);
+    const has_rhs = googleSerpHasRhs(frame);
+    const cols = googleSerpCenterRhsCols(viewport.width, has_rhs);
+
+    if (std.mem.eql(u8, id, "center_col")) {
+        return googleSerpColWidth(cols.center);
+    }
+    if (googleSerpRhsId(id)) {
+        if (cols.rhs == 0) return null;
+        return googleSerpColWidth(cols.rhs);
+    }
+    return null;
+}
+
+fn googleSerpLayoutLeft(self: *Element, frame: *Frame) ?f64 {
+    const id = self.getId();
+    if (id.len == 0) return null;
+    const viewport = rootLayoutSize(frame);
+    const has_rhs = googleSerpHasRhs(frame);
+    const cols = googleSerpCenterRhsCols(viewport.width, has_rhs);
+    const center_w = googleSerpColWidth(cols.center);
+    const rhs_w: f64 = if (cols.rhs > 0) googleSerpColWidth(cols.rhs) else 0;
+    const content_w = center_w + (if (cols.rhs > 0) google_serp_rhs_gap + rhs_w else 0);
+    const content_left = @max(0, (viewport.width - content_w) / 2.0);
+
+    if (std.mem.eql(u8, id, "center_col")) return content_left;
+    if (googleSerpRhsId(id) and cols.rhs > 0) {
+        return content_left + center_w + google_serp_rhs_gap;
+    }
+    return null;
+}
+
+fn isInlineLevelDisplay(display: []const u8) bool {
+    if (std.ascii.eqlIgnoreCase(display, "inline")) return true;
+    if (std.mem.indexOf(u8, display, "inline-") != null) return true;
+    return false;
+}
+
+fn isBlockLevel(self: *Element, frame: *Frame) bool {
+    if (readLayoutPropertyRaw(self, frame, "display")) |display| {
+        if (std.ascii.eqlIgnoreCase(display, "none")) return false;
+        if (std.ascii.eqlIgnoreCase(display, "contents")) return false;
+        if (isInlineLevelDisplay(display)) return false;
+        return true;
+    }
+    const tag = self.getTag();
+    if (tag == .body or tag == .html or tag == .form or tag == .li or tag == .dd or tag == .dt or tag == .dialog) {
+        return true;
+    }
+    return tag.isBlock();
+}
+
+fn childrenBlockFlowHeight(self: *Element, frame: *Frame, depth: usize) f64 {
+    if (depth > 64) return layout_leaf_block_height;
+    var total: f64 = 0;
+    var has_child = false;
+    var child = self.asNode().firstChild();
+    while (child) |c| {
+        if (c.is(Element)) |el| {
+            if (!el.checkVisibilityCached(null, frame)) continue;
+            has_child = true;
+            const dims = resolveElementDimensions(el, frame, depth + 1);
+            total += dims.height;
+        }
+        child = c.nextSibling();
+    }
+    if (!has_child) return layout_leaf_block_height;
+    return @max(total, layout_leaf_block_height);
+}
+
+fn resolveElementDimensions(self: *Element, frame: *Frame, depth: usize) LayoutSize {
+    if (depth > 64) return .{ .width = layout_default_size, .height = layout_default_size };
+
+    const parent_size = parentLayoutSize(self, frame);
+    var width: f64 = layout_default_size;
+    var height: f64 = layout_default_size;
+
+    if (layoutDimensionFromProperty(self, frame, "width", .width)) |w| width = w;
+    if (layoutDimensionFromProperty(self, frame, "height", .height)) |h| height = h;
+
+    const tag = self.getTag();
+    if (tag == .html or tag == .body) {
+        const root = rootLayoutSize(frame);
+        if (width == layout_default_size) width = root.width;
+        if (height == layout_default_size) {
+            height = if (tag == .body) @max(root.height * 8.0, 800.0) else root.height;
+        }
+    } else if (tag == .img or tag == .iframe) {
+        if (width == layout_default_size) {
+            if (self.getAttributeSafe(comptime .wrap("width"))) |w| {
+                width = std.fmt.parseFloat(f64, w) catch width;
+            }
+        }
+        if (height == layout_default_size) {
+            if (self.getAttributeSafe(comptime .wrap("height"))) |h| {
+                height = std.fmt.parseFloat(f64, h) catch height;
+            }
+        }
+    } else if (tag == .svg) {
+        if (width == layout_default_size) {
+            if (self.getAttributeSafe(comptime .wrap("width"))) |w| {
+                if (parseLayoutDimension(w, parent_size.width)) |parsed| width = parsed;
+            }
+        }
+        if (height == layout_default_size) {
+            if (self.getAttributeSafe(comptime .wrap("height"))) |h| {
+                if (parseLayoutDimension(h, parent_size.height)) |parsed| height = parsed;
+            }
+        }
+    } else if (googleSerpGridWidth(self, frame)) |serp_w| {
+        if (width == layout_default_size) width = serp_w;
+        if (height == layout_default_size) height = childrenBlockFlowHeight(self, frame, depth);
+    } else if (isBlockLevel(self, frame)) {
+        if (width == layout_default_size) width = parent_size.width;
+        if (height == layout_default_size) height = childrenBlockFlowHeight(self, frame, depth);
+    }
+
+    const transform = getLayoutPropertyValue(self, "transform", frame);
+    const transformed = dimensionsAfterTransform(width, height, transform);
+    return .{
+        .width = @max(transformed.width, 0),
+        .height = @max(transformed.height, 0),
+    };
 }
 
 fn rootLayoutSizeForHitTest(frame: *Frame) LayoutSize {
@@ -1433,8 +1602,8 @@ fn parentLayoutSizeForHitTest(self: *Element, frame: *Frame) LayoutSize {
 
 fn elementLayoutSizeShallowForHitTest(self: *Element, frame: *Frame) LayoutSize {
     const parent_size = parentLayoutSizeForHitTest(self, frame);
-    var width: f64 = 5.0;
-    var height: f64 = 5.0;
+    var width: f64 = layout_default_size;
+    var height: f64 = layout_default_size;
 
     if (readLayoutPropertyRaw(self, frame, "width")) |raw| {
         if (parseLayoutDimension(raw, parent_size.width)) |w| width = w;
@@ -1445,52 +1614,33 @@ fn elementLayoutSizeShallowForHitTest(self: *Element, frame: *Frame) LayoutSize 
 
     const tag = self.getTag();
     if (tag == .html or tag == .body) {
-        if (width == 5.0 or height == 5.0) {
-            const root = rootLayoutSizeForHitTest(frame);
-            if (width == 5.0) width = root.width;
-            if (height == 5.0) height = root.height;
+        const root = rootLayoutSizeForHitTest(frame);
+        if (width == layout_default_size) width = root.width;
+        if (height == layout_default_size) {
+            height = if (tag == .body) @max(root.height * 8.0, 800.0) else root.height;
         }
     } else if (tag == .img or tag == .iframe) {
-        if (self.getAttributeSafe(comptime .wrap("width"))) |w| {
-            width = std.fmt.parseFloat(f64, w) catch width;
+        if (width == layout_default_size) {
+            if (self.getAttributeSafe(comptime .wrap("width"))) |w| {
+                width = std.fmt.parseFloat(f64, w) catch width;
+            }
         }
-        if (self.getAttributeSafe(comptime .wrap("height"))) |h| {
-            height = std.fmt.parseFloat(f64, h) catch height;
+        if (height == layout_default_size) {
+            if (self.getAttributeSafe(comptime .wrap("height"))) |h| {
+                height = std.fmt.parseFloat(f64, h) catch height;
+            }
         }
+    } else if (isBlockLevel(self, frame)) {
+        if (width == layout_default_size) width = parent_size.width;
+        if (height == layout_default_size) height = layout_leaf_block_height;
     }
 
     return .{ .width = @max(width, 0), .height = @max(height, 0) };
 }
 
 fn getElementDimensionsForHitTest(self: *Element, frame: *Frame) struct { width: f64, height: f64 } {
-    const parent_size = parentLayoutSizeForHitTest(self, frame);
-    var width: f64 = 5.0;
-    var height: f64 = 5.0;
-
-    if (readLayoutPropertyRaw(self, frame, "width")) |raw| {
-        if (parseLayoutDimension(raw, parent_size.width)) |w| width = w;
-    }
-    if (readLayoutPropertyRaw(self, frame, "height")) |raw| {
-        if (parseLayoutDimension(raw, parent_size.height)) |h| height = h;
-    }
-
-    const tag = self.getTag();
-    if (tag == .html or tag == .body) {
-        if (width == 5.0 or height == 5.0) {
-            const root = rootLayoutSizeForHitTest(frame);
-            if (width == 5.0) width = root.width;
-            if (height == 5.0) height = root.height;
-        }
-    } else if (tag == .img or tag == .iframe) {
-        if (self.getAttributeSafe(comptime .wrap("width"))) |w| {
-            width = std.fmt.parseFloat(f64, w) catch width;
-        }
-        if (self.getAttributeSafe(comptime .wrap("height"))) |h| {
-            height = std.fmt.parseFloat(f64, h) catch height;
-        }
-    }
-
-    return .{ .width = @max(width, 0), .height = @max(height, 0) };
+    const dims = resolveElementDimensions(self, frame, 0);
+    return .{ .width = dims.width, .height = dims.height };
 }
 
 fn getMarginInsetForHitTest(self: *Element, frame: *Frame) struct { top: f64, left: f64 } {
@@ -1691,8 +1841,8 @@ fn parentUsesHorizontalFlow(parent: *Element, frame: *Frame) bool {
 /// `getElementDimensions` (prevents parent/child layout cycles).
 fn elementLayoutSizeShallow(self: *Element, frame: *Frame) LayoutSize {
     const parent_size = parentLayoutSize(self, frame);
-    var width: f64 = 5.0;
-    var height: f64 = 5.0;
+    var width: f64 = layout_default_size;
+    var height: f64 = layout_default_size;
 
     if (readLayoutPropertyRaw(self, frame, "width")) |raw| {
         if (parseLayoutDimension(raw, parent_size.width)) |w| width = w;
@@ -1703,18 +1853,25 @@ fn elementLayoutSizeShallow(self: *Element, frame: *Frame) LayoutSize {
 
     const tag = self.getTag();
     if (tag == .html or tag == .body) {
-        if (width == 5.0 or height == 5.0) {
-            const root = rootLayoutSize(frame);
-            if (width == 5.0) width = root.width;
-            if (height == 5.0) height = root.height;
+        const root = rootLayoutSize(frame);
+        if (width == layout_default_size) width = root.width;
+        if (height == layout_default_size) {
+            height = if (tag == .body) @max(root.height * 8.0, 800.0) else root.height;
         }
     } else if (tag == .img or tag == .iframe) {
-        if (self.getAttributeSafe(comptime .wrap("width"))) |w| {
-            width = std.fmt.parseFloat(f64, w) catch width;
+        if (width == layout_default_size) {
+            if (self.getAttributeSafe(comptime .wrap("width"))) |w| {
+                width = std.fmt.parseFloat(f64, w) catch width;
+            }
         }
-        if (self.getAttributeSafe(comptime .wrap("height"))) |h| {
-            height = std.fmt.parseFloat(f64, h) catch height;
+        if (height == layout_default_size) {
+            if (self.getAttributeSafe(comptime .wrap("height"))) |h| {
+                height = std.fmt.parseFloat(f64, h) catch height;
+            }
         }
+    } else if (isBlockLevel(self, frame)) {
+        if (width == layout_default_size) width = parent_size.width;
+        if (height == layout_default_size) height = layout_leaf_block_height;
     }
 
     return .{ .width = @max(width, 0), .height = @max(height, 0) };
@@ -1746,38 +1903,8 @@ fn shadowTreeHost(node: *Node) ?*Element {
 }
 
 fn getElementDimensions(self: *Element, frame: *Frame) struct { width: f64, height: f64 } {
-    var width: f64 = 5.0;
-    var height: f64 = 5.0;
-
-    if (layoutDimensionFromProperty(self, frame, "width", .width)) |w| width = w;
-    if (layoutDimensionFromProperty(self, frame, "height", .height)) |h| height = h;
-
-    if (width == 5.0 or height == 5.0) {
-        const tag = self.getTag();
-        if (tag == .html or tag == .body) {
-            if (width == 5.0) width = 1920.0;
-            if (height == 5.0) height = 100_000_000.0;
-        } else if (tag == .img or tag == .iframe) {
-            if (self.getAttributeSafe(comptime .wrap("width"))) |w| {
-                width = std.fmt.parseFloat(f64, w) catch width;
-            }
-            if (self.getAttributeSafe(comptime .wrap("height"))) |h| {
-                height = std.fmt.parseFloat(f64, h) catch height;
-            }
-        } else if (tag == .svg) {
-            const parent_size = parentLayoutSize(self, frame);
-            if (self.getAttributeSafe(comptime .wrap("width"))) |w| {
-                if (parseLayoutDimension(w, parent_size.width)) |parsed| width = parsed;
-            }
-            if (self.getAttributeSafe(comptime .wrap("height"))) |h| {
-                if (parseLayoutDimension(h, parent_size.height)) |parsed| height = parsed;
-            }
-        }
-    }
-
-    const transform = getLayoutPropertyValue(self, "transform", frame);
-    const transformed = dimensionsAfterTransform(width, height, transform);
-    return .{ .width = transformed.width, .height = transformed.height };
+    const dims = resolveElementDimensions(self, frame, 0);
+    return .{ .width = dims.width, .height = dims.height };
 }
 
 pub fn getClientWidth(self: *Element, frame: *Frame) f64 {
@@ -1827,10 +1954,12 @@ pub fn getBoundingClientRectForVisible(self: *Element, frame: *Frame) DOMRect {
     const scroll_y = @as(f64, @floatFromInt(frame.window.getScrollY()));
     const offset = getLayoutOffset(self, frame);
     const y = calculateDocumentPosition(self.asNode()) + offset.top;
+    const serp_left = googleSerpLayoutLeft(self, frame);
+    const x = if (serp_left) |left| left else offset.left;
 
     if (shadowTreeHost(self.asNode())) |host| {
         const host_rect = host.getBoundingClientRectForVisible(frame);
-        const local_x = calculateSiblingPosition(self.asNode()) + offset.left;
+        const local_x = if (serp_left) |left| left else calculateSiblingPosition(self.asNode()) + offset.left;
         const local_y = calculateDocumentPosition(self.asNode()) + offset.top;
         return .{
             ._x = host_rect._x + local_x,
@@ -1841,7 +1970,7 @@ pub fn getBoundingClientRectForVisible(self: *Element, frame: *Frame) DOMRect {
     }
 
     return .{
-        ._x = offset.left - scroll_x,
+        ._x = x - scroll_x,
         ._y = y - scroll_y,
         ._width = dims.width,
         ._height = dims.height,

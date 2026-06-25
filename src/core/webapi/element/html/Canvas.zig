@@ -23,7 +23,7 @@ const WebGLRenderingContext = @import("../../canvas/WebGLRenderingContext.zig");
 const OffscreenCanvas = @import("../../canvas/OffscreenCanvas.zig");
 const PixelBuffer = @import("../../canvas/PixelBuffer.zig").PixelBuffer;
 const PngEncoder = @import("../../canvas/PngEncoder.zig");
-const CanvasIntelligent = @import("../../../fingerprint/CanvasIntelligent.zig");
+const CanvasIntelligent = @import("../../../../runtime/profile/CanvasIntelligent.zig");
 
 const Execution = js.Execution;
 

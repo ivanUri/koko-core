@@ -1,6 +1,6 @@
 const std = @import("std");
-const URL = @import("../browser/URL.zig");
-const http = @import("../../runtime/network/http.zig");
+const URL = @import("../../core/browser/URL.zig");
+const http = @import("../network/http.zig");
 
 /// Origins that received `Accept-CH` for UA client hints.
 pub const OriginSet = std.StringHashMapUnmanaged(void);

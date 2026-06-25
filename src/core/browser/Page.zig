@@ -16,8 +16,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const App = @import("../../runtime/App.zig");
-const FingerprintProfile = @import("../fingerprint/Profile.zig");
-const ProfileStore = @import("../fingerprint/ProfileStore.zig");
+const FingerprintProfile = @import("../profile/types.zig");
+const ProfileStore = @import("../../runtime/profile/ProfileStore.zig");
 const NavigatorState = @import("../webapi/NavigatorState.zig");
 
 const js = @import("../js/js.zig");

@@ -78,8 +78,10 @@ pub fn add(self: *Scheduler, ctx: *anyopaque, cb: Callback, run_in_ms: u32, opts
 
 pub fn run(self: *Scheduler) !void {
     const now = milliTimestamp(.monotonic);
-    try self.runQueue(&self.low_priority, now);
+    // High-priority tasks (promise follow-ups, audio resolve) must not lose to
+    // repeating low-priority timers (CreepJS setTimeout polling).
     try self.runQueue(&self.high_priority, now);
+    try self.runQueue(&self.low_priority, now);
 }
 
 pub fn hasReadyTasks(self: *Scheduler) bool {

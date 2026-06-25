@@ -199,16 +199,18 @@ fn calculateIntersection(
 ) !IntersectionData {
     const target_rect = target.getBoundingClientRect(frame);
 
-    // Use root element's rect or viewport (simplified: assume 1920x1080)
+    const profile = frame.identityProfile();
+    const viewport_width = @as(f64, @floatFromInt(profile.window.inner_width));
+    const viewport_height = @as(f64, @floatFromInt(profile.window.inner_height));
+
     const root_rect = if (self._root) |root|
         root.getBoundingClientRect(frame)
     else
-        // Simplified viewport - assume 1920x1080 for now
         DOMRect{
             ._x = 0.0,
             ._y = 0.0,
-            ._width = 1920.0,
-            ._height = 1080.0,
+            ._width = viewport_width,
+            ._height = viewport_height,
         };
 
     // For a headless browser without real layout, we treat all elements as fully visible.

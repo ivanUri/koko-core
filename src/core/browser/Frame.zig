@@ -56,9 +56,9 @@ const MouseEvent = @import("../webapi/event/MouseEvent.zig");
 const HttpClient = @import("HttpClient.zig");
 const http = @import("../../runtime/network/http.zig");
 const build_config = @import("build_config");
-const FingerprintProfile = @import("../fingerprint/Profile.zig");
-const HttpProfile = @import("../fingerprint/HttpProfile.zig");
-const ProfileStore = @import("../fingerprint/ProfileStore.zig");
+const FingerprintProfile = @import("../profile/types.zig");
+const HttpProfile = @import("../../runtime/profile/HttpProfile.zig");
+const ProfileStore = @import("../../runtime/profile/ProfileStore.zig");
 const NavigatorState = @import("../webapi/NavigatorState.zig");
 
 const timestamp = @import("../../support/datetime.zig").timestamp;
@@ -220,6 +220,10 @@ _performance_delivery_scheduled: bool = false,
 _speech_voices_ready: bool = false,
 _speech_voices_load_scheduled: bool = false,
 _speech_voices: []?*@import("../webapi/speech/SpeechSynthesis.zig").SpeechSynthesisVoice = &.{},
+
+_offline_audio_pending: [8]?*anyopaque = .{null} ** 8,
+_offline_audio_pending_len: u8 = 0,
+_offline_audio_flush_queued: bool = false,
 
 _trusted_types_mapping: ?JS.Value.Global = null,
 
@@ -647,46 +651,22 @@ pub const HeadersForRequestOpts = struct {
     /// `is_document_navigation` is true.
     prior_origin: ?[]const u8 = null,
     is_document_navigation: bool = false,
-    /// Guest Chrome omnibox search omits Sec-Fetch-User.
+    /// Site policy may omit Sec-Fetch-User (e.g. in-session search redirects).
     omit_sec_fetch_user: bool = false,
-    /// Cold Google omnibox: curl_chrome146 default_headers only (~5 headers on wire).
+    /// Site policy may rely on curl-impersonate default_headers only (cold first hop).
     curl_defaults_only: bool = false,
 };
 
-fn isGoogleSearchUrl(url: []const u8) bool {
-    return std.mem.indexOf(u8, url, "google.com/search") != null;
-}
-
-fn isGoogleSiteUrl(url: []const u8) bool {
-    return std.mem.indexOf(u8, url, "google.com") != null;
-}
-
-/// Guest Chrome omnibox + in-search client redirects (sei=, sg_ss=) share headers.
-fn isGoogleSearchFlow(prior_url: []const u8, request_url: []const u8, reason: NavigateReason) bool {
-    if (!isGoogleSearchUrl(request_url)) return false;
-    if (reason == .address_bar) return true;
-    if (reason == .form and isGoogleSiteUrl(prior_url)) return true;
-    return isGoogleSearchUrl(prior_url);
-}
-
-/// Guest HAR first document hop already carries `sei=` (Chrome injects before network).
-fn appendGoogleSeiIfMissing(allocator: Allocator, url: []const u8) ![:0]const u8 {
-    if (std.mem.indexOf(u8, url, "sei=") != null) return try allocator.dupeZ(u8, url);
-    var rand: [16]u8 = undefined;
-    std.crypto.random.bytes(&rand);
-    const enc = std.base64.url_safe_no_pad.Encoder;
-    var sei_buf: [32]u8 = undefined;
-    const sei = sei_buf[0..enc.calcSize(rand.len)];
-    _ = enc.encode(sei, &rand);
-    const sep: []const u8 = if (std.mem.indexOf(u8, url, "?") != null) "&" else "?";
-    return try std.fmt.allocPrintSentinel(allocator, "{s}{s}sei={s}", .{ url, sep, sei }, 0);
-}
-
-fn googleOmniboxReferer(allocator: Allocator, url: []const u8) ![:0]const u8 {
-    const q_pos = std.mem.indexOf(u8, url, "q=") orelse return try allocator.dupeZ(u8, url);
-    const q_start = q_pos + 2;
-    const q_end = std.mem.indexOfPos(u8, url, q_start, "&") orelse url.len;
-    return try std.fmt.allocPrintSentinel(allocator, "https://www.google.com/search?q={s}", .{url[q_start..q_end]}, 0);
+fn navigateReasonForProfile(reason: NavigateReason) @import("../../runtime/profile/ProfileRuntime.zig").Reason {
+    return switch (reason) {
+        .anchor => .anchor,
+        .address_bar => .address_bar,
+        .form => .form,
+        .script => .script,
+        .history => .history,
+        .navigation => .navigation,
+        .initialFrameNavigation => .initial_frame_navigation,
+    };
 }
 
 fn refererHeaderForRequest(self: *Frame, opts: HeadersForRequestOpts) ![:0]const u8 {
@@ -736,6 +716,7 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
     if (comptime build_config.curl_impersonate) {
         if (opts.curl_defaults_only) return;
         const profile = self.loadedProfile();
+        const header_plan = self._session.browser.app.config.profile_runtime.headerPlan(request_url);
         if (profile.isFirefox()) {
             try HttpProfile.appendFirefoxHeaders(headers, self.arena, &static, ctx);
         } else if (opts.resource_type == .document and opts.is_document_navigation) {
@@ -747,14 +728,26 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
                 .color_scheme = profile.http.prefers_color_scheme,
                 .omit_sec_fetch_user = opts.omit_sec_fetch_user,
                 .referer_url = if (opts.omit_sec_fetch_user) opts.referer else null,
-                .user_agent = http_client.getUserAgent(),
             };
             if (opts.omit_sec_fetch_user) {
                 // sei=/sg_ss= in-search hops: manual Chrome headers, no Sec-Fetch-User (guest HAR).
                 try HttpProfile.appendChromeHeaders(headers, self.arena, identity, &static, ctx, chrome_opts);
             } else {
-                try HttpProfile.appendCurlImpersonateDocumentOverrides(headers, self.arena, ctx, chrome_opts);
+                try HttpProfile.appendCurlImpersonateDocumentOverrides(
+                    headers,
+                    self.arena,
+                    &static,
+                    ctx,
+                    chrome_opts,
+                    profile.mode == .antidetect,
+                );
             }
+            try self._session.browser.app.config.profile_runtime.appendHeaderPlugins(
+                header_plan,
+                headers,
+                self.arena,
+                http_client.getUserAgent(),
+            );
         } else {
             const full_hints = opts.resource_type == .document or
                 self._session.clientHintsEnabledForUrl(self.arena, request_url);
@@ -764,9 +757,14 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
                 .color_scheme = profile.http.prefers_color_scheme,
                 .omit_sec_fetch_user = opts.omit_sec_fetch_user,
                 .referer_url = if (opts.omit_sec_fetch_user) opts.referer else null,
-                .user_agent = http_client.getUserAgent(),
             };
             try HttpProfile.appendChromeHeaders(headers, self.arena, identity, &static, ctx, chrome_opts);
+            try self._session.browser.app.config.profile_runtime.appendHeaderPlugins(
+                header_plan,
+                headers,
+                self.arena,
+                http_client.getUserAgent(),
+            );
         }
         return;
     }
@@ -878,7 +876,7 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
         const nav_start = self.window._performance._timing.navigation_start;
         self.window._chrome.recordNavigationStart(nav_start);
     }
-    @import("../fingerprint/AutomationScrub.zig").applyOnce(self);
+    @import("../../runtime/profile/AutomationScrub.zig").applyOnce(self);
 
     const req_id = self._session.browser.http_client.nextReqId();
     log.info(.frame, "navigate", .{
@@ -992,50 +990,18 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
     const http_client = &session.browser.http_client;
 
     const prior_url = self.url;
-    // Root queued navigations (location.href → sg_ss) run on a fresh pending frame
-    // whose url is not the originator yet; use scheduleNavigation referer as prior.
-    const flow_prior_url = blk: {
-        if (isGoogleSearchUrl(prior_url)) break :blk prior_url;
-        if (opts.referer) |ref| {
-            if (isGoogleSearchUrl(ref)) break :blk ref;
-            // Root queued nav (homepage form → /search): pending frame url is still about:blank.
-            if (isGoogleSiteUrl(ref)) break :blk ref;
-        }
-        break :blk prior_url;
-    };
-    const first_google_search_hop = isGoogleSearchUrl(request_url) and
-        !isGoogleSearchUrl(flow_prior_url) and
-        (opts.reason == .address_bar or opts.reason == .form);
+    const nav_plan = try session.browser.app.config.profile_runtime.navigationPlan(self.arena, .{
+        .prior_url = prior_url,
+        .request_url = request_url,
+        .reason = navigateReasonForProfile(opts.reason),
+        .referer = opts.referer,
+        .prior_origin = opts.prior_origin orelse self.origin,
+        .external_transport_enabled = session.browser.app.config.googleChromeTransport(),
+    });
+    const prior_origin = nav_plan.prior_origin;
+    const nav_referer = nav_plan.referer;
 
-    var effective_url: [:0]const u8 = request_url;
-    // curl_chrome146 cold GET has no sei=; Chrome injects sei only after an in-session prior hop.
-    if (!first_google_search_hop and opts.reason == .address_bar and isGoogleSearchUrl(request_url)) {
-        effective_url = try appendGoogleSeiIfMissing(self.arena, request_url);
-    }
-
-    var prior_origin = opts.prior_origin orelse self.origin;
-    var omnibox_referer: ?[]const u8 = opts.referer;
-    const google_search_flow = isGoogleSearchFlow(flow_prior_url, effective_url, opts.reason);
-    // First /search hop (omnibox or homepage form): curl_chrome146 minimal default headers.
-    // In-session sei=/sg_ss= hops: manual Chrome headers, no Sec-Fetch-User, no curl defaults.
-    const in_session_google_search = google_search_flow and !first_google_search_hop;
-    // Cold Page.navigate → /search (about:blank prior) matches curl_chrome146: no Referer,
-    // Sec-Fetch-Site: none. In-search sei=/sg_ss= hops use q-only Referer + omit cookies.
-    if (in_session_google_search) {
-        if (prior_origin == null) {
-            prior_origin = try self.arena.dupe(u8, "https://www.google.com");
-        }
-        omnibox_referer = try googleOmniboxReferer(self.arena, effective_url);
-    }
-    const nav_referer: ?[:0]const u8 = blk: {
-        if (omnibox_referer) |ref| break :blk try self.arena.dupeZ(u8, ref);
-        if (std.mem.startsWith(u8, prior_url, "http") and !std.mem.eql(u8, prior_url, effective_url)) {
-            break :blk prior_url;
-        }
-        break :blk null;
-    };
-
-    self.url = try self.arena.dupeZ(u8, effective_url);
+    self.url = nav_plan.effective_url;
     const url_origin = try URL.getOrigin(self.arena, self.url);
     try self.applySandboxOrigin(url_origin);
 
@@ -1048,9 +1014,7 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
         .header = if (opts.header) |h| try self.arena.dupeZ(u8, h) else null,
     };
 
-    const use_chrome_transport = google_search_flow and
-        session.browser.app.config.googleChromeTransport() and
-        (first_google_search_hop or std.mem.indexOf(u8, request_url, "sg_ss=") != null);
+    const use_chrome_transport = nav_plan.use_external_transport;
 
     var headers = try http_client.newHeaders();
     if (opts.header) |hdr| {
@@ -1063,8 +1027,8 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
             .referer = nav_referer,
             .prior_origin = prior_origin,
             .is_document_navigation = true,
-            .omit_sec_fetch_user = in_session_google_search,
-            .curl_defaults_only = first_google_search_hop,
+            .omit_sec_fetch_user = nav_plan.omit_sec_fetch_user,
+            .curl_defaults_only = nav_plan.curl_defaults_only,
         });
     }
 
@@ -1112,8 +1076,8 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
                 .cookie_origin = if (std.mem.startsWith(u8, prior_url, "http")) prior_url else self.url,
                 .resource_type = .document,
                 .referer = nav_referer,
-                .omit_cookies = in_session_google_search,
-                .omit_sec_fetch_user = in_session_google_search,
+                .omit_cookies = nav_plan.omit_cookies,
+                .omit_sec_fetch_user = nav_plan.omit_sec_fetch_user,
                 .notification = self._session.notification,
                 .protect_from_abort = is_pending_root,
                 .skip_cache = opts.force,
@@ -1138,8 +1102,9 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
             .cookie_origin = if (std.mem.startsWith(u8, prior_url, "http")) prior_url else self.url,
             .resource_type = .document,
             .referer = nav_referer,
-            .omit_cookies = in_session_google_search,
-            .omit_sec_fetch_user = in_session_google_search,
+            .omit_cookies = nav_plan.omit_cookies,
+            .omit_sec_fetch_user = nav_plan.omit_sec_fetch_user,
+            .redirect_policy_refresh = refreshDocumentRedirectRequest,
             .notification = self._session.notification,
             .protect_from_abort = is_pending_root,
             .skip_cache = opts.force,
@@ -1486,6 +1451,43 @@ fn notifyParentLoadComplete(self: *Frame) void {
 
     self._parent_notified = true;
     parent.iframeCompletedLoading(self.iframe.?);
+}
+
+fn refreshDocumentRedirectRequest(
+    ctx: *anyopaque,
+    transfer: *HttpClient.Transfer,
+    prior_url: [:0]const u8,
+) !void {
+    const self: *Frame = @ptrCast(@alignCast(ctx));
+    const arena = transfer.req.params.arena;
+    const session = self._session;
+    const http_client = &session.browser.http_client;
+
+    const nav_plan = try session.browser.app.config.profile_runtime.navigationPlan(arena, .{
+        .prior_url = prior_url,
+        .request_url = transfer.req.params.url,
+        .reason = .navigation,
+        .referer = null,
+        .prior_origin = self.origin,
+        .external_transport_enabled = false,
+    });
+
+    transfer.req.params.omit_sec_fetch_user = nav_plan.omit_sec_fetch_user;
+    transfer.req.params.omit_cookies = nav_plan.omit_cookies;
+    transfer.req.params.referer = nav_plan.referer;
+
+    transfer.req.params.headers.deinit();
+    var headers = try http_client.newHeaders();
+    try self.headersForRequest(&headers, .{
+        .request_url = transfer.req.params.url,
+        .resource_type = .document,
+        .referer = nav_plan.referer,
+        .prior_origin = nav_plan.prior_origin,
+        .is_document_navigation = true,
+        .omit_sec_fetch_user = nav_plan.omit_sec_fetch_user,
+        .curl_defaults_only = nav_plan.curl_defaults_only,
+    });
+    transfer.req.params.headers = headers;
 }
 
 fn frameHeaderDoneCallback(response: HttpClient.Response) !bool {

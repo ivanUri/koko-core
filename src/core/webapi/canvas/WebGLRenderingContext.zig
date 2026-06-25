@@ -13,7 +13,7 @@
 
 const std = @import("std");
 
-const FingerprintProfile = @import("../../fingerprint/Profile.zig");
+const FingerprintProfile = @import("../../profile/types.zig");
 const js = @import("../../js/js.zig");
 const Execution = js.Execution;
 const Canvas = @import("../element/html/Canvas.zig");

@@ -63,6 +63,13 @@ fn _resolve(self: PromiseResolver, value: anytype) !void {
     if (!out.has_value or !out.value) {
         return error.FailedToResolvePromise;
     }
+    // Nested drain during an active checkpoint is a no-op (reentry guard). Mark
+    // pending so the outer checkpoint loop flushes reactions — CreepJS audio
+    // probes depend on this when startRendering runs inside timer microtasks.
+    if (env.checkpoint_active) {
+        env.checkpoint_pending = true;
+        return;
+    }
     env.runMicrotasks(.promise_resolve);
 }
 
@@ -126,6 +133,10 @@ fn _reject(self: PromiseResolver, value: anytype) !void {
     v8.v8__Promise__Resolver__Reject(self.handle, local.handle, js_val.handle, &out);
     if (!out.has_value or !out.value) {
         return error.FailedToRejectPromise;
+    }
+    if (env.checkpoint_active) {
+        env.checkpoint_pending = true;
+        return;
     }
     env.runMicrotasks(.promise_reject);
 }

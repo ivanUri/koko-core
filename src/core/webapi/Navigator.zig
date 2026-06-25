@@ -224,7 +224,24 @@ pub fn share(_: *const Navigator, _: js.Value, frame: *Frame) !js.Promise {
     return local.rejectPromise(.{ .dom_exception = .{ .err = error.SecurityError } });
 }
 
-pub fn canShare(_: *const Navigator, _: ?js.Value) bool {
+pub fn canShare(_: *const Navigator, data: ?js.Value) bool {
+    const val = data orelse return false;
+    if (!val.isObject()) return false;
+
+    const obj = val.toObject();
+    const url_val = obj.get("url") catch return false;
+    if (!url_val.isUndefined() and !url_val.isNull()) {
+        const url = url_val.toStringSlice() catch return false;
+        return std.ascii.startsWithIgnoreCase(url, "http://") or
+            std.ascii.startsWithIgnoreCase(url, "https://");
+    }
+
+    const text_val = obj.get("text") catch return false;
+    if (!text_val.isUndefined() and !text_val.isNull()) {
+        const text = text_val.toStringSlice() catch return false;
+        return text.len > 0;
+    }
+
     return false;
 }
 

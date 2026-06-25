@@ -28,8 +28,8 @@ const Scheduler = @import("Scheduler.zig");
 const Factory = @import("../browser/Factory.zig");
 const Frame = @import("../browser/Frame.zig");
 const HttpClient = @import("../browser/HttpClient.zig");
-const FingerprintProfile = @import("../fingerprint/Profile.zig");
-const ProfileStore = @import("../fingerprint/ProfileStore.zig");
+const FingerprintProfile = @import("../profile/types.zig");
+const ProfileStore = @import("../../runtime/profile/ProfileStore.zig");
 const EventManagerBase = @import("../browser/EventManagerBase.zig");
 
 const Blob = @import("../webapi/Blob.zig");

@@ -176,7 +176,14 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
             if (session.currentPage()) |page| {
                 if (page.queued_navigation.items.len != 0) {
                     try session.processQueuedNavigation();
-                    self.frame = session.currentFrame().?; // might have changed
+                    // Root navigations (e.g. Google sg_ss via location.replace) may
+                    // promote a pending Page; follow it so the next state machine
+                    // pass ticks the in-flight document transfer.
+                    self.frame = session.pendingOrCurrentFrame() orelse session.currentFrame().?;
+                    // Queued navigations are often scheduled from frameDoneCallback
+                    // while curl_multi_perform is active; kick curl immediately
+                    // instead of waiting for the next CDP poll window.
+                    _ = http_client.tick(0) catch {};
                     return .{ .ok = 0 };
                 }
             }

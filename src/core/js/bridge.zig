@@ -301,15 +301,18 @@ pub const Accessor = struct {
 pub const Indexed = struct {
     getter: *const fn (idx: u32, handle: ?*const v8.PropertyCallbackInfo) callconv(.c) u8,
     enumerator: ?*const fn (handle: ?*const v8.PropertyCallbackInfo) callconv(.c) u8,
+    descriptor: ?*const fn (idx: u32, handle: ?*const v8.PropertyCallbackInfo) callconv(.c) void = null,
 
     const Opts = struct {
         as_typed_array: bool = false,
         null_as_undefined: bool = false,
+        enumerable: bool = false,
     };
 
     fn init(comptime T: type, comptime getter: anytype, comptime enumerator: anytype, comptime opts: Opts) Indexed {
         var indexed = Indexed{
             .enumerator = null,
+            .descriptor = null,
             .getter = struct {
                 fn wrap(idx: u32, handle: ?*const v8.PropertyCallbackInfo) callconv(.c) u8 {
                     const v8_isolate = v8.v8__PropertyCallbackInfo__GetIsolate(handle).?;
@@ -341,6 +344,23 @@ pub const Indexed = struct {
             }.wrap;
         }
 
+        if (opts.enumerable) {
+            indexed.descriptor = struct {
+                fn wrap(idx: u32, handle: ?*const v8.PropertyCallbackInfo) callconv(.c) void {
+                    const v8_isolate = v8.v8__PropertyCallbackInfo__GetIsolate(handle).?;
+                    var caller: Caller = undefined;
+                    if (!caller.init(v8_isolate)) {
+                        return;
+                    }
+                    defer caller.deinit();
+                    caller.getIndexedDescriptor(T, getter, idx, handle.?, .{
+                        .as_typed_array = opts.as_typed_array,
+                        .null_as_undefined = opts.null_as_undefined,
+                    });
+                }
+            }.wrap;
+        }
+
         return indexed;
     }
 };
@@ -350,10 +370,12 @@ pub const NamedIndexed = struct {
     setter: ?*const fn (c_name: ?*const v8.Name, c_value: ?*const v8.Value, handle: ?*const v8.PropertyCallbackInfo) callconv(.c) u8 = null,
     deleter: ?*const fn (c_name: ?*const v8.Name, handle: ?*const v8.PropertyCallbackInfo) callconv(.c) u8 = null,
     enumerator: ?*const fn (handle: ?*const v8.PropertyCallbackInfo) callconv(.c) u8 = null,
+    descriptor: ?*const fn (c_name: ?*const v8.Name, handle: ?*const v8.PropertyCallbackInfo) callconv(.c) void = null,
 
     const Opts = struct {
         as_typed_array: bool = false,
         null_as_undefined: bool = false,
+        enumerable: bool = false,
     };
 
     fn init(comptime T: type, comptime getter: anytype, setter: anytype, deleter: anytype, comptime enumerator: anytype, comptime opts: Opts) NamedIndexed {
@@ -417,11 +439,27 @@ pub const NamedIndexed = struct {
             }
         }.wrap;
 
+        const descriptor_fn = if (opts.enumerable) struct {
+            fn wrap(c_name: ?*const v8.Name, handle: ?*const v8.PropertyCallbackInfo) callconv(.c) void {
+                const v8_isolate = v8.v8__PropertyCallbackInfo__GetIsolate(handle).?;
+                var caller: Caller = undefined;
+                if (!caller.init(v8_isolate)) {
+                    return;
+                }
+                defer caller.deinit();
+                caller.getNamedDescriptor(T, getter, c_name.?, handle.?, .{
+                    .as_typed_array = opts.as_typed_array,
+                    .null_as_undefined = opts.null_as_undefined,
+                });
+            }
+        }.wrap else null;
+
         return .{
             .getter = getter_fn,
             .setter = setter_fn,
             .deleter = deleter_fn,
             .enumerator = enumerator_fn,
+            .descriptor = descriptor_fn,
         };
     }
 };
@@ -823,6 +861,7 @@ pub const PageJsApis = flattenTypes(&.{
     @import("../webapi/collections.zig"),
     @import("../webapi/Console.zig"),
     @import("../webapi/Chrome.zig"),
+    @import("../webapi/GoogleCompat.zig"),
     @import("../webapi/Crypto.zig"),
     @import("../webapi/Permissions.zig"),
     @import("../webapi/MediaCapabilities.zig"),

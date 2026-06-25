@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "x-browser",
+  "channel": "stable",
+  "copyright": "Copyright 2026 Google LLC. All Rights Reserved.",
+  "year": "2026",
+  "apiKeys": {
+    "macos": "AIzaSyDr2UxVnv_U85AbhhY8XSHSIavUW0DC-sY",
+    "windows": "AIzaSyA2KlwBX3mkFo30om9LUFYQhpqLoa_BNhE",
+    "linux": "AIzaSyBqJZh-7pA44blAaAkH6490hUFOwX0KCYM"
+  }
+}

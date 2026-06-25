@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>CreepJS Audio Probe — Isolated</title>
+    <style>
+        body { font-family: ui-monospace, monospace; background: #0f1117; color: #e6edf3; margin: 16px; }
+        #status { font-size: 18px; margin-bottom: 12px; }
+        #log { white-space: pre-wrap; font-size: 12px; line-height: 1.5; }
+        .ok { color: #4cca9f; }
+        .err { color: #f85149; }
+        .dbg { color: #7ec8e3; }
+    </style>
+</head>
+<body>
+    <div id="status">running…</div>
+    <div id="log"></div>
+
+    <script>
+        const logEl = document.getElementById('log');
+        const statusEl = document.getElementById('status');
+        const dbg = (...args) => {
+            const t = performance.now().toFixed(1);
+            const line = `[${t}ms] ${args.map((a) => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')}`;
+            console.log('[audio-probe]', line);
+            const div = document.createElement('div');
+            div.className = 'dbg';
+            div.textContent = line;
+            logEl.appendChild(div);
+        };
+
+        async function hasFakeAudio() {
+            dbg('hasFakeAudio: begin');
+            const context = new OfflineAudioContext(1, 100, 44100);
+            dbg('hasFakeAudio: ctx', { length: context.length });
+            const oscillator = context.createOscillator();
+            oscillator.frequency.value = 0;
+            oscillator.start(0);
+            const p = context.startRendering();
+            dbg('hasFakeAudio: startRendering returned promise?', !!p?.then);
+            return new Promise((resolve) => {
+                context.oncomplete = (event) => {
+                    dbg('hasFakeAudio: oncomplete');
+                    const channelData = event.renderedBuffer.getChannelData?.(0);
+                    if (!channelData) return resolve(false);
+                    const unique = [...new Set(channelData)];
+                    resolve('' + unique !== '0');
+                };
+            }).finally(() => oscillator.disconnect());
+        }
+
+        function getRenderedBuffer(context) {
+            return new Promise((resolve) => {
+                dbg('getRenderedBuffer: begin', { length: context.length });
+                const analyser = context.createAnalyser();
+                const oscillator = context.createOscillator();
+                const dynamicsCompressor = context.createDynamicsCompressor();
+                oscillator.type = 'triangle';
+                oscillator.frequency.value = 10000;
+                dynamicsCompressor.threshold.value = -50;
+                dynamicsCompressor.knee.value = 40;
+                dynamicsCompressor.attack.value = 0;
+                oscillator.connect(dynamicsCompressor);
+                dynamicsCompressor.connect(analyser);
+                dynamicsCompressor.connect(context.destination);
+                oscillator.start(0);
+                const p = context.startRendering();
+                dbg('getRenderedBuffer: startRendering returned promise?', !!p?.then);
+                context.addEventListener('complete', (event) => {
+                    dbg('getRenderedBuffer: complete event', {
+                        bufferLength: event?.renderedBuffer?.length,
+                    });
+                    try {
+                        dynamicsCompressor.disconnect();
+                        oscillator.disconnect();
+                        const floatFrequencyData = new Float32Array(analyser.frequencyBinCount);
+                        analyser.getFloatFrequencyData?.(floatFrequencyData);
+                        const floatTimeDomainData = new Float32Array(analyser.fftSize);
+                        if ('getFloatTimeDomainData' in analyser) {
+                            analyser.getFloatTimeDomainData(floatTimeDomainData);
+                        }
+                        resolve({
+                            floatFrequencyData,
+                            floatTimeDomainData,
+                            buffer: event.renderedBuffer,
+                            compressorGainReduction: dynamicsCompressor.reduction?.value ?? dynamicsCompressor.reduction,
+                        });
+                    } catch (e) {
+                        dbg('getRenderedBuffer: error', e.message);
+                        resolve(null);
+                    }
+                });
+                dbg('getRenderedBuffer: listener registered');
+            });
+        }
+
+        async function run() {
+            const bufferLen = 5000;
+            dbg('=== Promise.all start (same as creep.js) ===');
+            const t0 = performance.now();
+            const [audioData, audioIsFake] = await Promise.all([
+                getRenderedBuffer(new OfflineAudioContext(1, bufferLen, 44100)),
+                hasFakeAudio().catch((e) => { dbg('hasFakeAudio error', e.message); return false; }),
+            ]);
+            dbg('=== Promise.all done ===', {
+                elapsedMs: (performance.now() - t0).toFixed(1),
+                hasAudioData: !!audioData,
+                audioIsFake,
+            });
+
+            if (!audioData?.buffer) {
+                statusEl.textContent = 'FAIL — no rendered buffer';
+                statusEl.className = 'err';
+                return;
+            }
+
+            const buffer = audioData.buffer;
+            const copy = new Float32Array(bufferLen);
+            buffer.copyFromChannel?.(copy, 0);
+            const bins = buffer.getChannelData?.(0) || [];
+            const sampleSum = [...bins].slice(4500, bufferLen).reduce((a, n) => a + Math.abs(n), 0);
+            const pattern = [
+                audioData.compressorGainReduction,
+                [...audioData.floatFrequencyData].reduce((a, n) => a + Math.abs(n), 0),
+                [...audioData.floatTimeDomainData].reduce((a, n) => a + Math.abs(n), 0),
+            ].join(',');
+
+            dbg('results', { sampleSum, pattern, bufferLength: buffer.length, audioIsFake });
+            statusEl.textContent = `PASS — sampleSum=${sampleSum} audioIsFake=${audioIsFake}`;
+            statusEl.className = 'ok';
+            window.AUDIO_PROBE_RESULT = { sampleSum, pattern, audioIsFake, elapsedMs: performance.now() - t0 };
+        }
+
+        run().catch((e) => {
+            statusEl.textContent = 'FAIL — ' + e.message;
+            statusEl.className = 'err';
+            dbg('run() threw', e.message, e.stack);
+        });
+    </script>
+</body>
+</html>

@@ -56,45 +56,6 @@ pub const SpeechVoiceSpec = struct {
     default_voice: bool,
 };
 
-/// macOS Chrome 149 — five internal PDF plugins (navigator.plugins.length === 5).
-const default_chrome_plugins = [_]PluginSpec{
-    .{
-        .name = "PDF Viewer",
-        .filename = "internal-pdf-viewer",
-        .description = "Portable Document Format",
-        .mime_type = "application/pdf",
-        .mime_suffixes = "pdf",
-    },
-    .{
-        .name = "Chrome PDF Viewer",
-        .filename = "internal-pdf-viewer",
-        .description = "Portable Document Format",
-        .mime_type = "application/pdf",
-        .mime_suffixes = "pdf",
-    },
-    .{
-        .name = "Chromium PDF Viewer",
-        .filename = "internal-pdf-viewer",
-        .description = "Portable Document Format",
-        .mime_type = "application/pdf",
-        .mime_suffixes = "pdf",
-    },
-    .{
-        .name = "Microsoft Edge PDF Viewer",
-        .filename = "internal-pdf-viewer",
-        .description = "Portable Document Format",
-        .mime_type = "application/pdf",
-        .mime_suffixes = "pdf",
-    },
-    .{
-        .name = "WebKit built-in PDF",
-        .filename = "internal-pdf-viewer",
-        .description = "Portable Document Format",
-        .mime_type = "application/pdf",
-        .mime_suffixes = "pdf",
-    },
-};
-
 pub const LoadedProfile = struct {
     arena: std.heap.ArenaAllocator,
     mode: Mode,
@@ -128,6 +89,15 @@ pub const LoadedProfile = struct {
     audio_probe_freq: ?[]const f32 = null,
     speech_voices: []const SpeechVoiceSpec = &.{},
     measure_text_baseline: []const MeasureTextIntelligent.Entry = &.{},
+    /// Site policy ids enabled for this profile (e.g. "google-search").
+    policies: []const []const u8 = &.{},
+
+    pub fn hasPolicy(self: *const LoadedProfile, policy_id: []const u8) bool {
+        for (self.policies) |id| {
+            if (std.mem.eql(u8, id, policy_id)) return true;
+        }
+        return false;
+    }
 
     pub fn deinit(self: *LoadedProfile) void {
         self.arena.deinit();
@@ -308,6 +278,7 @@ const JsonProfile = struct {
     audioProbe: JsonAudioProbe = .{},
     speechVoicesFile: []const u8 = "",
     measureTextBaseline: JsonMeasureTextBaseline = .{},
+    policies: []const []const u8 = &.{},
 };
 
 pub fn resolve(name: ?[]const u8) !LoadedProfile {
@@ -379,6 +350,7 @@ fn fromEmbedded(name: ?[]const u8) !LoadedProfile {
         .http = undefined,
         .transport = undefined,
         .plugins = &.{},
+        .policies = &.{},
     };
     errdefer profile.deinit();
 
@@ -388,11 +360,11 @@ fn fromEmbedded(name: ?[]const u8) !LoadedProfile {
     profile.http.brands = try allocator.alloc(Brand, 1);
     profile.http.brands[0] = .{ .brand = "Velora", .version = "1" };
     profile.http.sec_ch_ua = try buildSecChUa(allocator, profile.http.brands);
-    profile.http.accept_language = try buildAcceptLanguage(allocator, src.languages[0], if (src.languages.len > 1) src.languages[1] else "en");
+    profile.http.accept_language = try buildAcceptLanguage(allocator, src.languages);
     profile.http.prefers_color_scheme = "light";
     profile.transport.target = TransportProfile.Target.chrome146;
     profile.transport.impersonate = try allocator.dupeZ(u8, profile.transport.target.name());
-    profile.plugins = try dupePluginSpecs(allocator, &default_chrome_plugins);
+    profile.plugins = &.{};
     return profile;
 }
 
@@ -440,6 +412,7 @@ fn parseJson(bytes: []const u8) !LoadedProfile {
 
     const allocator = profile.arena.allocator();
     profile.id = try allocator.dupe(u8, doc.id);
+    profile.policies = try dupeStringList(allocator, doc.policies);
 
     profile.languages = try dupeStringList(allocator, doc.navigator.languages);
     profile.fonts = try loadFonts(allocator, doc.fonts, doc.fontsFile);
@@ -454,11 +427,7 @@ fn parseJson(bytes: []const u8) !LoadedProfile {
         };
     }
     profile.http.sec_ch_ua = try buildSecChUa(allocator, profile.http.brands);
-    profile.http.accept_language = try buildAcceptLanguage(
-        allocator,
-        doc.navigator.languages[0],
-        if (doc.navigator.languages.len > 1) doc.navigator.languages[1] else "en",
-    );
+    profile.http.accept_language = try buildAcceptLanguage(allocator, doc.navigator.languages);
     profile.http.prefers_color_scheme = try allocator.dupe(u8, doc.userAgentData.prefersColorScheme);
 
     const transport_target = TransportProfile.Target.resolve(
@@ -471,8 +440,6 @@ fn parseJson(bytes: []const u8) !LoadedProfile {
 
     profile.plugins = if (doc.plugins.len > 0)
         try parsePlugins(allocator, doc.plugins)
-    else if (mode == .antidetect and browser_family == .chrome)
-        try dupePluginSpecs(allocator, &default_chrome_plugins)
     else
         &.{};
 
@@ -726,8 +693,22 @@ fn buildSecChUa(allocator: std.mem.Allocator, brands: []const Brand) ![:0]u8 {
     return slice[0 .. slice.len - 1 :0];
 }
 
-fn buildAcceptLanguage(allocator: std.mem.Allocator, primary: []const u8, secondary: []const u8) ![:0]u8 {
-    return try std.fmt.allocPrintSentinel(allocator, "Accept-Language: {s},{s};q=0.9", .{ primary, secondary }, 0);
+fn buildAcceptLanguage(allocator: std.mem.Allocator, languages: []const []const u8) ![:0]u8 {
+    var list = try std.ArrayList(u8).initCapacity(allocator, 64);
+    errdefer list.deinit(allocator);
+    try list.appendSlice(allocator, "Accept-Language: ");
+    for (languages, 0..) |lang, i| {
+        if (i > 0) try list.append(allocator, ',');
+        switch (i) {
+            0 => try list.appendSlice(allocator, lang),
+            1 => try list.writer(allocator).print("{s};q=0.9", .{lang}),
+            2 => try list.writer(allocator).print("{s};q=0.8", .{lang}),
+            else => try list.writer(allocator).print("{s};q=0.7", .{lang}),
+        }
+    }
+    try list.append(allocator, 0);
+    const slice = try list.toOwnedSlice(allocator);
+    return slice[0 .. slice.len - 1 :0];
 }
 
 fn parsePersonaId(raw: []const u8, platform: []const u8) !Profile.PersonaId {
@@ -793,6 +774,13 @@ test "ProfileStore: load chrome-macos-sonoma with transport" {
     try testing.expect(profile.fonts.len >= 800);
     try testing.expect(profile.speech_voices.len >= 190);
     try testing.expectEqual(@as(u8, 30), profile.identity.screen.color_depth);
+    try testing.expect(profile.hasPolicy("google-search"));
+}
+
+test "ProfileStore: velora profile has no site policies" {
+    const profile = try resolve("velora");
+    defer profile.deinit();
+    try testing.expectEqual(@as(usize, 0), profile.policies.len);
 }
 
 test "ProfileStore: load firefox-macos profile" {
@@ -804,4 +792,5 @@ test "ProfileStore: load firefox-macos profile" {
     try testing.expect(std.mem.indexOf(u8, profile.http.user_agent, "Firefox/147") != null);
     try testing.expectEqual(@as(usize, 0), profile.plugins.len);
     try testing.expect(profile.canvas_probe_data_url == null);
+    try testing.expectEqual(@as(usize, 0), profile.policies.len);
 }

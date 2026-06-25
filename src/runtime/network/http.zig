@@ -282,6 +282,8 @@ fn opensocketCallback(
 pub const Connection = struct {
     _easy: *libcurl.Curl,
     in_use: bool,
+    /// True when this easy handle is registered on a curl_multi (HttpClient.trackConn).
+    in_multi: bool = false,
     transport: Transport,
     origin: Origin,
     node: std.DoublyLinkedList.Node = .{},
@@ -317,6 +319,22 @@ pub const Connection = struct {
 
     pub fn deinit(self: *const Connection) void {
         libcurl.curl_easy_cleanup(self._easy);
+    }
+
+    /// Replace the easy handle entirely. Pooled `curl_easy_reset` can leave a
+    /// stale HTTP/3 session that blocks the next HTTP/2 request (Google sg_ss=).
+    pub fn reinit(
+        self: *Connection,
+        config: *const Config,
+        ca_blob: ?libcurl.CurlBlob,
+        ip_filter: ?*const IpFilter,
+    ) !void {
+        libcurl.curl_easy_cleanup(self._easy);
+        self._easy = libcurl.curl_easy_init() orelse return error.FailedToInitializeEasy;
+        self.transport = .none;
+        self.origin = .unknown;
+        self.in_use = false;
+        try self.reset(config, ca_blob, ip_filter);
     }
 
     pub fn setURL(self: *const Connection, url: [:0]const u8) !void {
@@ -374,6 +392,11 @@ pub const Connection = struct {
 
     pub fn setHeaders(self: *const Connection, headers: *Headers) !void {
         try libcurl.curl_easy_setopt(self._easy, .http_header, headers.headers);
+    }
+
+    /// Overrides curl-impersonate default User-Agent (CURLOPT_USERAGENT, not HTTPHEADER).
+    pub fn setUserAgent(self: *const Connection, ua: [:0]const u8) !void {
+        try libcurl.curl_easy_setopt(self._easy, .useragent, ua.ptr);
     }
 
     pub fn clearInternalCookies(self: *const Connection) !void {
@@ -451,6 +474,8 @@ pub const Connection = struct {
         libcurl.curl_easy_reset(self._easy);
         self.transport = .none;
         self.origin = .unknown;
+        self.in_multi = false;
+        self.in_multi = false;
 
         if (build_config.curl_impersonate) {
             try self.clearInternalCookies();
@@ -529,14 +554,28 @@ pub const Connection = struct {
     /// supplies the full document header list (e.g. Google search sei=/sg_ss= hops
     /// must not leak Sec-Fetch-User from impersonate defaults).
     pub fn applyProfileTransport(self: *const Connection, config: *const Config, default_headers: bool) !void {
+        try self.applyProfileTransportVersion(config, default_headers, .h3);
+    }
+
+    pub const ProfileHttpVersion = enum { h2, h3 };
+
+    /// curl-impersonate transport with an explicit HTTP version (Google sg_ss= needs h2).
+    pub fn applyProfileTransportVersion(
+        self: *const Connection,
+        config: *const Config,
+        default_headers: bool,
+        version: ProfileHttpVersion,
+    ) !void {
         const easy = self._easy;
         const target = config.profile.transport.impersonate;
         try libcurl.setImpersonate(easy, target, default_headers);
         if (!config.profile.isFirefox()) {
             try applyChromeTlsKnobs(easy);
-            // Guest Chrome search SERP prefers HTTP/3 (see www.google.com.har).
-            // Keep h2 fallback until curl-impersonate h3_hash matches Chrome (quic-probe).
-            try libcurl.curl_easy_setopt(easy, .http_version, libcurl.HTTP_VERSION_3);
+            const http_version: c_long = switch (version) {
+                .h2 => libcurl.HTTP_VERSION_2TLS,
+                .h3 => libcurl.HTTP_VERSION_3,
+            };
+            try libcurl.curl_easy_setopt(easy, .http_version, http_version);
         }
         try libcurl.curl_easy_setopt(easy, .accept_encoding, "");
     }
@@ -567,6 +606,15 @@ pub const Connection = struct {
 
     pub fn setFollowLocation(self: *const Connection, follow: bool) !void {
         try libcurl.curl_easy_setopt(self._easy, .follow_location, @as(c_long, if (follow) 2 else 0));
+    }
+
+    pub fn setHttpVersion(self: *const Connection, version: c_long) !void {
+        try libcurl.curl_easy_setopt(self._easy, .http_version, version);
+    }
+
+    pub fn forceFreshConnection(self: *const Connection) !void {
+        try libcurl.curl_easy_setopt(self._easy, .fresh_connect, true);
+        try libcurl.curl_easy_setopt(self._easy, .forbid_reuse, true);
     }
 
     pub fn setTlsVerify(self: *const Connection, verify: bool, use_proxy: bool) !void {

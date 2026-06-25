@@ -12,11 +12,13 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
+const RC = @import("../../../support/rc.zig").RC;
 
 const js = @import("../../js/js.zig");
 
 const color = @import("../../browser/color.zig");
 const Frame = @import("../../browser/Frame.zig");
+const Page = @import("../../browser/Page.zig");
 
 /// CanvasGradient represents an opaque object describing a gradient.
 /// It is returned by the `createLinearGradient()`, `createRadialGradient()`,
@@ -65,9 +67,22 @@ pub const ColorStop = struct {
     color: color.RGBA,
 };
 
+_rc: RC(u8) = .{},
 _arena: std.mem.Allocator,
 _kind: Kind,
 _stops: std.ArrayListUnmanaged(ColorStop) = .empty,
+
+pub fn deinit(self: *CanvasGradient, page: *Page) void {
+    page.releaseArena(self._arena);
+}
+
+pub fn releaseRef(self: *CanvasGradient, page: *Page) void {
+    self._rc.release(self, page);
+}
+
+pub fn acquireRef(self: *CanvasGradient) void {
+    self._rc.acquire();
+}
 
 pub fn createLinear(x0: f64, y0: f64, x1: f64, y1: f64, frame: *Frame) !*CanvasGradient {
     return create(.{ .linear = .{ .x0 = x0, .y0 = y0, .x1 = x1, .y1 = y1 } }, frame);

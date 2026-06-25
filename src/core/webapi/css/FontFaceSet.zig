@@ -23,7 +23,7 @@ const Event = @import("../Event.zig");
 const EventTarget = @import("../EventTarget.zig");
 
 const FontFace = @import("FontFace.zig");
-const FingerprintProfile = @import("../../fingerprint/Profile.zig");
+const FingerprintProfile = @import("../../profile/types.zig");
 const TextMetrics = @import("../canvas/TextMetrics.zig");
 
 const Allocator = std.mem.Allocator;

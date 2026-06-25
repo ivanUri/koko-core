@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const Frame = @import("../browser/Frame.zig");
+const Frame = @import("../../core/browser/Frame.zig");
 const NativeCanvas = @import("NativeCanvas.zig");
 
 pub const ProbeId = enum {

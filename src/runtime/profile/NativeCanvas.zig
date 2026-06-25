@@ -1,9 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const Frame = @import("../browser/Frame.zig");
-const color = @import("../browser/color.zig");
-const PixelBuffer = @import("../webapi/canvas/PixelBuffer.zig").PixelBuffer;
+const Frame = @import("../../core/browser/Frame.zig");
+const color = @import("../../core/browser/color.zig");
+const PixelBuffer = @import("../../core/webapi/canvas/PixelBuffer.zig").PixelBuffer;
 
 extern fn velora_canvas_fill_text(
     pixels: [*]u8,

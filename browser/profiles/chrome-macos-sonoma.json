@@ -2,6 +2,7 @@
   "version": 1,
   "id": "chrome-macos-sonoma",
   "mode": "antidetect",
+  "policies": ["google-search"],
   "personaId": "macos_sonoma_intel",
   "transport": {
     "impersonate": "chrome149"

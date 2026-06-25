@@ -1,4 +1,4 @@
-const Frame = @import("../browser/Frame.zig");
+const Frame = @import("../../core/browser/Frame.zig");
 
 /// Remove common automation artifacts before page scripts run fingerprint probes.
 pub const scrub_script: []const u8 =

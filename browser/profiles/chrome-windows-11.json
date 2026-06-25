@@ -2,6 +2,7 @@
   "version": 1,
   "id": "chrome-windows-11",
   "mode": "antidetect",
+  "policies": ["google-search"],
   "personaId": "windows_11_intel",
   "transport": {
     "impersonate": "chrome149"

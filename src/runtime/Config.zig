@@ -13,8 +13,9 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
-const ProfileStore = @import("../core/fingerprint/ProfileStore.zig");
-const ProfileRotation = @import("../core/fingerprint/ProfileRotation.zig");
+const ProfileStore = @import("profile/ProfileStore.zig");
+const ProfileRotation = @import("profile/ProfileRotation.zig");
+const ProfileRuntime = @import("profile/ProfileRuntime.zig");
 const log = @import("../support/log.zig");
 const builtin = @import("builtin");
 
@@ -187,25 +188,42 @@ pub const Mode = Commands.Union;
 mode: Mode,
 exec_name: []const u8,
 profile: ProfileStore.LoadedProfile,
+profile_runtime: ProfileRuntime.ProfileRuntime,
 http_headers: HttpHeaders,
 
-pub fn init(allocator: Allocator, exec_name: []const u8, mode: Mode) !Config {
-    var config = Config{
-        .mode = mode,
-        .exec_name = exec_name,
-        .profile = undefined,
-        .http_headers = undefined,
-    };
-    const picked_profile = try config.resolveBrowserProfileName(allocator);
+/// ProfileRuntime stores a pointer into Config.profile; must run after Config is at its final address.
+pub fn rebindProfilePointers(self: *Config) void {
+    self.profile_runtime.profile = &self.profile;
+}
+
+pub fn initInPlace(self: *Config, allocator: Allocator, exec_name: []const u8, mode: Mode) !void {
+    self.mode = mode;
+    self.exec_name = exec_name;
+    self.profile = undefined;
+    self.profile_runtime = undefined;
+    self.http_headers = undefined;
+
+    const picked_profile = try self.resolveBrowserProfileName(allocator);
     defer if (picked_profile) |name| allocator.free(name);
-    config.profile = try ProfileStore.resolve(picked_profile orelse config.browserProfile());
-    errdefer config.profile.deinit();
-    config.http_headers = try HttpHeaders.init(allocator, &config);
-    return config;
+    self.profile = try ProfileStore.resolve(picked_profile orelse self.browserProfile());
+    errdefer self.profile.deinit();
+    self.profile_runtime = try ProfileRuntime.ProfileRuntime.init(allocator, &self.profile);
+    errdefer self.profile_runtime.deinit(allocator);
+    self.http_headers = try HttpHeaders.init(allocator, self);
+    self.rebindProfilePointers();
+}
+
+pub fn init(allocator: Allocator, exec_name: []const u8, mode: Mode) !Config {
+    var config: Config = undefined;
+    try initInPlace(&config, allocator, exec_name, mode);
+    var out = config;
+    out.rebindProfilePointers();
+    return out;
 }
 
 pub fn deinit(self: *Config, allocator: Allocator) void {
     self.http_headers.deinit(allocator);
+    self.profile_runtime.deinit(allocator);
     self.profile.deinit();
 }
 
@@ -401,10 +419,13 @@ pub fn blockCidrs(self: *const Config) ?[]const u8 {
 }
 
 pub fn googleChromeTransport(self: *const Config) bool {
-    return switch (self.mode) {
+    const flag = switch (self.mode) {
         inline .serve, .fetch, .mcp => |opts| opts.google_chrome_transport,
         else => unreachable,
     };
+    // sg_ss= document hops stall in curl-impersonate multi; auto-enable Chrome
+    // transport when the spawn helper is configured (see google-search policy).
+    return flag or std.posix.getenv("VELORA_CHROME_SPAWN") != null;
 }
 
 pub fn maxConnections(self: *const Config) u16 {
@@ -781,12 +802,23 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
     std.process.exit(1);
 }
 
-pub fn parseArgs(allocator: Allocator) !Config {
-    const exec_name, const command = try Commands.parse(allocator);
+/// CLI option strings are allocated with `cli_allocator` (typically an arena).
+/// Long-lived config state (`http_headers`, `profile_runtime`) uses `config_allocator`
+/// so `deinit(config_allocator)` can free without allocator mismatch.
+/// Must write in place: Config embeds non-copyable arena state in profile/runtime.
+pub fn parseArgsInPlace(self: *Config, cli_allocator: Allocator, config_allocator: Allocator) !void {
+    const exec_name, const command = try Commands.parse(cli_allocator);
     if (command == .serve and command.serve.timeout != null) {
         log.warn(.app, "--timeout is deprecated", .{});
     }
-    return .init(allocator, exec_name, command);
+    try initInPlace(self, config_allocator, exec_name, command);
+    self.rebindProfilePointers();
+}
+
+pub fn parseArgs(cli_allocator: Allocator, config_allocator: Allocator) !Config {
+    var config: Config = undefined;
+    try parseArgsInPlace(&config, cli_allocator, config_allocator);
+    return config;
 }
 
 pub fn validateUserAgent(ua: []const u8, allow_mozilla: bool) !void {

@@ -361,11 +361,15 @@ fn countExternalReferences() comptime_int {
                 if (value.enumerator != null) {
                     count += 1;
                 }
+                if (value.descriptor != null) {
+                    count += 1;
+                }
             } else if (T == bridge.NamedIndexed) {
                 count += 1;
                 if (value.setter != null) count += 1;
                 if (value.deleter != null) count += 1;
                 if (value.enumerator != null) count += 1;
+                if (value.descriptor != null) count += 1;
             }
         }
     }
@@ -432,6 +436,10 @@ fn collectExternalReferences() [countExternalReferences()]isize {
                     references[idx] = @bitCast(@intFromPtr(enumerator));
                     idx += 1;
                 }
+                if (value.descriptor) |descriptor| {
+                    references[idx] = @bitCast(@intFromPtr(descriptor));
+                    idx += 1;
+                }
             } else if (T == bridge.NamedIndexed) {
                 references[idx] = @bitCast(@intFromPtr(value.getter));
                 idx += 1;
@@ -445,6 +453,10 @@ fn collectExternalReferences() [countExternalReferences()]isize {
                 }
                 if (value.enumerator) |enumerator| {
                     references[idx] = @bitCast(@intFromPtr(enumerator));
+                    idx += 1;
+                }
+                if (value.descriptor) |descriptor| {
+                    references[idx] = @bitCast(@intFromPtr(descriptor));
                     idx += 1;
                 }
             }
@@ -670,7 +682,7 @@ fn attachClass(comptime JsApi: type, isolate: *v8.Isolate, template: *const v8.F
                     .query = null,
                     .deleter = null,
                     .definer = null,
-                    .descriptor = null,
+                    .descriptor = value.descriptor,
                     .data = null,
                     .flags = 0,
                 };
@@ -684,7 +696,7 @@ fn attachClass(comptime JsApi: type, isolate: *v8.Isolate, template: *const v8.F
                     .deleter = value.deleter,
                     .enumerator = value.enumerator,
                     .definer = null,
-                    .descriptor = null,
+                    .descriptor = value.descriptor,
                     .data = null,
                     .flags = v8.kOnlyInterceptStrings | v8.kNonMasking,
                 };

@@ -22,9 +22,9 @@ const Canvas = @import("../element/html/Canvas.zig");
 const CanvasGradient = @import("CanvasGradient.zig");
 const ImageData = @import("../ImageData.zig");
 const TextMetrics = @import("TextMetrics.zig");
-const FingerprintSeed = @import("../../fingerprint/FingerprintSeed.zig");
-const NativeCanvas = @import("../../fingerprint/NativeCanvas.zig");
-const CanvasIntelligent = @import("../../fingerprint/CanvasIntelligent.zig");
+const FingerprintSeed = @import("../../../runtime/profile/FingerprintSeed.zig");
+const NativeCanvas = @import("../../../runtime/profile/NativeCanvas.zig");
+const CanvasIntelligent = @import("../../../runtime/profile/CanvasIntelligent.zig");
 
 /// This class doesn't implement a `constructor`.
 /// It can be obtained with a call to `HTMLCanvasElement#getContext`.

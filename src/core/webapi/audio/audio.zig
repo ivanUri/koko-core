@@ -10,8 +10,8 @@ const Frame = @import("../../browser/Frame.zig");
 const EventTarget = @import("../EventTarget.zig");
 const Event = @import("../Event.zig");
 const OfflineAudioCompletionEvent = @import("../event/OfflineAudioCompletionEvent.zig");
-const FingerprintSeed = @import("../../fingerprint/FingerprintSeed.zig");
-const AudioIntelligent = @import("../../fingerprint/AudioIntelligent.zig");
+const FingerprintSeed = @import("../../../runtime/profile/FingerprintSeed.zig");
+const AudioIntelligent = @import("../../../runtime/profile/AudioIntelligent.zig");
 
 pub fn registerTypes() []const type {
     return &.{
@@ -1317,6 +1317,109 @@ pub const AudioContext = struct {
     };
 };
 
+const OfflineAudioPendingDelivery = struct {
+    offline: *OfflineAudioContext,
+    target: *EventTarget,
+    buf: *AudioBuffer,
+    resolver: js.PromiseResolver.Global,
+    length: u32,
+};
+
+fn dispatchOfflineCompleteEvent(
+    delivery: *const OfflineAudioPendingDelivery,
+    frame: *Frame,
+) !void {
+    const completion_event = try OfflineAudioCompletionEvent.initTrustedOnArena(delivery.buf, frame);
+    const event = completion_event.asEvent();
+
+    event.acquireRef();
+    defer _ = event.releaseRef(frame._page);
+
+    delivery.offline._last_complete_event = event;
+    try frame._event_manager.dispatch(delivery.target, event);
+    // oncomplete is often assigned after startRendering() returns (CreepJS hasFakeAudio).
+    if (delivery.offline._on_complete) |cb| {
+        try frame._event_manager.dispatchDirect(
+            delivery.target,
+            event,
+            cb,
+            .{ .context = "OfflineAudioContext.oncomplete" },
+        );
+    }
+}
+
+fn flushOfflineAudioCompleteMicrotask(ctx: *js.Context) void {
+    log.info(.js, "OfflineAudioContext.flush.begin", .{});
+    const frame = switch (ctx.global) {
+        .frame => |f| f,
+        .worker => return,
+    };
+    frame._offline_audio_flush_queued = false;
+
+    const len = frame._offline_audio_pending_len;
+    if (len == 0) return;
+    frame._offline_audio_pending_len = 0;
+    log.info(.js, "OfflineAudioContext.flush.count", .{ .len = len });
+
+    // queueMicrotaskCallback already entered the context and opened a HandleScope.
+    // Only install ctx.local — do not nest another HandleScope (V8 fatal).
+    var stack_local: js.Local = undefined;
+    const prev_local = ctx.local;
+    defer ctx.local = prev_local;
+    if (prev_local == null) {
+        const handle_ptr = js.v8.v8__Global__Get(&ctx.handle, ctx.isolate.handle) orelse return;
+        stack_local = .{
+            .ctx = ctx,
+            .isolate = ctx.isolate,
+            .handle = @ptrCast(handle_ptr),
+            .call_arena = ctx.call_arena,
+        };
+        ctx.local = &stack_local;
+    }
+    log.info(.js, "OfflineAudioContext.flush.local", .{ .had_local = prev_local != null });
+
+    const local = ctx.local.?;
+    for (frame._offline_audio_pending[0..len]) |slot| {
+        const delivery: *OfflineAudioPendingDelivery = @ptrCast(@alignCast(slot.?));
+        log.info(.js, "OfflineAudioContext.flush.dispatch", .{ .length = delivery.length });
+        dispatchOfflineCompleteEvent(delivery, frame) catch |err| {
+            log.err(.js, "OfflineAudioContext.dispatchCompleteEvent.error", .{ .err = err });
+        };
+        log.info(.js, "OfflineAudioContext.complete_event.dispatch", .{});
+        local.toLocal(delivery.resolver).resolve("OfflineAudioContext.startRendering", delivery.buf);
+        log.info(.js, "OfflineAudioContext.flush.resolved", .{ .length = delivery.length });
+    }
+    @memset(frame._offline_audio_pending[0..8], null);
+}
+
+fn scheduleOfflineAudioCompleteDelivery(
+    offline: *OfflineAudioContext,
+    frame: *Frame,
+    buf: *AudioBuffer,
+    resolver: js.PromiseResolver.Global,
+) !void {
+    log.info(.js, "OfflineAudioContext.schedule.begin", .{ .length = offline._length, .pending_len = frame._offline_audio_pending_len });
+    const idx = frame._offline_audio_pending_len;
+    if (idx >= frame._offline_audio_pending.len) return error.OutOfMemory;
+
+    const delivery = try frame.arena.create(OfflineAudioPendingDelivery);
+    delivery.* = .{
+        .offline = offline,
+        .target = offline.asEventTarget(),
+        .buf = buf,
+        .resolver = resolver,
+        .length = offline._length,
+    };
+    frame._offline_audio_pending[idx] = delivery;
+    frame._offline_audio_pending_len += 1;
+    log.info(.js, "OfflineAudioContext.schedule.queued", .{ .pending_len = frame._offline_audio_pending_len });
+
+    if (frame._offline_audio_flush_queued) return;
+    frame._offline_audio_flush_queued = true;
+    frame.js.queueMicrotaskCallback(flushOfflineAudioCompleteMicrotask);
+    log.info(.js, "OfflineAudioContext.schedule.microtask", .{});
+}
+
 pub const OfflineAudioContext = struct {
     _proto: *EventTarget,
     _ctx: *AudioContext,
@@ -1337,7 +1440,9 @@ pub const OfflineAudioContext = struct {
         const listener = try AudioContext.createListener(frame);
         const inner_ctx = try AudioContext.initWithState(state, destination, listener, frame);
         state.owner = inner_ctx;
-        const ctx = try frame._factory.eventTarget(OfflineAudioContext{
+        // Pin on frame arena — slab reuse across concurrent OfflineAudioContext probes
+        // invalidates pointers queued for microtask delivery.
+        const ctx = try frame._factory.eventTargetWithAllocator(frame.arena, OfflineAudioContext{
             ._proto = undefined,
             ._ctx = inner_ctx,
             ._channels = channels,
@@ -1399,45 +1504,18 @@ pub const OfflineAudioContext = struct {
         const promise = resolver.promise();
         const global_resolver = try resolver.persist();
 
-        const TaskData = struct {
-            ctx: *OfflineAudioContext,
-            frame: *Frame,
-            global_resolver: js.PromiseResolver.Global,
+        finalizeProbeFromInput(self._ctx.getDestination()._node._input);
+
+        const buf = self._ctx.renderOffline(frame, self._length, self._channels) catch |err| {
+            log.err(.js, "OfflineAudioContext.startRendering.error", .{ .err = err });
+            const error_msg = local.newString("Failed to render audio");
+            global_resolver.local(local).reject("OfflineAudioContext.startRendering", error_msg);
+            return promise;
         };
 
-        const data = try frame.arena.create(TaskData);
-        data.* = .{
-            .ctx = self,
-            .frame = frame,
-            .global_resolver = global_resolver,
-        };
+        try scheduleOfflineAudioCompleteDelivery(self, frame, buf, global_resolver);
 
-        try frame.js.scheduler.add(data, struct {
-            fn run(ctx: *anyopaque) !?u32 {
-                const d: *TaskData = @ptrCast(@alignCast(ctx));
-                var ls: js.Local.Scope = undefined;
-                d.frame.js.localScope(&ls);
-
-                finalizeProbeFromInput(d.ctx._ctx.getDestination()._node._input);
-
-                const buf = d.ctx._ctx.renderOffline(d.frame, d.ctx._length, d.ctx._channels) catch |err| {
-                    log.err(.js, "OfflineAudioContext.startRendering.error", .{ .err = err });
-                    const error_msg = ls.local.newString("Failed to render audio");
-                    _ = ls.local.toLocal(d.global_resolver).reject("OfflineAudioContext.startRendering", error_msg);
-                    return null;
-                };
-
-                d.ctx.dispatchCompleteEvent(buf, d.frame) catch |err| {
-                    log.err(.js, "OfflineAudioContext.dispatchCompleteEvent.error", .{ .err = err });
-                };
-
-                log.info(.js, "OfflineAudioContext.complete_event.dispatch", .{});
-                _ = ls.local.toLocal(d.global_resolver).resolve("OfflineAudioContext.startRendering", buf);
-
-                return null;
-            }
-        }.run, 0, .{ .name = "OfflineAudioContext.startRendering" });
-
+        log.info(.js, "OfflineAudioContext.startRendering.returning", .{ .length = self._length });
         return promise;
     }
 

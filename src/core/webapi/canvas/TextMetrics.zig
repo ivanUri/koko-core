@@ -12,8 +12,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
-const FingerprintProfile = @import("../../fingerprint/Profile.zig");
-const MeasureTextIntelligent = @import("../../fingerprint/MeasureTextIntelligent.zig");
+const FingerprintProfile = @import("../../profile/types.zig");
+const MeasureTextIntelligent = @import("../../../runtime/profile/MeasureTextIntelligent.zig");
 const js = @import("../../js/js.zig");
 const Frame = @import("../../browser/Frame.zig");
 
