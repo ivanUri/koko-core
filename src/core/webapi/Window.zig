@@ -326,7 +326,7 @@ pub fn flushPendingPostMessages(self: *Window) void {
         pending.deinit();
     }
 
-    frame._session.browser.runMacrotasks() catch |err| {
+    frame.scheduleDeferredMacrotaskPump() catch |err| {
         log.warn(.browser, "flush pending postMessage pump", .{ .err = err });
     };
 }
@@ -645,13 +645,19 @@ pub fn postMessage(self: *Window, message: js.Value.Temp, target_origin: ?[]cons
 
     // Clone from the sender realm into the target realm.
     const cloned_message = blk: {
-        var source_ls: js.Local.Scope = undefined;
-        frame.js.localScope(&source_ls);
-        defer source_ls.deinit();
-        var target_ls: js.Local.Scope = undefined;
-        target_frame.js.localScope(&target_ls);
-        defer target_ls.deinit();
-        const cloned = try message.local(&source_ls.local).structuredCloneTo(&target_ls.local);
+        var source_owned: js.Local.Scope = undefined;
+        const source_local: *const js.Local = blk2: {
+            if (frame.js.local) |active| break :blk2 active;
+            frame.js.localScope(&source_owned);
+            break :blk2 &source_owned.local;
+        };
+        defer if (frame.js.local == null) source_owned.deinit();
+
+        var target_owned: js.Local.Scope = undefined;
+        target_frame.js.localScope(&target_owned);
+        defer target_owned.deinit();
+
+        const cloned = try message.local(source_local).structuredCloneTo(&target_owned.local);
         break :blk try cloned.temp();
     };
 
@@ -668,18 +674,44 @@ pub fn postMessage(self: *Window, message: js.Value.Temp, target_origin: ?[]cons
     };
 
     const cross_browsing_context = frame != target_frame;
+    // Child → parent must dispatch synchronously so the sender can observe the
+    // recipient's reaction before its stack unwinds (reCAPTCHA v3, Turnstile
+    // token delivery). Parent → child (Turnstile iframe bootstrap) must wait
+    // until the iframe document is complete so internal message routers exist.
+    const child_to_parent = cross_browsing_context and frame.parent == target_frame;
+    const parent_to_child = cross_browsing_context and target_frame.parent == frame;
 
-    // Port-transfer and cross-browsing-context postMessages are dispatched
-    // synchronously so the recipient can react before the sender's stack
-    // unwinds (reCAPTCHA v3, Cloudflare Turnstile token delivery).
-    if (transferred_ports.len > 0 or cross_browsing_context) {
-        const event_target = target_frame.window.asEventTarget();
-        const has_listeners = target_frame._event_manager.hasDirectListeners(
-            event_target,
-            "message",
-            target_frame.window._on_message,
-        );
+    const event_target = target_frame.window.asEventTarget();
+    const has_listeners = target_frame._event_manager.hasDirectListeners(
+        event_target,
+        "message",
+        target_frame.window._on_message,
+    );
 
+    // Parent → child bootstrap may arrive while the iframe is still parsing. Queue
+    // until message routers exist. Do not queue once listeners are registered:
+    // Turnstile posts requestExtraParams and expects the extraParams reply on the
+    // same synchronous turn even if the iframe document is not yet .complete.
+    if (parent_to_child and target_frame._load_state != .complete and !has_listeners) {
+        try target_frame.window.queuePendingPostMessage(callback);
+        return;
+    }
+
+    // Parent → child must be synchronous once the iframe is ready, but not while
+    // the target is still inside an outbound postMessage (reentrant delivery).
+    // Turnstile posts requestExtraParams, the parent replies with extraParams, and
+    // running that handler before the child's stack unwinds leaves bootstrap globals
+    // (e.g. Wuby5) undefined → TypeError reading '.call'.
+    const defer_parent_reply = parent_to_child and target_frame.js.call_depth > 0;
+    const sync_dispatch = transferred_ports.len > 0 or child_to_parent or
+        (parent_to_child and !defer_parent_reply);
+
+    if (defer_parent_reply) {
+        try schedulePostMessageDelivery(target_frame, callback);
+        return;
+    }
+
+    if (sync_dispatch) {
         if (!has_listeners) {
             target_frame.window.queuePendingPostMessage(callback) catch |err| {
                 log.warn(.browser, "queue pending postMessage", .{ .err = err });
@@ -699,13 +731,17 @@ pub fn postMessage(self: *Window, message: js.Value.Temp, target_origin: ?[]cons
         return;
     }
 
+    try schedulePostMessageDelivery(target_frame, callback);
+}
+
+fn schedulePostMessageDelivery(target_frame: *Frame, callback: *PostMessageCallback) !void {
     try target_frame.js.scheduler.add(callback, PostMessageCallback.run, 0, .{
         .name = "postMessage",
         .low_priority = false,
         .finalizer = PostMessageCallback.cancelled,
     });
 
-    target_frame._session.browser.runMacrotasks() catch |err| {
+    target_frame.scheduleDeferredMacrotaskPump() catch |err| {
         log.warn(.browser, "postMessage pump", .{ .err = err });
     };
 }
@@ -942,10 +978,7 @@ const PostMessageCallback = struct {
             .cancelable = false,
         }, frame._page)).asEvent();
         try frame._event_manager.dispatchDirect(event_target, event, window._on_message, .{ .context = "window.postMessage" });
-
-        frame._session.browser.runMacrotasks() catch |err| {
-            log.warn(.browser, "postMessage dispatch pump", .{ .err = err });
-        };
+        try frame.scheduleDeferredMacrotaskPump();
     }
 
     fn run(ctx: *anyopaque) !?u32 {

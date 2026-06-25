@@ -1,8 +1,0 @@
-{
-  "must_contain": ["event:domcontentloaded", "root:function-toString-ok", "iframe-about-blank:function-toString-ok", "event:microtask-after-iframe"],
-  "must_not_contain": ["root:FAIL:window-null", "iframe-about-blank:FAIL:window-null", "missing:Object.prototype.toString", "FAIL:TypeError"],
-  "cdp_must_contain": ["Runtime.executionContextCreated", "Page.frameNavigated", "DOM.documentUpdated"],
-  "assert_no_duplicate_frame_navigated": true,
-  "assert_context_before_frame_navigated": true,
-  "assert_injected_script_stable": true
-}

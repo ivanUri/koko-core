@@ -462,9 +462,9 @@ const OscillatorNode = struct {
         return self._type;
     }
 
-    pub fn setType(self: *OscillatorNode, v: []const u8) void {
-        self._type = v;
-        self._node._state.probe.recordOscillatorType(v);
+    pub fn setType(self: *OscillatorNode, v: []const u8, frame: *Frame) !void {
+        self._type = try frame.dupeString(v);
+        self._node._state.probe.recordOscillatorType(self._type);
     }
 
     pub fn start(self: *OscillatorNode, when: ?f64) void {

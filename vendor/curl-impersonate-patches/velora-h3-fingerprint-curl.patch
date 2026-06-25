@@ -1,0 +1,35 @@
+diff --git a/lib/vquic/curl_ngtcp2.c b/lib/vquic/curl_ngtcp2.c
+--- a/lib/vquic/curl_ngtcp2.c
++++ b/lib/vquic/curl_ngtcp2.c
+@@ -2151,6 +2151,30 @@ static CURLcode init_ngh3_conn(struct Curl_cfilter *cf,
+     return CURLE_QUIC_CONNECT_ERROR;
+   }
+ 
++  {
++    unsigned char rndbuf[sizeof(uint32_t)];
++    CURLcode rnd_result = Curl_rand(data, rndbuf, sizeof(rndbuf));
++    if(!rnd_result) {
++      uint32_t rnd;
++      int64_t grease_type;
++      static const uint8_t chrome_pri[] = "u=0, i";
++      memcpy(&rnd, rndbuf, sizeof(rnd));
++      grease_type = (int64_t)((UINT64_C(0x1f) * (uint64_t)rnd) + UINT64_C(0x21));
++      rc = nghttp3_conn_submit_grease(ctx->h3conn, grease_type);
++      if(rc) {
++        failf(data, "error submitting HTTP/3 GREASE frame: %s",
++              nghttp3_strerror(rc));
++        return CURLE_QUIC_CONNECT_ERROR;
++      }
++      rc = nghttp3_conn_submit_chrome_priority_update(
++        ctx->h3conn, (int64_t)0x0f0700, 0,
++        chrome_pri, sizeof(chrome_pri) - 1);
++      if(rc) {
++        failf(data, "error submitting HTTP/3 PRIORITY_UPDATE frame: %s",
++              nghttp3_strerror(rc));
++        return CURLE_QUIC_CONNECT_ERROR;
++      }
++    }
++  }
++
+   rc = ngtcp2_conn_open_uni_stream(ctx->qconn, &qpack_enc_stream_id, NULL);
+   if(rc) {

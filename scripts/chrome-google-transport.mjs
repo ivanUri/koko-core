@@ -1,11 +1,21 @@
 #!/usr/bin/env node
 /**
- * Google document fetch via real Chrome network stack (Phase 2b).
+ * Google document fetch via real Chrome network stack (CDP, no Playwright).
+ *
+ * Prerequisite:
+ *   CHROME_CDP=http://127.0.0.1:9222  (Chrome started with --remote-debugging-port=9222)
+ *
  * stdin:  {"url":"https://...","headers":[["Name","value"],...]}
  * stdout: {"status":200,"finalUrl":"...","protocol":"h3","contentType":"...","bodyBase64":"..."}
  */
-import { chromium } from "playwright";
 import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { connectChrome, pageUrl } from "../code-check/sites/google/lib/chrome-cdp.mjs";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const input = JSON.parse(readFileSync(0, "utf8"));
 const { url, headers = [] } = input;
@@ -18,24 +28,38 @@ for (const [name, value] of headers) {
     extra[k] = String(value);
 }
 
-const browser = await chromium.launch({
-    channel: "chrome",
-    headless: true,
-    args: ["--incognito", "--disable-blink-features=AutomationControlled"],
+const spawn = process.env.VELORA_CHROME_SPAWN === "1";
+
+const { browser } = await connectChrome({
+    endpoint: process.env.CHROME_CDP,
+    spawn,
 });
+
+const page = await browser.newPage();
+const cdp = page.session;
+
 try {
-    const context = await browser.newContext();
-    const page = await context.newPage();
-    const cdp = await context.newCDPSession(page);
     await cdp.send("Network.enable");
     if (Object.keys(extra).length) {
-        await cdp.send("Network.setExtraHTTPHeaders", { headers: extra });
+        const hdrs = Object.entries(extra).map(([name, value]) => ({ name, value }));
+        await cdp.send("Network.setExtraHTTPHeaders", { headers: hdrs });
     }
 
+    const sgssHop = url.includes("sg_ss=");
     let doc = null;
     cdp.on("Network.responseReceived", (p) => {
         if (p.type !== "Document") return;
         const u = p.response?.url || "";
+        if (sgssHop) {
+            if (!u.includes("google.com/search") && !u.includes("/sorry")) return;
+            doc = {
+                status: p.response?.status ?? 0,
+                protocol: p.response?.protocol ?? null,
+                url: u,
+                requestId: p.requestId,
+            };
+            return;
+        }
         if (!u.includes("google.com/search") || u.includes("sg_ss=")) return;
         const candidate = {
             status: p.response?.status ?? 0,
@@ -48,18 +72,39 @@ try {
     });
 
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 90_000 });
-    // Guest Chrome may client-redirect to sg_ss= shortly after DOMContentLoaded.
-    for (let i = 0; i < 50; i++) {
-        const u = page.url();
-        if (u.includes("sg_ss=") || u.includes("/sorry")) break;
-        await new Promise((r) => setTimeout(r, 100));
+
+    if (!sgssHop) {
+        for (let i = 0; i < 50; i++) {
+            const u = await pageUrl(page);
+            if (u.includes("sg_ss=") || u.includes("/sorry")) break;
+            await delay(100);
+        }
+    } else {
+        for (let i = 0; i < 30; i++) {
+            const u = await pageUrl(page);
+            if (u.includes("/sorry") || /SearchResultsPage/.test(await page.content().catch(() => ""))) break;
+            await delay(100);
+        }
     }
-    await new Promise((r) => setTimeout(r, 500));
+    await delay(500);
+
+    const finalUrl = await pageUrl(page);
 
     if (!doc) {
+        const body = await page.content().catch(() => "");
+        if (body.length >= 256) {
+            process.stdout.write(JSON.stringify({
+                status: finalUrl.includes("/sorry") ? 429 : 200,
+                finalUrl,
+                protocol: null,
+                contentType: "text/html; charset=UTF-8",
+                bodyBase64: Buffer.from(body, "utf8").toString("base64"),
+            }));
+            process.exit(0);
+        }
         process.stdout.write(JSON.stringify({
             error: "no_document_response",
-            finalUrl: page.url(),
+            finalUrl,
         }));
         process.exit(1);
     }
@@ -73,25 +118,21 @@ try {
                 : res.body;
             if (body.length > 0) break;
         } catch {
-            await new Promise((r) => setTimeout(r, 50));
+            await delay(50);
         }
     }
-    // CDP body can be empty after cross-document redirect; DOM snapshot is the fallback.
     if (body.length < 256) {
         body = await page.content();
     }
 
-    const contentType = /SearchResultsPage/.test(body)
-        ? "text/html; charset=UTF-8"
-        : "text/html; charset=UTF-8";
-
     process.stdout.write(JSON.stringify({
         status: doc.status,
-        finalUrl: page.url(),
+        finalUrl,
         protocol: doc.protocol,
-        contentType,
+        contentType: "text/html; charset=UTF-8",
         bodyBase64: Buffer.from(body, "utf8").toString("base64"),
     }));
 } finally {
-    await browser.close();
+    await page.close().catch(() => undefined);
+    await browser.close().catch(() => undefined);
 }

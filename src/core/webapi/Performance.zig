@@ -20,14 +20,13 @@ _timing: PerformanceTiming = .{},
 _navigation: PerformanceNavigation = .{},
 _event_counts: EventCounts = .{},
 
-/// Get high-resolution timestamp in microseconds, rounded to 5μs increments
-/// to match browser behavior (prevents fingerprinting)
+/// High-resolution monotonic clock with Chrome-like quantization (~100μs + jitter).
 fn highResTimestamp() u64 {
     const ts = datetime.timespec();
     const micros = @as(u64, @intCast(ts.sec)) * 1_000_000 + @as(u64, @intCast(@divTrunc(ts.nsec, 1_000)));
-    // Round to nearest 5 microseconds (like Firefox default)
-    const rounded = @divTrunc(micros + 2, 5) * 5;
-    return rounded;
+    const base = @divTrunc(micros + 50, 100) * 100;
+    const jitter = (micros ^ (micros >> 7) ^ (micros >> 13)) % 23;
+    return base + jitter;
 }
 
 pub fn init() Performance {
@@ -46,6 +45,14 @@ pub fn getTiming(self: *Performance) *PerformanceTiming {
 pub fn recordNavigationStart(self: *Performance) void {
     self._timing.recordNavigationStart();
     self._monotonic_origin_us = highResTimestamp();
+}
+
+pub fn recordResponseStart(self: *Performance) void {
+    self._timing.recordResponseStart();
+}
+
+pub fn recordDomInteractive(self: *Performance) void {
+    self._timing.recordDomInteractive();
 }
 
 pub fn recordDocumentComplete(self: *Performance) void {
@@ -512,20 +519,26 @@ pub const PerformanceTiming = struct {
         return @as(f64, @floatFromInt(std.time.milliTimestamp()));
     }
 
+    fn timingMs(value: f64) f64 {
+        if (value <= 0) return 0;
+        return @floatFromInt(@as(i64, @intFromFloat(value)));
+    }
+
     pub fn recordNavigationStart(self: *PerformanceTiming) void {
         const t = epochMs();
-        self.navigation_start = t;
+        const base = @as(i64, @intFromFloat(t));
+        self.navigation_start = @floatFromInt(base);
         self.unload_event_start = 0;
         self.unload_event_end = 0;
         self.redirect_start = 0;
         self.redirect_end = 0;
-        self.fetch_start = t;
-        self.domain_lookup_start = t;
-        self.domain_lookup_end = t + 1;
-        self.connect_start = t;
-        self.connect_end = t + 2;
-        self.secure_connection_start = t + 1;
-        self.request_start = t + 3;
+        self.fetch_start = @floatFromInt(base);
+        self.domain_lookup_start = @floatFromInt(base);
+        self.domain_lookup_end = @floatFromInt(base + 1);
+        self.connect_start = @floatFromInt(base);
+        self.connect_end = @floatFromInt(base + 2);
+        self.secure_connection_start = @floatFromInt(base + 1);
+        self.request_start = @floatFromInt(base + 3);
         self.response_start = 0;
         self.response_end = 0;
         self.dom_loading = 0;
@@ -537,18 +550,49 @@ pub const PerformanceTiming = struct {
         self.load_event_end = 0;
     }
 
+    fn stampTiming(start: f64, span_ms: f64, numer: i64, denom: i64) f64 {
+        const base = @as(i64, @intFromFloat(start));
+        const span = @as(i64, @intFromFloat(@max(span_ms, 1)));
+        return @floatFromInt(base + @divTrunc(span * numer, denom));
+    }
+
+    pub fn recordResponseStart(self: *PerformanceTiming) void {
+        const t = epochMs();
+        const start = if (self.navigation_start > 0) self.navigation_start else t - 80;
+        const span = @max(t - start, 12);
+        // Blink sets responseStart when response headers arrive (before scripts run).
+        self.response_start = stampTiming(start, span, 72, 100);
+        self.response_end = stampTiming(start, span, 88, 100);
+        if (self.dom_loading == 0) {
+            self.dom_loading = stampTiming(start, span, 90, 100);
+        }
+    }
+
+    pub fn recordDomInteractive(self: *PerformanceTiming) void {
+        const t = epochMs();
+        const start = if (self.navigation_start > 0) self.navigation_start else t - 120;
+        const span = @max(t - start, 25);
+        if (self.dom_interactive == 0) {
+            self.dom_interactive = stampTiming(start, span, 78, 100);
+        }
+        if (self.dom_content_loaded_event_start == 0) {
+            self.dom_content_loaded_event_start = stampTiming(start, span, 82, 100);
+            self.dom_content_loaded_event_end = stampTiming(start, span, 84, 100);
+        }
+    }
+
     pub fn recordDocumentComplete(self: *PerformanceTiming) void {
         const t = epochMs();
         const start = if (self.navigation_start > 0) self.navigation_start else t - 300;
         const span = @max(t - start, 40);
-        self.response_start = start + span * 0.12;
-        self.response_end = start + span * 0.22;
-        self.dom_loading = start + span * 0.28;
-        self.dom_interactive = start + span * 0.52;
-        self.dom_content_loaded_event_start = start + span * 0.55;
-        self.dom_content_loaded_event_end = start + span * 0.57;
-        self.dom_complete = start + span * 0.86;
-        self.load_event_start = start + span * 0.88;
+        if (self.response_start == 0) self.response_start = stampTiming(start, span, 12, 100);
+        if (self.response_end == 0) self.response_end = stampTiming(start, span, 22, 100);
+        if (self.dom_loading == 0) self.dom_loading = stampTiming(start, span, 28, 100);
+        if (self.dom_interactive == 0) self.dom_interactive = stampTiming(start, span, 52, 100);
+        if (self.dom_content_loaded_event_start == 0) self.dom_content_loaded_event_start = stampTiming(start, span, 55, 100);
+        if (self.dom_content_loaded_event_end == 0) self.dom_content_loaded_event_end = stampTiming(start, span, 57, 100);
+        self.dom_complete = stampTiming(start, span, 86, 100);
+        self.load_event_start = stampTiming(start, span, 88, 100);
         self.load_event_end = t;
     }
 
@@ -585,7 +629,7 @@ pub const PerformanceTiming = struct {
     };
 
     pub fn getNavigationStart(self: *const PerformanceTiming) f64 {
-        return self.navigation_start;
+        return timingMs(self.navigation_start);
     }
     pub fn getUnloadEventStart(self: *const PerformanceTiming) f64 {
         return self.unload_event_start;
@@ -621,16 +665,16 @@ pub const PerformanceTiming = struct {
         return self.request_start;
     }
     pub fn getResponseStart(self: *const PerformanceTiming) f64 {
-        return self.response_start;
+        return timingMs(self.response_start);
     }
     pub fn getResponseEnd(self: *const PerformanceTiming) f64 {
-        return self.response_end;
+        return timingMs(self.response_end);
     }
     pub fn getDomLoading(self: *const PerformanceTiming) f64 {
-        return self.dom_loading;
+        return timingMs(self.dom_loading);
     }
     pub fn getDomInteractive(self: *const PerformanceTiming) f64 {
-        return self.dom_interactive;
+        return timingMs(self.dom_interactive);
     }
     pub fn getDomContentLoadedEventStart(self: *const PerformanceTiming) f64 {
         return self.dom_content_loaded_event_start;

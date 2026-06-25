@@ -70,7 +70,15 @@ pub fn getHead(self: *HTMLDocument) ?*Element {
 
 pub fn getBody(self: *HTMLDocument) ?*Element {
     const document_element = self._proto.getDocumentElement() orelse return null;
-    return findBodyForDoc(document_element);
+    if (findBodyForDoc(document_element)) |body| return body;
+
+    // Turnstile / challenge widgets often run inline scripts before the parser
+    // inserts an explicit <body>. Chrome exposes a live body element once
+    // <html> exists; synthesize one so `document.body.appendChild` does not throw.
+    const frame = self._proto._frame orelse return null;
+    const body_node = frame.createElementNS(.html, "body", null) catch return null;
+    _ = document_element.asNode().appendChild(body_node, frame) catch return null;
+    return body_node.is(Element);
 }
 
 pub fn setBody(self: *HTMLDocument, html: []const u8, frame: *Frame) !void {
@@ -351,7 +359,7 @@ pub const JsApi = struct {
     pub const currentScript = bridge.accessor(HTMLDocument.getCurrentScript, null, .{});
     pub const location = bridge.accessor(HTMLDocument.getLocation, HTMLDocument.setLocation, .{});
     pub const all = bridge.accessor(HTMLDocument.getAll, null, .{});
-    pub const cookie = bridge.accessor(HTMLDocument.getCookie, HTMLDocument.setCookie, .{});
+    // `cookie` is defined on Document (HTML spec).
     pub const doctype = bridge.accessor(HTMLDocument.getDocType, null, .{});
 
     // `document[name]` named property getter (HTML spec).

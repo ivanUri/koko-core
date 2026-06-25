@@ -226,15 +226,25 @@ pub fn dispatchDirect(
         event._dispatch_target = target;
     }
 
-    var ls: js.Local.Scope = undefined;
-    ctx.localScope(&ls);
-    defer {
-        ls.local.ctx.env.runMicrotasks(.event_handler);
-        ls.deinit();
-    }
+    // When dispatch runs inside a V8 API callback, Caller already installed
+    // ctx.local and the context is entered. A second localScope/deinit pair
+    // trips V8's "Cannot exit non-entered context" check on return. Draining
+    // microtasks in that case can re-enter event handlers and imbalance the
+    // context stack — the outer API caller owns the checkpoint.
+    const nested_in_api = ctx.local != null;
+    var owned_scope: js.Local.Scope = undefined;
+    const local: *const js.Local = blk: {
+        if (ctx.local) |active| break :blk active;
+        ctx.localScope(&owned_scope);
+        break :blk &owned_scope.local;
+    };
+    defer if (!nested_in_api) {
+        local.ctx.env.runMicrotasks(.event_handler);
+        owned_scope.deinit();
+    };
 
     // Call the property handler (e.g., onmessage) if present
-    if (getFunction(handler, &ls.local)) |func| {
+    if (getFunction(handler, local)) |func| {
         event._current_target = target;
         _ = func.callWithThis(void, target, .{event}) catch |err| {
             log.warn(.event, opts.context, .{ .err = err });
@@ -302,17 +312,17 @@ pub fn dispatchDirect(
 
         // Listener exceptions are reported, not propagated, so dispatch can continue.
         switch (listener.function) {
-            .value => |value| ls.local.toLocal(value).callWithThis(void, target, .{event}) catch |err| {
+            .value => |value| local.toLocal(value).callWithThis(void, target, .{event}) catch |err| {
                 log.warn(.event, opts.context, .{ .err = err });
             },
             .string => |string| {
                 const str = try arena.dupeZ(u8, string.str());
-                ls.local.eval(str, null) catch |err| {
+                local.eval(str, null) catch |err| {
                     log.warn(.event, opts.context, .{ .err = err });
                 };
             },
             .object => |obj_global| {
-                const obj = ls.local.toLocal(obj_global);
+                const obj = local.toLocal(obj_global);
                 const handle_event = obj.getFunction("handleEvent") catch |err| blk: {
                     log.warn(.event, opts.context, .{ .err = err });
                     break :blk null;

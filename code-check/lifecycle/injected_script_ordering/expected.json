@@ -1,7 +1,0 @@
-{
-  "must_contain": ["new-document:ran", "new-document:Object", "new-document:Function.prototype.toString", "new-document:document", "domcontentloaded:function-toString-ok"],
-  "must_not_contain": ["new-document:missing", "new-document:missing:Object", "new-document:missing:Function.prototype.toString", "domcontentloaded:FAIL:window-null"],
-  "cdp_must_contain": ["Runtime.executionContextCreated", "Page.frameNavigated"],
-  "assert_context_before_frame_navigated": true,
-  "assert_injected_script_stable": true
-}

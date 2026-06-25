@@ -37,7 +37,7 @@ secure: bool = false,
 http_only: bool = false,
 same_site: SameSite = .none,
 /// Minimum `Jar.document_nav_generation` before this cookie is attached to HTTP
-/// requests. New cookies commit on the *next* document navigation (Chrome behavior).
+/// requests. Normal cookies commit immediately; SG_SS is withheld longer.
 available_from_nav: u64 = 0,
 
 pub const SameSite = enum {
@@ -485,12 +485,13 @@ pub const Jar = struct {
         comptime is_http: bool,
     ) !void {
         var c = cookie;
-        // Chrome commits Set-Cookie on the next document navigation (+1). SG_SS is
+        // HTTP Set-Cookie is available immediately so same-page flows (e.g. Cloudflare
+        // Turnstile → cf_clearance fetch) can attach cookies before reload. SG_SS is
         // withheld longer so it is not attached during sei=/sg_ss= redirect hops.
         c.available_from_nav = if (std.mem.eql(u8, c.name, "SG_SS"))
             self.document_nav_generation + 3
         else
-            self.document_nav_generation + 1;
+            self.document_nav_generation;
 
         const is_expired = isCookieExpired(&c, request_time);
         defer if (is_expired) {
@@ -814,7 +815,7 @@ test "Jar: add limit" {
     }, now, true));
 }
 
-test "Jar: cookies commit on next document navigation" {
+test "Jar: HTTP cookies commit immediately, SG_SS withheld" {
     const now = std.time.timestamp();
     var jar = Jar.init(testing.allocator);
     defer jar.deinit();
@@ -823,12 +824,20 @@ test "Jar: cookies commit on next document navigation" {
     try jar.add(try Cookie.parse(testing.allocator, test_url, "AEC=1"), now, true);
     try jar.add(try Cookie.parse(testing.allocator, test_url, "SG_SS=botflag"), now, false);
 
-    jar.beginDocumentNavigation(); // generation 2 — next nav, HTTP cookies committed
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(testing.allocator);
     try jar.forRequest(test_url, buf.writer(testing.allocator), .{
         .is_http = true,
         .is_navigation = true,
+        .nav_generation = jar.document_nav_generation,
+    });
+    try testing.expectEqualStrings("AEC=1", buf.items);
+
+    jar.beginDocumentNavigation(); // generation 2 — SG_SS still withheld
+    buf.clearRetainingCapacity();
+    try jar.forRequest(test_url, buf.writer(testing.allocator), .{
+        .is_http = true,
+        .is_navigation = false,
         .nav_generation = jar.document_nav_generation,
     });
     try testing.expectEqualStrings("AEC=1", buf.items);

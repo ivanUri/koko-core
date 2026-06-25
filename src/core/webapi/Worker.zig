@@ -88,7 +88,8 @@ pub fn init(url: []const u8, exec: *Execution) !*Worker {
             log.warn(.js, "invalid blob", .{ .target = "worker" });
             return error.BlobNotFound;
         };
-        try self.loadInitialScript(blob._slice);
+        const script_copy = try arena.dupe(u8, blob._slice);
+        try self.scheduleDeferredBlobScript(script_copy);
         return self;
     }
 
@@ -179,8 +180,8 @@ fn httpDoneCallback(ctx: *anyopaque) !void {
     try self.loadInitialScript(script);
 }
 
-fn pumpAfterWorkerMessage(frame: *Frame) void {
-    frame._session.browser.runMacrotasks() catch |err| {
+fn scheduleDeferredMacrotaskPump(frame: *Frame) void {
+    frame.scheduleDeferredMacrotaskPump() catch |err| {
         log.warn(.browser, "worker pump macrotasks", .{ .err = err });
     };
 }
@@ -229,6 +230,40 @@ fn scheduleDeferredParentFlush(self: *Worker) !void {
     });
 }
 
+fn scheduleDeferredBlobScript(self: *Worker, script: []const u8) !void {
+    const frame = self._frame;
+    const arena = try frame.getArena(.medium, "Worker.deferBlobScript");
+    errdefer frame.releaseArena(arena);
+
+    const callback = try arena.create(DeferBlobScriptCallback);
+    callback.* = .{ .worker = self, .script = script, .arena = arena };
+
+    try frame.js.scheduler.add(callback, DeferBlobScriptCallback.run, 0, .{
+        .name = "Worker.deferBlobScript",
+        .low_priority = false,
+        .finalizer = DeferBlobScriptCallback.cancelled,
+    });
+}
+
+const DeferBlobScriptCallback = struct {
+    worker: *Worker,
+    script: []const u8,
+    arena: Allocator,
+
+    fn cancelled(ctx: *anyopaque) void {
+        const self: *DeferBlobScriptCallback = @ptrCast(@alignCast(ctx));
+        self.worker._frame.releaseArena(self.arena);
+    }
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *DeferBlobScriptCallback = @ptrCast(@alignCast(ctx));
+        defer self.worker._frame.releaseArena(self.arena);
+        self.worker._script_loaded = true;
+        try self.worker.loadInitialScript(self.script);
+        return null;
+    }
+};
+
 const DeferFlushCallback = struct {
     worker: *Worker,
     arena: Allocator,
@@ -243,7 +278,7 @@ const DeferFlushCallback = struct {
         defer self.worker._frame.releaseArena(self.arena);
 
         try self.worker.flushPendingInboundMessages();
-        pumpAfterWorkerMessage(self.worker._frame);
+        scheduleDeferredMacrotaskPump(self.worker._frame);
         return null;
     }
 };
@@ -348,10 +383,42 @@ pub fn getOnMessage(self: *const Worker) ?js.Function.Global {
 
 pub fn setOnMessage(self: *Worker, setter: ?FunctionSetter) void {
     self._on_message = getFunctionFromSetter(setter);
-    self.flushPendingUndelivered() catch |err| {
-        log.warn(.browser, "Worker.flushPendingUndelivered", .{ .err = err });
+    self.scheduleDeferredFlushUndelivered() catch |err| {
+        log.warn(.browser, "Worker.scheduleDeferredFlushUndelivered", .{ .err = err });
     };
 }
+
+pub fn scheduleDeferredFlushUndelivered(self: *Worker) !void {
+    const frame = self._frame;
+    const arena = try frame.getArena(.tiny, "Worker.deferFlushUndelivered");
+    errdefer frame.releaseArena(arena);
+
+    const callback = try arena.create(DeferFlushUndeliveredCallback);
+    callback.* = .{ .worker = self, .arena = arena };
+
+    try frame.js.scheduler.add(callback, DeferFlushUndeliveredCallback.run, 0, .{
+        .name = "Worker.deferFlushUndelivered",
+        .low_priority = false,
+        .finalizer = DeferFlushUndeliveredCallback.cancelled,
+    });
+}
+
+const DeferFlushUndeliveredCallback = struct {
+    worker: *Worker,
+    arena: Allocator,
+
+    fn cancelled(ctx: *anyopaque) void {
+        const self: *DeferFlushUndeliveredCallback = @ptrCast(@alignCast(ctx));
+        self.worker._frame.releaseArena(self.arena);
+    }
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *DeferFlushUndeliveredCallback = @ptrCast(@alignCast(ctx));
+        defer self.worker._frame.releaseArena(self.arena);
+        try self.worker.flushPendingUndelivered();
+        return null;
+    }
+};
 
 pub fn flushPendingUndelivered(self: *Worker) !void {
     const frame = self._frame;
@@ -364,7 +431,7 @@ pub fn flushPendingUndelivered(self: *Worker) !void {
         const pending = self._pending_undelivered.orderedRemove(0);
         try self.enqueueInboundTempMessage(pending.data, pending.message_id, pending.ports);
     }
-    pumpAfterWorkerMessage(frame);
+    scheduleDeferredMacrotaskPump(frame);
 }
 
 pub fn getOnMessageError(self: *const Worker) ?js.Function.Global {
@@ -565,7 +632,7 @@ const ReceiveMessageCallback = struct {
 
         try frame._event_manager.dispatchDirect(target, event, on_message, .{ .context = "Worker.receiveMessage" });
 
-        pumpAfterWorkerMessage(frame);
+        scheduleDeferredMacrotaskPump(frame);
 
         return null;
     }

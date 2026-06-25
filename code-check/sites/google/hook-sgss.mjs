@@ -1,20 +1,72 @@
 #!/usr/bin/env node
-// Hook SG_SS + window.sgs: cookie setter, sgs promise, beacons, network Set-Cookie.
-// Usage: node code-check/sites/google/hook-sgss.mjs [--chrome]
+// Hook SG_SS + window.sgs; compare Chrome guest vs Velora on the same query.
+//
+// Usage (real Chrome via CDP — no Playwright):
+//   /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome --remote-debugging-port=9222
+//   node code-check/sites/google/hook-sgss.mjs
+//   CHROME_CDP=http://127.0.0.1:9222 node hook-sgss.mjs --only chrome
+//   VELORA_ENDPOINT=http://127.0.0.1:19500 node hook-sgss.mjs --only velora
 import { spawn } from "node:child_process";
 import { createServer as createNetServer } from "node:net";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
 import { Browser } from "../../../sdk/dist/index.js";
+import { connectChrome } from "./lib/chrome-cdp.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../..");
 const veloraBin = resolve(repoRoot, "zig-out/bin/velora");
 const OUT = resolve(repoRoot, "code-check/tmp/google-sgss-hook");
-const SEARCH = "https://www.google.com/search?q=sgssprobe&hl=en";
-const useChrome = process.argv.includes("--chrome");
+
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function parseArgs(argv) {
+    const out = {
+        only: "both",
+        query: `sgssprobe-${Date.now()}`,
+        cooldownMs: 35_000,
+        endpoint: process.env.VELORA_ENDPOINT || null,
+        spawnChrome: false,
+        chromeEndpoint: undefined,
+    };
+    for (let i = 0; i < argv.length; i += 1) {
+        const a = argv[i];
+        const next = () => {
+            if (i + 1 >= argv.length) throw new Error(`Missing value for ${a}`);
+            i += 1;
+            return argv[i];
+        };
+        switch (a) {
+            case "--only": out.only = next(); break;
+            case "--query": out.query = next(); break;
+            case "--cooldown": out.cooldownMs = Number(next()); break;
+            case "--endpoint": out.endpoint = next(); break;
+            case "--spawn-chrome": out.spawnChrome = true; break;
+            case "--chrome-endpoint": out.chromeEndpoint = next(); break;
+            case "--chrome": out.only = "chrome"; break;
+            case "--velora": out.only = "velora"; break;
+            case "--help":
+                console.log(`Usage: node hook-sgss.mjs [--only chrome|velora|both] [--query Q] [--cooldown MS] [--endpoint URL]`);
+                process.exit(0);
+            default:
+                throw new Error(`Unknown arg: ${a}`);
+        }
+    }
+    return out;
+}
+
+function searchUrl(query) {
+    return `https://www.google.com/search?q=${encodeURIComponent(query)}&hl=en`;
+}
+
+function hopKind(url) {
+    if (url.includes("/sorry")) return "sorry";
+    if (url.includes("sg_ss=")) return "sg_ss";
+    if (url.includes("sei=")) return "sei";
+    if (url.includes("google.com/search")) return "search";
+    return "other";
+}
 
 const PROBE_HOOK = `(() => {
     const root = window.top;
@@ -266,8 +318,6 @@ const PROBE_HOOK = `(() => {
     snapGlobals("doc-init");
 })()`;
 
-const delay = (ms) => new Promise((r) => setTimeout(r, ms));
-
 function parseSetCookie(raw) {
     const s = String(raw || "");
     if (!s) return [];
@@ -275,6 +325,15 @@ function parseSetCookie(raw) {
         const name = part.trim().split("=")[0];
         return { name, isSgSs: name === "SG_SS" };
     });
+}
+
+function hdr(headers, key) {
+    if (!headers) return null;
+    const want = key.toLowerCase();
+    for (const [k, v] of Object.entries(headers)) {
+        if (k.toLowerCase() === want) return v;
+    }
+    return null;
 }
 
 async function getFreePort() {
@@ -289,7 +348,7 @@ async function getFreePort() {
     });
 }
 
-async function runCapture(label, setup) {
+async function runCapture(label, search, setup) {
     const network = [];
     const docs = [];
     const jarSnapshots = [];
@@ -345,14 +404,22 @@ async function runCapture(label, setup) {
         const url = p.request?.url || "";
         if (!url.includes("google.com")) return;
         const cookie = p.request?.headers?.Cookie ?? p.request?.headers?.cookie ?? "";
-        const tag = url.includes("sei=") ? "doc-sei-req" : "doc-hop1-req";
+        const kind = hopKind(url);
+        const tag = kind === "sei" ? "doc-sei-req" : kind === "sg_ss" ? "doc-sgss-req" : "doc-hop1-req";
         await snapshotJar(tag, url);
         docs.push({
             t: Date.now(),
+            kind,
             url: url.slice(0, 200),
-            hasSei: url.includes("sei="),
             cookieLen: String(cookie).length,
             hasSgSsInReq: String(cookie).includes("SG_SS"),
+            headers: {
+                referer: hdr(p.request?.headers, "referer"),
+                "sec-fetch-site": hdr(p.request?.headers, "sec-fetch-site"),
+                "sec-fetch-mode": hdr(p.request?.headers, "sec-fetch-mode"),
+                "sec-fetch-dest": hdr(p.request?.headers, "sec-fetch-dest"),
+                "sec-fetch-user": hdr(p.request?.headers, "sec-fetch-user"),
+            },
         });
     });
 
@@ -366,6 +433,7 @@ async function runCapture(label, setup) {
             t: Date.now(),
             type: p.type,
             status: p.response?.status,
+            kind: hopKind(url),
             url: url.slice(0, 200),
             setCookies: cookies.map((c) => c.name),
             setCookieRawLen: String(sc).length,
@@ -376,15 +444,16 @@ async function runCapture(label, setup) {
             await snapshotJar(`set-cookie-sgss:${p.type}:${p.response?.status}`, url);
         }
         if (p.type === "Document" && url.includes("google.com/search") && p.response?.status === 200) {
-            await snapshotJar(`doc-200:${url.includes("sei=") ? "sei" : "hop1"}`, url);
+            await snapshotJar(`doc-200:${entry.kind}`, url);
         }
     });
 
     let page1Html = null;
+    const searchBase = search.split("?")[0];
     session.on("Network.responseReceived", async (p) => {
         const url = p.response?.url || "";
-        if (url !== SEARCH && !url.startsWith(SEARCH + "&")) return;
-        if (p.response?.status !== 200 || page1Html) return;
+        if (!url.startsWith(searchBase) || !url.includes("q=")) return;
+        if (hopKind(url) !== "search" || p.response?.status !== 200 || page1Html) return;
         try {
             const body = await session.send("Network.getResponseBody", { requestId: p.requestId });
             const raw = body.body || "";
@@ -394,12 +463,22 @@ async function runCapture(label, setup) {
         } catch {}
     });
 
-    await page.goto(SEARCH, { waitUntil: "domcontentloaded", timeout: 90_000 });
-    await delay(500);
+    await page.goto(search, { waitUntil: "domcontentloaded", timeout: 90_000 });
+    for (let i = 0; i < 120; i++) {
+        try {
+            const u = await page.evaluate(() => location.href);
+            if (u.includes("sg_ss=") || u.includes("/sorry")) break;
+            const html = await page.content().catch(() => "");
+            if (/SearchResultsPage/.test(html)) break;
+        } catch {}
+        await delay(250);
+    }
+    await delay(2500);
+
     try {
         frameSnaps.push({
             t: Date.now(),
-            tag: "post-goto-500ms",
+            tag: "post-settle",
             ...(await page.evaluate(`(() => {
                 const s = (window.top && window.top.__sgssHook) || window.__sgssHook || {};
                 return {
@@ -413,7 +492,6 @@ async function runCapture(label, setup) {
             })()`)),
         });
     } catch {}
-    await delay(1500);
 
     const hook = await page.evaluate(`(() => {
         const s = (window.top && window.top.__sgssHook) || window.__sgssHook || {};
@@ -427,6 +505,12 @@ async function runCapture(label, setup) {
             challenge_version: typeof challenge_version !== "undefined" ? challenge_version : null,
             cbs: typeof cbs !== "undefined" ? String(cbs).slice(0, 120) : null,
         };
+        let ttEval = null;
+        try {
+            ttEval = eval(trustedTypes.createPolicy("x", { createScript: (x) => x }).createScript("1")) === 1;
+        } catch (e) {
+            ttEval = String(e);
+        }
         return {
             cookieSets: s.cookieSets || [],
             polls: s.polls || [],
@@ -437,6 +521,7 @@ async function runCapture(label, setup) {
             ticks: s.ticks || [],
             globalSnaps: s.globalSnaps || [],
             globals,
+            ttEval,
             pageKind: {
                 enablejs: document.documentElement.innerHTML.includes("enablejs"),
                 searchResults: document.documentElement.innerHTML.includes("SearchResultsPage"),
@@ -446,6 +531,7 @@ async function runCapture(label, setup) {
             hasSgSs: document.cookie.includes("SG_SS="),
             url: location.href,
             sorry: location.href.includes("/sorry"),
+            serp: document.documentElement.innerHTML.includes("SearchResultsPage"),
         };
     })()`);
 
@@ -455,7 +541,7 @@ async function runCapture(label, setup) {
         sgssAssign: (page1Html.match(/SG_SS\\s*=/g) || []).length,
         hasSgssSetCookie: /Set-Cookie[^\\n]*SG_SS/i.test(page1Html),
         scriptCount: (page1Html.match(/<script/gi) || []).length,
-        hasWindowSgs: /window\.sgs/.test(page1Html),
+        hasWindowSgs: /window\\.sgs/.test(page1Html),
         hasEnablejs: /enablejs/.test(page1Html),
         hasSearchResults: /SearchResultsPage/.test(page1Html),
         snippet: (() => {
@@ -468,63 +554,221 @@ async function runCapture(label, setup) {
 
     await cleanup();
 
-    return { label, hook, network, docs, jarSnapshots, frameSnaps, htmlHints, page1Html };
+    return { label, search, hook, network, docs, jarSnapshots, frameSnaps, htmlHints, page1Html };
 }
 
-async function runVelora() {
-    const port = await getFreePort();
-    const proc = spawn(veloraBin, [
-        "serve", "--host", "127.0.0.1", "--port", String(port),
-        "--browser-profile", "chrome-macos-sonoma", "--log-level", "warn",
-    ], { cwd: repoRoot, stdio: "ignore" });
-    const endpoint = `http://127.0.0.1:${port}`;
-    for (let i = 0; i < 40; i++) {
-        try { if ((await fetch(`${endpoint}/json/version`)).ok) break; } catch {}
-        await delay(100);
+async function runVelora(search, endpoint) {
+    let proc = null;
+    let ep = endpoint;
+    if (!ep) {
+        if (!existsSync(veloraBin)) throw new Error("zig build first");
+        const port = await getFreePort();
+        proc = spawn(veloraBin, [
+            "serve", "--host", "127.0.0.1", "--port", String(port),
+            "--browser-profile", "chrome-macos-sonoma", "--log-level", "warn",
+        ], {
+            cwd: repoRoot,
+            stdio: "ignore",
+            env: { ...process.env, VELORA_ROOT: repoRoot },
+        });
+        ep = `http://127.0.0.1:${port}`;
+        let ready = false;
+        for (let i = 0; i < 60; i++) {
+            try {
+                if ((await fetch(`${ep}/json/version`)).ok) {
+                    ready = true;
+                    break;
+                }
+            } catch {}
+            await delay(100);
+        }
+        if (!ready) {
+            proc?.kill("SIGTERM");
+            throw new Error(`Velora CDP not ready at ${ep} after 6s — restart velora serve manually`);
+        }
     }
     try {
-        return await runCapture("velora", async () => {
-            const b = await Browser.connect(endpoint);
+        return await runCapture("velora", search, async () => {
+            const b = await Browser.connect(ep);
             const page = await b.newPage();
             return { page, session: page.session, cleanup: () => b.close() };
         });
     } finally {
-        proc.kill("SIGTERM");
+        proc?.kill("SIGTERM");
     }
 }
 
-async function runChrome() {
-    const browser = await chromium.launch({
-        channel: "chrome",
-        headless: false,
-        args: ["--incognito", "--disable-blink-features=AutomationControlled"],
-    });
-    const context = await browser.newContext();
-    const page = await context.newPage();
-    const session = await context.newCDPSession(page);
-    return runCapture("chrome", async () => ({
+async function runChrome(search, chromeOpts) {
+    const { browser } = await connectChrome(chromeOpts);
+    const page = await browser.newPage();
+    return runCapture("chrome", search, async () => ({
         page,
-        session,
-        cleanup: () => browser.close(),
+        session: page.session,
+        cleanup: async () => {
+            await page.close().catch(() => undefined);
+        },
     }));
 }
 
-async function main() {
-    if (!useChrome && !existsSync(veloraBin)) throw new Error("zig build first");
-    mkdirSync(OUT, { recursive: true });
+function summarizeResult(r) {
+    const h = r.hook;
+    const docHops = r.docs.map((d) => ({
+        kind: d.kind,
+        cookieLen: d.cookieLen,
+        hasSgSsInReq: d.hasSgSsInReq,
+        secFetchUser: d.headers?.["sec-fetch-user"] ?? null,
+        referer: d.headers?.referer ? d.headers.referer.slice(0, 80) : null,
+    }));
+    const resHops = r.network
+        .filter((n) => n.type === "Document" && (n.kind === "search" || n.kind === "sei" || n.kind === "sg_ss" || n.kind === "sorry"))
+        .map((n) => ({ kind: n.kind, status: n.status, hasSgSs: n.hasSgSs }));
+    const sgsPhases = (h.sgsCalls || []).map((c) => c.phase);
+    return {
+        label: r.label,
+        outcome: h.sorry ? "sorry"
+            : h.serp ? "SERP"
+                : h.url.includes("sg_ss=") ? "sg_ss-no-serp"
+                    : h.url.includes("sei=") ? "stalled-at-sei"
+                        : "other",
+        sorry: h.sorry,
+        serp: h.serp,
+        finalUrl: h.url.slice(0, 120),
+        hasSgSsDoc: h.hasSgSs,
+        ttEval: h.ttEval,
+        sgsPhases,
+        sgsResolved: sgsPhases.includes("resolve"),
+        sgsRejected: sgsPhases.includes("reject"),
+        cookieSets: h.cookieSets.length,
+        docHops,
+        resHops,
+        globals: h.globals,
+        hookErrors: h.errors,
+        page1: r.htmlHints ? {
+            hasWindowSgs: r.htmlHints.hasWindowSgs,
+            enablejs: r.htmlHints.hasEnablejs,
+            serp: r.htmlHints.hasSearchResults,
+        } : null,
+    };
+}
 
-    const results = [];
-    if (useChrome) {
-        console.log("[capture] Chrome incognito...");
-        results.push(await runChrome());
-    } else {
-        console.log("[capture] Velora...");
-        results.push(await runVelora());
-        console.log("[capture] Chrome incognito (reference)...");
-        results.push(await runChrome());
+function diffResults(chrome, velora) {
+    const c = summarizeResult(chrome);
+    const v = summarizeResult(velora);
+    const rows = [];
+
+    const cmp = (key, a, b) => {
+        if (JSON.stringify(a) !== JSON.stringify(b)) rows.push({ key, chrome: a, velora: b });
+    };
+
+    cmp("outcome", c.outcome, v.outcome);
+    cmp("ttEval", c.ttEval, v.ttEval);
+    cmp("sgsResolved", c.sgsResolved, v.sgsResolved);
+    cmp("sgsRejected", c.sgsRejected, v.sgsRejected);
+    cmp("hasSgSsDoc", c.hasSgSsDoc, v.hasSgSsDoc);
+    cmp("cookieSets", c.cookieSets, v.cookieSets);
+    cmp("docHopCount", c.docHops.length, v.docHops.length);
+    cmp("docHopKinds", c.docHops.map((h) => h.kind), v.docHops.map((h) => h.kind));
+    cmp("resHopStatuses", c.resHops.map((h) => `${h.kind}:${h.status}`), v.resHops.map((h) => `${h.kind}:${h.status}`));
+
+    const max = Math.max(c.docHops.length, v.docHops.length);
+    for (let i = 0; i < max; i += 1) {
+        const ch = c.docHops[i];
+        const vh = v.docHops[i];
+        if (!ch || !vh) {
+            rows.push({ key: `docHop[${i}]`, chrome: ch ?? "(missing)", velora: vh ?? "(missing)" });
+            continue;
+        }
+        if (ch.kind !== vh.kind) rows.push({ key: `docHop[${i}].kind`, chrome: ch.kind, velora: vh.kind });
+        if (ch.cookieLen !== vh.cookieLen) rows.push({ key: `docHop[${i}].cookieLen`, chrome: ch.cookieLen, velora: vh.cookieLen });
+        if (ch.hasSgSsInReq !== vh.hasSgSsInReq) rows.push({ key: `docHop[${i}].sgssInReq`, chrome: ch.hasSgSsInReq, velora: vh.hasSgSsInReq });
+        if (ch.secFetchUser !== vh.secFetchUser) rows.push({ key: `docHop[${i}].secFetchUser`, chrome: ch.secFetchUser, velora: vh.secFetchUser });
     }
 
-    const report = { search: SEARCH, results };
+    if (JSON.stringify(c.sgsPhases) !== JSON.stringify(v.sgsPhases)) {
+        rows.push({ key: "sgsPhases", chrome: c.sgsPhases, velora: v.sgsPhases });
+    }
+    if (JSON.stringify(c.globals) !== JSON.stringify(v.globals)) {
+        rows.push({ key: "globals", chrome: c.globals, velora: v.globals });
+    }
+    if (JSON.stringify(c.page1) !== JSON.stringify(v.page1)) {
+        rows.push({ key: "page1", chrome: c.page1, velora: v.page1 });
+    }
+
+    return { chrome: c, velora: v, diffs: rows };
+}
+
+function printSummary(r) {
+    const s = summarizeResult(r);
+    const h = r.hook;
+    console.log(`\n=== ${r.label} ===`);
+    console.log(`outcome: ${s.outcome}`);
+    console.log(`final:   ${s.finalUrl}`);
+    console.log(`ttEval:  ${s.ttEval}`);
+    console.log(`SG_SS:   docCookie=${s.hasSgSsDoc} setterHooks=${s.cookieSets}`);
+    console.log(`sgs:     phases=${s.sgsPhases.join(" → ") || "(none)"}`);
+    if (h.errors?.length) console.log(`errors:  ${h.errors.join("; ")}`);
+
+    console.log("doc req hops:");
+    for (const d of s.docHops) {
+        console.log(`  ${d.kind.padEnd(6)} cookie=${String(d.cookieLen).padStart(3)} sgssInReq=${d.hasSgSsInReq} secFetchUser=${d.secFetchUser ?? "(absent)"}`);
+    }
+    console.log("doc res hops:");
+    for (const n of s.resHops) {
+        console.log(`  ${n.kind.padEnd(6)} status=${n.status} setSgSs=${n.hasSgSs}`);
+    }
+    if (s.page1) {
+        console.log(`page1:   sgs=${s.page1.hasWindowSgs} enablejs=${s.page1.enablejs} serp=${s.page1.serp}`);
+    }
+}
+
+function printDiff(diff) {
+    console.log("\n=== Chrome vs Velora diff ===");
+    if (!diff.diffs.length) {
+        console.log("(no differences — unexpected if Velora is blocked)");
+        return;
+    }
+    for (const d of diff.diffs) {
+        console.log(`\n[${d.key}]`);
+        console.log(`  chrome: ${fmt(d.chrome)}`);
+        console.log(`  velora: ${fmt(d.velora)}`);
+    }
+}
+
+function fmt(v) {
+    if (v == null) return String(v);
+    if (typeof v === "object") return JSON.stringify(v);
+    return String(v);
+}
+
+async function main() {
+    const opts = parseArgs(process.argv.slice(2));
+    const search = searchUrl(opts.query);
+    mkdirSync(OUT, { recursive: true });
+
+    console.log(`query: ${opts.query}`);
+    console.log(`search: ${search}`);
+
+    const results = [];
+
+    if (opts.only === "chrome" || opts.only === "both") {
+        console.log("\n[capture] Real Chrome (CDP)...");
+        results.push(await runChrome(search, { spawn: opts.spawnChrome, endpoint: opts.chromeEndpoint }));
+    }
+
+    if (opts.only === "both") {
+        console.log(`\n[cooldown] ${opts.cooldownMs}ms before Velora...`);
+        await delay(opts.cooldownMs);
+    }
+
+    if (opts.only === "velora" || opts.only === "both") {
+        console.log("\n[capture] Velora...");
+        results.push(await runVelora(search, opts.endpoint));
+    }
+
+    const report = { query: opts.query, search, results };
+    if (results.length === 2) {
+        report.diff = diffResults(results[0], results[1]);
+    }
     writeFileSync(resolve(OUT, "sgss-hook.json"), JSON.stringify(report, null, 2));
     for (const r of results) {
         if (r.page1Html) {
@@ -532,96 +776,8 @@ async function main() {
         }
     }
 
-    for (const r of results) {
-        const h = r.hook;
-        console.log(`\n=== ${r.label} ===`);
-        console.log(`final: ${h.url.slice(0, 100)}`);
-        console.log(`sorry: ${h.sorry} docCookie SG_SS: ${h.hasSgSs}`);
-        console.log(`cookie setter hooks: ${h.cookieSets.length}`);
-        console.log(`poll detections: ${h.polls.length}`);
-        console.log(`nav hooks: ${h.nav.length}`);
-        if (h.errors.length) console.log(`errors: ${h.errors.join("; ")}`);
-
-        const sgssNet = r.network.filter((n) => n.hasSgSs);
-        console.log(`network Set-Cookie SG_SS: ${sgssNet.length}`);
-        for (const n of sgssNet.slice(0, 5)) {
-            console.log(`  ${n.status} ${n.type} ${n.url.slice(0, 90)}`);
-        }
-
-        for (const d of r.docs) {
-            console.log(`  doc ${d.hasSei ? "sei" : "hop1"} cookie=${d.cookieLen} sgss=${d.hasSgSsInReq} ${d.url.slice(0, 70)}`);
-        }
-
-        console.log("jar snapshots:");
-        for (const s of r.jarSnapshots) {
-            console.log(`  [${s.tag}] sgss=${s.hasSgSs} names=${(s.names || []).join(",") || s.error || ""}`);
-        }
-
-        const pk = h.pageKind || {};
-        console.log(`page kind: enablejs=${pk.enablejs} searchResults=${pk.searchResults} htmlLen=${pk.htmlLen}`);
-        console.log(`sgs globals: sgs=${h.globals?.hasSgs} sp=${h.globals?.hasSp} ussv=${h.globals?.hasUssv} cv=${h.globals?.challenge_version}`);
-        if (h.globals?.spPreview) console.log(`  sp: ${h.globals.spPreview.slice(0, 100)}`);
-        if (h.sgsCalls?.length) {
-            console.log(`sgs calls (${h.sgsCalls.length}):`);
-            for (const c of h.sgsCalls.slice(0, 8)) {
-                const extra = c.phase === "reject" || c.phase === "throw"
-                    ? ` ${c.name || ""}: ${c.message || c.error || ""}`
-                    : c.result != null ? ` → ${String(c.result).slice(0, 80)}` : "";
-                console.log(`  [${c.phase}] @${(c.t || 0).toFixed?.(1) ?? c.t}${extra}`);
-            }
-        } else {
-            console.log("sgs calls: 0 (window.sgs never wrapped/invoked)");
-        }
-        if (h.ticks?.length) {
-            console.log(`google.tick load: ${h.ticks.map((t) => t.mark).join(" → ")}`);
-        }
-        if (h.beacons?.length) {
-            console.log(`beacons (${h.beacons.length}):`);
-            for (const b of h.beacons.slice(0, 5)) {
-                console.log(`  ${b.url.replace(/\?.*/, "").slice(-60)} @${(b.t || 0).toFixed?.(1) ?? b.t}`);
-            }
-        }
-
-        const hop1Snap = (h.globalSnaps || []).find((g) => g.tag === "doc-init" && g.href?.includes("/search?"));
-        if (hop1Snap) {
-            console.log(`hop1 globals @init: sgs=${hop1Snap.hasSgs} sp=${hop1Snap.hasSp} ussv=${hop1Snap.hasUssv} enablejs=${hop1Snap.enablejs}`);
-        }
-        if (r.frameSnaps?.length) {
-            console.log(`frame snaps (${r.frameSnaps.length}):`);
-            for (const f of r.frameSnaps.slice(0, 6)) {
-                const g = f.lastGlobals || (f.globalSnaps || []).slice(-1)[0];
-                const sgsN = f.sgsCallCount ?? (f.lastSgs || []).length;
-                console.log(`  ${f.url?.slice(0, 75) || f.tag} sgsCalls=${sgsN}${g ? ` sp=${g.hasSp} ussv=${g.hasUssv}` : ""}`);
-                for (const c of (f.lastSgs || []).slice(-3)) {
-                    console.log(`    sgs [${c.phase}]${c.message || c.result ? ` ${c.message || c.result}` : ""}`);
-                }
-            }
-        }
-
-        if (r.htmlHints) {
-            console.log(`page1 html: ${r.htmlHints.len} chars, SG_SS=${r.htmlHints.sgssLiteral}, scripts=${r.htmlHints.scriptCount}, sgs=${r.htmlHints.hasWindowSgs}, enablejs=${r.htmlHints.hasEnablejs}, SERP=${r.htmlHints.hasSearchResults}`);
-            if (r.htmlHints.snippet) console.log(`  snippet: ${r.htmlHints.snippet.replace(/\s+/g, " ").slice(0, 200)}`);
-        }
-
-        const sgssResponses = r.network.filter((n) => n.hasSgSs);
-        if (sgssResponses.length) {
-            console.log("responses with SG_SS Set-Cookie:");
-            for (const n of sgssResponses) {
-                console.log(`  ${n.status} ${n.type} ${n.url.slice(0, 90)} rawLen=${n.setCookieRawLen}`);
-            }
-        }
-
-        for (const c of h.cookieSets.slice(0, 3)) {
-            console.log(`  cookie set @${c.t.toFixed(1)}ms via ${c.via} len=${c.valueLen}`);
-            for (const line of c.stack.slice(0, 4)) console.log(`    ${line.trim()}`);
-        }
-        for (const p of h.polls.slice(0, 3)) {
-            console.log(`  poll @${p.t.toFixed(1)}ms len=${p.len} href=${p.href.slice(0, 60)}`);
-        }
-        for (const n of h.nav.filter((x) => x.detail?.includes("sei=")).slice(0, 3)) {
-            console.log(`  nav ${n.kind} @${n.t.toFixed(1)}ms → ${n.detail.slice(0, 80)}`);
-        }
-    }
+    for (const r of results) printSummary(r);
+    if (report.diff) printDiff(report.diff);
 
     console.log(`\nsaved: ${OUT}/sgss-hook.json`);
 }

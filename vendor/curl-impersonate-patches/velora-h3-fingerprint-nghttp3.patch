@@ -1,0 +1,128 @@
+diff --git a/lib/includes/nghttp3/nghttp3.h b/lib/includes/nghttp3/nghttp3.h
+--- a/lib/includes/nghttp3/nghttp3.h
++++ b/lib/includes/nghttp3/nghttp3.h
+@@ -2486,6 +2486,24 @@ NGHTTP3_EXTERN int nghttp3_conn_submit_settings(nghttp3_conn *conn,
+                                                 const nghttp3_settings_entry *iv,
+                                                 size_t niv);
+ 
++NGHTTP3_EXTERN int nghttp3_conn_submit_grease(nghttp3_conn *conn,
++                                              int64_t frame_type);
++
++NGHTTP3_EXTERN int nghttp3_conn_submit_chrome_priority_update(
++  nghttp3_conn *conn, int64_t frame_type, int64_t pri_elem_id,
++  const uint8_t *data, size_t datalen);
++
+ /**
+  * @function
+  *
+diff --git a/lib/nghttp3_conn.c b/lib/nghttp3_conn.c
+--- a/lib/nghttp3_conn.c
++++ b/lib/nghttp3_conn.c
+@@ -2238,6 +2238,48 @@ int nghttp3_conn_submit_settings(nghttp3_conn *conn, uint8_t flags,
+   return 0;
+ }
+ 
++int nghttp3_conn_submit_grease(nghttp3_conn *conn, int64_t frame_type) {
++  nghttp3_frame fr;
++
++  if (!conn->tx.ctrl) {
++    return NGHTTP3_ERR_INVALID_STATE;
++  }
++
++  memset(&fr, 0, sizeof(fr));
++  fr.hd.type = frame_type;
++  return nghttp3_stream_frq_add(conn->tx.ctrl, &fr);
++}
++
++int nghttp3_conn_submit_chrome_priority_update(nghttp3_conn *conn,
++                                               int64_t frame_type,
++                                               int64_t pri_elem_id,
++                                               const uint8_t *data,
++                                               size_t datalen) {
++  nghttp3_frame fr;
++  uint8_t *buf = NULL;
++
++  if (!conn->tx.ctrl) {
++    return NGHTTP3_ERR_INVALID_STATE;
++  }
++
++  if (datalen) {
++    buf = nghttp3_mem_malloc(conn->mem, datalen);
++    if (buf == NULL) {
++      return NGHTTP3_ERR_NOMEM;
++    }
++    memcpy(buf, data, datalen);
++  }
++
++  memset(&fr, 0, sizeof(fr));
++  fr.priority_update = (nghttp3_frame_priority_update){
++    .type = frame_type,
++    .pri_elem_id = pri_elem_id,
++    .data = buf,
++    .datalen = datalen,
++  };
++
++  return nghttp3_stream_frq_add(conn->tx.ctrl, &fr);
++}
++
+ int nghttp3_conn_bind_qpack_streams(nghttp3_conn *conn, int64_t qenc_stream_id,
+                                     int64_t qdec_stream_id) {
+diff --git a/lib/nghttp3_stream.c b/lib/nghttp3_stream.c
+--- a/lib/nghttp3_stream.c
++++ b/lib/nghttp3_stream.c
+@@ -243,6 +243,9 @@ int nghttp3_stream_frq_add(nghttp3_stream *stream, const nghttp3_frame *fr) {
+   return 0;
+ }
+ 
++static int nghttp3_stream_write_empty_frame(nghttp3_stream *stream,
++                                            int64_t frame_type);
++
+ int nghttp3_stream_fill_outq(nghttp3_stream *stream) {
+   nghttp3_ringbuf *frq = &stream->frq;
+   nghttp3_frame *fr;
+@@ -300,7 +303,18 @@ int nghttp3_stream_fill_outq(nghttp3_stream *stream) {
+ 
+       break;
+     default:
+-      /* TODO Not implemented */
++      if (fr->priority_update.datalen > 0) {
++        rv = nghttp3_stream_write_priority_update(stream, &fr->priority_update);
++        if (rv != 0) {
++          return rv;
++        }
++        nghttp3_frame_priority_update_free(&fr->priority_update, stream->mem);
++      } else {
++        rv = nghttp3_stream_write_empty_frame(stream, fr->hd.type);
++        if (rv != 0) {
++          return rv;
++        }
++      }
+       break;
+     }
+ 
+@@ -310,6 +324,27 @@ int nghttp3_stream_fill_outq(nghttp3_stream *stream) {
+   return 0;
+ }
+ 
++static int nghttp3_stream_write_empty_frame(nghttp3_stream *stream,
++                                            int64_t frame_type) {
++  size_t len;
++  int rv;
++  nghttp3_buf *chunk;
++  nghttp3_typed_buf tbuf;
++
++  len = nghttp3_frame_write_hd_len(frame_type, 0);
++  rv = nghttp3_stream_ensure_chunk(stream, len);
++  if (rv != 0) {
++    return rv;
++  }
++
++  chunk = nghttp3_stream_get_chunk(stream);
++  nghttp3_typed_buf_shared_init(&tbuf, chunk);
++  chunk->last = nghttp3_frame_write_hd(chunk->last, frame_type, 0);
++  tbuf.buf.last = chunk->last;
++
++  return nghttp3_stream_outq_add(stream, &tbuf);
++}
++
+ int nghttp3_stream_write_stream_type(nghttp3_stream *stream) {

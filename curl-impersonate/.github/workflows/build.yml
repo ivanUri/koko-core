@@ -1,0 +1,494 @@
+name: "Build on Linux/Darwin/BSD"
+
+on:
+  workflow_call:
+  push:
+    branches:
+      - main
+      - feature/*
+      - bugfix/*
+      - chore/*
+      - security/*
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  MACOSX_DEPLOYMENT_TARGET: 11.0
+  API: "21"  # Targeting an very old android API version
+
+jobs:
+  build:
+    name: (${{ matrix.host_label }}) Build curl-impersonate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            arch: x86_64
+            host: x86_64-linux-gnu
+            host_label: x86_64-linux-gnu
+            zigflags: -target x86_64-linux-gnu.2.17
+            make: make
+          - os: ubuntu-latest
+            platform: linux
+            arch: x86_64
+            host: x86_64-linux-musl
+            host_label: x86_64-linux-musl
+            zigflags: -target x86_64-linux-musl -fPIC
+            make: make
+          - os: ubuntu-latest
+            platform: linux
+            arch: i386
+            host: i386-linux-gnu
+            host_label: i386-linux-gnu
+            zigflags: -target x86-linux-gnu.2.17
+            make: make
+          - os: ubuntu-latest
+            platform: linux
+            arch: aarch64
+            host: aarch64-linux-gnu
+            host_label: aarch64-linux-gnu
+            zigflags: -target aarch64-linux-gnu.2.17
+            make: make
+          - os: ubuntu-latest
+            platform: linux
+            arch: aarch64
+            host: aarch64-linux-musl
+            host_label: aarch64-linux-musl
+            zigflags: -target aarch64-linux-musl -fPIC -mno-outline-atomics
+            make: make
+          - os: ubuntu-latest
+            platform: linux
+            arch: arm
+            host: arm-linux-gnueabihf
+            host_label: arm-linux-gnueabihf
+            zigflags: -target arm-linux-gnueabihf.2.17 -mcpu=arm1176jzf_s
+            make: make
+          - os: ubuntu-latest
+            platform: linux
+            arch: riscv64
+            host: riscv64-linux-gnu
+            host_label: riscv64-linux-gnu
+            zigflags: -target riscv64-linux-gnu.2.27
+            make: make
+          - os: ubuntu-latest
+            platform: linux
+            arch: loongarch64
+            host: loongarch64-linux-gnu
+            host_label: loongarch64-linux-gnu
+            zigflags: -target loongarch64-linux-gnu.2.36 -fPIC
+            make: make
+          - os: ubuntu-latest
+            platform: android
+            arch: aarch64
+            host: aarch64-linux-android
+            host_label: aarch64-linux-android
+            make: make
+          - os: ubuntu-latest
+            platform: android
+            arch: x86_64
+            host: x86_64-linux-android
+            host_label: x86_64-linux-android
+            make: make
+          - os: macos-14
+            platform: ios
+            arch: arm64
+            host: arm64-apple-ios
+            host_label: arm64-apple-ios
+            ios_sdk: iphoneos
+            ios_min_version: "13.0"
+            make: gmake
+          - os: macos-14
+            platform: ios
+            arch: arm64
+            host: arm64-apple-ios
+            host_label: arm64-apple-ios-simulator
+            ios_sdk: iphonesimulator
+            ios_min_version: "13.0"
+            make: gmake
+          - os: macos-15-intel
+            platform: ios
+            arch: x86_64
+            host: x86_64-apple-ios
+            host_label: x86_64-apple-ios-simulator
+            ios_sdk: iphonesimulator
+            ios_min_version: "13.0"
+            make: gmake
+          - os: macos-15-intel
+            platform: macos
+            arch: x86_64
+            host: x86_64-macos
+            host_label: x86_64-macos
+            make: gmake
+          - os: macos-14
+            platform: macos
+            arch: arm64
+            host: arm64-macos
+            host_label: arm64-macos
+            make: gmake
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v2
+
+      - name: Set up zig
+        if: matrix.platform == 'linux'
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.14.0
+
+      - name: Set zig env
+        if: matrix.platform == 'linux'
+        run: |
+          echo "CC=${{ github.workspace }}/zigshim/cc" >> $GITHUB_ENV
+          echo "CXX=${{ github.workspace }}/zigshim/cxx" >> $GITHUB_ENV
+          echo "AR=${{ github.workspace }}/zigshim/ar" >> $GITHUB_ENV
+          echo "ZIG_FLAGS=${{ matrix.zigflags }}" >> $GITHUB_ENV
+
+      - name: Set up Android NDK
+        if: matrix.platform == 'android'
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r26d
+
+      - name: Set Android toolchain env
+        if: matrix.platform == 'android'
+        env:
+          NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
+          TARGET="${{ matrix.host }}"
+          echo "AR=$TOOLCHAIN/bin/llvm-ar" >> $GITHUB_ENV
+          echo "CC=$TOOLCHAIN/bin/${TARGET}${API}-clang" >> $GITHUB_ENV
+          echo "AS=$TOOLCHAIN/bin/${TARGET}${API}-clang" >> $GITHUB_ENV
+          echo "CXX=$TOOLCHAIN/bin/${TARGET}${API}-clang++" >> $GITHUB_ENV
+          echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib" >> $GITHUB_ENV
+          echo "STRIP=$TOOLCHAIN/bin/llvm-strip" >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=$NDK" >> $GITHUB_ENV
+          echo "CFLAGS=-fPIC" >> $GITHUB_ENV
+          echo "CXXFLAGS=-fPIC" >> $GITHUB_ENV
+
+      - name: Set iOS toolchain env
+        if: matrix.platform == 'ios'
+        run: |
+          SDKROOT="$(xcrun --sdk ${{ matrix.ios_sdk }} --show-sdk-path)"
+          CC="$(xcrun --sdk ${{ matrix.ios_sdk }} --find clang)"
+          CXX="$(xcrun --sdk ${{ matrix.ios_sdk }} --find clang++)"
+          AR="$(xcrun --sdk ${{ matrix.ios_sdk }} --find ar)"
+          RANLIB="$(xcrun --sdk ${{ matrix.ios_sdk }} --find ranlib)"
+          STRIP="$(xcrun --sdk ${{ matrix.ios_sdk }} --find strip)"
+          if [[ "${{ matrix.ios_sdk }}" == "iphoneos" ]]; then
+            min_flag="-miphoneos-version-min=${{ matrix.ios_min_version }}"
+          else
+            min_flag="-mios-simulator-version-min=${{ matrix.ios_min_version }}"
+          fi
+          echo "SDKROOT=$SDKROOT" >> $GITHUB_ENV
+          echo "IOS_MIN_VERSION=${{ matrix.ios_min_version }}" >> $GITHUB_ENV
+          echo "CC=$CC" >> $GITHUB_ENV
+          echo "CXX=$CXX" >> $GITHUB_ENV
+          echo "AR=$AR" >> $GITHUB_ENV
+          echo "RANLIB=$RANLIB" >> $GITHUB_ENV
+          echo "STRIP=$STRIP" >> $GITHUB_ENV
+          echo "CFLAGS=-isysroot $SDKROOT -arch ${{ matrix.arch }} $min_flag -fPIC" >> $GITHUB_ENV
+          echo "CXXFLAGS=-isysroot $SDKROOT -arch ${{ matrix.arch }} $min_flag -fPIC" >> $GITHUB_ENV
+          echo "LDFLAGS=-isysroot $SDKROOT -arch ${{ matrix.arch }} $min_flag" >> $GITHUB_ENV
+
+      - name: Install Ubuntu dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install build-essential pkg-config cmake ninja-build curl autoconf automake libtool gperf
+          sudo apt-get install gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf gcc-riscv64-linux-gnu gcc-14-loongarch64-linux-gnu
+          sudo apt-get install golang-go
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: |
+          brew install pkg-config make cmake ninja autoconf automake libtool gpatch gperf
+          # Chrome version dependencies, install only not installed.
+          which go || brew install go
+          # Dependencies for the tests
+          brew install tcpdump curl nghttp2
+
+      - name: Build
+        run: |
+          set -e
+          install_dir="${{ runner.temp }}/install"
+          mkdir -p "$install_dir"
+
+          cmake_args="-G Ninja -DCMAKE_INSTALL_PREFIX=$install_dir"
+          if [[ "${{ matrix.platform }}" == "linux" ]]; then
+            cmake_args="$cmake_args -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=${{ matrix.arch }}"
+            cmake_args="$cmake_args -DCURL_CA_PATH=/etc/ssl/certs -DCURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"
+          elif [[ "${{ matrix.platform }}" == "android" ]]; then
+            case "${{ matrix.arch }}" in
+              aarch64) android_abi="arm64-v8a" ;;
+              x86_64) android_abi="x86_64" ;;
+              *) echo "Unsupported Android arch: ${{ matrix.arch }}"; exit 1 ;;
+            esac
+            cmake_args="$cmake_args -DCMAKE_SYSTEM_NAME=Android"
+            cmake_args="$cmake_args -DCMAKE_ANDROID_NDK=${ANDROID_NDK_HOME} -DCMAKE_ANDROID_ARCH_ABI=$android_abi -DCMAKE_SYSTEM_VERSION=${API}"
+          elif [[ "${{ matrix.platform }}" == "ios" ]]; then
+            cmake_args="$cmake_args -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_SYSTEM_PROCESSOR=${{ matrix.arch }} -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }}"
+            cmake_args="$cmake_args -DCMAKE_OSX_SYSROOT=${SDKROOT} -DCMAKE_OSX_DEPLOYMENT_TARGET=${IOS_MIN_VERSION}"
+          fi
+
+          if [[ "${{ matrix.platform }}" == "linux" ]]; then
+            ${{ matrix.make }} prepare-libidn2 BUILD_DIR=build
+          fi
+          ${{ matrix.make }} configure BUILD_DIR=build CMAKE_CONFIGURE_ARGS="$cmake_args"
+          ${{ matrix.make }} build BUILD_DIR=build CMAKE_CONFIGURE_ARGS="$cmake_args"
+          if [[ "${{ matrix.platform }}" == "linux" || "${{ matrix.platform }}" == "macos" ]]; then
+            ${{ matrix.make }} checkbuild BUILD_DIR=build CMAKE_CONFIGURE_ARGS="$cmake_args"
+          elif [[ "${{ matrix.platform }}" == "ios" ]]; then
+            if [[ ! -f build/deps/build/curl/src/curl-impersonate.app/curl-impersonate ]]; then
+              echo "Missing iOS curl-impersonate artifact: build/deps/build/curl/src/curl-impersonate.app/curl-impersonate" >&2
+              find build/deps/build/curl -maxdepth 3 -type f -name 'curl*' -print >&2
+              exit 1
+            fi
+            echo "Built iOS curl-impersonate artifact: ${{ matrix.host_label }}"
+          else
+            echo "Skipping checkbuild for non-native target: ${{ matrix.host_label }}"
+          fi
+          if [[ "${{ runner.os }}" == "Linux" && "${{ endsWith(matrix.host, 'musl') }}" == "true" ]]; then
+            ${{ matrix.make }} install BUILD_DIR=build CMAKE_CONFIGURE_ARGS="$cmake_args"
+          else
+            ${{ matrix.make }} install-strip BUILD_DIR=build CMAKE_CONFIGURE_ARGS="$cmake_args"
+          fi
+
+      - name: Create tar release files
+        run: |
+          set -e
+          install_dir="${{ runner.temp }}/install"
+          install_lib_dir="$install_dir/lib"
+          deps_lib_dir="${{ github.workspace }}/build/deps/install/lib"
+
+          cp "$deps_lib_dir/libz.a" "$install_lib_dir/"
+          cp "$deps_lib_dir/libzstd.a" "$install_lib_dir/"
+          cp "$deps_lib_dir/libbrotlidec.a" "$install_lib_dir/"
+          cp "$deps_lib_dir/libbrotlicommon.a" "$install_lib_dir/"
+          cp "$deps_lib_dir/libbrotlienc.a" "$install_lib_dir/"
+          cp "$deps_lib_dir/libnghttp2.a" "$install_lib_dir/"
+          cp "$deps_lib_dir/libnghttp3.a" "$install_lib_dir/"
+          cp "$deps_lib_dir/libngtcp2.a" "$install_lib_dir/"
+          cp "$deps_lib_dir/libngtcp2_crypto_boringssl.a" "$install_lib_dir/"
+          cp "$deps_lib_dir/libssl.a" "$install_lib_dir/"
+          cp "$deps_lib_dir/libcrypto.a" "$install_lib_dir/"
+          if [[ -f "$deps_lib_dir/libidn2.a" ]]; then
+            cp "$deps_lib_dir/libidn2.a" "$install_lib_dir/"
+          fi
+
+          cd "$install_lib_dir"
+          mv libcurl-impersonate.a libcurl-impersonate.orig.a
+          lib_list="libcurl-impersonate.orig.a libz.a libzstd.a libbrotlidec.a libbrotlicommon.a libbrotlienc.a libnghttp2.a libnghttp3.a libngtcp2.a libngtcp2_crypto_boringssl.a libssl.a libcrypto.a"
+          if [[ -f libidn2.a ]]; then
+            lib_list="$lib_list libidn2.a"
+          fi
+          if [[ "${{ runner.os }}" == "macOS" || "${{ matrix.platform }}" == "ios" ]]; then
+            libtool -static -o libcurl-impersonate.a $lib_list
+          else
+            $CC -r -o libcurl-impersonate.full.o -Wl,--whole-archive $lib_list -Wl,--no-whole-archive
+            ar rcs libcurl-impersonate.a libcurl-impersonate.full.o
+            rm -f libcurl-impersonate.full.o
+          fi
+          rm -f libz.a libzstd.a libbrotlidec.a libbrotlicommon.a libbrotlienc.a libnghttp2.a libnghttp3.a libngtcp2.a libngtcp2_crypto_boringssl.a libssl.a libcrypto.a libidn2.a
+          rm -f libcurl-impersonate.orig.a
+          ls -lah .
+          if [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
+            tar -c -z -f ${{ runner.temp }}/libcurl-impersonate-${{ github.ref_name }}.${{ matrix.host_label }}.tar.gz -C "$install_lib_dir" lib* -C "$install_dir" include
+          else
+            tar -c -z -f ${{ runner.temp }}/libcurl-impersonate.${{ matrix.host_label }}.tar.gz -C "$install_lib_dir" lib* -C "$install_dir" include
+          fi
+          echo "release_file_lib=${{ runner.temp }}/libcurl-impersonate-${{ github.ref_name }}.${{ matrix.host_label }}.tar.gz" >> $GITHUB_ENV
+
+          cd "$install_dir/bin"
+          if [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
+            tar -c -z -f ${{ runner.temp }}/curl-impersonate-${{ github.ref_name }}.${{ matrix.host_label }}.tar.gz curl-impersonate curl_*
+          else
+            tar -c -z -f ${{ runner.temp }}/curl-impersonate.${{ matrix.host_label }}.tar.gz curl-impersonate curl_*
+          fi
+
+      - name: Create iOS XCFramework slice
+        if: matrix.platform == 'ios'
+        run: |
+          slice_dir="${{ runner.temp }}/ios-slice"
+          mkdir -p "$slice_dir/lib" "$slice_dir/include/curl"
+          cp "${{ github.workspace }}/build/deps/src/curl/include/curl/"*.h "$slice_dir/include/curl/"
+          cp ${{ runner.temp }}/install/lib/libcurl-impersonate.a "$slice_dir/lib/"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts.${{ matrix.host_label }}
+          path: |
+            ${{ runner.temp }}/libcurl-impersonate*.tar.gz
+            ${{ runner.temp }}/curl-impersonate*.tar.gz
+
+      - name: Upload iOS slice artifact
+        if: matrix.platform == 'ios'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-slice.${{ matrix.host_label }}
+          path: ${{ runner.temp }}/ios-slice
+
+  build-freebsd:
+    name: (${{ matrix.host_label }}) Build curl-impersonate
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - vm_arch: x86_64
+            host_label: x86_64-freebsd
+            release_only: false
+          - vm_arch: aarch64
+            host_label: aarch64-freebsd
+            release_only: true
+    steps:
+      - name: Skip release-only FreeBSD target
+        if: ${{ matrix.release_only && !startsWith(github.ref, 'refs/tags/') }}
+        run: echo "Skipping ${{ matrix.host_label }} outside release tag builds."
+
+      - name: Check out the repo
+        if: ${{ !matrix.release_only || startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/checkout@v2
+
+      - name: Build in FreeBSD
+        if: ${{ !matrix.release_only || startsWith(github.ref, 'refs/tags/') }}
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "14.3"
+          arch: ${{ matrix.vm_arch }}
+          cpu: 4
+          mem: 8192
+          usesh: true
+          prepare: |
+            pkg update -f
+            pkg install -y pkgconf cmake ninja curl autoconf automake libtool gmake gperf go
+          run: |
+            set -e
+            install_dir="$PWD/freebsd-install"
+            artifacts_dir="$PWD/freebsd-artifacts"
+            rm -rf build-freebsd "$install_dir" "$artifacts_dir"
+            mkdir -p "$install_dir" "$artifacts_dir"
+
+            cmake_args="-G Ninja -DCMAKE_INSTALL_PREFIX=$install_dir"
+            cmake_args="$cmake_args -DUSE_LIBIDN2=OFF"
+
+            gmake configure BUILD_DIR=build-freebsd CMAKE_CONFIGURE_ARGS="$cmake_args"
+            gmake build BUILD_DIR=build-freebsd CMAKE_CONFIGURE_ARGS="$cmake_args"
+
+            v="$(build-freebsd/deps/build/curl/src/curl-impersonate -V)"
+            echo "$v"
+            echo "$v" | grep -q zlib
+            echo "$v" | grep -q zstd
+            echo "$v" | grep -q brotli
+            echo "$v" | grep -q nghttp2
+            echo "$v" | grep -q BoringSSL
+
+            gmake install-strip BUILD_DIR=build-freebsd CMAKE_CONFIGURE_ARGS="$cmake_args"
+
+            install_lib_dir="$install_dir/lib"
+            deps_lib_dir="$PWD/build-freebsd/deps/install/lib"
+
+            cp "$deps_lib_dir/libz.a" "$install_lib_dir/"
+            cp "$deps_lib_dir/libzstd.a" "$install_lib_dir/"
+            cp "$deps_lib_dir/libbrotlidec.a" "$install_lib_dir/"
+            cp "$deps_lib_dir/libbrotlicommon.a" "$install_lib_dir/"
+            cp "$deps_lib_dir/libbrotlienc.a" "$install_lib_dir/"
+            cp "$deps_lib_dir/libnghttp2.a" "$install_lib_dir/"
+            cp "$deps_lib_dir/libnghttp3.a" "$install_lib_dir/"
+            cp "$deps_lib_dir/libngtcp2.a" "$install_lib_dir/"
+            cp "$deps_lib_dir/libngtcp2_crypto_boringssl.a" "$install_lib_dir/"
+            cp "$deps_lib_dir/libssl.a" "$install_lib_dir/"
+            cp "$deps_lib_dir/libcrypto.a" "$install_lib_dir/"
+
+            cd "$install_lib_dir"
+            mv libcurl-impersonate.a libcurl-impersonate.orig.a
+            cc -r -o libcurl-impersonate.full.o -Wl,--whole-archive \
+              libcurl-impersonate.orig.a libz.a libzstd.a \
+              libbrotlidec.a libbrotlicommon.a libbrotlienc.a \
+              libnghttp2.a libnghttp3.a libngtcp2.a \
+              libngtcp2_crypto_boringssl.a libssl.a libcrypto.a \
+              -Wl,--no-whole-archive
+            ar rcs libcurl-impersonate.a libcurl-impersonate.full.o
+            rm -f libcurl-impersonate.full.o
+            rm -f libz.a libzstd.a libbrotlidec.a libbrotlicommon.a libbrotlienc.a libnghttp2.a libnghttp3.a libngtcp2.a libngtcp2_crypto_boringssl.a libssl.a libcrypto.a
+            rm -f libcurl-impersonate.orig.a
+
+            if [ "${{ startsWith(github.ref, 'refs/tags/') }}" = "true" ]; then
+              tar -czf "$artifacts_dir/libcurl-impersonate-${{ github.ref_name }}.${{ matrix.host_label }}.tar.gz" lib* -C "$install_dir" include
+              cd "$install_dir/bin"
+              tar -czf "$artifacts_dir/curl-impersonate-${{ github.ref_name }}.${{ matrix.host_label }}.tar.gz" curl-impersonate curl_*
+            else
+              tar -czf "$artifacts_dir/libcurl-impersonate.${{ matrix.host_label }}.tar.gz" lib* -C "$install_dir" include
+              cd "$install_dir/bin"
+              tar -czf "$artifacts_dir/curl-impersonate.${{ matrix.host_label }}.tar.gz" curl-impersonate curl_*
+            fi
+
+      - name: Upload FreeBSD artifacts
+        if: ${{ !matrix.release_only || startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts.${{ matrix.host_label }}
+          path: freebsd-artifacts/*.tar.gz
+
+  ios-xcframework:
+    name: (iOS) Create XCFramework
+    runs-on: macos-14
+    needs: build
+    steps:
+      - name: Download device slice
+        uses: actions/download-artifact@v4
+        with:
+          name: ios-slice.arm64-apple-ios
+          path: ${{ runner.temp }}/ios/device
+
+      - name: Download simulator slice
+        uses: actions/download-artifact@v4
+        with:
+          name: ios-slice.arm64-apple-ios-simulator
+          path: ${{ runner.temp }}/ios/simulator-arm64
+
+      - name: Download Intel simulator slice
+        uses: actions/download-artifact@v4
+        with:
+          name: ios-slice.x86_64-apple-ios-simulator
+          path: ${{ runner.temp }}/ios/simulator-x86_64
+
+      - name: Create universal simulator slice
+        run: |
+          mkdir -p ${{ runner.temp }}/ios/simulator/lib
+          cp -R ${{ runner.temp }}/ios/simulator-arm64/include ${{ runner.temp }}/ios/simulator/
+          lipo -create \
+            ${{ runner.temp }}/ios/simulator-arm64/lib/libcurl-impersonate.a \
+            ${{ runner.temp }}/ios/simulator-x86_64/lib/libcurl-impersonate.a \
+            -output ${{ runner.temp }}/ios/simulator/lib/libcurl-impersonate.a
+
+      - name: Create XCFramework
+        run: |
+          xcodebuild -create-xcframework \
+            -library ${{ runner.temp }}/ios/device/lib/libcurl-impersonate.a \
+            -headers ${{ runner.temp }}/ios/device/include \
+            -library ${{ runner.temp }}/ios/simulator/lib/libcurl-impersonate.a \
+            -headers ${{ runner.temp }}/ios/simulator/include \
+            -output ${{ runner.temp }}/libcurl-impersonate.xcframework
+
+          cd ${{ runner.temp }}
+          if [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
+            tar -c -z -f ${{ runner.temp }}/libcurl-impersonate-${{ github.ref_name }}.ios-xcframework.tar.gz libcurl-impersonate.xcframework
+          else
+            tar -c -z -f ${{ runner.temp }}/libcurl-impersonate.ios-xcframework.tar.gz libcurl-impersonate.xcframework
+          fi
+
+      - name: Upload XCFramework artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts.ios-xcframework
+          path: ${{ runner.temp }}/libcurl-impersonate*.ios-xcframework.tar.gz

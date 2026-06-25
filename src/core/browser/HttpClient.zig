@@ -303,7 +303,7 @@ pub fn changeProxy(self: *Client, proxy: ?[:0]const u8) !void {
 
 pub fn newHeaders(self: *const Client) !http.Headers {
     if (comptime build_config.curl_impersonate) {
-        // headersForRequest builds the full Chrome-ordered header set.
+        // Document nav: curl default_headers + small overrides. Subresources: full override list.
         return http.Headers.initEmpty();
     }
     const headers = &self.network.config.http_headers;
@@ -1114,6 +1114,8 @@ pub const RequestParams = struct {
     referer: ?[:0]const u8 = null, // null-terminated for CURLOPT_REFERER
     /// Guest Chrome omnibox search sends zero Cookie on sei=/sg_ss= document hops.
     omit_cookies: bool = false,
+    /// Google search document hops omit Sec-Fetch-User; disable curl default_headers.
+    omit_sec_fetch_user: bool = false,
 
     pub const ResourceType = enum {
         document,
@@ -1473,7 +1475,13 @@ pub const Transfer = struct {
         }
 
         if (comptime build_config.curl_impersonate) {
-            try conn.setReferer(req.params.referer);
+            // In-search sei=/sg_ss= hops embed Referer in the manual header list (HAR order).
+            const referer_in_headers = req.params.omit_sec_fetch_user and
+                req.params.resource_type == .document and
+                req.params.referer != null;
+            if (!referer_in_headers) {
+                try conn.setReferer(req.params.referer);
+            }
         }
 
         // add credentials
@@ -1487,7 +1495,9 @@ pub const Transfer = struct {
 
         // TLS impersonate must be last — CURLOPT_SSL_* / verify / cookie opts can clobber SSL ctx.
         if (comptime build_config.curl_impersonate) {
-            try http.Connection.applyProfileTransport(conn, client.network.config);
+            const curl_default_headers = !(req.params.omit_sec_fetch_user and
+                req.params.resource_type == .document);
+            try http.Connection.applyProfileTransport(conn, client.network.config, curl_default_headers);
         }
     }
 

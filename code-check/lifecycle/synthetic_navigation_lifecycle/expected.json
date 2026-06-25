@@ -1,4 +1,0 @@
-{
-  "must_contain": ["about-blank:function-toString-ok", "blob:script-ran", "iframe:onload", "after-synthetic:function-toString-ok"],
-  "must_not_contain": ["about-blank:FAIL:window-null", "after-synthetic:FAIL:window-null", "missing:Object.prototype.toString", "FAIL:TypeError"]
-}

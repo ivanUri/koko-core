@@ -58,11 +58,11 @@ pub fn getFamily(self: *const FontFace) []const u8 {
     return self._family;
 }
 
-// load() rejects unavailable system fonts (CreepJS uses this path directly).
+// load() resolves for all families. CreepJS still distinguishes availability via
+// document.fonts.check(); rejecting here surfaces as NetworkError in challenge
+// scripts (e.g. Cloudflare Turnstile) that probe FontFace before check().
 pub fn load(self: *FontFace, frame: *Frame) !js.Promise {
-    if (!FingerprintProfile.isFontFamilyAvailable(frame.identityProfile(), self._family)) {
-        return frame.js.local.?.rejectPromise(.{ .dom_exception = .{ .err = error.NetworkError } });
-    }
+    _ = FingerprintProfile.isFontFamilyAvailable(frame.identityProfile(), self._family);
     return frame.js.local.?.resolvePromise(self);
 }
 

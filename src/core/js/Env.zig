@@ -57,8 +57,9 @@ pub const TaskSource = enum {
     unknown,
 };
 
-const MAX_CHECKPOINT_PASSES_PER_SCHEDULER_TICK = 32;
+const MAX_CHECKPOINT_PASSES_PER_SCHEDULER_TICK = 96;
 const MAX_SCHEDULER_PUMP_DEPTH = 4;
+const MAX_MACROTASK_RUN_DEPTH = 1;
 
 fn initClassIds() void {
     inline for (JsApis, 0..) |JsApi, i| {
@@ -114,6 +115,7 @@ private_symbols: PrivateSymbols,
 checkpoint_active: bool,
 checkpoint_pending: bool,
 scheduler_pump_depth: u8 = 0,
+macrotask_run_depth: u8 = 0,
 
 pub const InitOpts = struct {
     with_inspector: bool = false,
@@ -368,7 +370,7 @@ fn installTrustedTypesEvalShim(context: *Context) void {
     defer ls.deinit();
 
     const src =
-        \\(function(){var o=globalThis.eval;globalThis.eval=function(c){try{if(typeof trustedTypes!=="undefined"&&trustedTypes.isScript&&trustedTypes.isScript(c))c=c.toString()}catch(e){}return o.call(globalThis,c)}})();
+        \\(function(){var o=globalThis.eval;globalThis.eval=function(c){try{if(typeof trustedTypes!=="undefined"&&trustedTypes.isScript&&trustedTypes.isScript(c))c=c.toString()}catch(e){}return o.call(globalThis,c)}})();globalThis._p={createScript:function(s){return s}};
     ;
     ls.local.eval(src, "trusted-types-eval-shim") catch |err| {
         log.warn(.js, "trusted-types eval shim", .{ .err = err });
@@ -398,6 +400,15 @@ pub fn destroyContext(self: *Env, context: *Context) void {
     }
 
     context.deinit();
+}
+
+fn clearSchedulerSuppression(self: *Env) void {
+    for (self.contexts[0..self.context_count]) |ctx| {
+        switch (ctx.global) {
+            .frame => |frame| frame.clearSchedulerSuppression(),
+            .worker => {},
+        }
+    }
 }
 
 pub fn runMicrotasks(self: *Env, source: TaskSource) void {
@@ -438,6 +449,11 @@ pub fn runMicrotasks(self: *Env, source: TaskSource) void {
     var checkpoint_passes: usize = 0;
     var deferred_reentry_passes: usize = 0;
     self.checkpoint_active = true;
+    self.clearSchedulerSuppression();
+    defer {
+        self.checkpoint_active = false;
+        self.clearSchedulerSuppression();
+    }
     while (true) {
         self.checkpoint_pending = false;
         var i: usize = 0;
@@ -506,8 +522,10 @@ pub fn runMicrotasks(self: *Env, source: TaskSource) void {
         if (!self.checkpoint_pending) break;
         deferred_reentry_passes += 1;
     }
-    self.checkpoint_active = false;
-    if (deferred_reentry_passes > 0) {
+    // Deferred promise reactions may queue macrotasks. Pump them only from the
+    // outermost microtask drain — never recurse synchronously from inside an
+    // active scheduler pump (timer → runMicrotasks → pump → timer …).
+    if (deferred_reentry_passes > 0 and self.scheduler_pump_depth == 0) {
         self.pumpSchedulerTasks();
     }
 }
@@ -527,8 +545,15 @@ pub fn runMacrotasks(self: *Env) !void {
     if (v8.v8__Isolate__IsExecutionTerminating(self.isolate.handle)) {
         return;
     }
+    if (self.macrotask_run_depth >= MAX_MACROTASK_RUN_DEPTH) return;
+    self.macrotask_run_depth += 1;
+    defer self.macrotask_run_depth -= 1;
 
     for (self.contexts[0..self.context_count]) |ctx| {
+        const exec = &ctx.execution;
+        if (exec.realmState() == .dead or exec.schedulerSuppressed()) continue;
+        if (!exec.canEnterJs(.strict_active)) continue;
+
         if (comptime builtin.is_test == false) {
             // I hate this comptime check as much as you do. But we have tests
             // which rely on short execution before shutdown. In real world, it's
@@ -540,7 +565,7 @@ pub fn runMacrotasks(self: *Env) !void {
         }
 
         var hs: js.HandleScope = undefined;
-        const entered = ctx.enter(&hs);
+        const entered = ctx.enter(&hs) orelse continue;
         defer entered.exit();
         try ctx.scheduler.run();
     }

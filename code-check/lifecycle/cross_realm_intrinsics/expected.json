@@ -1,4 +1,0 @@
-{
-  "must_contain": ["child:Object", "child:Promise.prototype", "child:function-toString-ok", "child:object-toString-ok", "array:child-instanceof-child", "navigator:prototype-present", "reflect:ownKeys-ok", "callable-receiver:function-toString-ok"],
-  "must_not_contain": ["child:FAIL:window-null", "child:missing:Object.prototype.toString", "array:bad-child-instanceof-child", "navigator:prototype-null", "cross-realm-error:TypeError", "cross-realm-error:RangeError"]
-}

@@ -301,10 +301,41 @@ pub fn getOnMessage(self: *const WorkerGlobalScope) ?JS.Function.Global {
 
 pub fn setOnMessage(self: *WorkerGlobalScope, setter: ?FunctionSetter) void {
     self._on_message = getFunctionFromSetter(setter);
-    self.flushPendingUndelivered() catch |err| {
-        log.warn(.browser, "WorkerGlobalScope.flushPendingUndelivered", .{ .err = err });
+    self.scheduleDeferredFlushUndelivered() catch |err| {
+        log.warn(.browser, "WorkerGlobalScope.scheduleDeferredFlushUndelivered", .{ .err = err });
     };
 }
+
+pub fn scheduleDeferredFlushUndelivered(self: *WorkerGlobalScope) !void {
+    const arena = try self._session.getArena(.tiny, "WorkerGlobalScope.deferFlushUndelivered");
+    errdefer self._session.releaseArena(arena);
+
+    const callback = try arena.create(DeferFlushUndeliveredCallback);
+    callback.* = .{ .worker_scope = self, .arena = arena };
+
+    try self.js.scheduler.add(callback, DeferFlushUndeliveredCallback.run, 0, .{
+        .name = "WorkerGlobalScope.deferFlushUndelivered",
+        .low_priority = false,
+        .finalizer = DeferFlushUndeliveredCallback.cancelled,
+    });
+}
+
+const DeferFlushUndeliveredCallback = struct {
+    worker_scope: *WorkerGlobalScope,
+    arena: Allocator,
+
+    fn cancelled(ctx: *anyopaque) void {
+        const self: *DeferFlushUndeliveredCallback = @ptrCast(@alignCast(ctx));
+        self.worker_scope._session.releaseArena(self.arena);
+    }
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *DeferFlushUndeliveredCallback = @ptrCast(@alignCast(ctx));
+        defer self.worker_scope._session.releaseArena(self.arena);
+        try self.worker_scope.flushPendingUndelivered();
+        return null;
+    }
+};
 
 pub fn flushPendingUndelivered(self: *WorkerGlobalScope) !void {
     const target = self.asEventTarget();
@@ -322,8 +353,8 @@ pub fn flushPendingUndelivered(self: *WorkerGlobalScope) !void {
             .cancelable = false,
         }, self._page)).asEvent();
         try self.dispatch(target, event, self._on_message, .{});
-        pumpAfterWorkerMessage(self);
     }
+    try scheduleDeferredMacrotaskPump(self);
 }
 
 fn releasePendingUndelivered(self: *WorkerGlobalScope) void {
@@ -360,11 +391,44 @@ pub fn postMessage(self: *WorkerGlobalScope, data: JS.Value, transfer: ?[]JS.Val
         &[_]*MessagePort{};
 
     try self._worker.receiveMessage(data, message_id, transferred_ports);
-    // Ensure the parent frame can dispatch the queued Worker message event.
-    self._worker._frame._session.browser.runMacrotasks() catch |err| {
-        log.warn(.browser, "worker postMessage pump", .{ .err = err });
-    };
+    // Defer macrotask pumping: Turnstile blob workers call postMessage from
+    // eval/onmessage; running macrotasks synchronously there trips V8's
+    // "Unexpected level after return from api call" check.
+    try scheduleDeferredMacrotaskPump(self);
 }
+
+fn scheduleDeferredMacrotaskPump(worker_scope: *WorkerGlobalScope) !void {
+    const arena = try worker_scope._session.getArena(.tiny, "WorkerGlobalScope.deferPump");
+    errdefer worker_scope._session.releaseArena(arena);
+
+    const callback = try arena.create(DeferPumpCallback);
+    callback.* = .{ .session = worker_scope._session, .arena = arena };
+
+    try worker_scope.js.scheduler.add(callback, DeferPumpCallback.run, 0, .{
+        .name = "WorkerGlobalScope.deferPump",
+        .low_priority = false,
+        .finalizer = DeferPumpCallback.cancelled,
+    });
+}
+
+const DeferPumpCallback = struct {
+    session: *Session,
+    arena: Allocator,
+
+    fn cancelled(ctx: *anyopaque) void {
+        const self: *DeferPumpCallback = @ptrCast(@alignCast(ctx));
+        self.session.releaseArena(self.arena);
+    }
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *DeferPumpCallback = @ptrCast(@alignCast(ctx));
+        defer self.session.releaseArena(self.arena);
+        self.session.browser.runMacrotasks() catch |err| {
+            log.warn(.browser, "worker postMessage pump", .{ .err = err });
+        };
+        return null;
+    }
+};
 
 // Called internally by Worker when it wants to post a message to us
 pub fn receiveMessage(self: *WorkerGlobalScope, data: JS.Value, message_id: u64, ports: []const *MessagePort) !void {
@@ -727,16 +791,10 @@ const ReceiveMessageCallback = struct {
             .cancelable = false,
         }, worker_scope._page)).asEvent();
         try worker_scope.dispatch(target, event, on_message, .{});
-        pumpAfterWorkerMessage(worker_scope);
+        try scheduleDeferredMacrotaskPump(worker_scope);
         return null;
     }
 };
-
-fn pumpAfterWorkerMessage(worker_scope: *WorkerGlobalScope) void {
-    worker_scope._session.browser.runMacrotasks() catch |err| {
-        log.warn(.browser, "worker pump macrotasks", .{ .err = err });
-    };
-}
 
 pub const JsApi = struct {
     pub const bridge = JS.Bridge(WorkerGlobalScope);

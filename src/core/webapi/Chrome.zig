@@ -41,6 +41,16 @@ pub const Csi = struct {
     tran: u32 = 15,
 };
 
+pub fn recordResponseCommit(self: *Chrome, commit_ms: f64) void {
+    const commit_sec = commit_ms / 1000.0;
+    const start_sec = if (self._request_time > 0) self._request_time else commit_sec - 0.15;
+    self._commit_time = commit_sec;
+    if (self._first_paint_time == 0) {
+        self._first_paint_time = commit_sec + 0.02;
+    }
+    _ = start_sec;
+}
+
 pub fn recordNavigationStart(self: *Chrome, nav_start_ms: f64) void {
     const start_sec = nav_start_ms / 1000.0;
     self._request_time = start_sec;

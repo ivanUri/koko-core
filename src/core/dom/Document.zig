@@ -552,6 +552,16 @@ pub fn getReadyState(self: *const Document) []const u8 {
     return @tagName(self._ready_state);
 }
 
+pub fn getCookie(self: *Document, frame: *Frame) ![]const u8 {
+    const html_doc = self.is(HTMLDocument) orelse return "";
+    return HTMLDocument.getCookie(html_doc, frame);
+}
+
+pub fn setCookie(self: *Document, cookie_str: []const u8, frame: *Frame) ![]const u8 {
+    const html_doc = self.is(HTMLDocument) orelse return "";
+    return HTMLDocument.setCookie(html_doc, cookie_str, frame);
+}
+
 pub fn getActiveElement(self: *Document) ?*Element {
     if (self._active_element) |el| {
         return el;
@@ -1247,6 +1257,7 @@ pub const JsApi = struct {
     }
     pub const referrer = bridge.attribute("", .{});
     pub const title = bridge.accessor(Document.getTitle, Document.setTitle, .{});
+    pub const cookie = bridge.accessor(Document.getCookie, Document.setCookie, .{});
 };
 
 const testing = @import("../../testing/testing.zig");

@@ -1,0 +1,4 @@
+pyyaml
+pytest
+pytest-asyncio
+th1 @ git+https://github.com/lexiforest/th1.git@main

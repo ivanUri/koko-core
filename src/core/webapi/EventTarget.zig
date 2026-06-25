@@ -108,7 +108,7 @@ pub fn addEventListener(self: *EventTarget, typ: []const u8, callback_: ?EventLi
 
     if (std.mem.eql(u8, typ, "message")) {
         switch (self._type) {
-            .worker_global_scope => |wgs| wgs.flushPendingUndelivered() catch {},
+            .worker_global_scope => |wgs| wgs.scheduleDeferredFlushUndelivered() catch {},
             else => {},
         }
     }

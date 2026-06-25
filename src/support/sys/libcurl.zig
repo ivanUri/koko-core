@@ -250,10 +250,10 @@ pub const CurlOption = enum(c.CURLoption) {
     http3_tls_extension_order = c.CURLOPT_HTTP3_TLS_EXTENSION_ORDER,
 };
 
-/// Chrome guest QUIC transport params (quic.browserleaks.com h3_text baseline).
-/// Real Chrome: GREASE|GREASE|984832; curl-impersonate chrome146: GREASE only.
-/// Do not pass via CURLOPT_QUIC_TRANSPORT_PARAMETERS — it forces http/1.1 on this libcurl build.
-pub const CHROME_QUIC_TRANSPORT_PARAMS: [:0]const u8 = "1:65536;6:262144;7:100;51:1;GREASE;GREASE;984832";
+/// Chrome h3_text delta vs stock curl-impersonate is HTTP/3 control-stream frames
+/// (GREASE + PRIORITY_UPDATE 0x0f0700), not CURLOPT_QUIC_TRANSPORT_PARAMETERS.
+/// See vendor/curl-impersonate-patches/velora-h3-fingerprint-*.patch.
+pub const CHROME_QUIC_TRANSPORT_PARAMS: [:0]const u8 = "1:30000;3:1472;4:15728640;5:6291456;6:6291456;7:6291456;8:100;9:103;15:;17:1@1,GREASE;32:65536;12583:AUTO;12584:0x4f524947;GREASE";
 pub const CHROME_HTTP3_PSEUDO_HEADERS_ORDER: [:0]const u8 = "m,a,s,p";
 
 /// Prefer HTTP/2 over TLS (Chrome-like ALPN).

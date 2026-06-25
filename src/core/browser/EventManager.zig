@@ -74,8 +74,8 @@ pub fn register(self: *EventManager, target: *EventTarget, typ: []const u8, call
     if (listener.typ.eql(comptime .wrap("message"))) {
         switch (target._type) {
             .window => target._type.window.flushPendingPostMessages(),
-            .worker => target._type.worker.flushPendingUndelivered() catch |err| {
-                log.warn(.browser, "Worker.flushPendingUndelivered", .{ .err = err });
+            .worker => target._type.worker.scheduleDeferredFlushUndelivered() catch |err| {
+                log.warn(.browser, "Worker.scheduleDeferredFlushUndelivered", .{ .err = err });
             },
             .message_port => target._type.message_port.flushPendingDeliveries() catch |err| {
                 log.warn(.browser, "MessagePort.flushPendingDeliveries", .{ .err = err });
@@ -176,14 +176,19 @@ fn dispatchNode(self: *EventManager, target: *Node, event: *Event, comptime opts
     // Create a single scope for all event handlers in this dispatch.
     // This ensures function handles passed to queueMicrotask remain valid
     // throughout the entire dispatch, preventing crashes when microtasks run.
-    var ls: js.Local.Scope = undefined;
-    frame.js.localScope(&ls);
-    defer {
+    const nested_in_api = frame.js.local != null;
+    var owned_scope: js.Local.Scope = undefined;
+    const local: *const js.Local = blk: {
+        if (frame.js.local) |active| break :blk active;
+        frame.js.localScope(&owned_scope);
+        break :blk &owned_scope.local;
+    };
+    defer if (!nested_in_api) {
         if (was_handled) {
-            ls.local.ctx.env.runMicrotasks(.event_handler);
+            local.ctx.env.runMicrotasks(.event_handler);
         }
-        ls.deinit();
-    }
+        owned_scope.deinit();
+    };
 
     const activation_state = try ActivationState.create(event, target, frame);
 
@@ -259,7 +264,7 @@ fn dispatchNode(self: *EventManager, target: *Node, event: *Event, comptime opts
         if (event._stop_propagation) return;
         const current_target = path[i];
         if (self.base.getListeners(current_target, event._type_string)) |list| {
-            try self.dispatchPhase(list, current_target, event, &was_handled, &ls.local, comptime .init(true, opts));
+            try self.dispatchPhase(list, current_target, event, &was_handled, local, comptime .init(true, opts));
         }
     }
 
@@ -274,7 +279,7 @@ fn dispatchNode(self: *EventManager, target: *Node, event: *Event, comptime opts
             was_handled = true;
             event._current_target = target_et;
 
-            try ls.toLocal(inline_handler).callWithThis(void, target_et, .{event});
+            try local.toLocal(inline_handler).callWithThis(void, target_et, .{event});
 
             if (event._stop_propagation) {
                 return;
@@ -286,7 +291,7 @@ fn dispatchNode(self: *EventManager, target: *Node, event: *Event, comptime opts
         }
 
         if (self.base.getListeners(target_et, event._type_string)) |list| {
-            try self.dispatchPhase(list, target_et, event, &was_handled, &ls.local, comptime .init(null, opts));
+            try self.dispatchPhase(list, target_et, event, &was_handled, local, comptime .init(null, opts));
             if (event._stop_propagation) {
                 return;
             }
@@ -300,7 +305,7 @@ fn dispatchNode(self: *EventManager, target: *Node, event: *Event, comptime opts
         for (path[1..]) |current_target| {
             if (event._stop_propagation) break;
             if (self.base.getListeners(current_target, event._type_string)) |list| {
-                try self.dispatchPhase(list, current_target, event, &was_handled, &ls.local, comptime .init(false, opts));
+                try self.dispatchPhase(list, current_target, event, &was_handled, local, comptime .init(false, opts));
             }
         }
     }

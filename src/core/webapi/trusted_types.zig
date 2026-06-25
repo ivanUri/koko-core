@@ -162,7 +162,8 @@ pub const TrustedTypePolicy = struct {
 };
 
 pub const TrustedTypePolicyFactory = struct {
-    _pad: bool = false,
+    /// Set when createPolicy runs (CSP `trusted-types NAME default`).
+    _default_policy: ?*TrustedTypePolicy = null,
 
     fn persistOptionCallback(opts: js.Object, key: []const u8) !?js.Function.Global {
         const func = opts.getFunction(key) catch return null;
@@ -176,6 +177,7 @@ pub const TrustedTypePolicyFactory = struct {
         frame: *Frame,
     ) !*TrustedTypePolicy {
         _ = self;
+        const factory = &frame.window._trusted_types;
 
         var create_html: ?js.Function.Global = null;
         var create_script: ?js.Function.Global = null;
@@ -187,12 +189,21 @@ pub const TrustedTypePolicyFactory = struct {
             create_script_url = try persistOptionCallback(opts, "createScriptURL");
         }
 
-        return frame._factory.create(TrustedTypePolicy{
+        const policy = try frame._factory.create(TrustedTypePolicy{
             ._name = try frame.dupeString(name),
             ._create_html = create_html,
             ._create_script = create_script,
             ._create_script_url = create_script_url,
         });
+        // CSP `trusted-types NAME default` makes NAME the default when created.
+        // Turnstile creates a stub `default` policy first, then `gIqNx7`; prefer the
+        // latter (both have createScript, but gIqNx7 is the real policy).
+        if (create_script != null) {
+            factory._default_policy = policy;
+        } else if (factory._default_policy == null) {
+            factory._default_policy = policy;
+        }
+        return policy;
     }
 
     fn makeTrustedHTML(value: []const u8, frame: *Frame) !*TrustedHTML {
@@ -213,9 +224,11 @@ pub const TrustedTypePolicyFactory = struct {
         return makeTrustedScript("", frame);
     }
 
-    pub fn getDefaultPolicy(self: *const TrustedTypePolicyFactory) ?*TrustedTypePolicy {
+    pub fn getDefaultPolicy(self: *const TrustedTypePolicyFactory, frame: *Frame) ?*TrustedTypePolicy {
         _ = self;
-        return null;
+        // TrustedTypePolicyFactory uses empty_with_no_proto; JS→Zig self is always
+        // a fresh empty struct. State lives on the realm's Window.
+        return frame.window._trusted_types._default_policy;
     }
 
     pub fn getTypeMapping(self: *const TrustedTypePolicyFactory, frame: *Frame) !js.Value {
@@ -286,7 +299,11 @@ pub const TrustedTypePolicyFactory = struct {
                 return s.getEmptyScript(frame);
             }
         }.get, null, .{});
-        pub const defaultPolicy = bridge.accessor(TrustedTypePolicyFactory.getDefaultPolicy, null, .{});
+        pub const defaultPolicy = bridge.accessor(struct {
+            fn get(s: *const TrustedTypePolicyFactory, frame: *Frame) !?*TrustedTypePolicy {
+                return s.getDefaultPolicy(frame);
+            }
+        }.get, null, .{});
         pub const createPolicy = bridge.function(TrustedTypePolicyFactory.createPolicy, .{});
         pub const getAttributeType = bridge.function(TrustedTypePolicyFactory.getAttributeType, .{});
         pub const getPropertyType = bridge.function(TrustedTypePolicyFactory.getPropertyType, .{});

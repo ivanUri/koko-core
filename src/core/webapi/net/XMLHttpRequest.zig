@@ -470,10 +470,12 @@ fn httpHeaderDoneCallback(response: HttpClient.Response) !bool {
     self._response_url = try self._arena.dupeZ(u8, response.url());
 
     const exec = self._exec;
+    const ctx = exec.context;
 
-    var ls: js.Local.Scope = undefined;
-    exec.context.localScope(&ls);
-    defer ls.deinit();
+    const nested_in_api = ctx.local != null;
+    var owned_scope: js.Local.Scope = undefined;
+    if (!nested_in_api) ctx.localScope(&owned_scope);
+    defer if (!nested_in_api) owned_scope.deinit();
 
     try self.stateChanged(.headers_received, exec);
     try self._proto.dispatch(.load_start, .{ .loaded = 0, .total = self._response_len orelse 0 }, exec);

@@ -19,9 +19,20 @@ const TaggedOpaque = @import("../js/TaggedOpaque.zig");
 const EventTarget = @import("EventTarget.zig");
 const MessageEvent = @import("event/MessageEvent.zig");
 
+const Frame = @import("../browser/Frame.zig");
 const log = @import("../../support/log.zig");
 
 const Allocator = std.mem.Allocator;
+
+fn scheduleDeferredPump(exec: *const js.Execution) void {
+    const frame: *Frame = switch (exec.context.global) {
+        .frame => |f| f,
+        .worker => |wgs| wgs._worker._frame,
+    };
+    frame.scheduleDeferredMacrotaskPump() catch |err| {
+        log.warn(.browser, "MessagePort pump", .{ .err = err });
+    };
+}
 
 const MessagePort = @This();
 
@@ -134,9 +145,7 @@ fn enqueueMessage(self: *MessagePort, message: js.Value.Temp, exec: *const js.Ex
         .low_priority = false,
     });
 
-    exec.context.page.session.browser.runMacrotasks() catch |err| {
-        log.warn(.browser, "MessagePort pump", .{ .err = err });
-    };
+    scheduleDeferredPump(exec);
 }
 
 fn flushPendingMessages(self: *MessagePort) !void {
@@ -198,9 +207,7 @@ pub fn flushPendingDeliveries(self: *MessagePort) !void {
         try self.enqueueMessage(message, exec);
     }
 
-    exec.context.page.session.browser.runMacrotasks() catch |err| {
-        log.warn(.browser, "MessagePort flush pump", .{ .err = err });
-    };
+    scheduleDeferredPump(exec);
 }
 
 pub fn getOnMessageError(self: *const MessagePort) ?js.Function.Global {
@@ -248,9 +255,7 @@ const PostMessageCallback = struct {
             return null;
         }
 
-        self.exec.context.page.session.browser.runMacrotasks() catch |err| {
-            log.warn(.browser, "MessagePort dispatch pump", .{ .err = err });
-        };
+        scheduleDeferredPump(self.exec);
 
         return null;
     }

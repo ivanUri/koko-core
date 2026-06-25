@@ -219,7 +219,7 @@ pub fn deinit(self: *Context) void {
     defer env.app.arena_pool.release(self.arena);
 
     var hs: js.HandleScope = undefined;
-    const entered = self.enter(&hs);
+    const entered = self.enter(&hs) orelse return;
     defer entered.exit();
 
     // this can release objects
@@ -1088,14 +1088,16 @@ fn resolveDynamicModule(self: *Context, state: *DynamicModuleResolveState, modul
 //    var hs: js.HandleScope = undefined;
 //    const entered = ctx.enter(&hs);
 //    defer entered.exit();
-pub fn enter(self: *Context, hs: *js.HandleScope) Entered {
+pub fn enter(self: *Context, hs: *js.HandleScope) ?Entered {
     const isolate = self.isolate;
     js.HandleScope.init(hs, isolate);
+
+    const handle_ptr = v8.v8__Global__Get(&self.handle, isolate.handle) orelse return null;
 
     const original = self.global.getJs();
     self.global.setJs(self);
 
-    const handle: *const v8.Context = @ptrCast(v8.v8__Global__Get(&self.handle, isolate.handle));
+    const handle: *const v8.Context = @ptrCast(handle_ptr);
     v8.v8__Context__Enter(handle);
     return .{ .original = original, .handle = handle, .handle_scope = hs, .global = self.global };
 }
@@ -1238,7 +1240,7 @@ fn enqueueMicrotask(self: *Context, callback: anytype) void {
         fn run(data: ?*anyopaque) callconv(.c) void {
             const ctx: *Context = @ptrCast(@alignCast(data.?));
             var hs: js.HandleScope = undefined;
-            const entered = ctx.enter(&hs);
+            const entered = ctx.enter(&hs) orelse return;
             defer entered.exit();
             callback(ctx);
         }

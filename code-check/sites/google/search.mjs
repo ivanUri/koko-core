@@ -53,6 +53,7 @@ function parseArgs(argv) {
         warmDwellMs: 4000,
         warmScrolls: 3,
         warmFocusMs: 1200,
+        chromeTransport: false,
     };
     for (let i = 0; i < argv.length; i += 1) {
         const a = argv[i];
@@ -75,6 +76,7 @@ function parseArgs(argv) {
             case "--settle": out.settleMs = Number(next()); break;
             case "--warm-dwell": out.warmDwellMs = Number(next()); break;
             case "--warm-scrolls": out.warmScrolls = Number(next()); break;
+            case "--chrome-transport": out.chromeTransport = true; break;
             case "--help":
                 console.log(`Usage: node search.mjs [options]
 
@@ -92,6 +94,7 @@ Options:
   --settle <ms>           Post-navigation settle time
   --warm-dwell <ms>       Warm mode: dwell on homepage (default: 4000)
   --warm-scrolls <n>      Warm mode: scroll passes (default: 3)
+  --chrome-transport      Route google.com/search docs via real Chrome (SERP)
 `);
                 process.exit(0);
                 break;
@@ -151,6 +154,7 @@ function veloraArgs(opts, port) {
         ?? (opts.mode === "warm" && opts.cookieJar && existsSync(opts.cookieJar) ? opts.cookieJar : null);
     if (sessionLoad) args.push("--cookie", sessionLoad);
     if (opts.cookieJar) args.push("--cookie-jar", opts.cookieJar);
+    if (opts.chromeTransport) args.push("--google-chrome-transport");
     return args;
 }
 
@@ -161,6 +165,7 @@ async function spawnVelora(opts) {
     const proc = spawn(veloraBin, veloraArgs(opts, port), {
         cwd: repoRoot,
         stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, VELORA_ROOT: repoRoot },
     });
     proc.stderr.on("data", (c) => stderr.push(c));
     const endpoint = `http://127.0.0.1:${port}`;
@@ -288,10 +293,7 @@ const DOM_FILL_SCRIPT = `(q) => {
 const DOM_SUBMIT_SCRIPT = `(() => {
     const el = document.querySelector('textarea[name="q"], input[name="q"]');
     if (!el) return { ok: false, reason: "no_input" };
-    const enter = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
-    el.dispatchEvent(new KeyboardEvent("keydown", enter));
-    el.dispatchEvent(new KeyboardEvent("keypress", enter));
-    el.dispatchEvent(new KeyboardEvent("keyup", enter));
+    el.value = String(el.value || "").trim();
     const form = el.closest("form");
     if (form) {
         if (typeof form.requestSubmit === "function") form.requestSubmit();

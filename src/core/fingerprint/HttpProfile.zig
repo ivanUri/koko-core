@@ -3,6 +3,7 @@ const URL = @import("../browser/URL.zig");
 const HttpClient = @import("../browser/HttpClient.zig");
 const Profile = @import("Profile.zig");
 const ProfileStore = @import("ProfileStore.zig");
+const build_config = @import("build_config");
 
 /// Chrome-like HTTP header order for document and subresource requests.
 /// Matches curl-impersonate chrome146 ordering when `curl_impersonate` is linked.
@@ -73,7 +74,83 @@ pub const ChromeHeadersOpts = struct {
     color_scheme: []const u8 = "light",
     /// Guest Chrome omnibox search omits Sec-Fetch-User (www.google.com.har).
     omit_sec_fetch_user: bool = false,
+    /// Referer URL for in-search sei=/sg_ss= hops (inserted after Priority, before RTT).
+    referer_url: ?[]const u8 = null,
+    /// Bare User-Agent string for X-Browser-Validation (SHA-1 of API key + UA).
+    user_agent: ?[]const u8 = null,
 };
+
+const x_browser_channel = "stable";
+const x_browser_copyright = "Copyright 2026 Google LLC. All Rights Reserved.";
+const x_browser_year = "2026";
+
+const x_browser_api_key_macos = "AIzaSyDr2UxVnv_U85AbhhY8XSHSIavUW0DC-sY";
+const x_browser_api_key_windows = "AIzaSyA2KlwBX3mkFo30om9LUFYQhpqLoa_BNhE";
+const x_browser_api_key_linux = "AIzaSyBqJZh-7pA44blAaAkH6490hUFOwX0KCYM";
+
+pub fn isGoogleUrl(url: []const u8) bool {
+    return std.mem.indexOf(u8, url, "google.com") != null;
+}
+
+fn xBrowserApiKey(user_agent: []const u8) []const u8 {
+    var lower_buf: [512]u8 = undefined;
+    const ua_lower = if (user_agent.len <= lower_buf.len) blk: {
+        for (user_agent, 0..) |c, i| lower_buf[i] = std.ascii.toLower(c);
+        break :blk lower_buf[0..user_agent.len];
+    } else user_agent;
+    if (std.mem.indexOf(u8, ua_lower, "windows") != null) return x_browser_api_key_windows;
+    if (std.mem.indexOf(u8, ua_lower, "linux") != null) return x_browser_api_key_linux;
+    if (std.mem.indexOf(u8, ua_lower, "macintosh") != null or
+        std.mem.indexOf(u8, ua_lower, "mac os x") != null)
+        return x_browser_api_key_macos;
+    return x_browser_api_key_macos;
+}
+
+pub fn xBrowserValidation(allocator: std.mem.Allocator, user_agent: []const u8) ![:0]const u8 {
+    const api_key = xBrowserApiKey(user_agent);
+    var data = try std.ArrayList(u8).initCapacity(allocator, api_key.len + user_agent.len);
+    defer data.deinit(allocator);
+    try data.appendSlice(allocator, api_key);
+    try data.appendSlice(allocator, user_agent);
+
+    var digest: [20]u8 = undefined;
+    std.crypto.hash.Sha1.hash(data.items, &digest, .{});
+
+    const enc = std.base64.standard.Encoder;
+    var out_buf: [32]u8 = undefined;
+    const encoded = out_buf[0..enc.calcSize(digest.len)];
+    _ = enc.encode(encoded, &digest);
+    return try allocator.dupeZ(u8, encoded);
+}
+
+fn appendXBrowserHeaders(
+    headers: *HttpClient.Headers,
+    allocator: std.mem.Allocator,
+    user_agent: []const u8,
+) !void {
+    const validation = try xBrowserValidation(allocator, user_agent);
+    errdefer allocator.free(validation);
+
+    try headers.add("X-Browser-Channel: " ++ x_browser_channel);
+    const copyright_hdr = try std.fmt.allocPrintSentinel(
+        allocator,
+        "X-Browser-Copyright: {s}",
+        .{x_browser_copyright},
+        0,
+    );
+    try headers.add(copyright_hdr);
+
+    const validation_hdr = try std.fmt.allocPrintSentinel(
+        allocator,
+        "X-Browser-Validation: {s}",
+        .{validation},
+        0,
+    );
+    try headers.add(validation_hdr);
+
+    const year_hdr = try std.fmt.allocPrintSentinel(allocator, "X-Browser-Year: {s}", .{x_browser_year}, 0);
+    try headers.add(year_hdr);
+}
 
 fn isBrowserBrand(brand: []const u8) bool {
     return std.mem.indexOf(u8, brand, "Chrome") != null or std.mem.indexOf(u8, brand, "Chromium") != null;
@@ -165,6 +242,11 @@ fn appendChromeDocumentNavigationHeaders(
 
     try headers.add(document_priority);
 
+    if (opts.referer_url) |ref| {
+        const referer_hdr = try std.fmt.allocPrintSentinel(allocator, "Referer: {s}", .{ref}, 0);
+        try headers.add(referer_hdr);
+    }
+
     if (opts.full_client_hints) {
         const rtt_hdr = try std.fmt.allocPrintSentinel(allocator, "RTT: {d}", .{document_rtt}, 0);
         try headers.add(rtt_hdr);
@@ -236,16 +318,36 @@ fn appendChromeDocumentNavigationHeaders(
         try headers.add("Upgrade-Insecure-Requests: 1");
     }
 
-    try headers.add(static.user_agent_header);
-    try appendChromeXBrowserHeaders(headers);
+    if (comptime !build_config.curl_impersonate) {
+        try headers.add(static.user_agent_header);
+    } else if (opts.omit_sec_fetch_user) {
+        try headers.add(static.user_agent_header);
+    }
+
+    if (opts.user_agent) |ua| {
+        if (isGoogleUrl(ctx.request_url)) {
+            try appendXBrowserHeaders(headers, allocator, ua);
+        }
+    }
 }
 
-/// Chrome-internal navigation markers (guest Chrome HAR, coingloo.com SERP).
-fn appendChromeXBrowserHeaders(headers: *HttpClient.Headers) !void {
-    try headers.add("X-Browser-Channel: stable");
-    try headers.add("X-Browser-Copyright: Copyright 2026 Google LLC. All Rights Reserved.");
-    try headers.add("X-Browser-Validation: 0B09MqvCV801Pqs3w59rL0XpySY=");
-    try headers.add("X-Browser-Year: 2026");
+/// Per-request overrides merged on top of curl_easy_impersonate default_headers.
+/// curl_chrome146 supplies Accept, UA, Sec-CH-UA, Sec-Fetch-* defaults for cold navigations.
+pub fn appendCurlImpersonateDocumentOverrides(
+    headers: *HttpClient.Headers,
+    allocator: std.mem.Allocator,
+    ctx: RequestContext,
+    opts: ChromeHeadersOpts,
+) !void {
+    if (!std.mem.startsWith(u8, ctx.request_url, "http")) return;
+
+    _ = opts;
+    const site = secFetchSite(ctx);
+    // Cold omnibox uses curl default "none"; only override for real same-origin/cross-site hops.
+    if (!std.mem.eql(u8, site, "none")) {
+        const site_hdr = try std.fmt.allocPrintSentinel(allocator, "Sec-Fetch-Site: {s}", .{site}, 0);
+        try headers.add(site_hdr);
+    }
 }
 
 /// Append Chrome-ordered client hints + fetch metadata. Referer is set via CURLOPT_REFERER
@@ -309,7 +411,9 @@ pub fn appendChromeHeaders(
         try headers.add(color_hdr);
     }
 
-    try headers.add(static.user_agent_header);
+    if (comptime !build_config.curl_impersonate) {
+        try headers.add(static.user_agent_header);
+    }
     try headers.add(subresource_accept);
 
     const site = secFetchSite(ctx);
@@ -331,6 +435,12 @@ pub fn appendChromeHeaders(
     if (ctx.origin) |origin| {
         const origin_hdr = try std.fmt.allocPrintSentinel(allocator, "Origin: {s}", .{origin}, 0);
         try headers.add(origin_hdr);
+    }
+
+    if (opts.user_agent) |ua| {
+        if (isGoogleUrl(ctx.request_url)) {
+            try appendXBrowserHeaders(headers, allocator, ua);
+        }
     }
 }
 
@@ -464,4 +574,12 @@ test "HttpProfile: brandFullVersion maps Not A Brand to x.0.0.0" {
     try testing.expectEqualStrings("24.0.0.0", ver);
     const chrome_ver = try brandFullVersion(alloc, .{ .brand = "Google Chrome", .version = "149" }, "149.0.7827.104");
     try testing.expectEqualStrings("149.0.7827.104", chrome_ver);
+}
+
+test "HttpProfile: xBrowserValidation macOS Chrome 149" {
+    const alloc = testing.allocator;
+    const ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36";
+    const val = try xBrowserValidation(alloc, ua);
+    defer alloc.free(val);
+    try testing.expectEqualStrings("H+o9v6cagVZd2pOTUnzHRIkqiWI=", val);
 }

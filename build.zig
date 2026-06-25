@@ -122,7 +122,7 @@ pub fn build(b: *Build) !void {
                 .root_source_file = b.path("src/adapters/cli/main.zig"),
                 .target = target,
                 .optimize = optimize,
-                .strip = true,
+                .strip = b.option(bool, "strip", "Strip debug symbols from velora binary") orelse true,
                 .sanitize_c = enable_csan,
                 .sanitize_thread = enable_tsan,
                 .imports = &.{

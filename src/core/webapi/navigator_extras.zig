@@ -17,6 +17,8 @@ pub fn registerTypes() []const type {
         Bluetooth,
         GPU,
         GPUAdapter,
+        GPUQueue,
+        GPUDevice,
         USB,
         Serial,
         HID,
@@ -86,7 +88,9 @@ pub const GPUAdapter = struct {
     pub fn requestDevice(self: *const GPUAdapter, exec: *Execution) !js.Promise {
         _ = self;
         const local = exec.context.local orelse return error.NotHandled;
-        return local.rejectPromise(.{ .dom_exception = .{ .err = error.NotSupported } });
+        const queue = try exec._factory.create(GPUQueue{});
+        const device = try exec._factory.create(GPUDevice{ ._queue = queue });
+        return local.resolvePromise(device);
     }
 
     pub fn getFeatures(self: *const GPUAdapter, exec: *Execution) !js.Value {
@@ -126,6 +130,64 @@ pub const GPUAdapter = struct {
         pub const requestDevice = bridge.function(GPUAdapter.requestDevice, .{ .dom_exception = true });
     };
 };
+
+pub const GPUQueue = struct {
+    _pad: bool = false,
+
+    pub fn submit(self: *const GPUQueue, _: js.Value) void {
+        _ = self;
+    }
+
+    pub fn onSubmittedWorkDone(self: *const GPUQueue, exec: *Execution) !js.Promise {
+        _ = self;
+        const local = exec.context.local orelse return error.NotHandled;
+        return local.resolvePromise(js.Undefined{});
+    }
+
+    pub const JsApi = struct {
+        pub const bridge = js.Bridge(GPUQueue);
+        pub const Meta = struct {
+            pub const name = "GPUQueue";
+            pub const prototype_chain = bridge.prototypeChain();
+            pub var class_id: bridge.ClassId = undefined;
+            pub const empty_with_no_proto = true;
+        };
+        pub const submit = bridge.function(GPUQueue.submit, .{});
+        pub const onSubmittedWorkDone = bridge.function(GPUQueue.onSubmittedWorkDone, .{});
+    };
+};
+
+pub const GPUDevice = struct {
+    _pad: bool = false,
+    _queue: *GPUQueue,
+
+    pub fn getQueue(self: *GPUDevice) *GPUQueue {
+        return self._queue;
+    }
+
+    pub fn getLost(self: *GPUDevice, exec: *Execution) !js.Promise {
+        _ = self;
+        const local = exec.context.local orelse return error.NotHandled;
+        return local.createPromiseResolver().promise();
+    }
+
+    pub fn destroy(self: *GPUDevice) void {
+        _ = self;
+    }
+
+    pub const JsApi = struct {
+        pub const bridge = js.Bridge(GPUDevice);
+        pub const Meta = struct {
+            pub const name = "GPUDevice";
+            pub const prototype_chain = bridge.prototypeChain();
+            pub var class_id: bridge.ClassId = undefined;
+        };
+        pub const queue = bridge.accessor(GPUDevice.getQueue, null, .{});
+        pub const lost = bridge.accessor(GPUDevice.getLost, null, .{});
+        pub const destroy = bridge.function(GPUDevice.destroy, .{});
+    };
+};
+
 pub const USB = emptyInterface("USB");
 pub const Serial = emptyInterface("Serial");
 pub const HID = emptyInterface("HID");

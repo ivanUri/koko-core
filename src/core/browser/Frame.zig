@@ -475,6 +475,10 @@ pub fn suppressScheduler(self: *Frame) void {
     }
 }
 
+pub fn clearSchedulerSuppression(self: *Frame) void {
+    self._scheduler_suppressed = false;
+}
+
 /// Called at the start of every `navigate()` (including about:blank / blob).
 /// Macrotasks scheduled with a captured epoch older than the current value are dropped.
 pub fn bumpRealmNavigationEpoch(self: *Frame) void {
@@ -645,16 +649,23 @@ pub const HeadersForRequestOpts = struct {
     is_document_navigation: bool = false,
     /// Guest Chrome omnibox search omits Sec-Fetch-User.
     omit_sec_fetch_user: bool = false,
+    /// Cold Google omnibox: curl_chrome146 default_headers only (~5 headers on wire).
+    curl_defaults_only: bool = false,
 };
 
 fn isGoogleSearchUrl(url: []const u8) bool {
     return std.mem.indexOf(u8, url, "google.com/search") != null;
 }
 
+fn isGoogleSiteUrl(url: []const u8) bool {
+    return std.mem.indexOf(u8, url, "google.com") != null;
+}
+
 /// Guest Chrome omnibox + in-search client redirects (sei=, sg_ss=) share headers.
 fn isGoogleSearchFlow(prior_url: []const u8, request_url: []const u8, reason: NavigateReason) bool {
     if (!isGoogleSearchUrl(request_url)) return false;
     if (reason == .address_bar) return true;
+    if (reason == .form and isGoogleSiteUrl(prior_url)) return true;
     return isGoogleSearchUrl(prior_url);
 }
 
@@ -723,9 +734,27 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
     };
 
     if (comptime build_config.curl_impersonate) {
+        if (opts.curl_defaults_only) return;
         const profile = self.loadedProfile();
         if (profile.isFirefox()) {
             try HttpProfile.appendFirefoxHeaders(headers, self.arena, &static, ctx);
+        } else if (opts.resource_type == .document and opts.is_document_navigation) {
+            const full_hints = opts.resource_type == .document or
+                self._session.clientHintsEnabledForUrl(self.arena, request_url);
+            const chrome_opts = HttpProfile.ChromeHeadersOpts{
+                .full_client_hints = full_hints,
+                .brands = profile.http.brands,
+                .color_scheme = profile.http.prefers_color_scheme,
+                .omit_sec_fetch_user = opts.omit_sec_fetch_user,
+                .referer_url = if (opts.omit_sec_fetch_user) opts.referer else null,
+                .user_agent = http_client.getUserAgent(),
+            };
+            if (opts.omit_sec_fetch_user) {
+                // sei=/sg_ss= in-search hops: manual Chrome headers, no Sec-Fetch-User (guest HAR).
+                try HttpProfile.appendChromeHeaders(headers, self.arena, identity, &static, ctx, chrome_opts);
+            } else {
+                try HttpProfile.appendCurlImpersonateDocumentOverrides(headers, self.arena, ctx, chrome_opts);
+            }
         } else {
             const full_hints = opts.resource_type == .document or
                 self._session.clientHintsEnabledForUrl(self.arena, request_url);
@@ -734,6 +763,8 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
                 .brands = profile.http.brands,
                 .color_scheme = profile.http.prefers_color_scheme,
                 .omit_sec_fetch_user = opts.omit_sec_fetch_user,
+                .referer_url = if (opts.omit_sec_fetch_user) opts.referer else null,
+                .user_agent = http_client.getUserAgent(),
             };
             try HttpProfile.appendChromeHeaders(headers, self.arena, identity, &static, ctx, chrome_opts);
         }
@@ -766,6 +797,42 @@ pub fn getArena(self: *Frame, size_or_bucket: anytype, debug: []const u8) !Alloc
 pub fn releaseArena(self: *Frame, allocator: Allocator) void {
     return self._session.releaseArena(allocator);
 }
+
+/// Schedule `runMacrotasks` on the next scheduler turn. Never call
+/// `runMacrotasks` synchronously from V8 API callbacks (postMessage,
+/// addEventListener, Worker setup) — it imbalances Context Enter/Exit.
+pub fn scheduleDeferredMacrotaskPump(self: *Frame) !void {
+    const arena = try self.getArena(.tiny, "Frame.deferPump");
+    errdefer self.releaseArena(arena);
+
+    const callback = try arena.create(DeferMacrotaskPumpCallback);
+    callback.* = .{ .frame = self, .arena = arena };
+
+    try self.js.scheduler.add(callback, DeferMacrotaskPumpCallback.run, 0, .{
+        .name = "Frame.deferPump",
+        .low_priority = false,
+        .finalizer = DeferMacrotaskPumpCallback.cancelled,
+    });
+}
+
+const DeferMacrotaskPumpCallback = struct {
+    frame: *Frame,
+    arena: Allocator,
+
+    fn cancelled(ctx: *anyopaque) void {
+        const self: *DeferMacrotaskPumpCallback = @ptrCast(@alignCast(ctx));
+        self.frame.releaseArena(self.arena);
+    }
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *DeferMacrotaskPumpCallback = @ptrCast(@alignCast(ctx));
+        defer self.frame.releaseArena(self.arena);
+        self.frame._session.browser.runMacrotasks() catch |err| {
+            log.warn(.browser, "deferred macrotask pump", .{ .err = err });
+        };
+        return null;
+    }
+};
 
 fn iframeSandboxFlags(self: *const Frame) IFrameSandbox.Flags {
     const iframe = self.iframe orelse return .{};
@@ -931,22 +998,33 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
         if (isGoogleSearchUrl(prior_url)) break :blk prior_url;
         if (opts.referer) |ref| {
             if (isGoogleSearchUrl(ref)) break :blk ref;
+            // Root queued nav (homepage form → /search): pending frame url is still about:blank.
+            if (isGoogleSiteUrl(ref)) break :blk ref;
         }
         break :blk prior_url;
     };
+    const first_google_search_hop = isGoogleSearchUrl(request_url) and
+        !isGoogleSearchUrl(flow_prior_url) and
+        (opts.reason == .address_bar or opts.reason == .form);
+
     var effective_url: [:0]const u8 = request_url;
-    if (opts.reason == .address_bar and isGoogleSearchUrl(request_url)) {
+    // curl_chrome146 cold GET has no sei=; Chrome injects sei only after an in-session prior hop.
+    if (!first_google_search_hop and opts.reason == .address_bar and isGoogleSearchUrl(request_url)) {
         effective_url = try appendGoogleSeiIfMissing(self.arena, request_url);
     }
 
     var prior_origin = opts.prior_origin orelse self.origin;
     var omnibox_referer: ?[]const u8 = opts.referer;
     const google_search_flow = isGoogleSearchFlow(flow_prior_url, effective_url, opts.reason);
-    if (google_search_flow) {
+    // First /search hop (omnibox or homepage form): curl_chrome146 minimal default headers.
+    // In-session sei=/sg_ss= hops: manual Chrome headers, no Sec-Fetch-User, no curl defaults.
+    const in_session_google_search = google_search_flow and !first_google_search_hop;
+    // Cold Page.navigate → /search (about:blank prior) matches curl_chrome146: no Referer,
+    // Sec-Fetch-Site: none. In-search sei=/sg_ss= hops use q-only Referer + omit cookies.
+    if (in_session_google_search) {
         if (prior_origin == null) {
             prior_origin = try self.arena.dupe(u8, "https://www.google.com");
         }
-        // Always q-only referer (guest HAR); scheduleNavigation may pass full sei URL.
         omnibox_referer = try googleOmniboxReferer(self.arena, effective_url);
     }
     const nav_referer: ?[:0]const u8 = blk: {
@@ -970,18 +1048,25 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
         .header = if (opts.header) |h| try self.arena.dupeZ(u8, h) else null,
     };
 
+    const use_chrome_transport = google_search_flow and
+        session.browser.app.config.googleChromeTransport() and
+        (first_google_search_hop or std.mem.indexOf(u8, request_url, "sg_ss=") != null);
+
     var headers = try http_client.newHeaders();
     if (opts.header) |hdr| {
         try headers.add(hdr);
     }
-    try self.headersForRequest(&headers, .{
-        .request_url = self.url,
-        .resource_type = .document,
-        .referer = nav_referer,
-        .prior_origin = prior_origin,
-        .is_document_navigation = true,
-        .omit_sec_fetch_user = google_search_flow,
-    });
+    if (!use_chrome_transport) {
+        try self.headersForRequest(&headers, .{
+            .request_url = self.url,
+            .resource_type = .document,
+            .referer = nav_referer,
+            .prior_origin = prior_origin,
+            .is_document_navigation = true,
+            .omit_sec_fetch_user = in_session_google_search,
+            .curl_defaults_only = first_google_search_hop,
+        });
+    }
 
     // A root navigation issued against a pending Page (i.e. one allocated by
     // Session.initiateRootNavigation) flags both the notification and the
@@ -1009,9 +1094,11 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
         .proxy = session.browser.app.config.httpProxy() != null,
     } });
 
-    session.navigation._current_navigation_kind = opts.kind;
+    if (self.parent == null) {
+        session.navigation._current_navigation_kind = opts.kind;
+    }
 
-    if (google_search_flow and session.browser.app.config.googleChromeTransport()) {
+    if (use_chrome_transport) {
         return http_client.requestChromeTransport(.{
             .ctx = self,
             .params = .{
@@ -1025,7 +1112,8 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
                 .cookie_origin = if (std.mem.startsWith(u8, prior_url, "http")) prior_url else self.url,
                 .resource_type = .document,
                 .referer = nav_referer,
-                .omit_cookies = google_search_flow,
+                .omit_cookies = in_session_google_search,
+                .omit_sec_fetch_user = in_session_google_search,
                 .notification = self._session.notification,
                 .protect_from_abort = is_pending_root,
                 .skip_cache = opts.force,
@@ -1050,7 +1138,8 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
             .cookie_origin = if (std.mem.startsWith(u8, prior_url, "http")) prior_url else self.url,
             .resource_type = .document,
             .referer = nav_referer,
-            .omit_cookies = google_search_flow,
+            .omit_cookies = in_session_google_search,
+            .omit_sec_fetch_user = in_session_google_search,
             .notification = self._session.notification,
             .protect_from_abort = is_pending_root,
             .skip_cache = opts.force,
@@ -1228,6 +1317,7 @@ pub fn documentIsLoaded(self: *Frame) void {
 
     self._load_state = .load;
     self.document._ready_state = .interactive;
+    self.window._performance.recordDomInteractive();
     self._documentIsLoaded() catch |err| switch (err) {
         error.JsException => {}, // already logged
         else => log.err(.frame, "document is loaded2", .{ .err = err, .type = self._type, .url = self.url }),
@@ -1339,6 +1429,9 @@ pub fn documentIsComplete(self: *Frame) void {
         const load_end = self.window._performance._timing.load_event_end;
         self.window._chrome.recordDocumentComplete(load_end);
     }
+    // Turnstile parent posts bootstrap messages while the iframe is still
+    // parsing; deliver them once the widget script has finished loading.
+    self.window.flushPendingPostMessages();
     self._documentIsComplete() catch |err| switch (err) {
         error.JsException => {}, // already logged
         else => log.err(.frame, "document is complete", .{ .err = err, .type = self._type, .url = self.url }),
@@ -1432,6 +1525,12 @@ fn frameHeaderDoneCallback(response: HttpClient.Response) !bool {
         });
     }
 
+    self.window._performance.recordResponseStart();
+    if (!self.loadedProfile().isFirefox()) {
+        const rs = self.window._performance._timing.response_start;
+        self.window._chrome.recordResponseCommit(rs);
+    }
+
     var accept_iter = response.headerIterator();
     try self._session.processAcceptClientHints(response.url(), &accept_iter);
 
@@ -1441,10 +1540,14 @@ fn frameHeaderDoneCallback(response: HttpClient.Response) !bool {
         // already been sent
         self.markRealmReadyForPublication();
 
-        // Subframe: headers are the publication point — drain any microtasks
-        // queued while the realm was `.initializing` (widget iframes).
+        // Subframe: headers are the publication point — drain microtasks queued
+        // while the realm was `.initializing` (Turnstile iframes). Defer: a
+        // synchronous checkpoint from this HTTP callback imbalances V8 context
+        // Enter/Exit when another realm is mid-dispatch.
         if (self.parent != null) {
-            self._session.browser.env.runMicrotasks(.unknown);
+            self.scheduleDeferredMacrotaskPump() catch |err| {
+                log.warn(.frame, "defer subframe microtask drain", .{ .err = err });
+            };
         }
 
         // Commit point for a pending root navigation. Publish only after the
@@ -1606,10 +1709,14 @@ fn frameDoneCallback(ctx: *anyopaque) !void {
 
     log.debug(.frame, "navigate done", .{ .type = self._type, .url = self.url, .state = std.meta.activeTag(self._parse_state) });
 
-    //We need to handle different navigation types differently.
-    log.debug(.frame, "commit navigation start", .{ .type = self._type, .url = self.url });
-    try self._session.navigation.commitNavigation(self);
-    log.debug(.frame, "commit navigation done", .{ .type = self._type, .url = self.url });
+    // Session Navigation is per browsing context (root only). Iframe loads must
+    // not push child URLs into the top-level navigation stack — Cloudflare
+    // challenge scripts read navigation.currentEntry on the parent page.
+    if (self.parent == null) {
+        log.debug(.frame, "commit navigation start", .{ .type = self._type, .url = self.url });
+        try self._session.navigation.commitNavigation(self);
+        log.debug(.frame, "commit navigation done", .{ .type = self._type, .url = self.url });
+    }
 
     defer if (comptime IS_DEBUG) {
         log.debug(.frame, "frame load complete", .{

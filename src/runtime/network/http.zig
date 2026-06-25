@@ -520,17 +520,18 @@ pub const Connection = struct {
             try libcurl.curl_easy_setopt(self._easy, .opensocket_data, @constCast(filter));
         }
 
-        if (build_config.curl_impersonate) {
-            try self.applyProfileTransport(config);
-        }
+        // curl-impersonate TLS/headers are applied per-request in HttpClient.configureConn.
     }
 
     /// Apply curl-impersonate profile + Chrome TLS knobs (GREASE, ALPS, ext permutation).
     /// Must be the last SSL-affecting setup before curl_easy_perform.
-    pub fn applyProfileTransport(self: *const Connection, config: *const Config) !void {
+    /// `default_headers`: curl_chrome146 built-in header set. Disable when Velora
+    /// supplies the full document header list (e.g. Google search sei=/sg_ss= hops
+    /// must not leak Sec-Fetch-User from impersonate defaults).
+    pub fn applyProfileTransport(self: *const Connection, config: *const Config, default_headers: bool) !void {
         const easy = self._easy;
         const target = config.profile.transport.impersonate;
-        try libcurl.setImpersonate(easy, target, false);
+        try libcurl.setImpersonate(easy, target, default_headers);
         if (!config.profile.isFirefox()) {
             try applyChromeTlsKnobs(easy);
             // Guest Chrome search SERP prefers HTTP/3 (see www.google.com.har).
@@ -553,7 +554,7 @@ pub const Connection = struct {
 
     /// Kept for call sites that only hold a Connection pointer.
     pub fn applyChrome120Transport(self: *const Connection, config: *const Config) !void {
-        try self.applyProfileTransport(config);
+        try self.applyProfileTransport(config, true);
     }
 
     fn discardBody(_: [*]const u8, count: usize, len: usize, _: ?*anyopaque) usize {
