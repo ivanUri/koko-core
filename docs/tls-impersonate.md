@@ -52,15 +52,13 @@ vendor/curl-impersonate/curl_chrome146 -sI "https://www.google.com/search?q=test
 - Residential proxy for production scale
 - reCAPTCHA solver (fallback only)
 
-## Test commands
+## Runtime (no code-check harness)
+
+Google document hops with `sg_ss=` use the `google-search` profile policy and
+`scripts/chrome-google-transport.mjs` (real Chrome CDP network). Build the SDK first:
 
 ```bash
 npm run build:sdk
-npm run test:site:google
 ```
 
-Report fields in `code-check/tmp/google-search/report.json`:
-
-- `engineOk` — homepage + search box
-- `blockedSorry` — Google anti-bot
-- `serpOk` — real results
+Prerequisite: Chrome with `--remote-debugging-port=9222`, or set `VELORA_CHROME_SPAWN=1`.

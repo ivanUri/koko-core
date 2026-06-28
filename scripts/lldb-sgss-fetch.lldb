@@ -1,4 +1,0 @@
-settings set target.run-args fetch --browser-profile chrome-local-huys-macbook-pro
-process launch -i /tmp/velora-sgss-url.txt
-bt all
-quit

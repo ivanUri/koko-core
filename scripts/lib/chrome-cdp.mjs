@@ -9,7 +9,7 @@
  *   CHROME_BIN=/path/to/Google Chrome
  */
 import { spawn } from "node:child_process";
-import { Browser } from "../../../../sdk/dist/index.js";
+import { Browser } from "../../sdk/dist/index.js";
 
 export const CHROME_BIN = process.env.CHROME_BIN
     || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -80,13 +80,12 @@ export async function connectChrome(opts = {}) {
 
     const cleanup = async ({ closePage = true } = {}) => {
         if (closePage) await browser.close().catch(() => undefined);
-        // Never SIGKILL the user's daily Chrome; spawned instance is detached intentionally.
     };
 
     return { browser, endpoint, spawned, cleanup };
 }
 
-/** @param {import("../../../sdk/dist/browser/page.js").Page} page */
+/** @param {import("../../sdk/dist/browser/page.js").Page} page */
 export async function pageUrl(page) {
     return page.evaluate(() => location.href);
 }

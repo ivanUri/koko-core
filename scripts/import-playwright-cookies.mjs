@@ -5,7 +5,7 @@
  * Usage:
  *   node scripts/import-playwright-cookies.mjs \
  *     "/path/to/playwright-capture/missing-parts/08-cookies.json" \
- *     --out code-check/tmp/google-cookies.json
+ *     --out code-check/tmp/cookies.json
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
@@ -13,7 +13,7 @@ import { resolve } from "node:path";
 
 function parseArgs(argv) {
     let input = null;
-    let out = resolve("code-check/tmp/google-cookies.json");
+    let out = resolve("code-check/tmp/cookies.json");
     for (let i = 0; i < argv.length; i += 1) {
         if (argv[i] === "--out") out = resolve(argv[++i]);
         else if (!argv[i].startsWith("-")) input = resolve(argv[i]);
@@ -40,4 +40,3 @@ const raw = JSON.parse(readFileSync(input, "utf8"));
 const cookies = (Array.isArray(raw) ? raw : raw.cookies || []).map(toVeloraCookie);
 writeFileSync(out, JSON.stringify(cookies, null, 2));
 console.log(`wrote ${cookies.length} cookies → ${out}`);
-console.log(`test: node scripts/cdp-google-serp-probe.mjs --cookie ${out}`);

@@ -833,7 +833,12 @@ fn makeSyncEasyRequest(self: *Client, conn: *http.Connection, transfer: *Transfe
         try cb(Response.fromTransfer(transfer));
     }
 
-    const doc = CurlCliTransport.fetchSgSsDocument(transfer.req.params.arena, transfer.req.params.url, transfer.req.params.headers) catch |err| {
+    const doc = CurlCliTransport.fetchSgSsDocument(
+        transfer.req.params.arena,
+        transfer.req.params.url,
+        transfer.req.params.headers,
+        self.getUserAgent(),
+    ) catch |err| {
         transfer.requestFailed(err, true);
         transfer.deinit();
         return;
@@ -853,9 +858,10 @@ fn completeCliDocument(transfer: *Transfer, doc: CurlCliTransport.Document) !voi
     transfer.response_header = .{
         .url = doc.final_url,
         .status = doc.status,
-        .redirect_count = 0,
+        .redirect_count = doc.redirect_count,
         ._injected_headers = injected,
     };
+    transfer._redirect_count = doc.redirect_count;
     if (doc.protocol) |p| {
         const len = @min(p.len, ResponseHead.MAX_PROTOCOL_LEN);
         transfer.response_header.?._protocol_len = len;
@@ -1293,6 +1299,7 @@ pub const RequestParams = struct {
         document,
         xhr,
         script,
+        worker,
         fetch,
         beacon,
         image,
@@ -1306,6 +1313,7 @@ pub const RequestParams = struct {
                 .document => "Document",
                 .xhr => "XHR",
                 .script => "Script",
+                .worker => "Script",
                 .fetch => "Fetch",
                 .beacon => "Ping",
                 .image => "Image",
@@ -1645,7 +1653,7 @@ pub const Transfer = struct {
         conn.transport = .{ .http = self };
         conn.origin = switch (req.params.resource_type) {
             .document => .frame_navigation,
-            .fetch, .xhr, .script, .beacon, .image => .unknown,
+            .fetch, .xhr, .script, .worker, .beacon, .image => .unknown,
         };
 
         // Per-request timeout override (e.g. XHR timeout)
@@ -1678,7 +1686,7 @@ pub const Transfer = struct {
                 req.params.resource_type == .document);
             const sg_ss_hop = std.mem.indexOf(u8, req.params.url, "sg_ss=") != null;
             // Never negotiate HTTP/3 for sg_ss=: multi-kB query stalls in curl-impersonate
-            // QUIC; guest Chrome uses h2 (see capture-and-curl-sgss.mjs).
+            // QUIC; guest Chrome uses h2 for sg_ss= hops.
             const http_version: http.Connection.ProfileHttpVersion = if (sg_ss_hop) .h2 else .h3;
             if (sg_ss_hop) try conn.forceFreshConnection();
             try conn.applyProfileTransportVersion(client.network.config, curl_default_headers, http_version);

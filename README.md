@@ -145,17 +145,16 @@ VELORA_CDP=http://127.0.0.1:9222 npx velora-fetch https://example.com
 await page.search("https://www.bing.com/", "velora browser", { waitUntil: "domcontentloaded" });
 ```
 
-### MVP site coverage
+### Fingerprint probes
 
-| Site | Status | Test |
-|------|--------|------|
-| Wikipedia crawl | Stable | `npm run bench:crawl:wikipedia` |
-| Bing / DuckDuckGo | Stable | SDK `page.search()` |
-| Google SERP | Beta | Often blocked by `/sorry` anti-bot — see `docs/tls-impersonate.md` |
+| Probe | Command |
+|-------|---------|
+| CreepJS vs Chrome | `npm run test:creepjs:compare` |
+| CreepJS local sections | `npm run test:creepjs:local` |
+| BrowserLeaks | `npm run test:browserleaks` |
+| Profile CDP smoke | `npm run test:profile -- --profile chrome-local-huys-macbook-pro` |
 
-```bash
-npm run test:site:google   # exit 0 = SERP OK; exit 1 = blocked_sorry (engine OK); exit 2 = engine fail
-```
+Google SERP (`google-search` policy) uses real Chrome network via `scripts/chrome-google-transport.mjs` — see `docs/tls-impersonate.md`.
 
 ## Use Cases
 
@@ -242,9 +241,9 @@ Velora vs Playwright Chromium (startup, static navigation, JS workloads) on loca
 ```bash
 zig build
 npx playwright install chromium   # first time only
-npm run bench:compare:publish              # local HTML fixtures
-npm run bench:crawl:wikipedia:publish      # 100 live Wikipedia pages
 ```
+
+Historical benchmark reports: [`docs/benchmarks/`](docs/benchmarks/).
 
 Numbers are machine-local and use Playwright bundled Chromium (not Google Chrome desktop). See the benchmark docs for methodology and limitations.
 

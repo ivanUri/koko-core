@@ -9,12 +9,9 @@
  * stdout: {"status":200,"finalUrl":"...","protocol":"h3","contentType":"...","bodyBase64":"..."}
  */
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 
-import { connectChrome, pageUrl } from "../code-check/sites/google/lib/chrome-cdp.mjs";
+import { connectChrome, pageUrl } from "./lib/chrome-cdp.mjs";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const input = JSON.parse(readFileSync(0, "utf8"));
