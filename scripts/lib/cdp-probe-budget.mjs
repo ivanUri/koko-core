@@ -13,6 +13,12 @@ export const BLOCKED_FIXTURES = {};
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
+export async function fetchWithTimeout(url, timeoutMs = 3000) {
+    const res = await fetch(url, { signal: AbortSignal.timeout(Math.max(1, timeoutMs)) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${url}`);
+    return res;
+}
+
 export function parseMaxSecArg(argv, fallback = DEFAULT_MAX_SEC) {
     for (let i = 0; i < argv.length; i += 1) {
         if (argv[i] === "--max-sec") return Number(argv[++i]);
@@ -49,7 +55,6 @@ export function startHardLimit(maxSec, onExpire) {
     const timer = setTimeout(() => {
         onExpire("hard_limit");
     }, maxSec * 1000);
-    timer.unref?.();
     return () => clearTimeout(timer);
 }
 
@@ -83,7 +88,7 @@ export async function waitCdp(endpoint, deadline) {
             throw new Error("CDP not ready before deadline");
         }
         try {
-            if ((await fetch(`${normalized}/json/version`)).ok) return;
+            if ((await fetchWithTimeout(`${normalized}/json/version`, Math.min(3000, remainingMs(deadline)))).ok) return;
         } catch {}
         await delay(100);
     }
@@ -91,15 +96,17 @@ export async function waitCdp(endpoint, deadline) {
 }
 
 export async function evaluateWithTimeout(client, sessionId, expression, timeoutMs) {
+    const ms = Math.max(1, timeoutMs);
     const result = await Promise.race([
         client.send("Runtime.evaluate", {
             expression,
             returnByValue: true,
             awaitPromise: false,
-        }, sessionId),
-        delay(timeoutMs).then(() => null),
+        }, sessionId).catch((err) => ({ __transportError: String(err?.message || err) })),
+        delay(ms).then(() => null),
     ]);
     if (!result) return { timedOut: true };
+    if (result.__transportError) return { error: result.__transportError };
     if (result.exceptionDetails) {
         return { error: result.exceptionDetails.text || "evaluate failed" };
     }

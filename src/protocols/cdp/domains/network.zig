@@ -282,14 +282,14 @@ pub fn httpRequestStart(bc: *CDP.BrowserContext, msg: *const Notification.Reques
 
     const req = msg.request;
     const frame_id = req.params.frame_id;
-    const frame = bc.session.findFrameByFrameId(frame_id) orelse return;
+    const frame = bc.session.findFrameForHttpAttribution(frame_id) orelse return;
 
     // Modify request with extra CDP headers
     for (bc.extra_headers.items) |extra| {
         try req.params.headers.add(extra);
     }
 
-    // We're missing a bunch of fields, but, for now, this eems like enough
+    // We're missing a bunch of fields, but, for now, this seems like enough
     try bc.cdp.sendEvent("Network.requestWillBeSent", .{
         .frameId = &id.toFrameId(frame_id),
         .requestId = &id.toRequestId(req),

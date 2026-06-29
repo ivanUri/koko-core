@@ -67,8 +67,17 @@ pub fn endOfStream(self: *MediaSource, _: ?[]const u8) void {
     self._ready_state = 2;
 }
 
-pub fn isTypeSupported(_: []const u8) bool {
-    return true;
+pub fn isTypeSupported(mime_type: []const u8) bool {
+    const pos = std.mem.indexOfScalar(u8, mime_type, ';') orelse mime_type.len;
+    const base = std.mem.trim(u8, mime_type[0..pos], &std.ascii.whitespace);
+
+    if (std.ascii.eqlIgnoreCase(base, "video/webm")) return true;
+    if (std.ascii.eqlIgnoreCase(base, "video/mp4")) return true;
+    if (std.ascii.eqlIgnoreCase(base, "audio/webm")) return true;
+    if (std.ascii.eqlIgnoreCase(base, "audio/mp4")) return true;
+    if (std.ascii.eqlIgnoreCase(base, "audio/mpeg")) return true;
+    if (std.ascii.eqlIgnoreCase(base, "audio/aac")) return true;
+    return false;
 }
 
 pub const JsApi = struct {

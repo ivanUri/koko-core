@@ -97,12 +97,15 @@ fn applyPolicy(allocator: Allocator, policy: *const PolicyRegistry.SitePolicy, c
 
     var prior_origin = ctx.prior_origin;
     var referer = ctx.referer;
-    if (in_session) {
+    if (first_hop or in_session) {
         if (rules.prior_origin) |origin| {
             if (prior_origin == null) prior_origin = try allocator.dupe(u8, origin);
         }
+    }
+    if (in_session) {
         if (rules.referer == .search_q_only) {
-            referer = try searchQOnlyReferer(allocator, effective_url);
+            const ref_src = if (isSearchUrl(ctx.prior_url)) ctx.prior_url else effective_url;
+            referer = try searchQOnlyReferer(allocator, ref_src);
         }
     }
 
@@ -197,6 +200,16 @@ fn searchQOnlyReferer(allocator: Allocator, url: []const u8) ![:0]const u8 {
     const q_pos = std.mem.indexOf(u8, url, "q=") orelse return try allocator.dupeZ(u8, url);
     const q_start = q_pos + 2;
     const q_end = std.mem.indexOfPos(u8, url, q_start, "&") orelse url.len;
+    if (std.mem.indexOf(u8, url, "hl=")) |hl_pos| {
+        const hl_start = hl_pos + 3;
+        const hl_end = std.mem.indexOfPos(u8, url, hl_start, "&") orelse url.len;
+        return try std.fmt.allocPrintSentinel(
+            allocator,
+            "https://www.google.com/search?q={s}&hl={s}",
+            .{ url[q_start..q_end], url[hl_start..hl_end] },
+            0,
+        );
+    }
     return try std.fmt.allocPrintSentinel(
         allocator,
         "https://www.google.com/search?q={s}",
@@ -237,10 +250,13 @@ test "NavigationPlanner: antidetect first hop uses curl defaults" {
     });
     defer testing.allocator.free(plan.effective_url);
     if (plan.referer) |ref| testing.allocator.free(ref);
+    if (plan.prior_origin) |origin| testing.allocator.free(origin);
 
     try testing.expect(plan.curl_defaults_only);
     try testing.expect(!plan.omit_cookies);
     try testing.expect(!plan.omit_sec_fetch_user);
+    try testing.expect(plan.prior_origin != null);
+    try testing.expectEqualStrings("https://www.google.com", plan.prior_origin.?);
 }
 
 test "NavigationPlanner: in-session redirect hop uses navigation reason" {
@@ -265,8 +281,8 @@ test "NavigationPlanner: antidetect in-session omits cookies and sec-fetch-user"
     defer registry.deinit();
 
     const plan = try navigationPlan(testing.allocator, .antidetect, &google_search_policy, &registry, .{
-        .prior_url = "https://www.google.com/search?q=prev",
-        .request_url = "https://www.google.com/search?q=test&sg_ss=1",
+        .prior_url = "https://www.google.com/search?q=prev&hl=en",
+        .request_url = "https://www.google.com/search?q=test&hl=en&sg_ss=1",
         .reason = .address_bar,
     });
     defer testing.allocator.free(plan.effective_url);
@@ -276,7 +292,7 @@ test "NavigationPlanner: antidetect in-session omits cookies and sec-fetch-user"
     try testing.expect(plan.omit_sec_fetch_user);
     try testing.expect(!plan.curl_defaults_only);
     try testing.expect(plan.referer != null);
-    try testing.expectString("https://www.google.com/search?q=test", plan.referer.?);
+    try testing.expectString("https://www.google.com/search?q=prev&hl=en", plan.referer.?);
 }
 
 test "NavigationPlanner: antidetect without profile opt-in is no-op" {

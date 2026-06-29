@@ -1,0 +1,8 @@
+{
+  "default": "test",
+  "queries": [
+    { "q": "test", "hl": "en" },
+    { "q": "weather", "hl": "en" },
+    { "q": "velora browser", "hl": "en" }
+  ]
+}

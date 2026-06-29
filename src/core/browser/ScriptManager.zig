@@ -57,6 +57,8 @@ pub fn deinit(self: *ScriptManager) void {
 pub fn reset(self: *ScriptManager) void {
     self.base.reset();
     self.frame_notified_of_completion = false;
+    self.frame._defer_knitsail_post_parse = false;
+    self.frame._defer_knitsail_dcl = false;
 }
 
 // Frame wrapper uses this to fire documentIsLoaded and scriptsCompletedLoading
@@ -64,6 +66,16 @@ pub fn reset(self: *ScriptManager) void {
 pub fn tailHook(base: *ScriptManagerBase) void {
     const self: *ScriptManager = @fieldParentPtr("base", base);
     const frame = self.frame;
+
+    // Google knitsail: freeze pageT in pumpPostParseTasks before DCL so
+    // knitsail.a reads ≈192ms (Chroma). tailHook only defers; Frame fires DCL.
+    if (Frame.isGoogleKnitsailHost(frame.url)) {
+        frame._defer_knitsail_post_parse = true;
+        frame._defer_knitsail_dcl = true;
+        // scriptsCompletedLoading → documentIsComplete → documentIsLoaded must
+        // not run until Frame.pumpPostParseTasks freezes pageT and fires DCL.
+        return;
+    }
 
     // When all scripts (normal and deferred) are done loading, the document
     // state changes (this ultimately triggers the DOMContentLoaded event).
@@ -327,6 +339,14 @@ pub fn parseImportmap(self: *ScriptManager, script: *const Script) !void {
 
 pub fn staticScriptsDone(self: *ScriptManager) void {
     self.base.staticScriptsDone();
+}
+
+/// After knitsail pageT freeze + DCL in Frame.pumpPostParseTasks.
+pub fn notifyScriptsCompletedIfNeeded(self: *ScriptManager) void {
+    if (self.base.async_scripts.first != null) return;
+    if (self.frame_notified_of_completion) return;
+    self.frame_notified_of_completion = true;
+    self.frame.scriptsCompletedLoading();
 }
 
 // Parses data:[<media-type>][;base64],<data>

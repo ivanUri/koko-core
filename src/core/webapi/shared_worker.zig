@@ -18,10 +18,10 @@ pub fn registerTypes() []const type {
 _proto: *EventTarget,
 _port: ?*MessagePort = null,
 
-pub fn constructor(_: []const u8, _: ?[]const u8, frame: *Frame) !*SharedWorker {
-    return frame._factory.eventTarget(SharedWorker{
-        ._proto = undefined,
-    });
+pub fn constructor(_: []const u8, _: ?[]const u8, _: *Frame) !*SharedWorker {
+    // CreepJS probes SharedWorker before DedicatedWorker with a 3s timeout.
+    // A stub object wastes that window; throw so the probe falls through immediately.
+    return error.NotSupported;
 }
 
 pub fn getPort(self: *SharedWorker, exec: *const js.Execution) !*MessagePort {
@@ -38,6 +38,6 @@ pub const JsApi = struct {
         pub const prototype_chain = bridge.prototypeChain();
         pub var class_id: bridge.ClassId = undefined;
     };
-    pub const constructor = bridge.constructor(SharedWorker.constructor, .{});
+    pub const constructor = bridge.constructor(SharedWorker.constructor, .{ .dom_exception = true });
     pub const port = bridge.accessor(SharedWorker.getPort, null, .{});
 };

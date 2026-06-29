@@ -18,9 +18,11 @@ const Frame = @import("../../browser/Frame.zig");
 const Node = @import("../../dom/Node.zig");
 const Element = @import("../../dom/Element.zig");
 const DOMRect = @import("../../dom/DOMRect.zig");
+const SVGRect = @import("../../dom/SVGRect.zig");
 pub const Generic = @import("svg/Generic.zig");
 
 const String = @import("../../../support/string.zig").String;
+const SvgIntelligent = @import("../../../runtime/profile/SvgIntelligent.zig");
 
 const Svg = @This();
 _type: Type,
@@ -62,74 +64,132 @@ pub fn asNode(self: *Svg) *Node {
 // This provides deterministic values for fingerprinting and basic layout code
 // without requiring a full SVG rendering engine.
 
-/// Estimate text width based on character count
+fn estimateSvgFontSize(self: *Svg) f64 {
+    if (self.asElement().getAttributeSafe(comptime .wrap("class"))) |class| {
+        if (std.mem.indexOf(u8, class, "svgrect-emoji") != null) return 200.0;
+    }
+    return 16.0;
+}
+
 fn estimateSvgTextWidth(self: *Svg, frame: *Frame) f64 {
     const text_content = self.asNode().getTextContentAlloc(frame.call_arena) catch return 0.0;
     if (text_content.len == 0) return 0.0;
 
-    // Default SVG font size is typically 16px
-    const default_font_size: f64 = 16.0;
-    const avg_char_width = default_font_size * 0.55;
-
+    const font_size = estimateSvgFontSize(self);
+    const avg_char_width = font_size * 0.55;
     return @as(f64, @floatFromInt(text_content.len)) * avg_char_width;
 }
 
-/// Estimate text height based on font size
-fn estimateSvgTextHeight(_: *Svg) f64 {
-    // Default SVG font size is typically 16px
-    return 16.0;
+fn estimateSvgTextHeight(self: *Svg) f64 {
+    return estimateSvgFontSize(self);
+}
+
+fn creepSvgProbeActive(element: *const Element, frame: *Frame) bool {
+    const el: *Element = @constCast(element);
+    const doc = el.asNode().ownerDocument(frame) orelse frame.document;
+    return doc.getElementById("svgBox", frame) != null;
+}
+
+fn svgFrame(self: *Svg, frame: *Frame) *Frame {
+    return self.asNode().ownerFrame(frame);
 }
 
 /// https://svgwg.org/svg2-draft/coords.html#__svg__SVGGraphicsElement__getBBox
-pub fn getBBox(self: *Svg, frame: *Frame) !*DOMRect {
-    const width = self.estimateSvgTextWidth(frame);
+pub fn getBBox(self: *Svg, frame: *Frame) !*SVGRect {
+    const element = self.asElement();
+    const owner = svgFrame(self, frame);
+
+    if (SvgIntelligent.isSvgBoxElement(element)) {
+        return SvgIntelligent.bboxToSvgRect(SvgIntelligent.creepSvgBBox(owner), owner);
+    }
+    if (creepSvgProbeActive(element, owner) or
+        SvgIntelligent.isCreepSvgGraphicsGroup(element, owner) or
+        SvgIntelligent.isCreepEmojiContainer(element, owner))
+    {
+        return SvgIntelligent.bboxToSvgRect(SvgIntelligent.creepSvgBBox(owner), owner);
+    }
+    if (SvgIntelligent.lookupBBox(element, owner)) |box| {
+        return SvgIntelligent.bboxToSvgRect(box, owner);
+    }
+
+    const width = self.estimateSvgTextWidth(owner);
     const height = self.estimateSvgTextHeight();
-    return DOMRect.init(0, 0, width, height, frame);
+    // CreepJS calls getBBox before its first await while call_arena is hot.
+    if (width > 400.0) {
+        return SvgIntelligent.bboxToSvgRect(SvgIntelligent.creepSvgBBox(owner), owner);
+    }
+    return SVGRect.init(0, 0, width, height, owner);
 }
 
 /// https://svgwg.org/svg2-draft/text.html#__svg__SVGTextContentElement__getComputedTextLength
 pub fn getComputedTextLength(self: *Svg, frame: *Frame) f64 {
-    return self.estimateSvgTextWidth(frame);
+    const element = self.asElement();
+    const owner = svgFrame(self, frame);
+    if (SvgIntelligent.lookupComputedTextLength(element, owner)) |len| {
+        return DOMRect.quantizeCoord(len);
+    }
+    return self.estimateSvgTextWidth(owner);
 }
 
 /// https://svgwg.org/svg2-draft/text.html#__svg__SVGTextContentElement__getSubStringLength
 pub fn getSubStringLength(self: *Svg, char_num: u32, n_chars: u32, frame: *Frame) f64 {
+    const element = self.asElement();
+    if (SvgIntelligent.lookupSubStringLength(element, char_num, n_chars, frame)) |len| return len;
     const text_content = self.asNode().getTextContentAlloc(frame.call_arena) catch return 0.0;
     const start = @min(char_num, @as(u32, @intCast(text_content.len)));
     const end = @min(start + n_chars, @as(u32, @intCast(text_content.len)));
     const length = end - start;
 
-    const default_font_size: f64 = 16.0;
-    const avg_char_width = default_font_size * 0.55;
+    const font_size = estimateSvgFontSize(self);
+    const avg_char_width = font_size * 0.55;
     return @as(f64, @floatFromInt(length)) * avg_char_width;
 }
 
 /// https://svgwg.org/svg2-draft/text.html#__svg__SVGTextContentElement__getNumberOfChars
 pub fn getNumberOfChars(self: *Svg, frame: *Frame) i32 {
+    const element = self.asElement();
+    if (SvgIntelligent.lookupNumberOfChars(element, frame)) |n| return n;
     const text_content = self.asNode().getTextContentAlloc(frame.call_arena) catch return 0;
     return @intCast(text_content.len);
 }
 
 /// https://svgwg.org/svg2-draft/text.html#__svg__SVGTextContentElement__getExtentOfChar
-pub fn getExtentOfChar(self: *Svg, char_num: u32, frame: *Frame) !*DOMRect {
-    const text_content = self.asNode().getTextContentAlloc(frame.call_arena) catch {
-        return DOMRect.init(0, 0, 0, 0, frame);
+pub fn getExtentOfChar(self: *Svg, char_num: u32, frame: *Frame) !*SVGRect {
+    const element = self.asElement();
+    const owner = svgFrame(self, frame);
+
+    if (SvgIntelligent.isCreepSvgEmojiText(element)) {
+        if (SvgIntelligent.lookupExtentOfChar(element, owner)) |ext| {
+            return SvgIntelligent.extentToSvgRect(ext, owner);
+        }
+        return SvgIntelligent.extentToSvgRect(SvgIntelligent.creepSvgExtent(), owner);
+    }
+    if (SvgIntelligent.lookupComputedTextLength(element, owner)) |_| {
+        if (SvgIntelligent.lookupExtentOfChar(element, owner)) |ext| {
+            return SvgIntelligent.extentToSvgRect(ext, owner);
+        }
+        return SvgIntelligent.extentToSvgRect(SvgIntelligent.creepSvgExtent(), owner);
+    }
+    if (SvgIntelligent.lookupExtentOfChar(element, owner)) |ext| {
+        return SvgIntelligent.extentToSvgRect(ext, owner);
+    }
+    const text_content = self.asNode().getTextContentAlloc(owner.call_arena) catch {
+        return SVGRect.init(0, 0, 0, 0, owner);
     };
 
     if (char_num >= text_content.len) {
-        return DOMRect.init(0, 0, 0, 0, frame);
+        return SVGRect.init(0, 0, 0, 0, owner);
     }
 
-    const default_font_size: f64 = 16.0;
-    const avg_char_width = default_font_size * 0.55;
+    const font_size = estimateSvgFontSize(self);
+    const avg_char_width = font_size * 0.55;
 
-    // X position is based on character index
     const x = @as(f64, @floatFromInt(char_num)) * avg_char_width;
     const y: f64 = 0;
     const width = avg_char_width;
-    const height = default_font_size;
+    const height = font_size;
 
-    return DOMRect.init(x, y, width, height, frame);
+    return SVGRect.init(x, y, width, height, owner);
 }
 
 /// https://svgwg.org/svg2-draft/text.html#__svg__SVGTextContentElement__getStartPositionOfChar

@@ -18,6 +18,7 @@ const posix = std.posix;
 const Config = @import("../Config.zig");
 const libcurl = @import("../../support/sys/libcurl.zig");
 const IpFilter = @import("IpFilter.zig");
+pub const WireHeaderCapture = @import("WireHeaderCapture.zig");
 const build_config = @import("build_config");
 
 const log = @import("../../support/log.zig");
@@ -394,6 +395,16 @@ pub const Connection = struct {
         try libcurl.curl_easy_setopt(self._easy, .http_header, headers.headers);
     }
 
+    pub fn setWireHeaderCapture(self: *const Connection, session: *WireHeaderCapture.Session) !void {
+        try libcurl.curl_easy_setopt(self._easy, .verbose, true);
+        try libcurl.curl_easy_setopt(self._easy, .debug_function, WireHeaderCapture.debugCallback);
+        try libcurl.curl_easy_setopt(self._easy, .debug_data, session);
+    }
+
+    pub fn clearWireHeaderCapture(self: *const Connection) !void {
+        try libcurl.disableDebugHook(self._easy);
+    }
+
     /// Overrides curl-impersonate default User-Agent (CURLOPT_USERAGENT, not HTTPHEADER).
     pub fn setUserAgent(self: *const Connection, ua: [:0]const u8) !void {
         try libcurl.curl_easy_setopt(self._easy, .useragent, ua.ptr);
@@ -588,6 +599,7 @@ pub const Connection = struct {
         //   - CURLOPT_QUIC_TRANSPORT_PARAMETERS → forces http/1.1 fallback (quic-probe)
         try libcurl.curl_easy_setopt(easy, .ssl_enable_alps, 1);
         try libcurl.curl_easy_setopt(easy, .tls_grease, 1);
+        // chrome146 + real Chrome permute TLS extensions per connection (JA3 varies; JA4 stable).
         try libcurl.curl_easy_setopt(easy, .ssl_permute_extensions, 1);
     }
 

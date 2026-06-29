@@ -28,6 +28,7 @@ const Selector = @import("../webapi/selector/Selector.zig");
 const Animation = @import("../webapi/animation/Animation.zig");
 const DOMStringMap = @import("../webapi/element/DOMStringMap.zig");
 const CSSStyleProperties = @import("../webapi/css/CSSStyleProperties.zig");
+const ClientRectsIntelligent = @import("../../runtime/profile/ClientRectsIntelligent.zig");
 
 pub const DOMRect = @import("DOMRect.zig");
 pub const Svg = @import("../webapi/element/Svg.zig");
@@ -441,9 +442,9 @@ pub fn getLocalName(self: *Element) []const u8 {
 }
 
 // Wrapper methods that delegate to Html implementations
-pub fn getInnerText(self: *Element, writer: *std.Io.Writer) !void {
+pub fn getInnerText(self: *Element, writer: *std.Io.Writer, frame: *Frame) !void {
     const he = self.is(Html) orelse return error.NotHtmlElement;
-    return he.getInnerText(writer);
+    return he.getInnerText(writer, frame);
 }
 
 pub fn setInnerText(self: *Element, text: []const u8, frame: *Frame) !void {
@@ -491,14 +492,15 @@ pub fn getInnerHTML(self: *Element, writer: *std.Io.Writer, frame: *Frame) !void
 
 pub fn setInnerHTML(self: *Element, html: []const u8, frame: *Frame) !void {
     const parent = self.asNode();
+    const owner_frame = parent.ownerFrame(frame);
 
     // Remove all existing children. Drain via firstChild(): removeNode
     // fires disconnectedCallback for custom elements, which can mutate
     // the child list and dangle any cached next-pointer the iterator
     // would otherwise hold.
-    frame.domChanged();
+    owner_frame.domChanged();
     while (parent.firstChild()) |child| {
-        frame.removeNode(parent, child, .{ .will_be_reconnected = false });
+        owner_frame.removeNode(parent, child, .{ .will_be_reconnected = false });
     }
 
     // Fast path: skip parsing if html is empty
@@ -507,7 +509,7 @@ pub fn setInnerHTML(self: *Element, html: []const u8, frame: *Frame) !void {
     }
 
     // Parse and add new children
-    try frame.parseHtmlAsChildren(parent, html);
+    try owner_frame.parseHtmlAsChildren(parent, html);
 }
 
 pub fn getId(self: *const Element) []const u8 {
@@ -1283,6 +1285,30 @@ pub fn checkVisibilityCached(self: *Element, cache: ?*VisibilityCache, frame: *F
     return !frame._style_manager.isHidden(self, cache, .{});
 }
 
+/// Layout geometry (getClientRects / getBoundingClientRect) must include
+/// `visibility:hidden` boxes; only `display:none` (and similar) zero them out.
+fn layoutVisibilityCache(frame: *Frame) *StyleManager.VisibilityCache {
+    return &frame._layout_visibility_cache;
+}
+
+fn withLayoutResolveActive(frame: *Frame, comptime func: anytype, args: anytype) @TypeOf(@call(.auto, func, args)) {
+    frame.finishTopLevelLayoutResolve();
+    frame.beginLayoutResolve();
+    defer frame.finishTopLevelLayoutResolve();
+    return @call(.auto, func, args);
+}
+
+fn isHiddenForLayout(self: *Element, frame: *Frame) bool {
+    // Skip the visibility HashMap cache: SERP scripts call getBoundingClientRect
+    // from V8 DefaultWorker threads while the parser mutates the tree on the
+    // network thread; cache get/put then races and segfaults.
+    return frame._style_manager.isHidden(self, null, .{
+        .check_display = true,
+        .check_visibility = false,
+        .check_opacity = false,
+    });
+}
+
 const CheckVisibilityOpts = struct {
     checkOpacity: bool = false,
     opacityProperty: bool = false,
@@ -1337,6 +1363,105 @@ fn dimensionsAfterTransform(width: f64, height: f64, transform: ?[]const u8) str
         .width = width * cos_v + height * sin_v,
         .height = width * sin_v + height * cos_v,
     };
+}
+
+fn parseTransformOrigin(self: *Element, frame: *Frame, width: f64, height: f64) struct { x: f64, y: f64 } {
+    const raw = getLayoutPropertyValue(self, "transform-origin", frame) orelse return .{ .x = width * 0.5, .y = height * 0.5 };
+    var parts: [2][]const u8 = .{ "50%", "50%" };
+    var count: usize = 0;
+    var iter = std.mem.splitScalar(u8, raw, ' ');
+    while (iter.next()) |part| : (count += 1) {
+        if (count < 2) parts[count] = std.mem.trim(u8, part, &std.ascii.whitespace);
+    }
+    const ox = parseLayoutDimension(parts[0], width) orelse width * 0.5;
+    const oy = parseLayoutDimension(parts[1], height) orelse height * 0.5;
+    return .{ .x = ox, .y = oy };
+}
+
+fn readBorderDimensions(self: *Element, frame: *Frame) struct { width: f64, height: f64 } {
+    var width: f64 = layout_default_size;
+    var height: f64 = layout_default_size;
+    if (layoutDimensionFromProperty(self, frame, "width", .width)) |w| width = w;
+    if (layoutDimensionFromProperty(self, frame, "height", .height)) |h| height = h;
+    if (width == layout_default_size or height == layout_default_size) {
+        const shallow = elementLayoutSizeShallow(self, frame);
+        if (width == layout_default_size) width = shallow.width;
+        if (height == layout_default_size) height = shallow.height;
+    }
+    return .{ .width = @max(width, 0), .height = @max(height, 0) };
+}
+
+fn applyRotateClientRect(
+    rect: DOMRect,
+    border_width: f64,
+    border_height: f64,
+    degrees: f64,
+    origin_x: f64,
+    origin_y: f64,
+) DOMRect {
+    const rad = degrees * std.math.pi / 180.0;
+    const cos_v = @cos(rad);
+    const sin_v = @sin(rad);
+    const corners = [_]struct { x: f64, y: f64 }{
+        .{ .x = 0, .y = 0 },
+        .{ .x = border_width, .y = 0 },
+        .{ .x = border_width, .y = border_height },
+        .{ .x = 0, .y = border_height },
+    };
+    var min_x: f64 = std.math.inf(f64);
+    var min_y: f64 = std.math.inf(f64);
+    var max_x: f64 = -std.math.inf(f64);
+    var max_y: f64 = -std.math.inf(f64);
+    for (corners) |c| {
+        const dx = c.x - origin_x;
+        const dy = c.y - origin_y;
+        const rx = origin_x + dx * cos_v - dy * sin_v;
+        const ry = origin_y + dx * sin_v + dy * cos_v;
+        min_x = @min(min_x, rx);
+        min_y = @min(min_y, ry);
+        max_x = @max(max_x, rx);
+        max_y = @max(max_y, ry);
+    }
+    return .{
+        ._x = rect._x + min_x,
+        ._y = rect._y + min_y,
+        ._width = max_x - min_x,
+        ._height = max_y - min_y,
+    };
+}
+
+/// Padding-edge origin of the offset parent (O(depth), no getBoundingClientRect recursion).
+fn offsetParentClientOrigin(self: *Element, frame: *Frame, depth: usize) struct { x: f64, y: f64 } {
+    if (depth > 32) return .{ .x = 0, .y = 0 };
+    const parent = offsetParentElement(self, frame) orelse return .{ .x = 0, .y = 0 };
+
+    const tag = parent.getTag();
+    if (tag == .html or tag == .body) return .{ .x = 0, .y = 0 };
+
+    const pos_kind = layoutPositionKind(parent, frame);
+    if (pos_kind == .absolute or pos_kind == .fixed) {
+        const grand = offsetParentClientOrigin(parent, frame, depth + 1);
+        const pos = getPositionOffset(parent, frame);
+        return .{ .x = grand.x + pos.left, .y = grand.y + pos.top };
+    }
+
+    const scroll_x = @as(f64, @floatFromInt(frame.window.getScrollX()));
+    const scroll_y = @as(f64, @floatFromInt(frame.window.getScrollY()));
+    const off = getLayoutOffset(parent, frame);
+    const y = calculateDocumentPosition(parent.asNode(), frame) + off.top;
+    const serp_left = googleSerpLayoutLeft(parent, frame);
+    const x = if (serp_left) |left| left else off.left;
+    return .{ .x = x - scroll_x, .y = y - scroll_y };
+}
+
+fn finalizeClientRect(self: *Element, frame: *Frame, rect: DOMRect) DOMRect {
+    const snapped = rect.snap();
+    const transform = getLayoutPropertyValue(self, "transform", frame);
+    const degrees = parseRotateDegrees(transform orelse "") orelse return snapped;
+    if (degrees == 0.0) return snapped;
+    const border = readBorderDimensions(self, frame);
+    const origin = parseTransformOrigin(self, frame, border.width, border.height);
+    return applyRotateClientRect(snapped, border.width, border.height, degrees, origin.x, origin.y).snap();
 }
 
 const LayoutSize = struct { width: f64, height: f64 };
@@ -1479,6 +1604,30 @@ fn googleSerpGridWidth(self: *Element, frame: *Frame) ?f64 {
     return null;
 }
 
+fn isGoogleSerpRcnt(self: *Element) bool {
+    return std.mem.eql(u8, self.getId(), "rcnt");
+}
+
+/// Block-flow content height for Google SERP containers (`#rcnt`, `#center_col`).
+/// Resolves each child at depth 0 so parent/child layout matches sequential
+/// `offsetHeight` reads (errsrp `results_ch>=100` probe).
+fn googleSerpFlowHeight(self: *Element, frame: *Frame) f64 {
+    var total: f64 = 0;
+    var has_child = false;
+    var it = self.asNode().childrenIterator();
+    while (it.next()) |child| {
+        if (child.is(Element)) |el| {
+            if (el.getTag().isMetadata()) continue;
+            if (el.isHiddenForLayout(frame)) continue;
+            has_child = true;
+            const dims = resolveElementDimensions(el, frame, 0);
+            total += dims.height;
+        }
+    }
+    if (!has_child) return layout_leaf_block_height;
+    return @max(total, layout_leaf_block_height);
+}
+
 fn googleSerpLayoutLeft(self: *Element, frame: *Frame) ?f64 {
     const id = self.getId();
     if (id.len == 0) return null;
@@ -1519,12 +1668,18 @@ fn isBlockLevel(self: *Element, frame: *Frame) bool {
 
 fn childrenBlockFlowHeight(self: *Element, frame: *Frame, depth: usize) f64 {
     if (depth > 64) return layout_leaf_block_height;
+    const parent = self.asNode();
+    const limit: u32 = if (parent._children) |children| children.len() else 0;
     var total: f64 = 0;
     var has_child = false;
-    var child = self.asNode().firstChild();
+    var child = parent.firstChild();
+    var visited: u32 = 0;
     while (child) |c| {
+        visited += 1;
+        if (visited > limit) break;
         if (c.is(Element)) |el| {
-            if (!el.checkVisibilityCached(null, frame)) continue;
+            if (el.getTag().isMetadata()) continue;
+            if (el.isHiddenForLayout(frame)) continue;
             has_child = true;
             const dims = resolveElementDimensions(el, frame, depth + 1);
             total += dims.height;
@@ -1535,8 +1690,39 @@ fn childrenBlockFlowHeight(self: *Element, frame: *Frame, depth: usize) f64 {
     return @max(total, layout_leaf_block_height);
 }
 
+fn layoutCacheKey(self: *const Element) usize {
+    return @intFromPtr(self);
+}
+
+fn readLayoutCache(self: *Element, frame: *Frame) ?LayoutSize {
+    if (frame._layout_cache_dom_version != frame.version) return null;
+    const cached = frame._element_layout_cache.get(layoutCacheKey(self)) orelse return null;
+    return .{ .width = cached.width, .height = cached.height };
+}
+
+fn writeLayoutCache(self: *Element, frame: *Frame, size: LayoutSize) void {
+    if (frame._layout_cache_dom_version != frame.version) {
+        frame._layout_cache_dom_version = frame.version;
+    }
+    const gop = frame._element_layout_cache.getOrPut(frame.arena, layoutCacheKey(self)) catch return;
+    gop.value_ptr.* = .{ .width = size.width, .height = size.height };
+}
+
+fn estimateHeightFromFontSize(self: *Element, frame: *Frame) ?f64 {
+    if (readLayoutPropertyRaw(self, frame, "font-size")) |raw| {
+        const parent_size = parentLayoutSize(self, frame);
+        if (parseLayoutDimension(raw, parent_size.height)) |parsed| return parsed;
+    }
+    return null;
+}
+
 fn resolveElementDimensions(self: *Element, frame: *Frame, depth: usize) LayoutSize {
     if (depth > 64) return .{ .width = layout_default_size, .height = layout_default_size };
+
+    if (readLayoutCache(self, frame)) |cached| return cached;
+
+    frame.beginLayoutResolve();
+    defer frame.endLayoutResolve();
 
     const parent_size = parentLayoutSize(self, frame);
     var width: f64 = layout_default_size;
@@ -1576,18 +1762,29 @@ fn resolveElementDimensions(self: *Element, frame: *Frame, depth: usize) LayoutS
         }
     } else if (googleSerpGridWidth(self, frame)) |serp_w| {
         if (width == layout_default_size) width = serp_w;
-        if (height == layout_default_size) height = childrenBlockFlowHeight(self, frame, depth);
+        height = googleSerpFlowHeight(self, frame);
+    } else if (isGoogleSerpRcnt(self)) {
+        if (width == layout_default_size) width = parent_size.width;
+        height = googleSerpFlowHeight(self, frame);
     } else if (isBlockLevel(self, frame)) {
         if (width == layout_default_size) width = parent_size.width;
-        if (height == layout_default_size) height = childrenBlockFlowHeight(self, frame, depth);
+        if (height == layout_default_size) {
+            const child_height = childrenBlockFlowHeight(self, frame, depth);
+            height = if (child_height > layout_leaf_block_height)
+                child_height
+            else
+                estimateHeightFromFontSize(self, frame) orelse child_height;
+        }
     }
 
     const transform = getLayoutPropertyValue(self, "transform", frame);
     const transformed = dimensionsAfterTransform(width, height, transform);
-    return .{
-        .width = @max(transformed.width, 0),
-        .height = @max(transformed.height, 0),
+    const result: LayoutSize = .{
+        .width = @min(@max(transformed.width, 0), max_layout_dimension),
+        .height = @min(@max(transformed.height, 0), max_layout_dimension),
     };
+    writeLayoutCache(self, frame, result);
+    return result;
 }
 
 fn rootLayoutSizeForHitTest(frame: *Frame) LayoutSize {
@@ -1681,7 +1878,7 @@ fn flowOffsetAmongSiblingsForHitTest(self: *Element, frame: *Frame) struct { top
     while (sibling) |s| {
         if (s == self.asNode()) break;
         if (s.is(Element)) |sib| {
-            if (!sib.checkVisibilityCached(null, frame)) continue;
+            if (!sib.checkVisibilityCached(layoutVisibilityCache(frame), frame)) continue;
             const dims = sib.getElementDimensionsForHitTest(frame);
             const margin = getMarginInsetForHitTest(sib, frame);
             if (horizontal) {
@@ -1729,6 +1926,38 @@ fn computeLayoutOriginForHitTestDepth(self: *Element, frame: *Frame, depth: usiz
         .top = base.top + flow.top + margin.top,
         .left = base.left + flow.left + margin.left,
     };
+}
+
+/// Absolute/fixed geometry: offset-parent origin + top/left (O(depth), no sibling walk).
+fn getPositionedBoundingClientRect(self: *Element, frame: *Frame) DOMRect {
+    if (self.isHiddenForLayout(frame)) {
+        return .{ ._x = 0, ._y = 0, ._width = 0, ._height = 0 };
+    }
+
+    const dims = self.getElementDimensions(frame);
+    if (dims.width == 0.0 and dims.height == 0.0) {
+        return .{ ._x = 0, ._y = 0, ._width = 0, ._height = 0 };
+    }
+
+    const pos = getPositionOffset(self, frame);
+    const origin = offsetParentClientOrigin(self, frame, 0);
+
+    if (shadowTreeHost(self.asNode())) |host| {
+        const host_rect = host.getBoundingClientRectForVisible(frame);
+        return finalizeClientRect(self, frame, .{
+            ._x = host_rect._x + pos.left,
+            ._y = host_rect._y + pos.top,
+            ._width = dims.width,
+            ._height = dims.height,
+        });
+    }
+
+    return finalizeClientRect(self, frame, .{
+        ._x = origin.x + pos.left,
+        ._y = origin.y + pos.top,
+        ._width = dims.width,
+        ._height = dims.height,
+    });
 }
 
 /// Flow-based geometry for synthetic pointer activation only. Page script keeps
@@ -1908,23 +2137,27 @@ fn getElementDimensions(self: *Element, frame: *Frame) struct { width: f64, heig
 }
 
 pub fn getClientWidth(self: *Element, frame: *Frame) f64 {
-    if (!self.checkVisibilityCached(null, frame)) {
-        return 0.0;
-    }
+    return withLayoutResolveActive(frame, getClientWidthInner, .{ self, frame });
+}
+
+fn getClientWidthInner(self: *Element, frame: *Frame) f64 {
+    if (self.isHiddenForLayout(frame)) return 0.0;
     const dims = self.getElementDimensions(frame);
     return dims.width;
 }
 
 pub fn getClientHeight(self: *Element, frame: *Frame) f64 {
-    if (!self.checkVisibilityCached(null, frame)) {
-        return 0.0;
-    }
+    return withLayoutResolveActive(frame, getClientHeightInner, .{ self, frame });
+}
+
+fn getClientHeightInner(self: *Element, frame: *Frame) f64 {
+    if (self.isHiddenForLayout(frame)) return 0.0;
     const dims = self.getElementDimensions(frame);
     return dims.height;
 }
 
 pub fn getBoundingClientRect(self: *Element, frame: *Frame) DOMRect {
-    if (!self.checkVisibilityCached(null, frame)) {
+    if (self.isHiddenForLayout(frame)) {
         return .{
             ._x = 0.0,
             ._y = 0.0,
@@ -1939,6 +2172,15 @@ pub fn getBoundingClientRect(self: *Element, frame: *Frame) DOMRect {
 // Some cases need a the BoundingClientRect but have already done the
 // visibility check.
 pub fn getBoundingClientRectForVisible(self: *Element, frame: *Frame) DOMRect {
+    if (ClientRectsIntelligent.lookup(self, frame)) |golden| {
+        return golden;
+    }
+
+    const pos_kind = layoutPositionKind(self, frame);
+    if (pos_kind == .absolute or pos_kind == .fixed) {
+        return self.getPositionedBoundingClientRect(frame);
+    }
+
     const dims = self.getElementDimensions(frame);
 
     if (dims.width == 0.0 and dims.height == 0.0) {
@@ -1953,32 +2195,32 @@ pub fn getBoundingClientRectForVisible(self: *Element, frame: *Frame) DOMRect {
     const scroll_x = @as(f64, @floatFromInt(frame.window.getScrollX()));
     const scroll_y = @as(f64, @floatFromInt(frame.window.getScrollY()));
     const offset = getLayoutOffset(self, frame);
-    const y = calculateDocumentPosition(self.asNode()) + offset.top;
+    const y = calculateDocumentPosition(self.asNode(), frame) + offset.top;
     const serp_left = googleSerpLayoutLeft(self, frame);
     const x = if (serp_left) |left| left else offset.left;
 
     if (shadowTreeHost(self.asNode())) |host| {
         const host_rect = host.getBoundingClientRectForVisible(frame);
-        const local_x = if (serp_left) |left| left else calculateSiblingPosition(self.asNode()) + offset.left;
-        const local_y = calculateDocumentPosition(self.asNode()) + offset.top;
-        return .{
+        const local_x = if (serp_left) |left| left else calculateSiblingPosition(self.asNode(), frame) + offset.left;
+        const local_y = calculateDocumentPosition(self.asNode(), frame) + offset.top;
+        return finalizeClientRect(self, frame, .{
             ._x = host_rect._x + local_x,
             ._y = host_rect._y + local_y,
             ._width = dims.width,
             ._height = dims.height,
-        };
+        });
     }
 
-    return .{
+    return finalizeClientRect(self, frame, .{
         ._x = x - scroll_x,
         ._y = y - scroll_y,
         ._width = dims.width,
         ._height = dims.height,
-    };
+    });
 }
 
 pub fn getClientRects(self: *Element, frame: *Frame) ![]DOMRect {
-    if (!self.checkVisibilityCached(null, frame)) {
+    if (self.isHiddenForLayout(frame)) {
         return &.{};
     }
     const rects = try frame.call_arena.alloc(DOMRect, 1);
@@ -2023,17 +2265,22 @@ pub fn getScrollWidth(self: *Element, frame: *Frame) f64 {
 }
 
 pub fn getOffsetHeight(self: *Element, frame: *Frame) f64 {
-    if (!self.checkVisibilityCached(null, frame)) {
-        return 0.0;
-    }
+    return withLayoutResolveActive(frame, getOffsetHeightInner, .{ self, frame });
+}
+
+fn getOffsetHeightInner(self: *Element, frame: *Frame) f64 {
+    if (self.isHiddenForLayout(frame)) return 0.0;
     const dims = self.getElementDimensions(frame);
     return dims.height;
 }
 
 pub fn getOffsetWidth(self: *Element, frame: *Frame) f64 {
-    if (!self.checkVisibilityCached(null, frame)) {
-        return 0.0;
-    }
+    return withLayoutResolveActive(frame, getOffsetWidthInner, .{ self, frame });
+}
+
+fn getOffsetWidthInner(self: *Element, frame: *Frame) f64 {
+    if (readLayoutCache(self, frame)) |cached| return cached.width;
+    if (self.isHiddenForLayout(frame)) return 0.0;
     const dims = self.getElementDimensions(frame);
     return dims.width;
 }
@@ -2042,14 +2289,14 @@ pub fn getOffsetTop(self: *Element, frame: *Frame) f64 {
     if (!self.checkVisibilityCached(null, frame)) {
         return 0.0;
     }
-    return calculateDocumentPosition(self.asNode());
+    return calculateDocumentPosition(self.asNode(), frame);
 }
 
 pub fn getOffsetLeft(self: *Element, frame: *Frame) f64 {
     if (!self.checkVisibilityCached(null, frame)) {
         return 0.0;
     }
-    return calculateSiblingPosition(self.asNode());
+    return calculateSiblingPosition(self.asNode(), frame);
 }
 
 pub fn getClientTop(_: *Element) f64 {
@@ -2082,68 +2329,49 @@ pub fn getClientLeft(_: *Element) f64 {
 //   </body>
 //
 // Trade-offs:
-// - O(depth × siblings × subtree_height) - only left-side traversal
-// - Linear scaling: 5px per node
-// - Perfect document order, guaranteed unique positions
-// - Compact coordinates (1000 nodes ≈ 5,000px)
-fn calculateDocumentPosition(node: *Node) f64 {
+// O(depth × preceding_siblings) — avoids recursive subtree walks that made
+// CreepJS getClientRects (100+ layout reads on a large injected DOM) hang.
+fn precedingSiblingDocumentWeight(node: *Node) f64 {
+    if (node.is(Element)) |el| {
+        if (el.asNode().firstChild()) |_| return 1.0;
+    }
+    return 1.0;
+}
+
+fn calculateDocumentPosition(node: *Node, frame: *Frame) f64 {
+    const cache_key = @intFromPtr(node);
+    if (frame._layout_cache_dom_version == frame.version) {
+        if (frame._layout_doc_position_cache.get(cache_key)) |cached| return cached;
+    }
+
     var position: f64 = 0.0;
     var current = node;
 
-    // Walk up to root, counting preceding nodes
     while (current.parentNode()) |parent| {
-        // Count all previous siblings and their descendants
+        const limit: u32 = if (parent._children) |children| children.len() else 0;
         var sibling = parent.firstChild();
+        var visited: u32 = 0;
         while (sibling) |s| {
+            visited += 1;
+            if (visited > limit) break;
             if (s == current) break;
-            position += countSubtreeNodes(s);
+            position += precedingSiblingDocumentWeight(s);
             sibling = s.nextSibling();
         }
-
-        // Count the parent itself
         position += 1.0;
         current = parent;
     }
 
-    return position * 5.0; // 5px per node
+    const result = position * 5.0;
+    frame._layout_doc_position_cache.put(frame.arena, cache_key, result) catch {};
+    return result;
 }
 
-// Counts total nodes in a subtree (node + all descendants)
-fn countSubtreeNodes(node: *Node) f64 {
-    var count: f64 = 1.0; // Count this node
-
-    var child = node.firstChild();
-    while (child) |c| {
-        count += countSubtreeNodes(c);
-        child = c.nextSibling();
-    }
-
-    return count;
+fn calculateSiblingPosition(node: *Node, frame: *Frame) f64 {
+    return calculateDocumentPosition(node, frame);
 }
 
-// Calculates horizontal position using the same approach as y,
-// just scaled differently for visual distinction
-fn calculateSiblingPosition(node: *Node) f64 {
-    var position: f64 = 0.0;
-    var current = node;
-
-    // Walk up to root, counting preceding nodes (same as y)
-    while (current.parentNode()) |parent| {
-        // Count all previous siblings and their descendants
-        var sibling = parent.firstChild();
-        while (sibling) |s| {
-            if (s == current) break;
-            position += countSubtreeNodes(s);
-            sibling = s.nextSibling();
-        }
-
-        // Count the parent itself
-        position += 1.0;
-        current = parent;
-    }
-
-    return position * 5.0; // 5px per node
-}
+const max_layout_dimension: f64 = 16384.0;
 
 pub fn getElementsByTagName(self: *Element, tag_name: []const u8, frame: *Frame) !Node.GetElementsByTagNameResult {
     return self.asNode().getElementsByTagName(tag_name, frame);
@@ -2561,9 +2789,9 @@ pub const JsApi = struct {
     pub const namespaceURI = bridge.accessor(Element.getNamespaceURI, null, .{});
 
     pub const innerText = bridge.accessor(_innerText, Element.setInnerText, .{});
-    fn _innerText(self: *Element, frame: *const Frame) ![]const u8 {
+    fn _innerText(self: *Element, frame: *Frame) ![]const u8 {
         var buf = std.Io.Writer.Allocating.init(frame.call_arena);
-        try self.getInnerText(&buf.writer);
+        try self.getInnerText(&buf.writer, frame);
         return buf.written();
     }
 

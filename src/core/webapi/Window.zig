@@ -37,6 +37,7 @@ const MessagePort = @import("MessagePort.zig");
 const MediaQueryList = @import("css/MediaQueryList.zig");
 const storage = @import("storage/storage.zig");
 const Element = @import("../dom/Element.zig");
+const CSSStyleDeclaration = @import("css/CSSStyleDeclaration.zig");
 const CSSStyleProperties = @import("css/CSSStyleProperties.zig");
 const CustomElementRegistry = @import("CustomElementRegistry.zig");
 const Selection = @import("Selection.zig");
@@ -236,8 +237,16 @@ pub fn getChrome(self: *Window) ?*Chrome {
 }
 
 pub fn getGoogle(self: *Window) ?*GoogleCompat {
-    if (!GoogleCompat.shouldExpose(self._frame)) return null;
-    return &self._google;
+    const frame = self._frame;
+    if (GoogleCompat.shouldExpose(frame) or GoogleCompat.shouldExposeBootstrap(frame)) {
+        self._google.ensureBootstrapDefaults(frame);
+        return &self._google;
+    }
+    return null;
+}
+
+pub fn setGoogle(self: *Window, value: js.Value) void {
+    self._google.applyPlainObject(value, self._frame);
 }
 
 pub fn setLocation(self: *Window, url: [:0]const u8, frame: *Frame) !void {
@@ -501,13 +510,13 @@ pub fn matchMedia(_: *const Window, query: []const u8, frame: *Frame) !*MediaQue
     });
 }
 
-pub fn getComputedStyle(_: *const Window, element: *Element, pseudo_element: ?[]const u8, frame: *Frame) !*CSSStyleProperties {
+pub fn getComputedStyle(_: *const Window, element: *Element, pseudo_element: ?[]const u8, frame: *Frame) !*CSSStyleDeclaration {
     if (pseudo_element) |pe| {
         if (pe.len != 0) {
             log.warn(.not_implemented, "window.GetComputedStyle", .{ .pseudo_element = pe });
         }
     }
-    return CSSStyleProperties.init(element, true, frame);
+    return CSSStyleDeclaration.init(element, true, frame);
 }
 
 // window.open(url?, target?, features?) — v1 scope:
@@ -1070,7 +1079,7 @@ pub const JsApi = struct {
     pub const origin = bridge.accessor(Window.getOrigin, null, .{});
     pub const location = bridge.accessor(Window.getLocation, Window.setLocation, .{ .deletable = false });
     pub const chrome = bridge.accessor(Window.getChrome, null, .{ .null_as_undefined = true });
-    pub const google = bridge.accessor(Window.getGoogle, null, .{ .null_as_undefined = true });
+    pub const google = bridge.accessor(Window.getGoogle, Window.setGoogle, .{ .null_as_undefined = true });
     pub const history = bridge.accessor(Window.getHistory, null, .{});
     pub const navigation = bridge.accessor(Window.getNavigation, null, .{});
     pub const crypto = bridge.accessor(Window.getCrypto, null, .{});

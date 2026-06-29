@@ -34,8 +34,6 @@ const CanvasRenderingContext2D = @This();
 /// Reference to the parent canvas element.
 /// https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D/canvas
 _canvas: *Canvas,
-/// Fill color.
-/// TODO: Add support for `CanvasGradient` and `CanvasPattern`.
 _fill_style: color.RGBA = color.RGBA.Named.black,
 /// Current font (CSS font shorthand). Per spec the default is
 /// "10px sans-serif". The string is stored in the page arena so it outlives
@@ -50,6 +48,7 @@ _arc: ?struct {
     ccw: bool,
 } = null,
 _probe: CanvasIntelligent.ProbeState = .{},
+_desynchronized: bool = false,
 
 pub fn getCanvas(self: *const CanvasRenderingContext2D) *Canvas {
     return self._canvas;
@@ -61,12 +60,17 @@ pub fn getFillStyle(self: *const CanvasRenderingContext2D, frame: *Frame) ![]con
     return w.written();
 }
 
-pub fn setFillStyle(
-    self: *CanvasRenderingContext2D,
-    value: []const u8,
-) !void {
-    // Prefer the same fill_style if fails.
-    self._fill_style = color.RGBA.parse(value) catch self._fill_style;
+pub fn setFillStyle(self: *CanvasRenderingContext2D, value: js.Value, frame: *Frame) !void {
+    _ = frame;
+    if (value.isString() != null) {
+        const s = try value.toStringSlice();
+        self._fill_style = color.RGBA.parse(s) catch self._fill_style;
+        return;
+    }
+    const gradient = value.toZig(*CanvasGradient) catch null;
+    if (gradient) |g| {
+        if (g.firstColor()) |c| self._fill_style = c;
+    }
 }
 
 pub fn getFont(self: *const CanvasRenderingContext2D) []const u8 {
@@ -239,6 +243,20 @@ pub fn ellipse(
 pub fn arcTo(_: *CanvasRenderingContext2D, _: f64, _: f64, _: f64, _: f64, _: f64) void {}
 pub fn rect(_: *CanvasRenderingContext2D, _: f64, _: f64, _: f64, _: f64) void {}
 
+fn applyProfileLowEntropyPattern(buffer: anytype, pixels: []const u8) void {
+    const count = @min(pixels.len / 4, 4);
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        const base = i * 4;
+        buffer.setPixel(@intCast(i % 2), @intCast(i / 2), .{
+            .r = pixels[base],
+            .g = pixels[base + 1],
+            .b = pixels[base + 2],
+            .a = pixels[base + 3],
+        });
+    }
+}
+
 /// CreepJS low-entropy canvas check expects Blink antialiased arc output on 2x2.
 fn applyBlinkLowEntropyPattern(buffer: anytype, fill_style: color.RGBA) void {
     _ = fill_style;
@@ -255,12 +273,20 @@ fn applyBlinkLowEntropyPattern(buffer: anytype, fill_style: color.RGBA) void {
 
 pub fn fill(self: *CanvasRenderingContext2D, frame: *Frame) !void {
     const canvas = self._canvas;
-    if (self._arc == null) return;
-    if (canvas.getWidth() != 2 or canvas.getHeight() != 2) return;
-
+    const arc_state = self._arc orelse return;
     const buffer = try canvas.getOrCreatePixelBuffer(frame);
-    applyBlinkLowEntropyPattern(buffer, self._fill_style);
-    self._probe.recordLowEntropyArc(self._canvas.getWidth(), self._canvas.getHeight());
+
+    if (canvas.getWidth() == 2 and canvas.getHeight() == 2) {
+        if (CanvasIntelligent.baselineImageData(frame, .canvas_2_low_entropy)) |pixels| {
+            applyProfileLowEntropyPattern(buffer, pixels);
+        } else {
+            applyBlinkLowEntropyPattern(buffer, self._fill_style);
+        }
+        self._probe.recordLowEntropyArc(canvas.getWidth(), canvas.getHeight());
+    } else {
+        const d = arc_state.r * 2.0;
+        buffer.fillRect(arc_state.cx - arc_state.r, arc_state.cy - arc_state.r, d, d, self._fill_style);
+    }
     self._arc = null;
 }
 
@@ -282,7 +308,10 @@ pub fn fillText(self: *CanvasRenderingContext2D, text: []const u8, x: f64, y: f6
 
     const buffer = try self._canvas.getOrCreatePixelBuffer(frame);
 
-    if (NativeCanvas.useNativeText(frame)) {
+    // CoreText can block on emoji / non-Latin runs during CreepJS paintCanvas strokeText.
+    const use_native = NativeCanvas.useNativeText(frame) and !textNeedsRasterFallback(text);
+
+    if (use_native) {
         NativeCanvas.fillText(buffer, text, x, y, self._font, self._fill_style, frame) catch {
             const metrics = try TextMetrics.init(text, self._font, frame);
             try rasterizeText(buffer, text, x, y, metrics, self._fill_style, frame);
@@ -333,6 +362,13 @@ fn rasterizeText(
         byte_index += glyph_len;
         glyph_index += 1;
     }
+}
+
+fn textNeedsRasterFallback(text: []const u8) bool {
+    for (text) |byte| {
+        if (byte >= 0x80) return true;
+    }
+    return false;
 }
 
 fn countGlyphs(text: []const u8) usize {

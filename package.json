@@ -18,6 +18,11 @@
     "test:creepjs:online:debug": "node scripts/cdp-creepjs-online-debug.mjs",
     "test:creepjs:timeout": "node scripts/cdp-creepjs-timeout-probe.mjs",
     "test:browserleaks": "node scripts/cdp-browserleaks-compare.mjs",
-    "test:profile": "node scripts/cdp-profile-probe.mjs"
+    "test:profile": "node scripts/cdp-profile-probe.mjs",
+    "google:compare": "node google-search-debug/scripts/compare-search.mjs",
+    "google:sorry-parity": "node google-search-debug/scripts/compare-sorry-parity.mjs",
+    "google:trace": "node google-search-debug/scripts/trace-search.mjs",
+    "google:probe": "node google-search-debug/scripts/probe-google-js.mjs",
+    "google:probe-knitsail": "node google-search-debug/scripts/probe-knitsail.mjs"
   }
 }

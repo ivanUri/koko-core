@@ -18,6 +18,7 @@ const crypto = @import("../../support/sys/libcrypto.zig");
 
 const Frame = @import("../browser/Frame.zig");
 const js = @import("../js/js.zig");
+const Execution = js.Execution;
 
 const CryptoKey = @import("CryptoKey.zig");
 
@@ -45,11 +46,11 @@ pub fn generateKey(
     algo: algorithm.Init,
     extractable: bool,
     key_usages: []const []const u8,
-    frame: *Frame,
+    exec: *const Execution,
 ) !js.Promise {
-    const local = frame.js.local.?;
+    const local = exec.context.local orelse return error.JsEntryIllegal;
     switch (algo) {
-        .hmac_key_gen => |params| return HMAC.init(params, extractable, key_usages, frame),
+        .hmac_key_gen => |params| return HMAC.init(params, extractable, key_usages, exec),
         .aes_key_gen => |params| {
             AES.validate(params, key_usages) catch |err| {
                 return local.rejectPromise(.{ .dom_exception = .{ .err = err } });
@@ -68,8 +69,8 @@ pub fn generateKey(
             };
             log.warn(.not_implemented, "generateKey", .{ .name = params.name });
         },
-        .name => |js_name| return generateKeyFromName(try js_name.toSSO(false), extractable, key_usages, frame),
-        .object => |object| return generateKeyFromName(try object.name.toSSO(false), extractable, key_usages, frame),
+        .name => |js_name| return generateKeyFromName(try js_name.toSSO(false), extractable, key_usages, exec),
+        .object => |object| return generateKeyFromName(try object.name.toSSO(false), extractable, key_usages, exec),
         .invalid => return local.rejectPromise(.{ .type_error = "invalid algorithm" }),
     }
 
@@ -80,10 +81,11 @@ fn generateKeyFromName(
     name: String,
     extractable: bool,
     key_usages: []const []const u8,
-    frame: *Frame,
+    exec: *const Execution,
 ) !js.Promise {
-    return _generateKeyFromName(name, extractable, key_usages, frame) catch |err| {
-        return frame.js.local.?.rejectPromise(.{ .dom_exception = .{ .err = err } });
+    return _generateKeyFromName(name, extractable, key_usages, exec) catch |err| {
+        const local = exec.context.local orelse return error.JsEntryIllegal;
+        return local.rejectPromise(.{ .dom_exception = .{ .err = err } });
     };
 }
 
@@ -91,8 +93,12 @@ fn _generateKeyFromName(
     name: String,
     extractable: bool,
     key_usages: []const []const u8,
-    frame: *Frame,
+    exec: *const Execution,
 ) !js.Promise {
+    const frame = switch (exec.context.global) {
+        .frame => |f| f,
+        .worker => |w| w._worker._frame,
+    };
     if (name.eql(comptime .wrap("X25519"))) {
         return X25519.init(extractable, key_usages, frame);
     }
@@ -200,14 +206,15 @@ pub fn sign(
     algo: algorithm.Sign,
     key: *CryptoKey,
     data: []const u8, // ArrayBuffer.
-    frame: *Frame,
+    exec: *const Execution,
 ) !js.Promise {
+    const local = exec.context.local orelse return error.JsEntryIllegal;
     return switch (key._type) {
         // Call sign for HMAC.
-        .hmac => return HMAC.sign(algo, key, data, frame),
+        .hmac => return HMAC.sign(algo, key, data, exec),
         else => {
             log.warn(.not_implemented, "SubtleCrypto.sign", .{ .key_type = key._type });
-            return frame.js.local.?.rejectPromise(.{ .dom_exception = .{ .err = error.InvalidAccessError } });
+            return local.rejectPromise(.{ .dom_exception = .{ .err = error.InvalidAccessError } });
         },
     };
 }
@@ -219,15 +226,62 @@ pub fn verify(
     key: *const CryptoKey,
     signature: []const u8, // ArrayBuffer.
     data: []const u8, // ArrayBuffer.
-    frame: *Frame,
+    exec: *const Execution,
 ) !js.Promise {
+    const local = exec.context.local orelse return error.JsEntryIllegal;
     if (!algo.isHMAC()) {
-        return frame.js.local.?.rejectPromise(.{ .dom_exception = .{ .err = error.InvalidAccessError } });
+        return local.rejectPromise(.{ .dom_exception = .{ .err = error.InvalidAccessError } });
     }
 
     return switch (key._type) {
-        .hmac => HMAC.verify(key, signature, data, frame),
-        else => frame.js.local.?.rejectPromise(.{ .dom_exception = .{ .err = error.InvalidAccessError } }),
+        .hmac => HMAC.verify(key, signature, data, exec),
+        else => local.rejectPromise(.{ .dom_exception = .{ .err = error.InvalidAccessError } }),
+    };
+}
+
+/// Imports a key from external format.
+pub fn importKey(
+    _: *const SubtleCrypto,
+    format: []const u8,
+    key_data: []const u8,
+    algo: algorithm.Init,
+    extractable: bool,
+    key_usages: []const []const u8,
+    exec: *const Execution,
+) !js.Promise {
+    const local = exec.context.local orelse return error.JsEntryIllegal;
+
+    if (!std.mem.eql(u8, format, "raw")) {
+        const is_unsupported = std.mem.eql(u8, format, "pkcs8") or
+            std.mem.eql(u8, format, "spki") or std.mem.eql(u8, format, "jwk");
+        if (is_unsupported) {
+            log.warn(.not_implemented, "SubtleCrypto.importKey", .{ .format = format });
+            return local.rejectPromise(.{ .dom_exception = .{ .err = error.NotSupported } });
+        }
+        return local.rejectPromise(.{ .type_error = "invalid format" });
+    }
+
+    return switch (algo) {
+        .aes_key_gen => |params| AES.importKey(params, key_data, extractable, key_usages, exec),
+        else => local.rejectPromise(.{ .dom_exception = .{ .err = error.NotSupported } }),
+    };
+}
+
+/// Encrypts data with the given key.
+pub fn encrypt(
+    _: *const SubtleCrypto,
+    algo: algorithm.Encrypt,
+    key: *CryptoKey,
+    data: []const u8,
+    exec: *const Execution,
+) !js.Promise {
+    const local = exec.context.local orelse return error.JsEntryIllegal;
+    return switch (key._type) {
+        .aes => AES.encrypt(algo, key, data, exec),
+        else => {
+            log.warn(.not_implemented, "SubtleCrypto.encrypt", .{ .key_type = key._type });
+            return local.rejectPromise(.{ .dom_exception = .{ .err = error.InvalidAccessError } });
+        },
     };
 }
 
@@ -264,7 +318,9 @@ pub const JsApi = struct {
     };
 
     pub const generateKey = bridge.function(SubtleCrypto.generateKey, .{ .dom_exception = true });
+    pub const importKey = bridge.function(SubtleCrypto.importKey, .{ .dom_exception = true });
     pub const exportKey = bridge.function(SubtleCrypto.exportKey, .{ .dom_exception = true });
+    pub const encrypt = bridge.function(SubtleCrypto.encrypt, .{ .dom_exception = true });
     pub const sign = bridge.function(SubtleCrypto.sign, .{ .dom_exception = true });
     pub const verify = bridge.function(SubtleCrypto.verify, .{ .dom_exception = true });
     pub const deriveBits = bridge.function(SubtleCrypto.deriveBits, .{ .dom_exception = true });

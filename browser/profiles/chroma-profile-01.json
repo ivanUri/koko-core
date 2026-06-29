@@ -1,0 +1,189 @@
+{
+  "version": 1,
+  "id": "chroma-profile-01",
+  "mode": "antidetect",
+  "policies": [
+    "google-search"
+  ],
+  "personaId": "macos_sonoma_intel",
+  "transport": {
+    "impersonate": "chrome149"
+  },
+  "navigator": {
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+    "platform": "MacIntel",
+    "languages": [
+      "en-US",
+      "en"
+    ],
+    "hardwareConcurrency": 8,
+    "deviceMemory": 8,
+    "maxTouchPoints": 0,
+    "vendor": "Google Inc.",
+    "pdfViewerEnabled": true,
+    "appVersion": "5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+  },
+  "userAgentData": {
+    "brands": [
+      {
+        "brand": "Google Chrome",
+        "version": "149"
+      },
+      {
+        "brand": "Chromium",
+        "version": "149"
+      },
+      {
+        "brand": "Not)A;Brand",
+        "version": "24"
+      }
+    ],
+    "platform": "macOS",
+    "platformVersion": "26.1.0",
+    "architecture": "arm",
+    "bitness": "64",
+    "uaFullVersion": "149.0.7827.104",
+    "mobile": false,
+    "prefersColorScheme": "light"
+  },
+  "plugins": [
+    {
+      "name": "PDF Viewer",
+      "filename": "internal-pdf-viewer",
+      "description": "Portable Document Format",
+      "mimeType": "application/pdf",
+      "mimeSuffixes": "pdf"
+    },
+    {
+      "name": "Chrome PDF Viewer",
+      "filename": "internal-pdf-viewer",
+      "description": "Portable Document Format",
+      "mimeType": "application/pdf",
+      "mimeSuffixes": "pdf"
+    },
+    {
+      "name": "Chromium PDF Viewer",
+      "filename": "internal-pdf-viewer",
+      "description": "Portable Document Format",
+      "mimeType": "application/pdf",
+      "mimeSuffixes": "pdf"
+    },
+    {
+      "name": "Microsoft Edge PDF Viewer",
+      "filename": "internal-pdf-viewer",
+      "description": "Portable Document Format",
+      "mimeType": "application/pdf",
+      "mimeSuffixes": "pdf"
+    },
+    {
+      "name": "WebKit built-in PDF",
+      "filename": "internal-pdf-viewer",
+      "description": "Portable Document Format",
+      "mimeType": "application/pdf",
+      "mimeSuffixes": "pdf"
+    }
+  ],
+  "screen": {
+    "width": 1440,
+    "height": 900,
+    "availWidth": 1440,
+    "availHeight": 869,
+    "devicePixelRatio": 1,
+    "colorDepth": 30,
+    "pixelDepth": 30,
+    "touch": false
+  },
+  "window": {
+    "innerWidth": 1200,
+    "innerHeight": 835,
+    "outerWidth": 1200,
+    "outerHeight": 922
+  },
+  "webgl": {
+    "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
+    "vendor": "WebKit",
+    "renderer": "WebKit WebGL",
+    "shadingLanguageVersion": "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)",
+    "unmaskedVendor": "Google Inc. (Apple)",
+    "unmaskedRenderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)",
+    "maxTextureSize": 16384,
+    "maxCubeMapTextureSize": 16384,
+    "maxRenderbufferSize": 16384,
+    "maxVertexAttribs": 16,
+    "maxVertexUniformVectors": 1024,
+    "maxVaryingVectors": 30,
+    "maxCombinedTextureImageUnits": 32,
+    "maxVertexTextureImageUnits": 16,
+    "maxTextureImageUnits": 16,
+    "maxFragmentUniformVectors": 1024,
+    "maxDrawBuffers": 8,
+    "maxTextureMaxAnisotropy": 16,
+    "maxViewportDims": [
+      16384,
+      16384
+    ],
+    "aliasedLineWidthRange": [
+      1,
+      1
+    ],
+    "aliasedPointSizeRange": [
+      1,
+      511
+    ],
+    "extensions": [
+      "ANGLE_instanced_arrays",
+      "EXT_blend_minmax",
+      "EXT_clip_control",
+      "EXT_color_buffer_half_float",
+      "EXT_depth_clamp",
+      "EXT_disjoint_timer_query",
+      "EXT_float_blend",
+      "EXT_frag_depth",
+      "EXT_polygon_offset_clamp",
+      "EXT_shader_texture_lod",
+      "EXT_texture_compression_bptc",
+      "EXT_texture_compression_rgtc",
+      "EXT_texture_filter_anisotropic",
+      "EXT_texture_mirror_clamp_to_edge",
+      "EXT_sRGB",
+      "KHR_parallel_shader_compile",
+      "OES_element_index_uint",
+      "OES_fbo_render_mipmap",
+      "OES_standard_derivatives",
+      "OES_texture_float",
+      "OES_texture_float_linear",
+      "OES_texture_half_float",
+      "OES_texture_half_float_linear",
+      "OES_vertex_array_object",
+      "WEBGL_blend_func_extended",
+      "WEBGL_color_buffer_float",
+      "WEBGL_compressed_texture_astc",
+      "WEBGL_compressed_texture_etc",
+      "WEBGL_compressed_texture_etc1",
+      "WEBGL_compressed_texture_pvrtc",
+      "WEBGL_compressed_texture_s3tc",
+      "WEBGL_compressed_texture_s3tc_srgb",
+      "WEBGL_debug_renderer_info",
+      "WEBGL_debug_shaders",
+      "WEBGL_depth_texture",
+      "WEBGL_draw_buffers",
+      "WEBGL_lose_context",
+      "WEBGL_multi_draw",
+      "WEBGL_polygon_mode"
+    ]
+  },
+  "timezone": "Asia/Bangkok",
+  "locale": "en-US",
+  "canvasProbe": {
+    "dataUrlFile": "browser/profiles/assets/chroma-profile-01-canvas-probe.txt",
+    "probesFile": "browser/profiles/assets/chroma-profile-01-canvas-probes.json"
+  },
+  "audioProbe": {
+    "dataFile": "browser/profiles/assets/chroma-profile-01-audio-probe.json"
+  },
+  "fontsFile": "browser/profiles/assets/chroma-profile-01-fonts.json",
+  "speechVoicesFile": "browser/profiles/assets/chroma-profile-01-voices.json",
+  "measureTextBaseline": {
+    "dataFile": "browser/profiles/assets/chroma-profile-01-measuretext.json"
+  }
+}

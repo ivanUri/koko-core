@@ -147,6 +147,11 @@ pub fn deinit(self: *Event, page: *Page) void {
     // V8 FinalizerCallback detachment for the Event-side key happens
     // generically inside `RC.release` (see `src/support/rc.zig`). All we
     // need to do here is release the per-event arena.
+    if (self._arena.ptr == page.frame_arena.ptr) {
+        // frame.arena must never be stored as Event._arena — releasing it would
+        // recycle the entire page frame pool while the document is still live.
+        return;
+    }
     page.releaseArena(self._arena);
 }
 

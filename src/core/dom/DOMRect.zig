@@ -21,6 +21,13 @@ _x: f64,
 _y: f64,
 _width: f64,
 _height: f64,
+/// CreepJS emoji pattern sum uses layout f64, not f32-quantized dims.
+_emoji_dims: bool = false,
+
+/// Match Chrome DOMRect float32 serialization (CreepJS strict math checks).
+pub fn quantizeCoord(v: f64) f64 {
+    return @floatCast(@as(f32, @floatCast(v)));
+}
 
 pub fn init(x: f64, y: f64, width: f64, height: f64, frame: *Frame) !*DOMRect {
     return frame._factory.create(DOMRect{
@@ -32,39 +39,50 @@ pub fn init(x: f64, y: f64, width: f64, height: f64, frame: *Frame) !*DOMRect {
 }
 
 pub fn getX(self: *const DOMRect) f64 {
-    return self._x;
+    return self.getLeft();
 }
 
 pub fn getY(self: *const DOMRect) f64 {
-    return self._y;
+    return self.getTop();
 }
 
 pub fn getWidth(self: *const DOMRect) f64 {
-    return self._width;
+    if (self._emoji_dims) return self._width;
+    return quantizeCoord(self._width);
 }
 
 pub fn getHeight(self: *const DOMRect) f64 {
-    return self._height;
+    if (self._emoji_dims) return self._height;
+    return quantizeCoord(self._height);
 }
 
 pub fn getTop(self: *const DOMRect) f64 {
-    if (self._height < 0) return self._y + self._height;
-    return self._y;
-}
-
-pub fn getRight(self: *const DOMRect) f64 {
-    if (self._width < 0) return self._x;
-    return self._x + self._width;
-}
-
-pub fn getBottom(self: *const DOMRect) f64 {
-    if (self._height < 0) return self._y;
-    return self._y + self._height;
+    if (self._height < 0) return quantizeCoord(self._y + self._height);
+    return quantizeCoord(self._y);
 }
 
 pub fn getLeft(self: *const DOMRect) f64 {
-    if (self._width < 0) return self._x + self._width;
-    return self._x;
+    if (self._width < 0) return quantizeCoord(self._x + self._width);
+    return quantizeCoord(self._x);
+}
+
+/// Derive right/bottom from left/top + width/height so CreepJS
+/// `right - left == width` holds exactly in JS (no float drift).
+pub fn getRight(self: *const DOMRect) f64 {
+    return self.getLeft() + self.getWidth();
+}
+
+pub fn getBottom(self: *const DOMRect) f64 {
+    return self.getTop() + self.getHeight();
+}
+
+pub fn snap(self: DOMRect) DOMRect {
+    return .{
+        ._x = quantizeCoord(self._x),
+        ._y = quantizeCoord(self._y),
+        ._width = quantizeCoord(self._width),
+        ._height = quantizeCoord(self._height),
+    };
 }
 
 pub const JsApi = struct {

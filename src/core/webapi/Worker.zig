@@ -94,17 +94,22 @@ pub fn init(url: []const u8, exec: *Execution) !*Worker {
     }
 
     const http_client = &session.browser.http_client;
+    var headers = try http_client.newHeaders();
+    try frame.headersForRequest(&headers, .{
+        .request_url = resolved_url,
+        .resource_type = .worker,
+    });
     http_client.request(.{
         .ctx = self,
         .params = .{
             .url = resolved_url,
             .method = .GET,
-            .headers = try http_client.newHeaders(),
+            .headers = headers,
             .frame_id = self._frame_id,
             .loader_id = self._loader_id,
-            .resource_type = .script,
+            .resource_type = .worker,
             .cookie_jar = &session.cookie_jar,
-            .cookie_origin = resolved_url,
+            .cookie_origin = frame.url,
             .notification = session.notification,
         },
         .header_callback = httpHeaderCallback,
@@ -186,6 +191,22 @@ fn scheduleDeferredMacrotaskPump(frame: *Frame) void {
     };
 }
 
+/// CreepJS getWorkerData uses two setTimeout(0) rounds after creep.js eval.
+const bootstrap_drain_max_passes: u32 = 128;
+const bootstrap_pump_max_rounds: u32 = 48;
+
+fn drainBootstrapSchedulers(self: *Worker) !void {
+    const browser = self._frame._session.browser;
+    var pass: u32 = 0;
+    while (pass < bootstrap_drain_max_passes) : (pass += 1) {
+        var any_ready = false;
+        if (self._worker_scope.js.scheduler.hasReadyTasks()) any_ready = true;
+        if (self._frame.js.scheduler.hasReadyTasks()) any_ready = true;
+        if (!any_ready) break;
+        try browser.runMacrotasks();
+    }
+}
+
 fn loadInitialScript(self: *Worker, script: []const u8) !void {
     var ls: js.Local.Scope = undefined;
     self._worker_scope.js.localScope(&ls);
@@ -201,19 +222,74 @@ fn loadInitialScript(self: *Worker, script: []const u8) !void {
     try_catch.init(&ls.local);
     defer try_catch.deinit();
 
+    // reCAPTCHA's worker bootstrap posts to the parent during importScripts and
+    // expects a synchronous reply before the initial eval returns.
+    self._bootstrap_complete = true;
+
     _ = ls.local.eval(wrapped_script, self._url) catch |err| {
         const caught = try_catch.caughtOrError(self._arena, err);
         log.err(.browser, "worker script error", .{ .url = self._url, .caught = caught });
         self.fireErrorEvent(caught.exception orelse @errorName(err), null);
         return;
     };
-
-    self._bootstrap_complete = true;
     ls.local.runMacrotasks();
+    // CreepJS dedicated worker allows only 3s and chains setTimeout(0) after a
+    // large synchronous eval. Local.runMacrotasks pumps V8 only — drain Velora
+    // schedulers (worker + parent) so queueEvent can postMessage in time.
+    try drainBootstrapSchedulers(self);
+    // CreepJS worker scope chains setTimeout (queueEvent) after eval; pump the
+    // worker scheduler on the next frame turn so getWorkerData can postMessage.
+    try self.scheduleDeferredWorkerPump(0);
     // Queue parent delivery for the next macrotask turn so Worker() can return
     // and onmessage handlers can be assigned first.
     try self.scheduleDeferredParentFlush();
 }
+
+fn scheduleDeferredWorkerPump(self: *Worker, round: u32) !void {
+    const frame = self._frame;
+    const arena = try frame.getArena(.tiny, "Worker.deferPump");
+    errdefer frame.releaseArena(arena);
+
+    const callback = try arena.create(DeferWorkerPumpCallback);
+    callback.* = .{ .worker = self, .arena = arena, .round = round };
+
+    try frame.js.scheduler.add(callback, DeferWorkerPumpCallback.run, 0, .{
+        .name = "Worker.deferPump",
+        .low_priority = false,
+        .finalizer = DeferWorkerPumpCallback.cancelled,
+    });
+}
+
+const DeferWorkerPumpCallback = struct {
+    worker: *Worker,
+    arena: Allocator,
+    round: u32,
+
+    fn cancelled(ctx: *anyopaque) void {
+        const self: *DeferWorkerPumpCallback = @ptrCast(@alignCast(ctx));
+        self.worker._frame.releaseArena(self.arena);
+    }
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *DeferWorkerPumpCallback = @ptrCast(@alignCast(ctx));
+        const worker = self.worker;
+        const frame = worker._frame;
+        const browser = frame._session.browser;
+
+        browser.runMacrotasks() catch |err| {
+            log.warn(.browser, "worker deferred pump", .{ .err = err });
+        };
+        scheduleDeferredMacrotaskPump(frame);
+
+        const worker_pending = worker._worker_scope.js.scheduler.hasReadyTasks();
+        const frame_pending = frame.js.scheduler.hasReadyTasks();
+        defer frame.releaseArena(self.arena);
+        if ((worker_pending or frame_pending) and self.round + 1 < bootstrap_pump_max_rounds) {
+            try worker.scheduleDeferredWorkerPump(self.round + 1);
+        }
+        return null;
+    }
+};
 
 fn scheduleDeferredParentFlush(self: *Worker) !void {
     const frame = self._frame;
@@ -279,6 +355,8 @@ const DeferFlushCallback = struct {
 
         try self.worker.flushPendingInboundMessages();
         scheduleDeferredMacrotaskPump(self.worker._frame);
+        // Bootstrap handshake (importScripts + MessageChannel setup) is done.
+        self.worker._bootstrap_complete = false;
         return null;
     }
 };
@@ -350,6 +428,29 @@ pub fn postMessage(self: *Worker, data: js.Value, transfer: ?[]js.Value) !void {
         &[_]*MessagePort{};
 
     try self._worker_scope.receiveMessage(data, message_id, transferred_ports);
+    if (self._bootstrap_complete) {
+        pumpBootstrapMessaging(&self._frame.js.execution);
+    }
+}
+
+/// True while a dedicated worker is still in its initial bootstrap eval
+/// (including nested importScripts). reCAPTCHA expects synchronous
+/// worker↔page MessageChannel round-trips during this window.
+pub fn bootstrapMessagingActive(exec: *const Execution) bool {
+    return switch (exec.context.global) {
+        .worker => |wgs| wgs._worker._bootstrap_complete,
+        .frame => |frame| blk: {
+            for (frame.workers.items) |worker| {
+                if (worker._bootstrap_complete) break :blk true;
+            }
+            break :blk false;
+        },
+    };
+}
+
+pub fn pumpBootstrapMessaging(exec: *const Execution) void {
+    if (!bootstrapMessagingActive(exec)) return;
+    exec.context.env.pumpSchedulerTasks();
 }
 
 // Called internally by WorkerGlobalScope when it wants to post a message to us

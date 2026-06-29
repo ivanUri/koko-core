@@ -75,20 +75,15 @@ pub fn getElementById(self: *ShadowRoot, id: []const u8, frame: *Frame) ?*Elemen
         return element;
     }
 
-    // Slow path: ID was removed but might have duplicates
-    if (self._removed_ids.remove(id)) {
-        // Do a tree walk to find another element with this ID
-        var tw = @import("../dom/TreeWalker.zig").Full.Elements.init(self.asNode(), .{});
-        while (tw.next()) |el| {
-            const element_id = el.getAttributeSafe(comptime .wrap("id")) orelse continue;
-            if (std.mem.eql(u8, element_id, id)) {
-                // we ignore this error to keep getElementById easy to call
-                // if it really failed, then we're out of memory and nothing's
-                // going to work like it should anyways.
-                const owned_id = frame.dupeString(id) catch return null;
-                self._elements_by_id.put(frame.arena, owned_id, el) catch return null;
-                return el;
-            }
+    // Slow path: id map miss (shadow DOM innerHTML may skip indexing).
+    _ = self._removed_ids.remove(id);
+    var tw = @import("../dom/TreeWalker.zig").Full.Elements.init(self.asNode(), .{});
+    while (tw.next()) |el| {
+        const element_id = el.getAttributeSafe(comptime .wrap("id")) orelse continue;
+        if (std.mem.eql(u8, element_id, id)) {
+            const owned_id = frame.dupeString(id) catch return null;
+            self._elements_by_id.put(frame.arena, owned_id, el) catch return null;
+            return el;
         }
     }
 

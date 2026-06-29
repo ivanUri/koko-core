@@ -20,6 +20,7 @@ const EventTarget = @import("EventTarget.zig");
 const MessageEvent = @import("event/MessageEvent.zig");
 
 const Frame = @import("../browser/Frame.zig");
+const Worker = @import("Worker.zig");
 const log = @import("../../support/log.zig");
 
 const Allocator = std.mem.Allocator;
@@ -145,7 +146,11 @@ fn enqueueMessage(self: *MessagePort, message: js.Value.Temp, exec: *const js.Ex
         .low_priority = false,
     });
 
-    scheduleDeferredPump(exec);
+    if (Worker.bootstrapMessagingActive(exec)) {
+        Worker.pumpBootstrapMessaging(exec);
+    } else {
+        scheduleDeferredPump(exec);
+    }
 }
 
 fn flushPendingMessages(self: *MessagePort) !void {
@@ -192,6 +197,10 @@ pub fn getOnMessage(self: *const MessagePort) ?js.Function.Global {
 
 pub fn setOnMessage(self: *MessagePort, cb: ?js.Function.Global) !void {
     self._on_message = cb;
+    // HTML: assigning onmessage enables the port message queue.
+    if (cb != null) {
+        try self.start();
+    }
     try self.flushPendingDeliveries();
 }
 

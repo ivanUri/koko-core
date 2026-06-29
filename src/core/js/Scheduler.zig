@@ -84,6 +84,14 @@ pub fn run(self: *Scheduler) !void {
     try self.runQueue(&self.low_priority, now);
 }
 
+/// Run at most one ready task (high priority first). Used for knitsail timer milestones.
+pub fn runOne(self: *Scheduler) !bool {
+    const now = milliTimestamp(.monotonic);
+    if (try self.runOneFromQueue(&self.high_priority, now)) return true;
+    if (try self.runOneFromQueue(&self.low_priority, now)) return true;
+    return false;
+}
+
 pub fn hasReadyTasks(self: *Scheduler) bool {
     const now = milliTimestamp(.monotonic);
     return queueHasReadyTask(&self.low_priority, now) or queueHasReadyTask(&self.high_priority, now);
@@ -99,34 +107,32 @@ pub fn msToNextHigh(self: *Scheduler) ?u64 {
 }
 
 fn runQueue(self: *Scheduler, queue: *Queue, now: u64) !void {
-    if (queue.count() == 0) {
-        return;
+    while (try self.runOneFromQueue(queue, now)) {}
+}
+
+fn runOneFromQueue(self: *Scheduler, queue: *Queue, now: u64) !bool {
+    if (queue.count() == 0) return false;
+    const head = queue.peek() orelse return false;
+    if (head.run_at > now) return false;
+
+    var task = queue.remove();
+    if (comptime IS_DEBUG) {
+        log.debug(.scheduler, "scheduler.runTask", .{ .name = task.name });
     }
 
-    while (queue.peek()) |*task_| {
-        if (task_.run_at > now) {
-            return;
-        }
-        var task = queue.remove();
+    const repeat_in_ms = task.callback(task.ctx) catch |err| {
+        log.warn(.scheduler, "task.callback", .{ .name = task.name, .err = err });
+        return true;
+    };
+
+    if (repeat_in_ms) |ms| {
         if (comptime IS_DEBUG) {
-            log.debug(.scheduler, "scheduler.runTask", .{ .name = task.name });
+            std.debug.assert(ms != 0);
         }
-
-        const repeat_in_ms = task.callback(task.ctx) catch |err| {
-            log.warn(.scheduler, "task.callback", .{ .name = task.name, .err = err });
-            continue;
-        };
-
-        if (repeat_in_ms) |ms| {
-            // Task cannot be repeated immediately, and they should know that
-            if (comptime IS_DEBUG) {
-                std.debug.assert(ms != 0);
-            }
-            task.run_at = now + ms;
-            try self.low_priority.add(task);
-        }
+        task.run_at = now + ms;
+        try self.low_priority.add(task);
     }
-    return;
+    return true;
 }
 
 fn queueHasReadyTask(queue: *Queue, now: u64) bool {

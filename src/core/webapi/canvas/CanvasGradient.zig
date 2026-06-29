@@ -113,6 +113,11 @@ fn create(kind: Kind, frame: *Frame) !*CanvasGradient {
 /// `color_str` cannot be parsed as a CSS color. Stops are stored in insertion
 /// order (the spec allows duplicates and does not require sorting at
 /// insertion time).
+pub fn firstColor(self: *const CanvasGradient) ?color.RGBA {
+    if (self._stops.items.len == 0) return null;
+    return self._stops.items[0].color;
+}
+
 pub fn addColorStop(self: *CanvasGradient, offset: f64, color_str: []const u8) !void {
     if (!std.math.isFinite(offset) or offset < 0.0 or offset > 1.0) {
         return error.IndexSizeError;

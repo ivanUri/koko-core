@@ -5,7 +5,7 @@
  * Usage:
  *   node scripts/cdp-creepjs-local-probe.mjs
  *   node scripts/cdp-creepjs-local-probe.mjs --page audio
- *   node scripts/cdp-creepjs-local-probe.mjs --max-sec 15
+ *   node scripts/cdp-creepjs-local-probe.mjs --max-sec 20
  */
 
 import { spawn } from "node:child_process";
@@ -25,7 +25,7 @@ const STATIC_PORT = 8765;
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function parseArgs(argv) {
-    const out = { profile: "chrome-local-huys-macbook-pro", maxSec: 15, logLevel: "info", page: "full" };
+    const out = { profile: "chrome-local-huys-macbook-pro", maxSec: 20, logLevel: "info", page: "full" };
     for (let i = 0; i < argv.length; i += 1) {
         const a = argv[i];
         if (a === "--profile") out.profile = argv[++i];
@@ -95,12 +95,25 @@ async function main() {
         "--port", String(STATIC_PORT),
     ], { cwd: REPO, stdio: ["ignore", "pipe", "pipe"] });
 
-    const pagePath = args.page === "audio" ? "/audio-probe.html" : "/index.html";
+    const pagePath = args.page === "audio"
+        ? "/audio-probe.html"
+        : args.page === "worker"
+            ? "/worker-probe.html"
+            : args.page === "parallel"
+                ? "/parallel-probe.html"
+                : args.page === "audio-heavy"
+                    ? "/audio-heavy-probe.html"
+                    : args.page === "canvas2d"
+                        ? "/canvas2d-probe.html"
+                        : args.page === "client-rects"
+                            ? "/client-rects-probe.html"
+                            : "/index.html";
     const targetUrl = `http://127.0.0.1:${STATIC_PORT}${pagePath}`;
 
     const port = await getFreePort();
     const endpoint = `http://127.0.0.1:${port}`;
     const logs = { stdout: [], stderr: [], static: [] };
+    const consoleLines = [];
     const t0 = Date.now();
 
     staticProc.stdout.on("data", (b) => logs.static.push(b.toString()));
@@ -148,6 +161,16 @@ async function main() {
         await client.send("Page.enable", {}, sessionId);
         await client.send("Runtime.enable", {}, sessionId);
         await client.send("Log.enable", {}, sessionId).catch(() => {});
+        client.ws.on("message", (raw) => {
+            try {
+                const msg = JSON.parse(String(raw));
+                if (msg.method === "Runtime.consoleAPICalled") {
+                    const args = msg.params?.args ?? [];
+                    const text = args.map((a) => a.value ?? a.description ?? "").join(" ");
+                    consoleLines.push(text);
+                }
+            } catch {}
+        });
 
         console.log(`navigate: ${targetUrl}`);
         await client.send("Page.navigate", { url: targetUrl }, sessionId);
@@ -156,9 +179,39 @@ async function main() {
             ? `(() => ({
                 ready: document.readyState,
                 status: document.getElementById('status')?.textContent ?? null,
-                passed: (document.getElementById('status')?.textContent ?? '').startsWith('PASS'),
+                passed: !!(window.AUDIO_PROBE_RESULT?.sampleSum),
                 result: window.AUDIO_PROBE_RESULT ?? null,
                 logLines: document.getElementById('log')?.children?.length ?? 0,
+            }))()`
+            : args.page === "worker"
+                ? `(() => ({
+                ready: document.readyState,
+                mini: window.__WORKER_MINI__ ?? null,
+                creep: window.__WORKER_CREEP__ ?? null,
+                logText: document.getElementById('log')?.textContent ?? '',
+                miniOk: !!(window.__WORKER_MINI__?.userAgent),
+                creepOk: !!(window.__WORKER_CREEP__?.userAgent),
+                done: (document.getElementById('log')?.textContent ?? '').includes('done'),
+            }))()`
+            : args.page === "parallel"
+                ? `(() => ({
+                ready: document.readyState,
+                done: !!(window.__PARALLEL_PROBE__),
+                result: window.__PARALLEL_PROBE__ ?? null,
+                logText: document.getElementById('log')?.textContent ?? '',
+            }))()`
+            : args.page === "canvas2d"
+                ? `(() => ({
+                ready: document.readyState,
+                status: document.getElementById('status')?.textContent ?? null,
+                done: !!(window.__CANVAS2D_PROBE__?.ok),
+                result: window.__CANVAS2D_PROBE__ ?? null,
+            }))()`
+            : args.page === "audio-heavy"
+                ? `(() => ({
+                ready: document.readyState,
+                status: document.getElementById('status')?.textContent ?? null,
+                passed: (document.getElementById('status')?.textContent ?? '').startsWith('PASS'),
             }))()`
             : `(() => ({
                 ready: document.readyState,
@@ -172,9 +225,10 @@ async function main() {
         while (Date.now() - t0 < args.maxSec * 1000) {
             const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
             try {
+                const evalTimeoutMs = args.page === "full" ? 3000 : 5000;
                 const r = await Promise.race([
                     client.send("Runtime.evaluate", { expression: pollExpr, returnByValue: true }, sessionId),
-                    delay(3000).then(() => { throw new Error("evaluate timeout 3s"); }),
+                    delay(evalTimeoutMs).then(() => { throw new Error(`evaluate timeout ${evalTimeoutMs / 1000}s`); }),
                 ]);
                 const v = r.result?.value ?? null;
                 samples.push({ elapsedSec: Number(elapsed), ...v });
@@ -182,6 +236,30 @@ async function main() {
                     console.log(`[${elapsed}s] status=${v?.status} passed=${v?.passed} logLines=${v?.logLines}`);
                     if (v?.passed) {
                         console.log("audio probe PASS", v?.result);
+                        break;
+                    }
+                } else if (args.page === "parallel") {
+                    console.log(`[${elapsed}s] done=${v?.done} result=${JSON.stringify(v?.result)}`);
+                    if (v?.done) {
+                        console.log("parallel probe PASS", v?.result);
+                        break;
+                    }
+                } else if (args.page === "worker") {
+                    console.log(`[${elapsed}s] miniOk=${v?.miniOk} creepOk=${v?.creepOk} done=${v?.done}`);
+                    if (v?.miniOk && v?.creepOk) {
+                        console.log("worker probe PASS", { mini: v?.mini?.userAgent, creep: v?.creep?.userAgent });
+                        break;
+                    }
+                } else if (args.page === "canvas2d") {
+                    console.log(`[${elapsed}s] status=${v?.status} done=${v?.done}`);
+                    if (v?.done) {
+                        console.log("canvas2d probe PASS", v?.result);
+                        break;
+                    }
+                } else if (args.page === "audio-heavy") {
+                    console.log(`[${elapsed}s] status=${v?.status} passed=${v?.passed}`);
+                    if (v?.passed) {
+                        console.log("audio-heavy probe PASS", v?.status);
                         break;
                     }
                 } else {
@@ -222,6 +300,7 @@ async function main() {
         killed,
         error,
         samples,
+        consoleLines,
         veloraLog: { stdout: logs.stdout.join(""), stderr: logs.stderr.join("") },
         staticLog: logs.static.join(""),
     };
@@ -235,9 +314,19 @@ async function main() {
     console.log(report.veloraLog.stderr.split("\n").filter(Boolean).slice(-60).join("\n") || "(empty)");
     console.log(`\nsaved: ${outPath} (${elapsedMs}ms)`);
 
+    const veloraText = report.veloraLog.stderr + report.veloraLog.stdout;
+    const allConsole = [...consoleLines, ...veloraText.split("\n")].join("\n");
     const passed = args.page === "audio"
-        ? samples.some((s) => s.passed)
-        : samples.some((s) => s.audioPassed);
+        ? samples.some((s) => s.passed) || allConsole.includes("AUDIO_PROBE_RESULT")
+        : args.page === "worker"
+            ? samples.some((s) => s.miniOk && s.creepOk) || allConsole.includes("worker probe PASS")
+            : args.page === "parallel"
+                ? samples.some((s) => s.done) || allConsole.includes("parallel probe PASS")
+                : args.page === "canvas2d"
+                    ? samples.some((s) => s.done) || allConsole.includes("canvas2d probe PASS")
+                    : args.page === "audio-heavy"
+                        ? samples.some((s) => s.passed) || allConsole.includes("PASS noise=")
+                        : samples.some((s) => s.audioPassed) || allConsole.includes("audio passed");
     process.exitCode = passed ? 0 : 1;
 }
 

@@ -254,6 +254,7 @@ fn createSnapshotContext(
 
     // Attach constructors for this context's APIs to the global
     inline for (ContextApis) |JsApi| {
+        if (@hasDecl(JsApi.Meta, "skip_global") and JsApi.Meta.skip_global == true) continue;
         const template_index = comptime bridge.JsApiLookup.getId(JsApi);
         const func = v8.v8__FunctionTemplate__GetFunction(templates[template_index], context);
         if (@hasDecl(JsApi.Meta, "name")) {
@@ -514,7 +515,7 @@ fn countInternalFields(comptime JsApi: type) u8 {
 }
 
 // Shared illegal constructor callback for types without explicit constructors
-fn illegalConstructorCallback(raw_info: ?*const v8.FunctionCallbackInfo) callconv(.c) void {
+pub fn illegalConstructorCallback(raw_info: ?*const v8.FunctionCallbackInfo) callconv(.c) void {
     const isolate = v8.v8__FunctionCallbackInfo__GetIsolate(raw_info);
     log.warn(.js, "Illegal constructor call", .{});
 
@@ -739,7 +740,9 @@ fn attachClass(comptime JsApi: type, isolate: *v8.Isolate, template: *const v8.F
 
     if (@hasDecl(JsApi.Meta, "name")) {
         const js_name = v8.v8__Symbol__GetToStringTag(isolate);
-        const js_value = v8.v8__String__NewFromUtf8(isolate, JsApi.Meta.name.ptr, v8.kNormal, @intCast(JsApi.Meta.name.len));
+        const tag = if (@hasDecl(JsApi.Meta, "to_string_tag")) JsApi.Meta.to_string_tag else JsApi.Meta.name;
+        const js_value = v8.v8__String__NewFromUtf8(isolate, tag.ptr, v8.kNormal, @intCast(tag.len));
+        v8.v8__Template__Set(@ptrCast(prototype), js_name, js_value, v8.ReadOnly + v8.DontDelete);
         v8.v8__Template__Set(@ptrCast(instance), js_name, js_value, v8.ReadOnly + v8.DontDelete);
     }
 

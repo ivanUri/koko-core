@@ -359,6 +359,8 @@ async function main() {
     const curlQuicDiffs = chrome && curl.quic ? compareQuic(curl, chrome) : [];
     const tlsSummary = summarize(tlsDiffs);
     const quicSummary = summarize(quicDiffs);
+    const tlsPrimary = ["ja4", "ja3n_hash", "akamai_hash"];
+    const tlsPrimarySummary = summarize(tlsDiffs.filter((d) => tlsPrimary.includes(d.key)));
 
     const report = {
         at: new Date().toISOString(),
@@ -381,13 +383,19 @@ async function main() {
             ? "velora_crashed_on_https_navigation"
             : !chrome
                 ? "chrome_skipped"
-                : tlsSummary.allMatch && quicSummary.allMatch
-                    ? "velora_matches_chrome"
-                    : !quicSummary.allMatch && tlsSummary.allMatch
-                        ? "quic_gap_only"
-                        : !tlsSummary.allMatch && quicSummary.allMatch
-                            ? "tls_gap_only"
-                            : "tls_and_quic_gaps",
+                : tlsPrimarySummary.allMatch && quicSummary.allMatch
+                    ? "velora_matches_chrome_primary"
+                    : tlsSummary.allMatch && quicSummary.allMatch
+                        ? "velora_matches_chrome_full"
+                        : !quicSummary.allMatch && tlsPrimarySummary.allMatch
+                            ? "quic_gap_only"
+                            : !tlsPrimarySummary.allMatch && quicSummary.allMatch
+                                ? "tls_primary_gap"
+                                : "tls_and_quic_gaps",
+        notes: {
+            ja3_raw_varies_per_connection: true,
+            primary_tls_fields: tlsPrimary,
+        },
     };
 
     const outPath = resolve(args.output, "report.json");
@@ -406,7 +414,9 @@ async function main() {
     }
 
     if (chrome && velora.tls) {
-        console.log("\n--- Velora vs Chrome ---");
+        const primary = summarize(tlsDiffs.filter((d) => tlsPrimary.includes(d.key)));
+        console.log(`\n--- Velora vs Chrome (primary TLS: ${primary.matches}/${primary.total}) ---`);
+        console.log("primary = ja4, ja3n_hash, akamai_hash (JA3 raw order varies per Chrome connection)");
         for (const d of [...tlsDiffs, ...quicDiffs].filter((x) => !x.match)) {
             console.log(`FAIL ${d.key}`);
             console.log(`  chrome: ${JSON.stringify(d.chrome)}`);
@@ -418,7 +428,7 @@ async function main() {
     console.log(`saved: ${outPath}`);
 
     if (velora.error) process.exitCode = 2;
-    else if (chrome && (!tlsSummary.allMatch || !quicSummary.allMatch)) process.exitCode = 1;
+    else if (chrome && (!tlsPrimarySummary.allMatch || !quicSummary.allMatch)) process.exitCode = 1;
 }
 
 main().catch((err) => {

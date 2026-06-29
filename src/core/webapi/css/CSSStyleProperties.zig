@@ -17,8 +17,17 @@ const js = @import("../../js/js.zig");
 const Element = @import("../../dom/Element.zig");
 const Frame = @import("../../browser/Frame.zig");
 const CSSStyleDeclaration = @import("CSSStyleDeclaration.zig");
+const ComputedStyleProps = @import("computed_style_properties.zig");
 
 const CSSStyleProperties = @This();
+
+const known_property_map: std.StaticStringMap(void) = blk: {
+    var entries: [ComputedStyleProps.names.len]struct { []const u8, void } = undefined;
+    for (ComputedStyleProps.names, 0..) |name, i| {
+        entries[i] = .{ name, {} };
+    }
+    break :blk std.StaticStringMap(void).initComptime(entries[0..]);
+};
 
 _proto: *CSSStyleDeclaration,
 
@@ -35,6 +44,26 @@ pub fn length(self: *const CSSStyleProperties) u32 {
 pub fn item(self: *const CSSStyleProperties, index: i32) []const u8 {
     if (index < 0) return "";
     return self._proto.item(@intCast(index));
+}
+
+pub fn getIndexName(self: *const CSSStyleProperties, index: usize) ?[]const u8 {
+    if (self._proto.isComputed()) {
+        return self._proto.getIndexName(index);
+    }
+    const name = self._proto.item(@intCast(index));
+    if (name.len == 0) return null;
+    return name;
+}
+
+pub fn getIndexes(self: *const CSSStyleProperties, frame: *Frame) !js.Array {
+    const len = self.length();
+    var arr = frame.js.local.?.newArray(len);
+    for (0..len) |i| {
+        var key_buf: [16]u8 = undefined;
+        const key = try std.fmt.bufPrint(&key_buf, "{d}", .{i});
+        _ = try arr.set(@intCast(i), key, .{});
+    }
+    return arr;
 }
 
 pub fn getCssText(self: *const CSSStyleProperties, frame: *Frame) ![]const u8 {
@@ -81,9 +110,26 @@ pub fn setNamed(self: *CSSStyleProperties, name: []const u8, value: []const u8, 
     try self._proto.setProperty(dash_case, value, null, frame);
 }
 
+pub fn getNamedKeys(self: *const CSSStyleProperties, frame: *Frame) !js.Array {
+    if (self._proto.isComputed()) {
+        return self._proto.getNamedKeys(frame);
+    }
+    const len = self.length();
+    var arr = frame.js.local.?.newArray(len);
+    var i: u32 = 0;
+    while (i < len) : (i += 1) {
+        const name = self.item(@intCast(i));
+        _ = try arr.set(i, name, .{});
+    }
+    return arr;
+}
+
 pub fn getNamed(self: *CSSStyleProperties, name: []const u8, frame: *Frame) ![]const u8 {
     if (method_names.has(name)) {
         return error.NotHandled;
+    }
+    if (self._proto.isComputed()) {
+        return self._proto.getNamed(name, frame);
     }
 
     const dash_case = camelCaseToDashCase(name, &frame.buf);
@@ -127,229 +173,7 @@ pub fn getNamed(self: *CSSStyleProperties, name: []const u8, frame: *Frame) ![]c
 }
 
 fn isKnownCSSProperty(dash_case: []const u8) bool {
-    const known_properties = std.StaticStringMap(void).initComptime(.{
-        // Colors & backgrounds
-        .{ "color", {} },
-        .{ "background", {} },
-        .{ "background-color", {} },
-        .{ "background-image", {} },
-        .{ "background-position", {} },
-        .{ "background-repeat", {} },
-        .{ "background-size", {} },
-        .{ "background-attachment", {} },
-        .{ "background-clip", {} },
-        .{ "background-origin", {} },
-        // Typography
-        .{ "font", {} },
-        .{ "font-family", {} },
-        .{ "font-size", {} },
-        .{ "font-style", {} },
-        .{ "font-weight", {} },
-        .{ "font-variant", {} },
-        .{ "line-height", {} },
-        .{ "letter-spacing", {} },
-        .{ "word-spacing", {} },
-        .{ "text-align", {} },
-        .{ "text-decoration", {} },
-        .{ "text-indent", {} },
-        .{ "text-transform", {} },
-        .{ "white-space", {} },
-        .{ "word-break", {} },
-        .{ "word-wrap", {} },
-        .{ "overflow-wrap", {} },
-        // Box model
-        .{ "margin", {} },
-        .{ "margin-top", {} },
-        .{ "margin-right", {} },
-        .{ "margin-bottom", {} },
-        .{ "margin-left", {} },
-        .{ "margin-block", {} },
-        .{ "margin-block-start", {} },
-        .{ "margin-block-end", {} },
-        .{ "margin-inline", {} },
-        .{ "margin-inline-start", {} },
-        .{ "margin-inline-end", {} },
-        .{ "padding", {} },
-        .{ "padding-top", {} },
-        .{ "padding-right", {} },
-        .{ "padding-bottom", {} },
-        .{ "padding-left", {} },
-        .{ "padding-block", {} },
-        .{ "padding-block-start", {} },
-        .{ "padding-block-end", {} },
-        .{ "padding-inline", {} },
-        .{ "padding-inline-start", {} },
-        .{ "padding-inline-end", {} },
-        // Border
-        .{ "border", {} },
-        .{ "border-width", {} },
-        .{ "border-style", {} },
-        .{ "border-color", {} },
-        .{ "border-top", {} },
-        .{ "border-top-width", {} },
-        .{ "border-top-style", {} },
-        .{ "border-top-color", {} },
-        .{ "border-right", {} },
-        .{ "border-right-width", {} },
-        .{ "border-right-style", {} },
-        .{ "border-right-color", {} },
-        .{ "border-bottom", {} },
-        .{ "border-bottom-width", {} },
-        .{ "border-bottom-style", {} },
-        .{ "border-bottom-color", {} },
-        .{ "border-left", {} },
-        .{ "border-left-width", {} },
-        .{ "border-left-style", {} },
-        .{ "border-left-color", {} },
-        .{ "border-radius", {} },
-        .{ "border-top-left-radius", {} },
-        .{ "border-top-right-radius", {} },
-        .{ "border-bottom-left-radius", {} },
-        .{ "border-bottom-right-radius", {} },
-        .{ "border-collapse", {} },
-        .{ "border-spacing", {} },
-        // Sizing
-        .{ "width", {} },
-        .{ "height", {} },
-        .{ "block-size", {} },
-        .{ "inline-size", {} },
-        .{ "min-width", {} },
-        .{ "min-height", {} },
-        .{ "max-width", {} },
-        .{ "max-height", {} },
-        .{ "box-sizing", {} },
-        // Positioning
-        .{ "position", {} },
-        .{ "top", {} },
-        .{ "right", {} },
-        .{ "bottom", {} },
-        .{ "left", {} },
-        .{ "inset", {} },
-        .{ "inset-block", {} },
-        .{ "inset-block-start", {} },
-        .{ "inset-block-end", {} },
-        .{ "inset-inline", {} },
-        .{ "inset-inline-start", {} },
-        .{ "inset-inline-end", {} },
-        .{ "z-index", {} },
-        .{ "float", {} },
-        .{ "clear", {} },
-        // Display & visibility
-        .{ "display", {} },
-        .{ "visibility", {} },
-        .{ "opacity", {} },
-        .{ "overflow", {} },
-        .{ "overflow-x", {} },
-        .{ "overflow-y", {} },
-        .{ "clip", {} },
-        .{ "clip-path", {} },
-        // Flexbox
-        .{ "flex", {} },
-        .{ "flex-direction", {} },
-        .{ "flex-wrap", {} },
-        .{ "flex-flow", {} },
-        .{ "flex-grow", {} },
-        .{ "flex-shrink", {} },
-        .{ "flex-basis", {} },
-        .{ "order", {} },
-        // Grid
-        .{ "grid", {} },
-        .{ "grid-template", {} },
-        .{ "grid-template-columns", {} },
-        .{ "grid-template-rows", {} },
-        .{ "grid-template-areas", {} },
-        .{ "grid-auto-columns", {} },
-        .{ "grid-auto-rows", {} },
-        .{ "grid-auto-flow", {} },
-        .{ "grid-column", {} },
-        .{ "grid-column-start", {} },
-        .{ "grid-column-end", {} },
-        .{ "grid-row", {} },
-        .{ "grid-row-start", {} },
-        .{ "grid-row-end", {} },
-        .{ "grid-area", {} },
-        .{ "gap", {} },
-        .{ "row-gap", {} },
-        .{ "column-gap", {} },
-        // Alignment (flexbox & grid)
-        .{ "align-content", {} },
-        .{ "align-items", {} },
-        .{ "align-self", {} },
-        .{ "justify-content", {} },
-        .{ "justify-items", {} },
-        .{ "justify-self", {} },
-        .{ "place-content", {} },
-        .{ "place-items", {} },
-        .{ "place-self", {} },
-        // Transforms & animations
-        .{ "transform", {} },
-        .{ "transform-origin", {} },
-        .{ "transform-style", {} },
-        .{ "perspective", {} },
-        .{ "perspective-origin", {} },
-        .{ "transition", {} },
-        .{ "transition-property", {} },
-        .{ "transition-duration", {} },
-        .{ "transition-timing-function", {} },
-        .{ "transition-delay", {} },
-        .{ "animation", {} },
-        .{ "animation-name", {} },
-        .{ "animation-duration", {} },
-        .{ "animation-timing-function", {} },
-        .{ "animation-delay", {} },
-        .{ "animation-iteration-count", {} },
-        .{ "animation-direction", {} },
-        .{ "animation-fill-mode", {} },
-        .{ "animation-play-state", {} },
-        // Filters & effects
-        .{ "filter", {} },
-        .{ "backdrop-filter", {} },
-        .{ "box-shadow", {} },
-        .{ "text-shadow", {} },
-        // Outline
-        .{ "outline", {} },
-        .{ "outline-width", {} },
-        .{ "outline-style", {} },
-        .{ "outline-color", {} },
-        .{ "outline-offset", {} },
-        // Lists
-        .{ "list-style", {} },
-        .{ "list-style-type", {} },
-        .{ "list-style-position", {} },
-        .{ "list-style-image", {} },
-        // Tables
-        .{ "table-layout", {} },
-        .{ "caption-side", {} },
-        .{ "empty-cells", {} },
-        // Misc
-        .{ "cursor", {} },
-        .{ "pointer-events", {} },
-        .{ "user-select", {} },
-        .{ "resize", {} },
-        .{ "object-fit", {} },
-        .{ "object-position", {} },
-        .{ "vertical-align", {} },
-        .{ "content", {} },
-        .{ "quotes", {} },
-        .{ "counter-reset", {} },
-        .{ "counter-increment", {} },
-        // Scrolling
-        .{ "scroll-behavior", {} },
-        .{ "scroll-margin", {} },
-        .{ "scroll-padding", {} },
-        .{ "overscroll-behavior", {} },
-        .{ "overscroll-behavior-x", {} },
-        .{ "overscroll-behavior-y", {} },
-        // Containment
-        .{ "contain", {} },
-        .{ "container", {} },
-        .{ "container-type", {} },
-        .{ "container-name", {} },
-        // Aspect ratio
-        .{ "aspect-ratio", {} },
-    });
-
-    return known_properties.has(dash_case);
+    return known_property_map.has(dash_case);
 }
 
 fn camelCaseToDashCase(name: []const u8, buf: []u8) []const u8 {
@@ -443,5 +267,6 @@ pub const JsApi = struct {
     pub const setProperty = bridge.function(CSSStyleProperties.setProperty, .{});
     pub const removeProperty = bridge.function(CSSStyleProperties.removeProperty, .{});
     pub const cssFloat = bridge.accessor(CSSStyleProperties.getFloat, CSSStyleProperties.setFloat, .{});
-    pub const @"[]" = bridge.namedIndexed(CSSStyleProperties.getNamed, CSSStyleProperties.setNamed, null, null, .{});
+    pub const @"[int]" = bridge.indexed(CSSStyleProperties.getIndexName, CSSStyleProperties.getIndexes, .{ .enumerable = true });
+    pub const @"[]" = bridge.namedIndexed(CSSStyleProperties.getNamed, CSSStyleProperties.setNamed, null, CSSStyleProperties.getNamedKeys, .{ .enumerable = true });
 };

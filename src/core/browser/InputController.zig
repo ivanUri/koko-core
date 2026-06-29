@@ -67,7 +67,13 @@ pub fn dispatchPointerUpAtCdp(root_frame: *Frame, x: f64, y: f64) !void {
 }
 
 fn dispatchPointerDownAtOpts(root_frame: *Frame, x: f64, y: f64, timeout_ms: u32) !void {
-    try HumanInput.movePointerTo(root_frame, x, y, .{ .steps = 8, .step_delay_ms = 4 });
+    const cdp_fast = timeout_ms <= cdp_ready_timeout_ms;
+    if (cdp_fast) {
+        root_frame._last_pointer_x = x;
+        root_frame._last_pointer_y = y;
+    } else {
+        try HumanInput.movePointerTo(root_frame, x, y, .{ .steps = 8, .step_delay_ms = 4 });
+    }
     const hit = (try waitForActivationHit(root_frame, x, y, timeout_ms)) orelse return;
     const effective = resolveEffectiveHit(hit);
     root_frame._input_press_hit = effective;
@@ -99,6 +105,12 @@ fn dispatchActivationOnTarget(hit: Frame.InputHit) !void {
     try dispatchPointerOver(effective);
     try dispatchPointerDown(effective);
     try dispatchPointerUpAndClick(effective);
+}
+
+/// Update last pointer position without dispatching events (CDP fast path).
+pub fn stashPointerAt(root_frame: *Frame, x: f64, y: f64) void {
+    root_frame._last_pointer_x = x;
+    root_frame._last_pointer_y = y;
 }
 
 /// Pointer/mouse move at viewport coordinates (no button press).
@@ -156,6 +168,10 @@ fn waitForActivationHit(root_frame: *Frame, x: f64, y: f64, timeout_ms: u32) !?F
                 return hit;
             }
         }
+        if (try resolveCaptchaCheckboxFallback(root_frame, x, y)) |hit| {
+            logActivation(hit);
+            return hit;
+        }
         if (try resolveHitOnce(root_frame, x, y, true)) |hit| {
             logActivation(hit);
             return hit;
@@ -189,11 +205,13 @@ fn waitForActivationHit(root_frame: *Frame, x: f64, y: f64, timeout_ms: u32) !?F
 }
 
 fn resolveHitOnce(root_frame: *Frame, x: f64, y: f64, fast: bool) !?Frame.InputHit {
-    const raw = (try root_frame.hitTestForInput(x, y)) orelse return null;
+    const raw = (try root_frame.hitTestForInput(x, y)) orelse {
+        return try resolveCaptchaCheckboxFallback(root_frame, x, y);
+    };
     const pierced_iframe = raw.element.getTag() == .iframe or raw.frame != root_frame;
     const refined = try refineInputHit(raw, fast);
     if (pierced_iframe and refined.frame == root_frame and refined.element.getTag() != .iframe) {
-        return null;
+        return try resolveCaptchaCheckboxFallback(root_frame, x, y);
     }
     return refined;
 }
@@ -397,6 +415,83 @@ fn refineIframeHit(hit: Frame.InputHit) !?Frame.InputHit {
     // nested documents; heuristic activation search misses widget markup.
     if (try child_frame.hitTestForInput(child_x, child_y)) |child_hit| {
         return child_hit;
+    }
+    if (isCaptchaWidgetFrame(child_frame)) {
+        if (findWidgetCheckboxTarget(child_frame, child_x, child_y)) |widget| {
+            return centerHitOnElement(.{
+                .element = widget,
+                .frame = child_frame,
+                .client_x = child_x,
+                .client_y = child_y,
+            });
+        }
+    }
+    return null;
+}
+
+fn resolveCaptchaCheckboxFallback(root_frame: *Frame, x: f64, y: f64) !?Frame.InputHit {
+    const raw = (try root_frame.hitTestForInput(x, y)) orelse {
+        return findCaptchaWidgetAtPoint(root_frame, x, y);
+    };
+    if (raw.element.getTag() == .iframe) {
+        if (try refineIframeHit(raw)) |child_hit| {
+            const refined = try refineInputHit(child_hit, true);
+            if (isActionableHit(refined, root_frame)) return refined;
+            if (isCaptchaWidgetFrame(refined.frame)) return refined;
+        }
+        if (raw.element.asNode().is(IFrame)) |iframe| {
+            if (iframe._window) |child_window| {
+                const child_frame = child_window._frame;
+                if (isCaptchaWidgetFrame(child_frame)) {
+                    const rect = raw.element.getActivationBoundingClientRect(raw.frame);
+                    const child_x = x - rect.getLeft();
+                    const child_y = y - rect.getTop();
+                    if (findWidgetCheckboxTarget(child_frame, child_x, child_y)) |widget| {
+                        return centerHitOnElement(.{
+                            .element = widget,
+                            .frame = child_frame,
+                            .client_x = child_x,
+                            .client_y = child_y,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    return findCaptchaWidgetAtPoint(root_frame, x, y);
+}
+
+fn findCaptchaWidgetAtPoint(root_frame: *Frame, x: f64, y: f64) ?Frame.InputHit {
+    return findCaptchaWidgetInFrame(root_frame, root_frame, x, y, 0);
+}
+
+fn findCaptchaWidgetInFrame(frame: *Frame, coord_frame: *Frame, x: f64, y: f64, depth: u8) ?Frame.InputHit {
+    if (depth > 8) return null;
+
+    if (isCaptchaWidgetFrame(frame)) {
+        if (findWidgetCheckboxTarget(frame, x, y)) |widget| {
+            return centerHitOnElement(.{
+                .element = widget,
+                .frame = frame,
+                .client_x = x,
+                .client_y = y,
+            });
+        }
+    }
+
+    for (frame.child_frames.items) |child_frame| {
+        const iframe_el = child_frame.iframe orelse continue;
+        const rect = iframe_el.asElement().getActivationBoundingClientRect(coord_frame);
+        if (x < rect.getLeft() or x > rect.getRight() or
+            y < rect.getTop() or y > rect.getBottom())
+        {
+            continue;
+        }
+        const child_x = x - rect.getLeft();
+        const child_y = y - rect.getTop();
+        if (findCaptchaWidgetInFrame(child_frame, child_frame, child_x, child_y, depth + 1)) |hit| {
+            return hit;
+        }
     }
     return null;
 }

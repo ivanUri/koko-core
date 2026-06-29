@@ -289,6 +289,7 @@ pub const IdentityResult = struct {
 };
 
 pub fn addIdentity(self: *Context, ptr: usize) !IdentityResult {
+    self.page.flushPendingIdentityRemovals();
     const gop = try self.identity.identity_map.getOrPut(self.identity_arena, ptr);
     return .{
         .value_ptr = gop.value_ptr,

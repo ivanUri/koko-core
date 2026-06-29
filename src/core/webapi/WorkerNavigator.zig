@@ -106,10 +106,6 @@ pub fn getVendor(_: *const WorkerNavigator, page: *Page) []const u8 {
     return page.navigatorState().vendor();
 }
 
-pub fn getGlobalPrivacyControl(_: *const WorkerNavigator, page: *Page) bool {
-    return page.navigatorState().globalPrivacyControl();
-}
-
 pub fn getGpu(self: *WorkerNavigator) *navigator_extras.GPU {
     return &self._gpu;
 }
@@ -150,7 +146,6 @@ pub const JsApi = struct {
     pub const product = bridge.accessor(WorkerNavigator.getProduct, null, .{});
     pub const webdriver = bridge.accessor(WorkerNavigator.getWebdriver, null, .{});
     pub const doNotTrack = bridge.accessor(WorkerNavigator.getDoNotTrack, null, .{});
-    pub const globalPrivacyControl = bridge.accessor(WorkerNavigator.getGlobalPrivacyControl, null, .{});
     pub const userAgentData = bridge.accessor(WorkerNavigator.getUserAgentData, null, .{});
     pub const gpu = bridge.accessor(WorkerNavigator.getGpu, null, .{});
     pub const cookieEnabled = bridge.attribute(true, .{});

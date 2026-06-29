@@ -40,6 +40,7 @@ _proto: *XMLHttpRequestEventTarget,
 _arena: Allocator,
 _http_response: ?HttpClient.Response = null,
 _active_request: bool = false,
+_send_flag: bool = false,
 
 _url: [:0]const u8 = "",
 _method: http.Method = .GET,
@@ -203,6 +204,7 @@ pub fn open(self: *XMLHttpRequest, method_: []const u8, url: [:0]const u8) !void
     self._response_mime = null;
     self._response_headers.clearRetainingCapacity();
     self._request_body = null;
+    self._send_flag = false;
 
     const exec = self._exec;
     self._method = try parseMethod(method_);
@@ -221,7 +223,7 @@ pub fn send(self: *XMLHttpRequest, body_: ?[]const u8) !void {
     if (comptime IS_DEBUG) {
         log.debug(.http, "XMLHttpRequest.send", .{ .url = self._url });
     }
-    if (self._ready_state != .opened) {
+    if (self._ready_state != .opened or self._send_flag) {
         return error.InvalidStateError;
     }
 
@@ -252,6 +254,7 @@ pub fn send(self: *XMLHttpRequest, body_: ?[]const u8) !void {
 
     self.acquireRef();
     self._active_request = true;
+    self._send_flag = true;
 
     http_client.request(.{
         .ctx = self,
@@ -276,6 +279,7 @@ pub fn send(self: *XMLHttpRequest, body_: ?[]const u8) !void {
         .shutdown_callback = httpShutdownCallback,
     }) catch |err| {
         self.releaseSelfRef();
+        self._send_flag = false;
         return err;
     };
 }

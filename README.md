@@ -156,6 +156,8 @@ await page.search("https://www.bing.com/", "velora browser", { waitUntil: "domco
 
 Google SERP (`google-search` policy) uses real Chrome network via `scripts/chrome-google-transport.mjs` — see `docs/tls-impersonate.md`.
 
+Google Search debug (trace / compare Velora vs Chrome): [`google-search-debug/README.md`](google-search-debug/README.md) — `npm run google:compare`, `npm run google:trace`.
+
 ## Use Cases
 
 Velora is designed for:

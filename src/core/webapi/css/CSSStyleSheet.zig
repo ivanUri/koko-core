@@ -5,6 +5,7 @@ const Frame = @import("../../browser/Frame.zig");
 const Parser = @import("../../browser/css/Parser.zig");
 
 const Element = @import("../../dom/Element.zig");
+const Node = @import("../../dom/Node.zig");
 
 const CSSRuleList = @import("CSSRuleList.zig");
 const CSSRule = @import("CSSRule.zig");
@@ -39,6 +40,11 @@ pub fn initWithOwner(owner: *Element, frame: *Frame) !*CSSStyleSheet {
 
 pub fn getOwnerNode(self: *const CSSStyleSheet) ?*Element {
     return self._owner_node;
+}
+
+fn ownerFrameFor(self: *const CSSStyleSheet, caller: *Frame) *Frame {
+    const owner = self.getOwnerNode() orelse return caller;
+    return owner.asNode().ownerFrame(caller);
 }
 
 pub fn getHref(self: *const CSSStyleSheet) ?[]const u8 {
@@ -115,7 +121,7 @@ pub fn insertRule(self: *CSSStyleSheet, rule: []const u8, maybe_index: ?u32, fra
     try rules.insert(index, style_rule._proto, frame);
 
     // Notify StyleManager that rules have changed
-    frame._style_manager.sheetModified();
+    ownerFrameFor(self, frame)._style_manager.sheetModified();
 
     return index;
 }
@@ -125,7 +131,7 @@ pub fn deleteRule(self: *CSSStyleSheet, index: u32, frame: *Frame) !void {
     try rules.remove(index);
 
     // Notify StyleManager that rules have changed
-    frame._style_manager.sheetModified();
+    ownerFrameFor(self, frame)._style_manager.sheetModified();
 }
 
 pub fn replace(self: *CSSStyleSheet, text: []const u8, frame: *Frame) CSSError!js.Promise {
@@ -152,7 +158,7 @@ pub fn replaceSync(self: *CSSStyleSheet, text: []const u8, frame: *Frame) CSSErr
     }
 
     // Notify StyleManager that rules have changed
-    frame._style_manager.sheetModified();
+    ownerFrameFor(self, frame)._style_manager.sheetModified();
 }
 
 pub const JsApi = struct {

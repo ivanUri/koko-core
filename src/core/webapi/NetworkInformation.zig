@@ -11,11 +11,11 @@ pub fn getEffectiveType(_: *const NetworkInformation) []const u8 {
 }
 
 pub fn getDownlink(_: *const NetworkInformation) f64 {
-    return 7.85;
+    return @import("../../runtime/profile/HttpProfile.zig").in_session_downlink;
 }
 
 pub fn getRtt(_: *const NetworkInformation) f64 {
-    return 50.0;
+    return @floatFromInt(@import("../../runtime/profile/HttpProfile.zig").in_session_rtt);
 }
 
 pub fn getSaveData(_: *const NetworkInformation) bool {

@@ -205,6 +205,7 @@ pub const CurlOption = enum(c.CURLoption) {
     accept_encoding = c.CURLOPT_ACCEPT_ENCODING,
     verbose = c.CURLOPT_VERBOSE,
     debug_function = c.CURLOPT_DEBUGFUNCTION,
+    debug_data = c.CURLOPT_DEBUGDATA,
     custom_request = c.CURLOPT_CUSTOMREQUEST,
     post = c.CURLOPT_POST,
     http_post = c.CURLOPT_HTTPPOST,
@@ -238,6 +239,7 @@ pub const CurlOption = enum(c.CURLoption) {
     ssl_enable_alps = 1002,
     ssl_cert_compression = 11003,
     ssl_permute_extensions = 1007,
+    tls_extension_order = c.CURLOPT_TLS_EXTENSION_ORDER,
     http2_pseudo_headers_order = 11005,
     http2_settings = 11006,
     http2_window_update = 1008,
@@ -258,6 +260,10 @@ pub const CurlOption = enum(c.CURLoption) {
 /// See vendor/curl-impersonate-patches/velora-h3-fingerprint-*.patch.
 pub const CHROME_QUIC_TRANSPORT_PARAMS: [:0]const u8 = "1:30000;3:1472;4:15728640;5:6291456;6:6291456;7:6291456;8:100;9:103;15:;17:1@1,GREASE;32:65536;12583:AUTO;12584:0x4f524947;GREASE";
 pub const CHROME_HTTP3_PSEUDO_HEADERS_ORDER: [:0]const u8 = "m,a,s,p";
+
+/// Chrome 149 TLS extension order on macOS (browserleaks ja3_text, h2 ALPN).
+/// curl-impersonate chrome146 defaults to permute; fixed order matches real Chrome JA3/JA4_o.
+pub const CHROME_TLS_EXTENSION_ORDER: [:0]const u8 = "0-35-13-23-43-65281-10-17613-18-51-5-45-11-27-65037-16";
 
 /// Prefer HTTP/2 over TLS (Chrome-like ALPN).
 pub const HTTP_VERSION_2TLS: c_long = c.CURL_HTTP_VERSION_2TLS;
@@ -650,6 +656,12 @@ pub fn setImpersonate(easy: *Curl, target: [:0]const u8, default_headers: bool) 
     try errorCheck(curl_easy_impersonate(easy, target.ptr, if (default_headers) 1 else 0));
 }
 
+pub fn disableDebugHook(easy: *Curl) Error!void {
+    try errorCheck(c.curl_easy_setopt(easy, c.CURLOPT_VERBOSE, @as(c_long, 0)));
+    try errorCheck(c.curl_easy_setopt(easy, c.CURLOPT_DEBUGFUNCTION, @as(?*const anyopaque, null)));
+    try errorCheck(c.curl_easy_setopt(easy, c.CURLOPT_DEBUGDATA, @as(?*anyopaque, null)));
+}
+
 pub fn curl_easy_setopt(easy: *Curl, comptime option: CurlOption, value: anytype) Error!void {
     const opt: c.CURLoption = @intFromEnum(option);
     const code = switch (option) {
@@ -718,6 +730,7 @@ pub fn curl_easy_setopt(easy: *Curl, comptime option: CurlOption, value: anytype
         .quic_transport_parameters,
         .http3_sig_hash_algs,
         .http3_tls_extension_order,
+        .tls_extension_order,
         .ech,
         => blk: {
             const s: ?[*]const u8 = value;
@@ -747,6 +760,7 @@ pub fn curl_easy_setopt(easy: *Curl, comptime option: CurlOption, value: anytype
         .read_data,
         .write_data,
         .opensocket_data,
+        .debug_data,
         => blk: {
             const ptr: ?*anyopaque = switch (@typeInfo(@TypeOf(value))) {
                 .null => null,
@@ -762,7 +776,7 @@ pub fn curl_easy_setopt(easy: *Curl, comptime option: CurlOption, value: anytype
                     fn cb(handle: ?*Curl, msg_type: c.curl_infotype, raw: [*c]u8, len: usize, user: ?*anyopaque) callconv(.c) c_int {
                         const h = handle orelse unreachable;
                         const u = user orelse unreachable;
-                        return value(h, @enumFromInt(@intFromEnum(msg_type)), raw, len, u);
+                        return value(h, @enumFromInt(msg_type), raw, len, u);
                     }
                 }.cb,
                 else => @compileError("expected Zig function or null for " ++ @tagName(option) ++ ", got " ++ @typeName(@TypeOf(value))),

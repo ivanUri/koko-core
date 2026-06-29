@@ -47,7 +47,8 @@ pub const ProbeState = struct {
         if (!self.oscillator_started) return false;
         if (@abs(self.oscillator_frequency - 10000) > 0.01) return false;
         if (@abs(self.compressor_threshold - (-50)) > 0.01) return false;
-        if (@abs(self.gain_value - 0.5) > 0.01) return false;
+        // CreepJS graph: osc → compressor → analyser → destination (no GainNode).
+        if (self.gain_value > 0.01) return false;
         return true;
     }
 };
@@ -55,6 +56,7 @@ pub const ProbeState = struct {
 pub const Baseline = struct {
     samples: []const f32,
     freq: []const f32,
+    time_domain: ?[]const f32 = null,
 };
 
 pub fn baseline(frame: *Frame) ?Baseline {
@@ -63,7 +65,11 @@ pub fn baseline(frame: *Frame) ?Baseline {
     const samples = profile.audio_probe_samples orelse return null;
     const freq = profile.audio_probe_freq orelse return null;
     if (samples.len == 0 or freq.len == 0) return null;
-    return .{ .samples = samples, .freq = freq };
+    return .{
+        .samples = samples,
+        .freq = freq,
+        .time_domain = profile.audio_probe_time_domain,
+    };
 }
 
 pub fn shouldUseBaseline(state: ProbeState, frame: *Frame) bool {

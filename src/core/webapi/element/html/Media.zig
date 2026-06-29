@@ -91,7 +91,9 @@ pub fn as(self: *Media, comptime T: type) *T {
     return self.is(T).?;
 }
 
-pub fn canPlayType(_: *const Media, mime_type: []const u8, frame: *Frame) []const u8 {
+const MediaKind = enum { audio, video, generic };
+
+pub fn canPlayType(self: *const Media, mime_type: []const u8, frame: *Frame) []const u8 {
     const pos = std.mem.indexOfScalar(u8, mime_type, ';') orelse mime_type.len;
     const base_type = std.mem.trim(u8, mime_type[0..pos], &std.ascii.whitespace);
 
@@ -99,34 +101,42 @@ pub fn canPlayType(_: *const Media, mime_type: []const u8, frame: *Frame) []cons
         return "";
     }
     const lower = std.ascii.lowerString(&frame.buf, base_type);
+    const media_kind: MediaKind = switch (self._type) {
+        .audio => .audio,
+        .video => .video,
+        .generic => .generic,
+    };
 
-    if (isProbablySupported(lower)) {
+    if (isProbablySupported(lower, media_kind)) {
         return "probably";
     }
-    if (isMaybeSupported(lower)) {
+    if (isMaybeSupported(lower, media_kind)) {
         return "maybe";
     }
     return "";
 }
 
-fn isProbablySupported(mime_type: []const u8) bool {
+fn isProbablySupported(mime_type: []const u8, _: MediaKind) bool {
     if (std.mem.eql(u8, mime_type, "video/mp4")) return true;
     if (std.mem.eql(u8, mime_type, "video/webm")) return true;
     if (std.mem.eql(u8, mime_type, "audio/mp4")) return true;
     if (std.mem.eql(u8, mime_type, "audio/webm")) return true;
     if (std.mem.eql(u8, mime_type, "audio/mpeg")) return true;
     if (std.mem.eql(u8, mime_type, "audio/mp3")) return true;
+    // CreepJS probes every mime on both <audio> and <video>; Chrome answers the same on both.
     if (std.mem.eql(u8, mime_type, "audio/ogg")) return true;
-    if (std.mem.eql(u8, mime_type, "video/ogg")) return true;
     if (std.mem.eql(u8, mime_type, "audio/wav")) return true;
     if (std.mem.eql(u8, mime_type, "audio/wave")) return true;
     if (std.mem.eql(u8, mime_type, "audio/x-wav")) return true;
+    if (std.mem.eql(u8, mime_type, "audio/aac")) return true;
     return false;
 }
 
-fn isMaybeSupported(mime_type: []const u8) bool {
-    if (std.mem.eql(u8, mime_type, "audio/aac")) return true;
+fn isMaybeSupported(mime_type: []const u8, media_kind: MediaKind) bool {
+    _ = media_kind;
+    if (std.mem.eql(u8, mime_type, "audio/mpegurl")) return true;
     if (std.mem.eql(u8, mime_type, "audio/x-m4a")) return true;
+    if (std.mem.eql(u8, mime_type, "video/x-matroska")) return true;
     if (std.mem.eql(u8, mime_type, "video/x-m4v")) return true;
     if (std.mem.eql(u8, mime_type, "audio/flac")) return true;
     return false;

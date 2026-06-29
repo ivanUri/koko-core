@@ -14,6 +14,8 @@
 
 //! This file provides various arguments needed for crypto APIs.
 
+const std = @import("std");
+
 const js = @import("../../js/js.zig");
 
 const CryptoKey = @import("../CryptoKey.zig");
@@ -88,6 +90,30 @@ pub const Init = union(enum) {
 /// Algorithm for deriveBits() and deriveKey().
 pub const Derive = union(enum) {
     ecdh_or_x25519: Init.EcdhKeyDeriveParams,
+};
+
+/// For `encrypt()` and `decrypt()` functionality.
+pub const Encrypt = union(enum) {
+    aes_gcm: AesGcm,
+    name: []const u8,
+    invalid: js.Value,
+
+    /// https://developer.mozilla.org/en-US/docs/Web/API/AesGcmParams
+    pub const AesGcm = struct {
+        name: []const u8,
+        iv: js.TypedArray(u8),
+        additionalData: ?js.TypedArray(u8) = null,
+        tagLength: ?u32 = null,
+    };
+
+    pub fn isAesGcm(self: Encrypt) bool {
+        const name = switch (self) {
+            .aes_gcm => |params| params.name,
+            .name => |n| n,
+            .invalid => return false,
+        };
+        return std.ascii.eqlIgnoreCase(name, "AES-GCM");
+    }
 };
 
 /// For `sign()` functionality.

@@ -34,10 +34,25 @@ pub fn parseFont(font: []const u8) struct { size: f64, family: []const u8 } {
         const num = std.mem.trim(u8, trimmed[0..px], " \t");
         size = std.fmt.parseFloat(f64, num) catch size;
         const rest = std.mem.trim(u8, trimmed[px + 2 ..], " \t");
-        if (rest.len > 0) family = rest;
+        if (rest.len > 0) {
+            if (std.mem.indexOf(u8, rest, ",")) |comma| {
+                family = trimQuotes(std.mem.trim(u8, rest[0..comma], " \t"));
+            } else {
+                family = trimQuotes(rest);
+            }
+        }
     }
 
     return .{ .size = size, .family = family };
+}
+
+fn trimQuotes(name: []const u8) []const u8 {
+    if (name.len >= 2 and ((name[0] == '"' and name[name.len - 1] == '"') or
+        (name[0] == '\'' and name[name.len - 1] == '\'')))
+    {
+        return name[1 .. name.len - 1];
+    }
+    return name;
 }
 
 pub fn fillText(

@@ -1525,6 +1525,8 @@ pub const Transfer = struct {
     // Error captured in dataCallback to be reported in processMessages.
     _callback_error: ?anyerror = null,
 
+    _wire_capture: ?*http.WireHeaderCapture.Session = null,
+
     // for when a Transfer is queued in the client.queue
     _node: std.DoublyLinkedList.Node = .{},
 
@@ -1698,6 +1700,11 @@ pub const Transfer = struct {
             try conn.setHeaders(&header_list);
             if (client.network.config.profile.mode == .antidetect) {
                 try conn.setUserAgent(client.getUserAgent());
+            }
+            if (http.WireHeaderCapture.shouldCapture(req.params.url, req.params.resource_type)) {
+                const session = try http.WireHeaderCapture.Session.init(req.params.arena, req.params.url);
+                self._wire_capture = session;
+                try conn.setWireHeaderCapture(session);
             }
         } else {
             try conn.setHeaders(&header_list);
@@ -1893,6 +1900,16 @@ pub const Transfer = struct {
         defer transfer._header_done_called = true;
 
         try transfer.buildResponseHeader(conn);
+
+        if (transfer._wire_capture) |session| {
+            const status = transfer.response_header.?.status;
+            const protocol = transfer.response_header.?.protocol() orelse "unknown";
+            session.flush(status, protocol) catch |err| {
+                log.warn(.http, "wire header capture flush", .{ .err = err });
+            };
+            transfer._wire_capture = null;
+            conn.clearWireHeaderCapture() catch {};
+        }
 
         if (transfer.req.params.cookie_jar) |jar| {
             var i: usize = 0;

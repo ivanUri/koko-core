@@ -59,6 +59,15 @@ pub fn setPoster(self: *Video, value: []const u8, frame: *Frame) !void {
     try self.asElement().setAttributeSafe(comptime .wrap("poster"), .wrap(value), frame);
 }
 
+pub fn getVideoPlaybackQuality(_: *const Video, frame: *Frame) !js.Object {
+    const local = frame.js.local orelse return error.NotHandled;
+    const obj = local.newObject();
+    _ = try obj.set("totalVideoFrames", @as(u32, 0), .{});
+    _ = try obj.set("droppedVideoFrames", @as(u32, 0), .{});
+    _ = try obj.set("corruptedVideoFrames", @as(u32, 0), .{});
+    return obj;
+}
+
 pub const JsApi = struct {
     pub const bridge = js.Bridge(Video);
 
@@ -71,4 +80,5 @@ pub const JsApi = struct {
     pub const poster = bridge.accessor(Video.getPoster, Video.setPoster, .{});
     pub const videoWidth = bridge.accessor(Video.getVideoWidth, null, .{});
     pub const videoHeight = bridge.accessor(Video.getVideoHeight, null, .{});
+    pub const getVideoPlaybackQuality = bridge.function(Video.getVideoPlaybackQuality, .{});
 };

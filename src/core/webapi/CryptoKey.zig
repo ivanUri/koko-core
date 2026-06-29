@@ -33,11 +33,13 @@ _key: []const u8,
 /// Different algorithms may use different data structures;
 /// this union can be used for such situations. Active field is understood
 /// from `_type`.
-_vary: extern union {
+_vary: union {
     /// Used by HMAC.
     digest: *const crypto.EVP_MD,
     /// Used by asymmetric algorithms (X25519, Ed25519).
     pkey: *crypto.EVP_PKEY,
+    /// AES symmetric keys carry no extra state.
+    aes: void,
 },
 
 /// https://developer.mozilla.org/en-US/docs/Web/API/CryptoKeyPair
@@ -49,7 +51,7 @@ pub const Pair = struct {
 /// Key-creating functions expect this format.
 pub const KeyOrPair = union(enum) { key: *CryptoKey, pair: Pair };
 
-pub const Type = enum(u8) { hmac, rsa, x25519 };
+pub const Type = enum(u8) { hmac, rsa, x25519, aes };
 
 /// Changing the names of fields would affect bitmask creation.
 pub const Usages = struct {
@@ -71,6 +73,14 @@ pub inline fn canSign(self: *const CryptoKey) bool {
 
 pub inline fn canVerify(self: *const CryptoKey) bool {
     return self._usages & Usages.verify != 0;
+}
+
+pub inline fn canEncrypt(self: *const CryptoKey) bool {
+    return self._usages & Usages.encrypt != 0;
+}
+
+pub inline fn canDecrypt(self: *const CryptoKey) bool {
+    return self._usages & Usages.decrypt != 0;
 }
 
 pub inline fn canDeriveBits(self: *const CryptoKey) bool {

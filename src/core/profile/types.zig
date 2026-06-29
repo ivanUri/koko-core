@@ -48,6 +48,7 @@ pub const WebGLProfile = struct {
     aliased_line_width_range: [2]f32,
     aliased_point_size_range: [2]f32,
     extensions: []const []const u8,
+    extensions_webgl2: []const []const u8 = &.{},
 };
 
 pub const IdentityProfile = struct {

@@ -43,21 +43,13 @@ pub fn init(allocator: std.mem.Allocator, app: *App, writer: *std.io.Writer) !*S
 
     self.session = try self.browser.newSession(self.notification);
 
-    if (app.config.cookieFile()) |cookie_path| {
-        @import("../../runtime/cookies.zig").loadFromFile(self.session, cookie_path);
-    }
+    @import("../../runtime/profile_session.zig").bootstrapCookies(self.session, app.config);
 
     return self;
 }
 
 pub fn deinit(self: *Self) void {
-    if (self.app.config.cookieJarFile()) |cookie_jar_path| {
-        @import("../../runtime/cookies.zig").saveToFile(&self.session.cookie_jar, cookie_jar_path);
-        var storage_buf: [512]u8 = undefined;
-        if (std.fmt.bufPrint(&storage_buf, "{s}.storage.json", .{cookie_jar_path})) |storage_path| {
-            @import("../../runtime/session_persist.zig").saveStorage(self.session, storage_path);
-        } else |_| {}
-    }
+    @import("../../runtime/profile_session.zig").persistCookies(self.session, self.app.config);
 
     self.node_registry.deinit();
     self.aw.deinit();

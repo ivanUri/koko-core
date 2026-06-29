@@ -97,7 +97,8 @@ fn dispatchMouseEvent(cmd: *CDP.Command) !void {
         .mouseMoved => {
             const bc = cmd.browser_context orelse return;
             const frame = bc.session.currentFrame() orelse return;
-            try InputController.dispatchPointerMoveAt(frame, params.x, params.y);
+            // Response already sent — avoid hit-test/event dispatch blocking the transport.
+            InputController.stashPointerAt(frame, params.x, params.y);
         },
         .mouseWheel => {
             const bc = cmd.browser_context orelse return;

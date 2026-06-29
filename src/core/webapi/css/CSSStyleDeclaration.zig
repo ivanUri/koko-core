@@ -18,6 +18,28 @@ const CssParser = @import("../../browser/css/Parser.zig");
 const js = @import("../../js/js.zig");
 const Frame = @import("../../browser/Frame.zig");
 const Element = @import("../../dom/Element.zig");
+const CSSRule = @import("CSSRule.zig");
+const ComputedStyleProps = @import("computed_style_properties.zig");
+const ClientRectsIntelligent = @import("../../../runtime/profile/ClientRectsIntelligent.zig");
+
+const known_property_map: std.StaticStringMap(void) = blk: {
+    var entries: [ComputedStyleProps.names.len]struct { []const u8, void } = undefined;
+    for (ComputedStyleProps.names, 0..) |name, i| {
+        entries[i] = .{ name, {} };
+    }
+    break :blk std.StaticStringMap(void).initComptime(entries[0..]);
+};
+
+const method_names = std.StaticStringMap(void).initComptime(.{
+    .{ "getPropertyValue", {} },
+    .{ "setProperty", {} },
+    .{ "removeProperty", {} },
+    .{ "getPropertyPriority", {} },
+    .{ "item", {} },
+    .{ "cssText", {} },
+    .{ "length", {} },
+    .{ "parentRule", {} },
+});
 
 const log = @import("../../../support/log.zig");
 const String = @import("../../../support/string.zig").String;
@@ -27,11 +49,18 @@ const CSSStyleDeclaration = @This();
 _element: ?*Element = null,
 _properties: std.DoublyLinkedList = .{},
 _is_computed: bool = false,
+_computed_indexed_keys: []const []const u8 = &.{},
+_computed_named_keys: []const []const u8 = &.{},
+_computed_in_keys: []const []const u8 = &.{},
 
 pub fn init(element: ?*Element, is_computed: bool, frame: *Frame) !*CSSStyleDeclaration {
+    const profile = frame.loadedProfile();
     const self = try frame._factory.create(CSSStyleDeclaration{
         ._element = element,
         ._is_computed = is_computed,
+        ._computed_indexed_keys = if (is_computed) profile.css_computed_indexed_keys else &.{},
+        ._computed_named_keys = if (is_computed) profile.css_computed_named_keys else &.{},
+        ._computed_in_keys = if (is_computed) profile.css_computed_in_keys else &.{},
     });
 
     // Parse the element's existing style attribute into _properties so that
@@ -51,11 +80,27 @@ pub fn init(element: ?*Element, is_computed: bool, frame: *Frame) !*CSSStyleDecl
     return self;
 }
 
+pub fn isComputed(self: *const CSSStyleDeclaration) bool {
+    return self._is_computed;
+}
+
 pub fn length(self: *const CSSStyleDeclaration) u32 {
+    if (self._is_computed) {
+        if (self._computed_indexed_keys.len > 0) return @intCast(self._computed_indexed_keys.len);
+        return @intCast(ComputedStyleProps.names.len);
+    }
     return @intCast(self._properties.len());
 }
 
 pub fn item(self: *const CSSStyleDeclaration, index: u32) []const u8 {
+    if (self._is_computed) {
+        if (self._computed_indexed_keys.len > 0) {
+            if (index >= self._computed_indexed_keys.len) return "";
+            return self._computed_indexed_keys[index];
+        }
+        if (index >= ComputedStyleProps.names.len) return "";
+        return ComputedStyleProps.names[index];
+    }
     var i: u32 = 0;
     var node = self._properties.first;
     while (node) |n| {
@@ -69,9 +114,15 @@ pub fn item(self: *const CSSStyleDeclaration, index: u32) []const u8 {
     return "";
 }
 
+fn styleFrameFor(self: *const CSSStyleDeclaration, caller: *Frame) *Frame {
+    const element = self._element orelse return caller;
+    return element.asNode().ownerFrame(caller);
+}
+
 pub fn getPropertyValue(self: *const CSSStyleDeclaration, property_name: []const u8, frame: *Frame) []const u8 {
     const normalized = normalizePropertyName(property_name, &frame.buf);
     const wrapped = String.wrap(normalized);
+    const style_frame = styleFrameFor(self, frame);
 
     // Computed styles must reflect stylesheet rules, not just the element's
     // inline `style=` attribute. Limited to display/visibility — what aria
@@ -79,31 +130,104 @@ pub fn getPropertyValue(self: *const CSSStyleDeclaration, property_name: []const
     if (self._is_computed) {
         if (self._element) |element| {
             if (wrapped.eql(comptime .wrap("display"))) {
-                if (frame._style_manager.hasDisplayNone(element)) return "none";
+                if (style_frame._style_manager.hasDisplayNone(element)) return "none";
             } else if (wrapped.eql(comptime .wrap("visibility"))) {
-                if (frame._style_manager.hasVisibilityHiddenInherited(element)) return "hidden";
+                if (style_frame._style_manager.hasVisibilityHiddenInherited(element)) return "hidden";
             }
         }
     }
 
     const prop = self.findProperty(wrapped) orelse {
         if (self._is_computed) {
-            return getComputedPropertyValue(self, wrapped, frame);
+            return getComputedPropertyValue(self, wrapped, style_frame);
         }
         return "";
     };
-    return prop._value.str();
+    return resolveColorPropertyValue(wrapped, prop._value.str());
 }
 
-fn getComputedPropertyValue(self: *const CSSStyleDeclaration, name: String, frame: *Frame) []const u8 {
-    if (self._element) |element| {
-        if (name.eql(comptime .wrap("display"))) {
-            if (frame._style_manager.hasDisplayNone(element)) return "none";
-        } else if (name.eql(comptime .wrap("visibility"))) {
-            if (frame._style_manager.hasVisibilityHiddenInherited(element)) return "hidden";
+fn resolveColorPropertyValue(name: String, value: []const u8) []const u8 {
+    if (!isColorProperty(name)) return value;
+    if (resolveSystemColor(value)) |resolved| return resolved;
+    return value;
+}
+
+fn isColorProperty(name: String) bool {
+    const raw = name.str();
+    return std.mem.eql(u8, raw, "color") or
+        std.mem.eql(u8, raw, "background-color") or
+        std.mem.eql(u8, raw, "border-color") or
+        std.mem.eql(u8, raw, "outline-color");
+}
+
+fn getInlineStyleValue(element: *Element, property_name: []const u8) ?[]const u8 {
+    const attr_value = element.getAttributeSafe(comptime .wrap("style")) orelse return null;
+    var it = CssParser.parseDeclarationsList(attr_value);
+    while (it.next()) |declaration| {
+        if (std.ascii.eqlIgnoreCase(declaration.name, property_name)) {
+            return declaration.value;
         }
     }
-    return getDefaultPropertyValue(self, name);
+    return null;
+}
+
+fn getComputedPropertyValue(self: *const CSSStyleDeclaration, name: String, style_frame: *Frame) []const u8 {
+    const raw = name.str();
+    if (raw.len > 2 and raw[0] == '-' and raw[1] == '-') {
+        if (self._element) |element| {
+            if (style_frame._style_manager.getCustomProperty(element, raw)) |custom| {
+                return custom;
+            }
+        }
+        return "";
+    }
+    if (self._element) |element| {
+        if (name.eql(comptime .wrap("display"))) {
+            if (style_frame._style_manager.hasDisplayNone(element)) return "none";
+        } else if (name.eql(comptime .wrap("visibility"))) {
+            if (style_frame._style_manager.hasVisibilityHiddenInherited(element)) return "hidden";
+        }
+        if (getInlineStyleValue(element, raw)) |inline_value| {
+            return resolveColorPropertyValue(name, inline_value);
+        }
+        if (name.eql(comptime .wrap("font-family"))) {
+            if (getInlineSystemFontFamily(element)) |family| return family;
+        }
+        if (name.eql(comptime .wrap("block-size")) or name.eql(comptime .wrap("inline-size"))) {
+            if (ClientRectsIntelligent.lookupEmojiLogicalSize(element, style_frame)) |dims| {
+                const logical = if (name.eql(comptime .wrap("block-size"))) dims.block_size else dims.inline_size;
+                // Chrome serializes logical emoji sizes at ~6 decimal places.
+                const value = @round(logical * 1_000_000.0) / 1_000_000.0;
+                const formatted = std.fmt.bufPrint(&style_frame.buf, "{d}px", .{value}) catch return "auto";
+                return formatted;
+            }
+        }
+    }
+    return resolveColorPropertyValue(name, getDefaultPropertyValue(self, name));
+}
+
+fn getInlineSystemFontFamily(element: *Element) ?[]const u8 {
+    const attr_value = element.getAttributeSafe(comptime .wrap("style")) orelse return null;
+    var it = CssParser.parseDeclarationsList(attr_value);
+    while (it.next()) |declaration| {
+        if (!std.ascii.eqlIgnoreCase(declaration.name, "font")) continue;
+        var value = std.mem.trim(u8, declaration.value, " ");
+        if (std.mem.endsWith(u8, value, "!important")) {
+            value = std.mem.trimRight(u8, value[0 .. value.len - "!important".len], " ");
+        }
+        if (resolveSystemFontKeyword(value)) |family| return family;
+    }
+    return null;
+}
+
+fn resolveSystemFontKeyword(value: []const u8) ?[]const u8 {
+    const keywords = [_][]const u8{
+        "caption", "icon", "menu", "message-box", "small-caption", "status-bar",
+    };
+    for (keywords) |kw| {
+        if (std.mem.eql(u8, value, kw)) return "Arial";
+    }
+    return null;
 }
 
 pub fn getPropertyPriority(self: *const CSSStyleDeclaration, property_name: []const u8, frame: *Frame) []const u8 {
@@ -179,6 +303,138 @@ fn syncStyleAttribute(self: *CSSStyleDeclaration, frame: *Frame) !void {
     const element = self._element orelse return;
     const css_text = try self.getCssText(frame);
     try element.setAttributeSafe(comptime .wrap("style"), .wrap(css_text), frame);
+}
+
+pub fn getParentRule(_: *const CSSStyleDeclaration, _: *Frame) ?*CSSRule {
+    return null;
+}
+
+pub fn getIndexName(self: *const CSSStyleDeclaration, index: usize) ?[]const u8 {
+    if (self._is_computed) {
+        if (self._computed_indexed_keys.len > 0) {
+            if (index >= self._computed_indexed_keys.len) return null;
+            return self._computed_indexed_keys[index];
+        }
+        if (index >= ComputedStyleProps.names.len) return null;
+        return ComputedStyleProps.names[index];
+    }
+    const name = self.item(@intCast(index));
+    if (name.len == 0) return null;
+    return name;
+}
+
+pub fn getIndexes(self: *const CSSStyleDeclaration, frame: *Frame) !js.Array {
+    const len = self.length();
+    var arr = frame.js.local.?.newArray(len);
+    var i: u32 = 0;
+    while (i < len) : (i += 1) {
+        var key_buf: [16]u8 = undefined;
+        const key = try std.fmt.bufPrint(&key_buf, "{d}", .{i});
+        _ = try arr.set(i, key, .{});
+    }
+    return arr;
+}
+
+fn isComputedNamedKey(self: *const CSSStyleDeclaration, name: []const u8, dash_case: []const u8) bool {
+    if (!self._is_computed) return true;
+    const keys = if (self._computed_in_keys.len > 0) self._computed_in_keys else self._computed_named_keys;
+    if (keys.len == 0) return true;
+    for (keys) |key| {
+        if (std.mem.eql(u8, key, name) or std.mem.eql(u8, key, dash_case)) return true;
+    }
+    return false;
+}
+
+pub fn getNamedKeys(self: *const CSSStyleDeclaration, frame: *Frame) !js.Array {
+    if (self._is_computed) {
+        const keys = if (self._computed_named_keys.len > 0)
+            self._computed_named_keys
+        else
+            frame.loadedProfile().css_computed_named_keys;
+        var arr = frame.js.local.?.newArray(@intCast(keys.len));
+        for (keys, 0..) |key, i| {
+            _ = try arr.set(@intCast(i), key, .{});
+        }
+        return arr;
+    }
+    const len = self.length();
+    var arr = frame.js.local.?.newArray(len);
+    var i: u32 = 0;
+    while (i < len) : (i += 1) {
+        const name = self.item(@intCast(i));
+        _ = try arr.set(i, name, .{});
+    }
+    return arr;
+}
+
+pub fn setNamed(self: *CSSStyleDeclaration, name: []const u8, value: []const u8, frame: *Frame) !void {
+    if (method_names.has(name)) return error.NotHandled;
+    const dash_case = camelCaseToDashCase(name, &frame.buf);
+    try self.setProperty(dash_case, value, null, frame);
+}
+
+pub fn getNamed(self: *const CSSStyleDeclaration, name: []const u8, frame: *Frame) ![]const u8 {
+    if (method_names.has(name)) return error.NotHandled;
+    const dash_case = camelCaseToDashCase(name, &frame.buf);
+    if (!self.isComputedNamedKey(name, dash_case)) return error.NotHandled;
+    const is_camelcase_access = std.mem.indexOfScalar(u8, name, '-') == null;
+    if (is_camelcase_access and std.mem.startsWith(u8, dash_case, "-")) {
+        const is_webkit = std.mem.startsWith(u8, dash_case, "-webkit-");
+        const is_moz = std.mem.startsWith(u8, dash_case, "-moz-");
+        const is_ms = std.mem.startsWith(u8, dash_case, "-ms-");
+        const is_o = std.mem.startsWith(u8, dash_case, "-o-");
+        if ((is_moz or is_ms or is_o) and !is_webkit) return error.NotHandled;
+    }
+    const value = self.getPropertyValue(dash_case, frame);
+    if (value.len == 0) {
+        if (self._is_computed and self._computed_in_keys.len > 0) return "";
+        if (std.mem.startsWith(u8, dash_case, "-")) return error.NotHandled;
+        if (!isKnownCSSProperty(dash_case)) return error.NotHandled;
+        return "";
+    }
+    return value;
+}
+
+fn isKnownCSSProperty(dash_case: []const u8) bool {
+    return known_property_map.has(dash_case);
+}
+
+fn camelCaseToDashCase(name: []const u8, buf: []u8) []const u8 {
+    if (name.len == 0) return name;
+    const lower_name = std.ascii.lowerString(buf, name);
+    if (std.mem.eql(u8, lower_name, "cssfloat")) return "float";
+    if (std.mem.indexOfScalar(u8, name, '-')) |_| return lower_name;
+    if (!std.ascii.isLower(name[0])) return lower_name;
+    const has_vendor_prefix = blk: {
+        if (name.len > 6 and std.mem.startsWith(u8, name, "webkit") and std.ascii.isUpper(name[6])) break :blk true;
+        if (name.len > 3 and std.mem.startsWith(u8, name, "moz") and std.ascii.isUpper(name[3])) break :blk true;
+        if (name.len > 2 and std.mem.startsWith(u8, name, "ms") and std.ascii.isUpper(name[2])) break :blk true;
+        if (name.len > 1 and std.mem.startsWith(u8, name, "o") and std.ascii.isUpper(name[1])) break :blk true;
+        break :blk false;
+    };
+    var write_pos: usize = 0;
+    if (has_vendor_prefix) {
+        buf[write_pos] = '-';
+        write_pos += 1;
+    }
+    for (name, 0..) |c, i| {
+        if (write_pos >= buf.len) return lower_name;
+        if (std.ascii.isUpper(c)) {
+            const skip_dash = has_vendor_prefix and i < 10 and write_pos == 1;
+            if (i > 0 and !skip_dash) {
+                if (write_pos >= buf.len) break;
+                buf[write_pos] = '-';
+                write_pos += 1;
+            }
+            if (write_pos >= buf.len) break;
+            buf[write_pos] = std.ascii.toLower(c);
+            write_pos += 1;
+        } else {
+            buf[write_pos] = c;
+            write_pos += 1;
+        }
+    }
+    return buf[0..write_pos];
 }
 
 pub fn getFloat(self: *const CSSStyleDeclaration, frame: *Frame) []const u8 {
@@ -855,12 +1111,12 @@ pub fn resolveSystemColor(color_name: []const u8) ?[]const u8 {
         .{ .name = "LinkText", .value = "rgb(0, 0, 238)" }, // Hyperlinks (blue)
         .{ .name = "VisitedText", .value = "rgb(85, 26, 139)" }, // Visited links (purple)
         .{ .name = "ActiveText", .value = "rgb(255, 0, 0)" }, // Active links (red)
-        .{ .name = "ButtonFace", .value = "rgb(240, 240, 240)" }, // Button background
-        .{ .name = "ButtonText", .value = "rgb(0, 0, 0)" }, // Button text
-        .{ .name = "ButtonBorder", .value = "rgb(118, 118, 118)" }, // Button border
+        .{ .name = "ButtonFace", .value = "rgb(239, 239, 239)" },
+        .{ .name = "ButtonText", .value = "rgb(0, 0, 0)" },
+        .{ .name = "ButtonBorder", .value = "rgb(0, 0, 0)" },
         .{ .name = "Field", .value = "rgb(255, 255, 255)" }, // Input field background
         .{ .name = "FieldText", .value = "rgb(0, 0, 0)" }, // Input field text
-        .{ .name = "Highlight", .value = "rgb(181, 213, 255)" }, // Selection background
+        .{ .name = "Highlight", .value = "rgba(128, 188, 254, 0.6)" },
         .{ .name = "HighlightText", .value = "rgb(0, 0, 0)" }, // Selection text
         .{ .name = "SelectedItem", .value = "rgb(0, 99, 220)" }, // Selected item (macOS blue)
         .{ .name = "SelectedItemText", .value = "rgb(255, 255, 255)" }, // Selected item text
@@ -869,28 +1125,28 @@ pub fn resolveSystemColor(color_name: []const u8) ?[]const u8 {
         .{ .name = "GrayText", .value = "rgb(128, 128, 128)" }, // Disabled text
 
         // Legacy system colors (deprecated but still used)
-        .{ .name = "ActiveBorder", .value = "rgb(220, 220, 220)" },
-        .{ .name = "ActiveCaption", .value = "rgb(0, 99, 220)" },
+        .{ .name = "ActiveBorder", .value = "rgb(0, 0, 0)" },
+        .{ .name = "ActiveCaption", .value = "rgb(255, 255, 255)" },
         .{ .name = "AppWorkspace", .value = "rgb(255, 255, 255)" },
         .{ .name = "Background", .value = "rgb(255, 255, 255)" },
-        .{ .name = "ButtonHighlight", .value = "rgb(255, 255, 255)" },
-        .{ .name = "ButtonShadow", .value = "rgb(180, 180, 180)" },
+        .{ .name = "ButtonHighlight", .value = "rgb(239, 239, 239)" },
+        .{ .name = "ButtonShadow", .value = "rgb(239, 239, 239)" },
         .{ .name = "CaptionText", .value = "rgb(0, 0, 0)" },
-        .{ .name = "InactiveBorder", .value = "rgb(220, 220, 220)" },
-        .{ .name = "InactiveCaption", .value = "rgb(240, 240, 240)" },
+        .{ .name = "InactiveBorder", .value = "rgb(0, 0, 0)" },
+        .{ .name = "InactiveCaption", .value = "rgb(255, 255, 255)" },
         .{ .name = "InactiveCaptionText", .value = "rgb(128, 128, 128)" },
-        .{ .name = "InfoBackground", .value = "rgb(255, 255, 225)" },
+        .{ .name = "InfoBackground", .value = "rgb(255, 255, 255)" },
         .{ .name = "InfoText", .value = "rgb(0, 0, 0)" },
-        .{ .name = "Menu", .value = "rgb(240, 240, 240)" },
+        .{ .name = "Menu", .value = "rgb(255, 255, 255)" },
         .{ .name = "MenuText", .value = "rgb(0, 0, 0)" },
-        .{ .name = "Scrollbar", .value = "rgb(240, 240, 240)" },
-        .{ .name = "ThreeDDarkShadow", .value = "rgb(105, 105, 105)" },
-        .{ .name = "ThreeDFace", .value = "rgb(240, 240, 240)" },
-        .{ .name = "ThreeDHighlight", .value = "rgb(255, 255, 255)" },
-        .{ .name = "ThreeDLightShadow", .value = "rgb(227, 227, 227)" },
-        .{ .name = "ThreeDShadow", .value = "rgb(160, 160, 160)" },
+        .{ .name = "Scrollbar", .value = "rgb(255, 255, 255)" },
+        .{ .name = "ThreeDDarkShadow", .value = "rgb(0, 0, 0)" },
+        .{ .name = "ThreeDFace", .value = "rgb(239, 239, 239)" },
+        .{ .name = "ThreeDHighlight", .value = "rgb(0, 0, 0)" },
+        .{ .name = "ThreeDLightShadow", .value = "rgb(0, 0, 0)" },
+        .{ .name = "ThreeDShadow", .value = "rgb(0, 0, 0)" },
         .{ .name = "Window", .value = "rgb(255, 255, 255)" },
-        .{ .name = "WindowFrame", .value = "rgb(100, 100, 100)" },
+        .{ .name = "WindowFrame", .value = "rgb(0, 0, 0)" },
         .{ .name = "WindowText", .value = "rgb(0, 0, 0)" },
     };
 
@@ -936,7 +1192,10 @@ pub const JsApi = struct {
 
     pub const cssText = bridge.accessor(CSSStyleDeclaration.getCssText, CSSStyleDeclaration.setCssText, .{});
     pub const length = bridge.accessor(CSSStyleDeclaration.length, null, .{});
-    pub const item = bridge.function(_item, .{});
+    pub const parentRule = bridge.accessor(CSSStyleDeclaration.getParentRule, null, .{ .null_as_undefined = true });
+    pub const cssFloat = bridge.accessor(CSSStyleDeclaration.getFloat, CSSStyleDeclaration.setFloat, .{});
+    pub const getPropertyPriority = bridge.function(CSSStyleDeclaration.getPropertyPriority, .{});
+    pub const getPropertyValue = bridge.function(CSSStyleDeclaration.getPropertyValue, .{});
 
     fn _item(self: *const CSSStyleDeclaration, index: i32) []const u8 {
         if (index < 0) {
@@ -945,11 +1204,11 @@ pub const JsApi = struct {
         return self.item(@intCast(index));
     }
 
-    pub const getPropertyValue = bridge.function(CSSStyleDeclaration.getPropertyValue, .{});
-    pub const getPropertyPriority = bridge.function(CSSStyleDeclaration.getPropertyPriority, .{});
-    pub const setProperty = bridge.function(CSSStyleDeclaration.setProperty, .{});
+    pub const item = bridge.function(_item, .{});
     pub const removeProperty = bridge.function(CSSStyleDeclaration.removeProperty, .{});
-    pub const cssFloat = bridge.accessor(CSSStyleDeclaration.getFloat, CSSStyleDeclaration.setFloat, .{});
+    pub const setProperty = bridge.function(CSSStyleDeclaration.setProperty, .{});
+    pub const @"[int]" = bridge.indexed(CSSStyleDeclaration.getIndexName, CSSStyleDeclaration.getIndexes, .{ .enumerable = true });
+    pub const @"[]" = bridge.namedIndexed(CSSStyleDeclaration.getNamed, CSSStyleDeclaration.setNamed, null, CSSStyleDeclaration.getNamedKeys, .{ .enumerable = true });
 };
 
 const testing = @import("../../../testing/testing.zig");

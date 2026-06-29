@@ -35,6 +35,12 @@ pub fn getMedia(self: *const MediaQueryList) []const u8 {
     return self._media;
 }
 
+fn colorSchemeFromProfile(frame: *Frame) MediaQueryEval.Viewport.ColorScheme {
+    const scheme = frame.loadedProfile().http.prefers_color_scheme;
+    if (std.ascii.eqlIgnoreCase(scheme, "dark")) return .dark;
+    return .light;
+}
+
 pub fn getMatches(self: *const MediaQueryList, frame: *Frame) bool {
     const screen = frame.identityProfile().screen;
     const vp: MediaQueryEval.Viewport = .{
@@ -43,6 +49,8 @@ pub fn getMatches(self: *const MediaQueryList, frame: *Frame) bool {
         .device_width_px = screen.width,
         .device_height_px = screen.height,
         .device_pixel_ratio = screen.device_pixel_ratio,
+        .color_scheme = colorSchemeFromProfile(frame),
+        .color_gamut = .p3,
     };
     return MediaQueryEval.matches(self._media, vp);
 }

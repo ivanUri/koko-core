@@ -334,6 +334,7 @@ pub fn mapZigInstanceToJs(self: *const Local, js_obj_handle: ?*const v8.Object, 
                     .identity = ctx.identity,
                     .finalizer_ptr_id = finalizer_ptr_id,
                     .resolved_ptr_id = resolved_ptr_id,
+                    .js_global = gop.value_ptr.*,
                     .next = fc.identities,
                 };
                 fc.identities = identity_finalizer;
@@ -863,8 +864,8 @@ fn jsValueToTypedArray(comptime T: type, js_val: js.Value) !?[]T {
         return &[_]T{};
     }
 
-    const backing_store_handle = v8.std__shared_ptr__v8__BackingStore__get(&backing_store_ptr).?;
-    const data = v8.v8__BackingStore__Data(backing_store_handle);
+    const backing_store_handle = v8.std__shared_ptr__v8__BackingStore__get(&backing_store_ptr) orelse return null;
+    const data = v8.v8__BackingStore__Data(backing_store_handle) orelse return null;
     const base = @as([*]u8, @ptrCast(data)) + byte_offset;
 
     // 2. Validate alignment
@@ -1289,17 +1290,16 @@ fn resolveT(comptime T: type, value: *T) Resolved {
                     const resolved_ptr_id = identity_finalizer.resolved_ptr_id;
                     defer session.fc_identity_pool.destroy(identity_finalizer);
 
-                    // Always clean up the identity map entry
-                    if (identity_finalizer.identity.identity_map.fetchRemove(resolved_ptr_id)) |kv| {
-                        var global = kv.value;
-                        v8.v8__Global__Reset(&global);
-                    }
-
-                    // If done, FC was already cleaned up during Page teardown.
-                    // The finalizer_ptr_id may have been reused for a new object,
-                    // so we must not look it up in the map. It's also unsafe to
-                    // dereference identity_finalizer.page after done is true.
+                    // If done, Page teardown already cleared finalizers and may have
+                    // released the identity-map arena — do not touch identity_map.
                     if (identity_finalizer.done) return;
+
+                    // V8 requires resetting the Global in the first weak-callback pass.
+                    // Only defer identity_map removal — mutating the hash table here
+                    // can re-enter while getOrPut is active (CreepJS audio path).
+                    var global = identity_finalizer.js_global;
+                    v8.v8__Global__Reset(&global);
+                    page.queueIdentityRemoval(resolved_ptr_id);
 
                     const finalizer_ptr_id = identity_finalizer.finalizer_ptr_id;
                     const fc = page.finalizer_callbacks.get(finalizer_ptr_id) orelse return;
@@ -1327,11 +1327,13 @@ fn resolveT(comptime T: type, value: *T) Resolved {
                         // registered so Page teardown can force_deinit the instance.
                         // When RC reaches zero, RC.release calls detachFinalizer which
                         // removes the FC and releases fc.arena.
-                        FT.releaseRef(@ptrFromInt(finalizer_ptr_id), page);
                         const owner: *FT = @ptrFromInt(finalizer_ptr_id);
-                        if (@hasField(FT, "_rc") and @field(owner, "_rc").count > 0) {
-                            return;
-                        }
+                        const keep_fc = @hasField(FT, "_rc") and @field(owner, "_rc").count > 1;
+                        FT.releaseRef(@ptrFromInt(finalizer_ptr_id), page);
+                        // Do not touch page.finalizer_callbacks after releaseRef:
+                        // detachFinalizer may have removed the entry while V8 is
+                        // iterating weak callbacks.
+                        if (keep_fc) return;
                     } else {
                         if (fc.identities == identity_finalizer) {
                             fc.identities = identity_finalizer.next;

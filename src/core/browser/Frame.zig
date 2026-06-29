@@ -219,6 +219,8 @@ _performance_delivery_scheduled: bool = false,
 
 _speech_voices_ready: bool = false,
 _speech_voices_load_scheduled: bool = false,
+_speech_remote_load_scheduled: bool = false,
+_speech_remote_ready: bool = false,
 _speech_voices: []?*@import("../webapi/speech/SpeechSynthesis.zig").SpeechSynthesisVoice = &.{},
 
 _offline_audio_pending: [8]?*anyopaque = .{null} ** 8,
@@ -246,6 +248,10 @@ _undefined_custom_elements: std.ArrayList(*Element.Html.Custom) = .{},
 _factory: *Factory,
 
 _load_state: LoadState = .waiting,
+/// Google sei: defer knitsail sg_ss microtasks until post-parse pump.
+_defer_knitsail_post_parse: bool = false,
+/// Google knitsail: DCL after pageT freeze in pumpPostParseTasks (not in tailHook).
+_defer_knitsail_dcl: bool = false,
 
 _parse_state: ParseState = .pre,
 
@@ -312,6 +318,17 @@ _cdp_mouse_release_y: f64 = 0,
 
 // Cached hosting `<iframe>` client size for child-frame hit-test layout.
 _hosting_iframe_layout_size: ?struct { width: f64, height: f64 } = null,
+
+// Per-element layout dimensions cache (key = @intFromPtr(element)). Invalidated on domChanged.
+_element_layout_cache: std.AutoHashMapUnmanaged(usize, struct { width: f64, height: f64 }) = .empty,
+_layout_cache_dom_version: usize = 0,
+
+// Layout hot-path caches (visibility + document position). Invalidated via version on domChanged.
+_layout_visibility_cache: StyleManager.VisibilityCache = .empty,
+_layout_visibility_cache_version: usize = 0,
+_layout_doc_position_cache: std.AutoHashMapUnmanaged(usize, f64) = .empty,
+// True while resolveElementDimensions is on the stack — enables stylesheet fast path.
+_layout_resolve_depth: u32 = 0,
 
 // DOM version used to invalidate cached state of "live" collections
 version: usize = 0,
@@ -402,7 +419,7 @@ pub fn init(self: *Frame, frame_id: u32, page: *Page, parent: ?*Frame) !void {
 
     self.js = try browser.env.createContext(self, .{
         .identity = &page.identity,
-        .identity_arena = arena,
+        .identity_arena = page.identity_arena,
         .call_arena = self.call_arena,
     });
     errdefer browser.env.destroyContext(self.js);
@@ -714,7 +731,36 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
     };
 
     if (comptime build_config.curl_impersonate) {
-        if (opts.curl_defaults_only) return;
+        if (opts.curl_defaults_only) {
+            // Cold first hop: curl-impersonate default_headers carry TLS-aligned
+            // Sec-Fetch/Accept/UA. Guest Chrome also sends Downlink/RTT/Priority,
+            // high-entropy Sec-CH-UA, and x-browser on google.com (www.google.com.har).
+            const profile = self.loadedProfile();
+            const header_plan = self._session.browser.app.config.profile_runtime.headerPlan(request_url);
+            if (!profile.isFirefox()) {
+                const chrome_opts = HttpProfile.ChromeHeadersOpts{
+                    .full_client_hints = true,
+                    .brands = profile.http.brands,
+                    .color_scheme = profile.http.prefers_color_scheme,
+                };
+                try HttpProfile.appendCurlImpersonateColdHopSupplements(
+                    headers,
+                    self.arena,
+                    identity,
+                    &static,
+                    ctx,
+                    chrome_opts,
+                    profile.mode == .antidetect,
+                );
+            }
+            try self._session.browser.app.config.profile_runtime.appendHeaderPlugins(
+                header_plan,
+                headers,
+                self.arena,
+                http_client.getUserAgent(),
+            );
+            return;
+        }
         const profile = self.loadedProfile();
         const header_plan = self._session.browser.app.config.profile_runtime.headerPlan(request_url);
         if (profile.isFirefox()) {
@@ -876,6 +922,9 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
         const nav_start = self.window._performance._timing.navigation_start;
         self.window._chrome.recordNavigationStart(nav_start);
     }
+    if (isGoogleKnitsailHost(request_url)) {
+        self.window._google.ensureBootstrapDefaults(self);
+    }
     @import("../../runtime/profile/AutomationScrub.zig").applyOnce(self);
 
     const req_id = self._session.browser.http_client.nextReqId();
@@ -996,6 +1045,8 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
         .reason = navigateReasonForProfile(opts.reason),
         .referer = opts.referer,
         .prior_origin = opts.prior_origin orelse self.origin,
+        // Chỉ bật khi user truyền --google-chrome-transport. Antidetect profile
+        // không tự spawn Chrome cho hop sg_ss (policy google-search.json).
         .external_transport_enabled = session.browser.app.config.googleChromeTransport(),
     });
     const prior_origin = nav_plan.prior_origin;
@@ -1290,6 +1341,18 @@ pub fn documentIsLoaded(self: *Frame) void {
 }
 
 pub fn _documentIsLoaded(self: *Frame) !void {
+    const HtmlElementVersionIntelligent = @import("../../runtime/profile/HtmlElementVersionIntelligent.zig");
+    HtmlElementVersionIntelligent.installOnDocument(self, self.js);
+
+    const WindowKeysIntelligent = @import("../../runtime/profile/WindowKeysIntelligent.zig");
+    WindowKeysIntelligent.installOnDocument(self, self.js);
+
+    const NavigatorKeysIntelligent = @import("../../runtime/profile/NavigatorKeysIntelligent.zig");
+    NavigatorKeysIntelligent.installOnDocument(self, self.js);
+
+    const MathsIntelligent = @import("../../runtime/profile/MathsIntelligent.zig");
+    MathsIntelligent.installOnGlobal(self, self.js);
+
     const event = try Event.initTrusted(.wrap("DOMContentLoaded"), .{ .bubbles = true }, self._page);
     try self._event_manager.dispatch(
         self.document.asEventTarget(),
@@ -1371,6 +1434,82 @@ fn pendingLoadCompleted(self: *Frame) void {
     }
 }
 
+/// Knitsail reads chrome.csi().pageT during sg_ss encode; Chroma short-path ≈ 185–195ms.
+/// Use Blink-like float artifacts (integer ms is a bot signal).
+const knitsail_post_parse_target_page_t_ms: f64 = 192.59999999403954;
+/// Stagger deferred setTimeout probes (t20/t80/t200) before sg_ss microtasks.
+const knitsail_timer_milestones_ms = [_]f64{ 22.600000001490116, 82.39999999850988, 165.10000000149012 };
+
+pub fn isGoogleKnitsailHost(url: []const u8) bool {
+    return std.mem.indexOf(u8, url, "google.") != null;
+}
+
+pub fn holdsKnitsailMicrotasks(self: *const Frame) bool {
+    return self._defer_knitsail_post_parse;
+}
+
+/// Run timer/macrotask work deferred while the HTML parser was active.
+pub fn pumpPostParseTasks(self: *Frame) void {
+    self.pumpPostParseTasksNow();
+}
+
+fn pumpKnitsailTimerMilestones(self: *Frame) void {
+    const perf = &self.window._performance;
+    for (knitsail_timer_milestones_ms) |ms| {
+        perf.freezeNow(ms);
+        _ = self.js.scheduler.runOne() catch |err| {
+            log.warn(.frame, "knitsail timer milestone", .{ .err = err, .ms = ms });
+        };
+    }
+}
+
+const google_knitsail_bootstrap_globals_script =
+    \\(function(){try{var g=globalThis.google;if(!g||typeof g!=='object'){g={};try{Object.defineProperty(globalThis,'google',{value:g,writable:true,configurable:true,enumerable:true});}catch(e){globalThis.google=g;}}if(!g.c)g.c={cap:0};if(g.sn==null||g.sn==='')g.sn='web';if(typeof g.tick!=='function'){g.tick=function(p,m,ms){try{if(ms==null&&globalThis.performance)ms=globalThis.performance.now();}catch(e){}};}var t=globalThis.performance&&globalThis.performance.timing;if(t){var td=globalThis.td||{};if(t.navigationStart)td.ns=t.navigationStart;if(t.responseStart)td.rs=t.responseStart;if(t.domLoading&&!td.qs)td.qs=t.domLoading;if(t.domComplete&&!td.fs)td.fs=t.domComplete;globalThis.td=td;}var m=/(?:\\?|&)sei=([^&]+)/.exec(globalThis.location.search);if(!m){var a=document.querySelector('noscript a[href*="sei="]');if(a)m=a.href.match(/sei=([^&]+)/);}if(m&&!g.kEI)g.kEI=decodeURIComponent(m[1]);}catch(e){}})();
+;
+
+fn injectGoogleKnitsailBootstrapGlobals(self: *Frame, ls: *JS.Local.Scope) void {
+    if (!isGoogleKnitsailHost(self.url)) return;
+    _ = ls.local.eval(google_knitsail_bootstrap_globals_script, "google-bootstrap-globals") catch |err| {
+        log.warn(.frame, "google bootstrap globals", .{ .err = err, .url = self.url });
+    };
+}
+
+fn pumpPostParseTasksNow(self: *Frame) void {
+    const knitsail = isGoogleKnitsailHost(self.url);
+    var ls: JS.Local.Scope = undefined;
+    self.js.localScope(&ls);
+    defer ls.deinit();
+
+    if (knitsail) {
+        injectGoogleKnitsailBootstrapGlobals(self, &ls);
+        pumpKnitsailTimerMilestones(self);
+        self._defer_knitsail_post_parse = false;
+        // Hold pageT through async knitsail.a (promise after DCL). recordNavigationStart clears freeze.
+        self.window._performance.freezeNow(knitsail_post_parse_target_page_t_ms);
+    } else if (self._defer_knitsail_post_parse) {
+        self._defer_knitsail_post_parse = false;
+    }
+
+    if (self._defer_knitsail_dcl) {
+        self._defer_knitsail_dcl = false;
+        self.documentIsLoaded();
+    }
+
+    ls.local.ctx.env.runMicrotasks(.after_evaluate);
+    ls.local.runMacrotasks();
+    _ = self.js.scheduler.run() catch |err| {
+        log.warn(.frame, "post-parse scheduler", .{ .err = err });
+    };
+
+    if (knitsail) {
+        self._script_manager.notifyScriptsCompletedIfNeeded();
+    }
+}
+
+pub fn isDocumentParsing(self: *const Frame) bool {
+    return self._load_state == .parsing;
+}
+
 pub fn documentIsComplete(self: *Frame) void {
     if (self._load_state == .complete) {
         // Ideally, documentIsComplete would only be called once, but with
@@ -1384,7 +1523,7 @@ pub fn documentIsComplete(self: *Frame) void {
 
     // documentIsComplete could be called directly, without first calling
     // documentIsLoaded, if there were _only_ async scripts
-    if (self._load_state == .parsing) {
+    if (self._load_state == .parsing and !self._defer_knitsail_dcl) {
         self.documentIsLoaded();
     }
 
@@ -1528,6 +1667,18 @@ fn frameHeaderDoneCallback(response: HttpClient.Response) !bool {
     }
 
     self.window._performance.recordResponseStart();
+    const nav_xfer: f64 = blk: {
+        if (response.contentLength()) |cl| {
+            const n = @as(f64, @floatFromInt(cl));
+            // Navigation Timing transferSize is wire bytes (headers + encoded body),
+            // not decoded HTML length. CDP route.fulfill / Google sei ≈ 376.
+            if (n > 0 and n <= 4096) break :blk n;
+        }
+        break :blk 376;
+    };
+    self.window._performance.ensureNavigationTimingEntry(self.url, nav_xfer, self) catch |err| {
+        log.warn(.frame, "navigation timing entry", .{ .err = err, .url = self.url });
+    };
     if (!self.loadedProfile().isFirefox()) {
         const rs = self.window._performance._timing.response_start;
         self.window._chrome.recordResponseCommit(rs);
@@ -1758,6 +1909,7 @@ fn frameDoneCallback(ctx: *anyopaque) !void {
             }
             log.debug(.frame, "static scripts done start", .{ .type = self._type, .url = self.url });
             self._script_manager.staticScriptsDone();
+            self.pumpPostParseTasks();
             log.debug(.frame, "static scripts done complete", .{ .type = self._type, .url = self.url });
         },
         .text => |*buf| {
@@ -2041,8 +2193,34 @@ pub fn openPopup(self: *Frame, opts: OpenPopupOpts) !*Frame {
     return popup;
 }
 
+pub fn layoutResolveActive(self: *const Frame) bool {
+    return self._layout_resolve_depth > 0;
+}
+
+pub fn beginLayoutResolve(self: *Frame) void {
+    self._layout_resolve_depth +%= 1;
+}
+
+pub fn endLayoutResolve(self: *Frame) void {
+    if (self._layout_resolve_depth > 0) self._layout_resolve_depth -= 1;
+}
+
+/// Called after a top-level layout getter returns. Recovers from leaked depth
+/// if a prior V8 native callback did not unwind Zig defers cleanly.
+pub fn finishTopLevelLayoutResolve(self: *Frame) void {
+    self._layout_resolve_depth = 0;
+}
+
 pub fn domChanged(self: *Frame) void {
+    // Bulk layout reads (offsetWidth chains) must not invalidate mid-resolve.
+    if (self.layoutResolveActive()) return;
     self.version += 1;
+    // Version-only invalidation: eager HashMap clearRetainingCapacity from V8
+    // worker threads raced HTTP/parser threads and segfaulted in metadata init
+    // (Google SERP ~800KB hop). Lazy miss via version checks on read paths.
+    self._layout_cache_dom_version = self.version;
+    self._layout_visibility_cache_version = self.version;
+    self._style_manager.invalidateLayoutPropertyCache();
 
     if (self._intersection_check_scheduled) {
         return;
@@ -4469,6 +4647,10 @@ fn findFrameByName(frame: *Frame, name: []const u8) ?*Frame {
 /// Hit-test for synthetic input (CDP, fetch --click-selector). Unlike
 /// `document.elementFromPoint`, this descends into child browsing contexts when
 /// the topmost element is an iframe so clicks can reach nested content.
+pub fn frameId(self: *const Frame) u32 {
+    return self._frame_id;
+}
+
 pub fn hitTestForInput(self: *Frame, x: f64, y: f64) !?InputHit {
     const target = (try self.window._document.elementFromPoint(x, y, self)) orelse return null;
     return try resolveInputHit(target, x, y, self);

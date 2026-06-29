@@ -20,6 +20,7 @@ const HtmlElement = @import("../Html.zig");
 
 const CanvasRenderingContext2D = @import("../../canvas/CanvasRenderingContext2D.zig");
 const WebGLRenderingContext = @import("../../canvas/WebGLRenderingContext.zig");
+const WebGL2RenderingContext = @import("../../canvas/WebGL2RenderingContext.zig").WebGL2RenderingContext;
 const OffscreenCanvas = @import("../../canvas/OffscreenCanvas.zig");
 const PixelBuffer = @import("../../canvas/PixelBuffer.zig").PixelBuffer;
 const PngEncoder = @import("../../canvas/PngEncoder.zig");
@@ -92,10 +93,18 @@ pub fn setHeight(self: *Canvas, value: u32, frame: *Frame) !void {
 const DrawingContext = union(enum) {
     @"2d": *CanvasRenderingContext2D,
     webgl: *WebGLRenderingContext,
-    webgl2: *WebGLRenderingContext,
+    webgl2: *WebGL2RenderingContext,
 };
 
-pub fn getContext(self: *Canvas, context_type: []const u8, frame: *Frame) !?DrawingContext {
+fn parseContext2dDesynchronized(options: ?js.Value) bool {
+    const opts = options orelse return false;
+    if (!opts.isObject()) return false;
+    const js_obj = opts.toObject();
+    const val = js_obj.get("desynchronized") catch return false;
+    return val.toBool();
+}
+
+pub fn getContext(self: *Canvas, context_type: []const u8, options: ?js.Value, frame: *Frame) !?DrawingContext {
     if (self._cached) |cached| {
         const matches = switch (cached) {
             .@"2d" => std.mem.eql(u8, context_type, "2d"),
@@ -107,7 +116,10 @@ pub fn getContext(self: *Canvas, context_type: []const u8, frame: *Frame) !?Draw
 
     const drawing_context: DrawingContext = blk: {
         if (std.mem.eql(u8, context_type, "2d")) {
-            const ctx = try frame._factory.create(CanvasRenderingContext2D{ ._canvas = self });
+            const ctx = try frame._factory.create(CanvasRenderingContext2D{
+                ._canvas = self,
+                ._desynchronized = parseContext2dDesynchronized(options),
+            });
             break :blk .{ .@"2d" = ctx };
         }
 
@@ -117,7 +129,7 @@ pub fn getContext(self: *Canvas, context_type: []const u8, frame: *Frame) !?Draw
         }
 
         if (std.mem.eql(u8, context_type, "webgl2")) {
-            const ctx = try frame._factory.create(WebGLRenderingContext{ ._canvas = self });
+            const ctx = try frame._factory.create(WebGL2RenderingContext{ ._canvas = self });
             break :blk .{ .webgl2 = ctx };
         }
         return null;
@@ -164,19 +176,33 @@ pub fn toDataURL(
     }
 
     if (self._cached) |cached| {
+        const w = self.getWidth();
+        const h = self.getHeight();
         switch (cached) {
             .@"2d" => |ctx| {
-                const w = self.getWidth();
-                const h = self.getHeight();
+                if (CanvasIntelligent.consumeCanvas40ModsDataUrl(&ctx._probe, frame, w, h)) |url| {
+                    return url;
+                }
                 if (w == 75 and h == 75) {
-                    if (CanvasIntelligent.consumeCanvas75DataUrl(&ctx._probe, frame)) |url| {
+                    if (CanvasIntelligent.consumeCanvas75DataUrl(&ctx._probe, frame, ctx._desynchronized)) |url| {
                         return url;
                     }
                 } else if (CanvasIntelligent.shouldUseDataUrlBaseline(ctx._probe, frame)) |url| {
                     return url;
                 }
             },
-            else => {},
+            .webgl => |ctx| {
+                const WebGLIntelligent = @import("../../../../runtime/profile/WebGLIntelligent.zig");
+                if (WebGLIntelligent.dataUrlBaseline(frame, w, h, ctx._is_webgl2)) |url| {
+                    return url;
+                }
+            },
+            .webgl2 => |_| {
+                const WebGLIntelligent = @import("../../../../runtime/profile/WebGLIntelligent.zig");
+                if (WebGLIntelligent.dataUrlBaseline(frame, w, h, true)) |url| {
+                    return url;
+                }
+            },
         }
     }
 

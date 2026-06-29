@@ -42,6 +42,10 @@ battery_config: BatteryManager.Config,
 // used by sessions to allocate pages.
 page_pool: std.heap.MemoryPool(Page),
 
+// Serializes CDP-driven browser ticks. Multiple CDP WebSocket threads must not
+// run HttpClient.perform / V8 macrotasks concurrently on the same session.
+tick_mutex: std.Thread.Mutex = .{},
+
 const InitOpts = struct {
     env: js.Env.InitOpts = .{},
     battery_config: BatteryManager.Config = .{},
