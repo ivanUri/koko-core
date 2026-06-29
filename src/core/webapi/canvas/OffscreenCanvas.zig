@@ -18,6 +18,7 @@ const js = @import("../../js/js.zig");
 const Blob = @import("../Blob.zig");
 const OffscreenCanvasRenderingContext2D = @import("OffscreenCanvasRenderingContext2D.zig");
 const WebGLRenderingContext = @import("WebGLRenderingContext.zig");
+const WebGL2RenderingContext = @import("WebGL2RenderingContext.zig").WebGL2RenderingContext;
 
 const Execution = js.Execution;
 
@@ -31,7 +32,7 @@ pub const _prototype_root = true;
 const DrawingContext = union(enum) {
     @"2d": *OffscreenCanvasRenderingContext2D,
     webgl: *WebGLRenderingContext,
-    webgl2: *WebGLRenderingContext,
+    webgl2: *WebGL2RenderingContext,
 };
 
 _width: u32,
@@ -61,7 +62,8 @@ pub fn setHeight(self: *OffscreenCanvas, value: u32) void {
     self._height = value;
 }
 
-pub fn getContext(self: *OffscreenCanvas, context_type: []const u8, exec: *Execution) !?DrawingContext {
+pub fn getContext(self: *OffscreenCanvas, context_type: []const u8, options: ?js.Value, exec: *Execution) !?DrawingContext {
+    _ = options;
     // Per spec: once a context type is bound, return the same object or null for mismatched type.
     if (self._cached) |cached| {
         const matches = switch (cached) {
@@ -82,7 +84,7 @@ pub fn getContext(self: *OffscreenCanvas, context_type: []const u8, exec: *Execu
             break :blk .{ .webgl = ctx };
         }
         if (std.mem.eql(u8, context_type, "webgl2")) {
-            const ctx = try exec._factory.create(WebGLRenderingContext{ ._offscreen_canvas = self });
+            const ctx = try exec._factory.create(WebGL2RenderingContext{ ._offscreen_canvas = self });
             break :blk .{ .webgl2 = ctx };
         }
         return null;

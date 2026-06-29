@@ -6,6 +6,10 @@ const Spoofing = @import("Spoofing.zig");
 const TransportProfile = @import("TransportProfile.zig");
 const MeasureTextIntelligent = @import("MeasureTextIntelligent.zig");
 const CanvasIntelligent = @import("CanvasIntelligent.zig");
+const WebGLParameters = @import("WebGLParameters.zig");
+const MathsIntelligent = @import("MathsIntelligent.zig");
+const ClientRectsIntelligent = @import("ClientRectsIntelligent.zig");
+const SvgIntelligent = @import("SvgIntelligent.zig");
 
 extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, override: c_int) c_int;
 
@@ -52,6 +56,7 @@ pub const PluginSpec = struct {
 pub const SpeechVoiceSpec = struct {
     name: []const u8,
     lang: []const u8,
+    voice_uri: []const u8,
     local_service: bool,
     default_voice: bool,
 };
@@ -65,6 +70,7 @@ pub const LoadedProfile = struct {
     languages: []const []const u8,
     fonts: []const []const u8,
     webgl_extensions: []const []const u8,
+    webgl_extensions2: []const []const u8 = &.{},
     http: struct {
         user_agent: [:0]const u8,
         brands: []Brand,
@@ -83,14 +89,41 @@ pub const LoadedProfile = struct {
     canvas_probe_50_emoji: ?[]const u8 = null,
     canvas_probe_75_data: ?[]const u8 = null,
     canvas_probe_75_paint: ?[]const u8 = null,
+    canvas_probe_75_paint_cpu: ?[]const u8 = null,
+    canvas_probe_mods_pixel_image: ?[]const u8 = null,
     canvas_probe_2_pixels: ?[]const u8 = null,
     /// Chrome-captured OfflineAudioContext probe (5000 samples + FFT bins).
     audio_probe_samples: ?[]const f32 = null,
     audio_probe_freq: ?[]const f32 = null,
+    audio_probe_time_domain: ?[]const f32 = null,
     speech_voices: []const SpeechVoiceSpec = &.{},
     measure_text_baseline: []const MeasureTextIntelligent.Entry = &.{},
+    webgl_probe_read_width: i32 = 0,
+    webgl_probe_read_height: i32 = 0,
+    webgl_probe_pixels: ?[]const u8 = null,
+    webgl_probe_pixels2: ?[]const u8 = null,
+    webgl_probe_data_uri: ?[]const u8 = null,
+    webgl_probe_data_uri2: ?[]const u8 = null,
+    webgl_probe_parameters: WebGLParameters.Map = .empty,
+    window_keys: []const []const u8 = &.{},
+    navigator_keys: []const []const u8 = &.{},
+    html_element_keys: []const []const u8 = &.{},
+    css_computed_keys: []const []const u8 = &.{},
+    css_computed_indexed_keys: []const []const u8 = &.{},
+    css_computed_named_keys: []const []const u8 = &.{},
+    /// Full merged key list for CSSStyleDeclaration `in`/named getter parity (creep alias expansion).
+    css_computed_in_keys: []const []const u8 = &.{},
+    maths_baseline: []const MathsIntelligent.Entry = &.{},
+    client_rects: []const ClientRectsIntelligent.Rect = &.{},
+    client_rects_emoji_dims: []const ClientRectsIntelligent.EmojiDim = &.{},
+    svg_baseline: SvgIntelligent.Baseline = .{},
     /// Site policy ids enabled for this profile (e.g. "google-search").
     policies: []const []const u8 = &.{},
+    /// Baked session state paths (cookie seed + mutable runtime jar).
+    session: struct {
+        cookie_seed_file: []const u8 = "",
+        cookie_runtime_file: []const u8 = "",
+    } = .{},
 
     pub fn hasPolicy(self: *const LoadedProfile, policy_id: []const u8) bool {
         for (self.policies) |id| {
@@ -123,6 +156,8 @@ pub const LoadedProfile = struct {
             .canvas_50_emoji => self.canvas_probe_50_emoji,
             .canvas_75_data => self.canvas_probe_75_data,
             .canvas_75_paint => self.canvas_probe_75_paint,
+            .canvas_75_paint_cpu => self.canvas_probe_75_paint_cpu,
+            .canvas_mods_pixel_image => self.canvas_probe_mods_pixel_image,
             else => null,
         };
     }
@@ -204,6 +239,7 @@ const JsonWebGL = struct {
     aliasedLineWidthRange: [2]f32 = .{ 1, 1 },
     aliasedPointSizeRange: [2]f32 = .{ 1, 1024 },
     extensions: []const []const u8,
+    extensions2: []const []const u8 = &.{},
 };
 
 const JsonTransport = struct {
@@ -234,6 +270,7 @@ const JsonMeasureTextBaseline = struct {
 
 const JsonMeasureTextEntry = struct {
     family: []const u8,
+    font: ?[]const u8 = null,
     text: []const u8,
     width: f64,
     actualBoundingBoxLeft: f64 = 0,
@@ -244,15 +281,78 @@ const JsonMeasureTextEntry = struct {
     fontBoundingBoxDescent: f64 = 0,
 };
 
+const JsonWebGLProbe = struct {
+    dataFile: []const u8 = "",
+};
+
+const JsonWindowKeys = struct {
+    dataFile: []const u8 = "",
+};
+
+const JsonNavigatorKeys = struct {
+    dataFile: []const u8 = "",
+};
+
+const JsonHtmlElementKeys = struct {
+    dataFile: []const u8 = "",
+};
+
+const JsonCssComputedKeys = struct {
+    dataFile: []const u8 = "",
+    enumerableKeysFile: []const u8 = "",
+};
+
+const JsonCssEnumerableKeys = struct {
+    indexed: []const []const u8 = &.{},
+    named: []const []const u8 = &.{},
+};
+
+const JsonMathsBaseline = struct {
+    dataFile: []const u8 = "",
+};
+
+const JsonClientRectsBaseline = struct {
+    dataFile: []const u8 = "",
+};
+
+const JsonSvgBaseline = struct {
+    dataFile: []const u8 = "",
+};
+
+const JsonSession = struct {
+    cookieSeedFile: []const u8 = "",
+    cookieRuntimeFile: []const u8 = "",
+};
+
+const JsonClientRectEntry = struct {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+};
+
+const JsonEmojiDimEntry = struct {
+    w: f64,
+    h: f64,
+};
+
+const JsonMathsBaselineEntry = struct {
+    method: []const u8,
+    args: []std.json.Value,
+    result: f64,
+};
+
 const JsonAudioBaseline = struct {
     samples: []const f64,
     freq: []const f64,
+    timeDomain: []const f64 = &.{},
     tailSum: f64 = 0,
 };
 
 const JsonSpeechVoice = struct {
     name: []const u8,
     lang: []const u8,
+    voiceURI: ?[]const u8 = null,
     localService: bool = true,
     default: bool = false,
 };
@@ -278,7 +378,16 @@ const JsonProfile = struct {
     audioProbe: JsonAudioProbe = .{},
     speechVoicesFile: []const u8 = "",
     measureTextBaseline: JsonMeasureTextBaseline = .{},
+    webglProbe: JsonWebGLProbe = .{},
+    windowKeys: JsonWindowKeys = .{},
+    navigatorKeys: JsonNavigatorKeys = .{},
+    htmlElementKeys: JsonHtmlElementKeys = .{},
+    cssComputedKeys: JsonCssComputedKeys = .{},
+    mathsBaseline: JsonMathsBaseline = .{},
+    clientRectsBaseline: JsonClientRectsBaseline = .{},
+    svgBaseline: JsonSvgBaseline = .{},
     policies: []const []const u8 = &.{},
+    session: JsonSession = .{},
 };
 
 pub fn resolve(name: ?[]const u8) !LoadedProfile {
@@ -304,9 +413,13 @@ pub fn resolve(name: ?[]const u8) !LoadedProfile {
 fn applyHostEnvironment(profile: *LoadedProfile) !void {
     if (profile.mode != .antidetect) return;
     var snap = HostEnvironment.detect(profile.arena.allocator()) catch return;
-    // Keep profile screen dimensions; host CG display (e.g. 1920×1080) mismatches
-    // window viewport and Chrome's screen.* in windowed automation runs.
+    // Antidetect JSON is authoritative for fingerprint surface; host probes are only
+    // for optional GPU renderer alignment (same machine as the cloned browser).
     snap.screen = null;
+    snap.window = null;
+    snap.device_memory = null;
+    snap.hardware_concurrency = null;
+    snap.timezone = null;
     try HostEnvironment.applyIdentity(&profile.identity, snap, profile.arena.allocator());
 }
 
@@ -417,6 +530,10 @@ fn parseJson(bytes: []const u8) !LoadedProfile {
     profile.languages = try dupeStringList(allocator, doc.navigator.languages);
     profile.fonts = try loadFonts(allocator, doc.fonts, doc.fontsFile);
     profile.webgl_extensions = try dupeStringList(allocator, doc.webgl.extensions);
+    profile.webgl_extensions2 = if (doc.webgl.extensions2.len > 0)
+        try dupeStringList(allocator, doc.webgl.extensions2)
+    else
+        &.{};
 
     profile.http.user_agent = try allocator.dupeZ(u8, doc.navigator.userAgent);
     profile.http.brands = try allocator.alloc(Brand, doc.userAgentData.brands.len);
@@ -456,7 +573,7 @@ fn parseJson(bytes: []const u8) !LoadedProfile {
         .device_memory = doc.navigator.deviceMemory,
         .max_touch_points = doc.navigator.maxTouchPoints,
         .pdf_viewer_enabled = doc.navigator.pdfViewerEnabled,
-        .global_privacy_control = true,
+        .global_privacy_control = false,
         .vendor = try allocator.dupe(u8, doc.navigator.vendor),
         .user_agent_fallback = profile.http.user_agent,
         .app_version = try allocator.dupe(u8, doc.navigator.appVersion),
@@ -511,6 +628,7 @@ fn parseJson(bytes: []const u8) !LoadedProfile {
             .aliased_line_width_range = doc.webgl.aliasedLineWidthRange,
             .aliased_point_size_range = doc.webgl.aliasedPointSizeRange,
             .extensions = profile.webgl_extensions,
+            .extensions_webgl2 = profile.webgl_extensions2,
         },
         .fonts = profile.fonts,
     };
@@ -520,6 +638,17 @@ fn parseJson(bytes: []const u8) !LoadedProfile {
     try loadAudioProbe(allocator, doc.audioProbe, &profile);
     profile.speech_voices = try loadSpeechVoices(allocator, doc.speechVoicesFile);
     profile.measure_text_baseline = try loadMeasureTextBaseline(allocator, doc.measureTextBaseline);
+    try loadWebGLProbe(allocator, doc.webglProbe, &profile);
+    profile.window_keys = try loadWindowKeys(allocator, doc.windowKeys);
+    profile.navigator_keys = try loadNavigatorKeys(allocator, doc.navigatorKeys);
+    profile.html_element_keys = try loadHtmlElementKeys(allocator, doc.htmlElementKeys);
+    try loadCssComputedKeys(allocator, doc.cssComputedKeys, &profile);
+    profile.maths_baseline = try loadMathsBaseline(allocator, doc.mathsBaseline);
+    try loadClientRectsBaseline(allocator, doc.clientRectsBaseline, &profile);
+    try loadSvgBaseline(allocator, doc.svgBaseline, &profile);
+
+    profile.session.cookie_seed_file = try allocator.dupe(u8, doc.session.cookieSeedFile);
+    profile.session.cookie_runtime_file = try allocator.dupe(u8, doc.session.cookieRuntimeFile);
 
     return profile;
 }
@@ -532,8 +661,10 @@ fn loadMeasureTextBaseline(allocator: std.mem.Allocator, spec: JsonMeasureTextBa
     const src = parsed.value;
     const out = try allocator.alloc(MeasureTextIntelligent.Entry, src.len);
     for (src, 0..) |e, i| {
+        const font = if (e.font) |f| try allocator.dupe(u8, f) else null;
         out[i] = .{
             .family = try allocator.dupe(u8, e.family),
+            .font = font,
             .text = try allocator.dupe(u8, e.text),
             .width = e.width,
             .actual_bounding_box_left = e.actualBoundingBoxLeft,
@@ -545,6 +676,266 @@ fn loadMeasureTextBaseline(allocator: std.mem.Allocator, spec: JsonMeasureTextBa
         };
     }
     return out;
+}
+
+fn loadWebGLProbe(allocator: std.mem.Allocator, probe: JsonWebGLProbe, profile: *LoadedProfile) !void {
+    if (probe.dataFile.len == 0) return;
+    const bytes = std.fs.cwd().readFileAlloc(allocator, probe.dataFile, 4 * 1024 * 1024) catch return;
+    defer allocator.free(bytes);
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return;
+    defer parsed.deinit();
+    const root = switch (parsed.value) {
+        .object => |o| o,
+        else => return,
+    };
+
+    const pixels_val = root.get("pixels") orelse return;
+    const pixels = try jsonU8Slice(allocator, pixels_val);
+    if (pixels.len == 0) return;
+
+    profile.webgl_probe_pixels = pixels;
+    profile.webgl_probe_read_width = jsonI32(root.get("readWidth"), 0);
+    profile.webgl_probe_read_height = jsonI32(root.get("readHeight"), 0);
+    if (root.get("pixels2")) |pixels2_val| {
+        const pixels2 = try jsonU8Slice(allocator, pixels2_val);
+        if (pixels2.len > 0) profile.webgl_probe_pixels2 = pixels2;
+    }
+    if (root.get("dataURI")) |uri_val| {
+        if (uri_val == .string and uri_val.string.len > 0) {
+            profile.webgl_probe_data_uri = try allocator.dupe(u8, uri_val.string);
+        }
+    }
+    if (root.get("dataURI2")) |uri_val| {
+        if (uri_val == .string and uri_val.string.len > 0) {
+            profile.webgl_probe_data_uri2 = try allocator.dupe(u8, uri_val.string);
+        }
+    }
+    try WebGLParameters.loadFromJsonObject(allocator, root.get("parameters"), &profile.webgl_probe_parameters);
+}
+
+fn jsonI32(value: ?std.json.Value, default: i32) i32 {
+    const v = value orelse return default;
+    return switch (v) {
+        .integer => |i| @intCast(i),
+        .float => |f| @intFromFloat(f),
+        else => default,
+    };
+}
+
+fn jsonU8Slice(allocator: std.mem.Allocator, value: std.json.Value) ![]u8 {
+    const arr = switch (value) {
+        .array => |a| a,
+        else => return &.{},
+    };
+    const out = try allocator.alloc(u8, arr.items.len);
+    for (arr.items, 0..) |item, i| {
+        out[i] = switch (item) {
+            .integer => |n| @intCast(n),
+            .float => |f| @intFromFloat(f),
+            else => 0,
+        };
+    }
+    return out;
+}
+
+fn loadWindowKeys(allocator: std.mem.Allocator, spec: JsonWindowKeys) ![]const []const u8 {
+    if (spec.dataFile.len == 0) return &.{};
+    const bytes = try std.fs.cwd().readFileAlloc(allocator, spec.dataFile, 8 * 1024 * 1024);
+    const parsed = try std.json.parseFromSlice([]const []const u8, allocator, bytes, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    return dupeStringList(allocator, parsed.value);
+}
+
+fn loadNavigatorKeys(allocator: std.mem.Allocator, spec: JsonNavigatorKeys) ![]const []const u8 {
+    if (spec.dataFile.len == 0) return &.{};
+    const bytes = try std.fs.cwd().readFileAlloc(allocator, spec.dataFile, 8 * 1024 * 1024);
+    const parsed = try std.json.parseFromSlice([]const []const u8, allocator, bytes, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    return dupeStringList(allocator, parsed.value);
+}
+
+fn loadCssComputedKeys(allocator: std.mem.Allocator, spec: JsonCssComputedKeys, profile: *LoadedProfile) !void {
+    if (spec.enumerableKeysFile.len > 0) {
+        const bytes = try std.fs.cwd().readFileAlloc(allocator, spec.enumerableKeysFile, 8 * 1024 * 1024);
+        const parsed = try std.json.parseFromSlice(JsonCssEnumerableKeys, allocator, bytes, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+        profile.css_computed_indexed_keys = try dupeStringList(allocator, parsed.value.indexed);
+        profile.css_computed_named_keys = try dupeStringList(allocator, parsed.value.named);
+    }
+    if (spec.dataFile.len > 0) {
+        const bytes = try std.fs.cwd().readFileAlloc(allocator, spec.dataFile, 8 * 1024 * 1024);
+        const parsed = try std.json.parseFromSlice([]const []const u8, allocator, bytes, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+        profile.css_computed_keys = try dupeStringList(allocator, parsed.value);
+        profile.css_computed_in_keys = profile.css_computed_keys;
+        return;
+    }
+    if (profile.css_computed_indexed_keys.len > 0 or profile.css_computed_named_keys.len > 0) {
+        profile.css_computed_in_keys = profile.css_computed_named_keys;
+    }
+}
+
+fn loadHtmlElementKeys(allocator: std.mem.Allocator, spec: JsonHtmlElementKeys) ![]const []const u8 {
+    if (spec.dataFile.len == 0) return &.{};
+    const bytes = try std.fs.cwd().readFileAlloc(allocator, spec.dataFile, 8 * 1024 * 1024);
+    const parsed = try std.json.parseFromSlice([]const []const u8, allocator, bytes, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    return dupeStringList(allocator, parsed.value);
+}
+
+fn loadClientRectsBaseline(allocator: std.mem.Allocator, spec: JsonClientRectsBaseline, profile: *LoadedProfile) !void {
+    if (spec.dataFile.len == 0) return;
+    const bytes = std.fs.cwd().readFileAlloc(allocator, spec.dataFile, 8 * 1024 * 1024) catch return;
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{ .ignore_unknown_fields = true }) catch return;
+    defer parsed.deinit();
+    const root = switch (parsed.value) {
+        .object => |o| o,
+        else => return,
+    };
+
+    if (root.get("elementClientRects")) |rects_val| {
+        const arr = switch (rects_val) {
+            .array => |a| a,
+            else => return,
+        };
+        const out = try allocator.alloc(ClientRectsIntelligent.Rect, arr.items.len);
+        for (arr.items, 0..) |item, i| {
+            const obj = switch (item) {
+                .object => |o| o,
+                else => continue,
+            };
+            out[i] = .{
+                .x = jsonF64(obj.get("x"), 0),
+                .y = jsonF64(obj.get("y"), 0),
+                .width = jsonF64(obj.get("width"), 0),
+                .height = jsonF64(obj.get("height"), 0),
+            };
+        }
+        profile.client_rects = out;
+    }
+
+    if (root.get("emojiDims")) |dims_val| {
+        const arr = switch (dims_val) {
+            .array => |a| a,
+            else => return,
+        };
+        const out = try allocator.alloc(ClientRectsIntelligent.EmojiDim, arr.items.len);
+        for (arr.items, 0..) |item, i| {
+            const obj = switch (item) {
+                .object => |o| o,
+                else => continue,
+            };
+            out[i] = .{
+                .w = jsonF64(obj.get("w"), 0),
+                .h = jsonF64(obj.get("h"), 0),
+            };
+        }
+        profile.client_rects_emoji_dims = out;
+    }
+}
+
+fn loadSvgBaseline(allocator: std.mem.Allocator, spec: JsonSvgBaseline, profile: *LoadedProfile) !void {
+    if (spec.dataFile.len == 0) return;
+    const bytes = std.fs.cwd().readFileAlloc(allocator, spec.dataFile, 8 * 1024 * 1024) catch return;
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{ .ignore_unknown_fields = true }) catch return;
+    defer parsed.deinit();
+    const root = switch (parsed.value) {
+        .object => |o| o,
+        else => return,
+    };
+
+    if (root.get("bBox")) |bbox_val| {
+        if (bbox_val == .object) {
+            const obj = bbox_val.object;
+            profile.svg_baseline.b_box = .{
+                .x = jsonF64(obj.get("x"), 0),
+                .y = jsonF64(obj.get("y"), 0),
+                .width = jsonF64(obj.get("width"), 0),
+                .height = jsonF64(obj.get("height"), 0),
+            };
+        }
+    }
+    profile.svg_baseline.computed_text_length = jsonF64(root.get("computedTextLength"), 0);
+    profile.svg_baseline.sub_string_length = jsonF64(root.get("subStringLength"), 0);
+    if (root.get("extentOfChar")) |ext_val| {
+        if (ext_val == .object) {
+            const obj = ext_val.object;
+            profile.svg_baseline.extent_of_char = .{
+                .x = jsonF64(obj.get("x"), 0),
+                .y = jsonF64(obj.get("y"), 0),
+                .width = jsonF64(obj.get("width"), 0),
+                .height = jsonF64(obj.get("height"), 0),
+            };
+        }
+    }
+    if (root.get("perEmojiComputedTextLength")) |arr_val| {
+        const arr = switch (arr_val) {
+            .array => |a| a,
+            else => return,
+        };
+        const out = try allocator.alloc(f64, arr.items.len);
+        for (arr.items, 0..) |item, i| {
+            out[i] = jsonF64(item, 0);
+        }
+        profile.svg_baseline.per_emoji_computed_text_length = out;
+    }
+    if (root.get("perEmojiNumberOfChars")) |arr_val| {
+        const arr = switch (arr_val) {
+            .array => |a| a,
+            else => return,
+        };
+        const out = try allocator.alloc(i32, arr.items.len);
+        for (arr.items, 0..) |item, i| {
+            out[i] = @intFromFloat(jsonF64(item, 0));
+        }
+        profile.svg_baseline.per_emoji_number_of_chars = out;
+    }
+}
+
+fn jsonF64(value: ?std.json.Value, default: f64) f64 {
+    const v = value orelse return default;
+    return switch (v) {
+        .float => |f| f,
+        .integer => |n| @floatFromInt(n),
+        else => default,
+    };
+}
+
+fn loadMathsBaseline(allocator: std.mem.Allocator, spec: JsonMathsBaseline) ![]const MathsIntelligent.Entry {
+    if (spec.dataFile.len == 0) return &.{};
+    const bytes = try std.fs.cwd().readFileAlloc(allocator, spec.dataFile, 8 * 1024 * 1024);
+    const parsed = try std.json.parseFromSlice([]const JsonMathsBaselineEntry, allocator, bytes, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    const src = parsed.value;
+    const out = try allocator.alloc(MathsIntelligent.Entry, src.len);
+    for (src, 0..) |e, i| {
+        const args_json = try argsToJson(allocator, e.args);
+        out[i] = .{
+            .method = try allocator.dupe(u8, e.method),
+            .args_json = args_json,
+            .result = e.result,
+        };
+    }
+    return out;
+}
+
+fn argsToJson(allocator: std.mem.Allocator, args: []std.json.Value) ![]const u8 {
+    var json = std.ArrayList(u8).initCapacity(allocator, 64) catch return error.OutOfMemory;
+    errdefer json.deinit(allocator);
+    try json.append(allocator, '[');
+    for (args, 0..) |arg, idx| {
+        if (idx > 0) try json.append(allocator, ',');
+        switch (arg) {
+            .integer => |n| try json.writer(allocator).print("{d}", .{n}),
+            .float => |f| try json.writer(allocator).print("{d}", .{f}),
+            .bool => |b| try json.writer(allocator).print("{}", .{b}),
+            .null => try json.appendSlice(allocator, "null"),
+            else => try json.append(allocator, '0'),
+        }
+    }
+    try json.append(allocator, ']');
+    return json.toOwnedSlice(allocator);
 }
 
 fn loadFonts(allocator: std.mem.Allocator, embedded: []const []const u8, file_path: []const u8) ![]const []const u8 {
@@ -564,9 +955,14 @@ fn loadSpeechVoices(allocator: std.mem.Allocator, file_path: []const u8) ![]cons
     const src = parsed.value;
     const out = try allocator.alloc(SpeechVoiceSpec, src.len);
     for (src, 0..) |v, i| {
+        const voice_uri = if (v.voiceURI) |uri|
+            try allocator.dupe(u8, uri)
+        else
+            try std.fmt.allocPrint(allocator, "com.apple.voice.compact.{s}.{s}", .{ v.lang, v.name });
         out[i] = .{
             .name = try allocator.dupe(u8, v.name),
             .lang = try allocator.dupe(u8, v.lang),
+            .voice_uri = voice_uri,
             .local_service = v.localService,
             .default_voice = v.default,
         };
@@ -591,6 +987,11 @@ fn loadAudioProbe(allocator: std.mem.Allocator, probe: JsonAudioProbe, profile: 
 
     profile.audio_probe_samples = samples;
     profile.audio_probe_freq = freq;
+    if (doc.timeDomain.len > 0) {
+        const time_domain = try allocator.alloc(f32, doc.timeDomain.len);
+        for (doc.timeDomain, 0..) |v, i| time_domain[i] = @floatCast(v);
+        profile.audio_probe_time_domain = time_domain;
+    }
 }
 
 fn loadCanvasProbe(allocator: std.mem.Allocator, probe: JsonCanvasProbe) !?[]const u8 {
@@ -608,6 +1009,8 @@ const JsonCanvasProbesFile = struct {
     canvas_50_emoji: []const u8 = "",
     canvas_75_data: []const u8 = "",
     canvas_75_paint: []const u8 = "",
+    canvas_75_paint_cpu: []const u8 = "",
+    canvas_mods_pixel_image: []const u8 = "",
     canvas_2_low_entropy: []const f64 = &.{},
 };
 
@@ -632,6 +1035,12 @@ fn loadCanvasProbes(allocator: std.mem.Allocator, probe: JsonCanvasProbe, profil
     }
     if (doc.canvas_75_paint.len > 0) {
         profile.canvas_probe_75_paint = try allocator.dupe(u8, doc.canvas_75_paint);
+    }
+    if (doc.canvas_75_paint_cpu.len > 0) {
+        profile.canvas_probe_75_paint_cpu = try allocator.dupe(u8, doc.canvas_75_paint_cpu);
+    }
+    if (doc.canvas_mods_pixel_image.len > 0) {
+        profile.canvas_probe_mods_pixel_image = try allocator.dupe(u8, doc.canvas_mods_pixel_image);
     }
     if (doc.canvas_2_low_entropy.len > 0) {
         const pixels = try allocator.alloc(u8, doc.canvas_2_low_entropy.len);
@@ -781,6 +1190,13 @@ test "ProfileStore: velora profile has no site policies" {
     const profile = try resolve("velora");
     defer profile.deinit();
     try testing.expectEqual(@as(usize, 0), profile.policies.len);
+}
+
+test "ProfileStore: chrome-local session cookie paths" {
+    const profile = try resolve("chrome-local-huys-macbook-pro");
+    defer profile.deinit();
+    try testing.expect(std.mem.endsWith(u8, profile.session.cookie_seed_file, "-session-cookies.json"));
+    try testing.expect(std.mem.endsWith(u8, profile.session.cookie_runtime_file, "-cookies.json"));
 }
 
 test "ProfileStore: load firefox-macos profile" {

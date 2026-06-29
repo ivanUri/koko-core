@@ -8,13 +8,15 @@ const EventCounts = @import("EventCounts.zig");
 const Allocator = std.mem.Allocator;
 
 pub fn registerTypes() []const type {
-    return &.{ Performance, Entry, Mark, Measure, PerformanceTiming, PerformanceNavigation };
+    return &.{ Performance, Entry, NavigationTimingEntry, Mark, Measure, PerformanceTiming, PerformanceNavigation };
 }
 
 const Performance = @This();
 
 /// Monotonic microsecond anchor for performance.now() (reset on each navigation).
 _monotonic_origin_us: u64,
+/// When set, now() returns this value (Google knitsail sg_ss encode window).
+_frozen_now_ms: ?f64 = null,
 _entries: std.ArrayList(*Entry) = .{},
 _timing: PerformanceTiming = .{},
 _navigation: PerformanceNavigation = .{},
@@ -45,6 +47,26 @@ pub fn getTiming(self: *Performance) *PerformanceTiming {
 pub fn recordNavigationStart(self: *Performance) void {
     self._timing.recordNavigationStart();
     self._monotonic_origin_us = highResTimestamp();
+    self._frozen_now_ms = null;
+    self.clearEntriesByType("navigation");
+}
+
+pub fn clearEntriesByType(self: *Performance, entry_type: []const u8) void {
+    var i: usize = 0;
+    while (i < self._entries.items.len) {
+        const entry = self._entries.items[i];
+        if (std.mem.eql(u8, entry.getEntryType(), entry_type)) {
+            _ = self._entries.orderedRemove(i);
+        } else {
+            i += 1;
+        }
+    }
+}
+
+/// PerformanceNavigationTiming — minimal entry for getEntriesByType("navigation").
+pub fn ensureNavigationTimingEntry(self: *Performance, url: []const u8, transfer_size: f64, frame: *Frame) !void {
+    self.clearEntriesByType("navigation");
+    _ = try NavigationTimingEntry.init(url, transfer_size, frame);
 }
 
 pub fn recordResponseStart(self: *Performance) void {
@@ -60,10 +82,29 @@ pub fn recordDocumentComplete(self: *Performance) void {
 }
 
 pub fn now(self: *const Performance) f64 {
+    if (self._frozen_now_ms) |frozen| return frozen;
     const current = highResTimestamp();
-    const elapsed = current - self._monotonic_origin_us;
+    const origin = self._monotonic_origin_us;
+    // Guard corrupted origins (UAF/slab reuse) — CreepJS logs use performance.now().
+    if (origin == 0 or origin > current) {
+        return 0.0;
+    }
+    const elapsed = current - origin;
     // Return as milliseconds with microsecond precision
     return @as(f64, @floatFromInt(elapsed)) / 1000.0;
+}
+
+pub fn freezeNow(self: *Performance, target_ms: f64) void {
+    if (target_ms >= 0) self._frozen_now_ms = target_ms;
+}
+
+/// Knitsail freeze window — also applied to `chrome.csi().pageT` when set.
+pub fn frozenNowMs(self: *const Performance) ?f64 {
+    return self._frozen_now_ms;
+}
+
+pub fn unfreezeNow(self: *Performance) void {
+    self._frozen_now_ms = null;
 }
 
 pub fn getTimeOrigin(self: *const Performance) f64 {
@@ -325,7 +366,7 @@ pub const Entry = struct {
         @"long-animation-frame",
         longtask,
         measure: *Measure,
-        navigation,
+        navigation: *NavigationTimingEntry,
         paint,
         resource,
         taskattribution,
@@ -358,6 +399,9 @@ pub const Entry = struct {
 
     pub fn getEntryType(self: *const Entry) []const u8 {
         return switch (self._type) {
+            .mark => "mark",
+            .measure => "measure",
+            .navigation => "navigation",
             else => |t| @tagName(t),
         };
     }
@@ -368,6 +412,34 @@ pub const Entry = struct {
 
     pub fn getStartTime(self: *const Entry) f64 {
         return self._start_time;
+    }
+
+    pub fn getNavigationType(self: *const Entry) ?[]const u8 {
+        return switch (self._type) {
+            .navigation => |n| n.getType(),
+            else => null,
+        };
+    }
+
+    pub fn getNavigationDeliveryType(self: *const Entry) ?[]const u8 {
+        return switch (self._type) {
+            .navigation => |n| n.getDeliveryType(),
+            else => null,
+        };
+    }
+
+    pub fn getNavigationTransferSize(self: *const Entry) ?f64 {
+        return switch (self._type) {
+            .navigation => |n| n.getTransferSize(),
+            else => null,
+        };
+    }
+
+    pub fn getNavigationNextHopProtocol(self: *const Entry) ?[]const u8 {
+        return switch (self._type) {
+            .navigation => |n| n.getNextHopProtocol(),
+            else => null,
+        };
     }
 
     pub const JsApi = struct {
@@ -382,6 +454,62 @@ pub const Entry = struct {
         pub const duration = bridge.accessor(Entry.getDuration, null, .{});
         pub const entryType = bridge.accessor(Entry.getEntryType, null, .{});
         pub const startTime = bridge.accessor(Entry.getStartTime, null, .{});
+        // PerformanceNavigationTiming fields (present when entryType === "navigation").
+        pub const @"type" = bridge.accessor(Entry.getNavigationType, null, .{});
+        pub const deliveryType = bridge.accessor(Entry.getNavigationDeliveryType, null, .{});
+        pub const transferSize = bridge.accessor(Entry.getNavigationTransferSize, null, .{});
+        pub const nextHopProtocol = bridge.accessor(Entry.getNavigationNextHopProtocol, null, .{});
+    };
+};
+
+pub const NavigationTimingEntry = struct {
+    _proto: *Entry,
+    _transfer_size: f64 = 0,
+
+    pub fn init(url: []const u8, transfer_size: f64, frame: *Frame) !*NavigationTimingEntry {
+        const perf = &frame.window._performance;
+        const n = try frame._factory.create(NavigationTimingEntry{
+            ._proto = undefined,
+            ._transfer_size = transfer_size,
+        });
+        const entry = try frame._factory.create(Entry{
+            ._start_time = 0,
+            ._duration = perf.now(),
+            ._name = try frame.dupeString(url),
+            ._type = .{ .navigation = n },
+        });
+        n._proto = entry;
+        try perf._entries.append(frame.arena, entry);
+        return n;
+    }
+
+    pub fn getType(self: *const NavigationTimingEntry) []const u8 {
+        _ = self;
+        return "navigate";
+    }
+
+    pub fn getDeliveryType(self: *const NavigationTimingEntry) []const u8 {
+        _ = self;
+        return "";
+    }
+
+    pub fn getTransferSize(self: *const NavigationTimingEntry) f64 {
+        return self._transfer_size;
+    }
+
+    pub fn getNextHopProtocol(self: *const NavigationTimingEntry) []const u8 {
+        _ = self;
+        return "";
+    }
+
+    pub const JsApi = struct {
+        pub const bridge = js.Bridge(NavigationTimingEntry);
+
+        pub const Meta = struct {
+            pub const name = "PerformanceNavigationTiming";
+            pub const prototype_chain = bridge.prototypeChain();
+            pub var class_id: bridge.ClassId = undefined;
+        };
     };
 };
 
@@ -557,15 +685,32 @@ pub const PerformanceTiming = struct {
     }
 
     pub fn recordResponseStart(self: *PerformanceTiming) void {
-        const t = epochMs();
-        const start = if (self.navigation_start > 0) self.navigation_start else t - 80;
-        const span = @max(t - start, 12);
-        // Blink sets responseStart when response headers arrive (before scripts run).
-        self.response_start = stampTiming(start, span, 72, 100);
-        self.response_end = stampTiming(start, span, 88, 100);
-        if (self.dom_loading == 0) {
-            self.dom_loading = stampTiming(start, span, 90, 100);
+        const start = if (self.navigation_start > 0) self.navigation_start else epochMs() - 80;
+        const base = @as(i64, @intFromFloat(start));
+        // Fast-navigation deltas from Chroma baseline (knitsail reads during script run).
+        const rs_off: i64 = 17;
+        const re_off: i64 = 20;
+        const dl_off: i64 = 33; // rs + 16
+        const di_off: i64 = 34;
+        const dcs_off: i64 = 34;
+        const dce_off: i64 = 35; // dl + 2
+        const dc_off: i64 = 35;
+        const les_off: i64 = 35;
+        const lee_off: i64 = 35; // le - dc = 0
+
+        self.response_start = @floatFromInt(base + rs_off);
+        self.response_end = @floatFromInt(base + re_off);
+        self.dom_loading = @floatFromInt(base + dl_off);
+        if (self.dom_interactive == 0) self.dom_interactive = @floatFromInt(base + di_off);
+        if (self.dom_content_loaded_event_start == 0) {
+            self.dom_content_loaded_event_start = @floatFromInt(base + dcs_off);
         }
+        if (self.dom_content_loaded_event_end == 0) {
+            self.dom_content_loaded_event_end = @floatFromInt(base + dce_off);
+        }
+        if (self.dom_complete == 0) self.dom_complete = @floatFromInt(base + dc_off);
+        if (self.load_event_start == 0) self.load_event_start = @floatFromInt(base + les_off);
+        if (self.load_event_end == 0) self.load_event_end = @floatFromInt(base + lee_off);
     }
 
     pub fn recordDomInteractive(self: *PerformanceTiming) void {
@@ -584,6 +729,16 @@ pub const PerformanceTiming = struct {
     pub fn recordDocumentComplete(self: *PerformanceTiming) void {
         const t = epochMs();
         const start = if (self.navigation_start > 0) self.navigation_start else t - 300;
+        // recordResponseStart already stamped fast-nav timings (Google knitsail). Do not
+        // overwrite load_event_end with a real epoch that can precede domContentLoadedEventEnd.
+        if (self.response_start > 0 and self.dom_content_loaded_event_end > 0) {
+            const dce = @as(i64, @intFromFloat(self.dom_content_loaded_event_end));
+            const load_end = @max(@as(i64, @intFromFloat(t)), dce);
+            if (self.dom_complete == 0) self.dom_complete = @floatFromInt(load_end);
+            if (self.load_event_start == 0) self.load_event_start = @floatFromInt(load_end);
+            self.load_event_end = @floatFromInt(load_end);
+            return;
+        }
         const span = @max(t - start, 40);
         if (self.response_start == 0) self.response_start = stampTiming(start, span, 12, 100);
         if (self.response_end == 0) self.response_end = stampTiming(start, span, 22, 100);

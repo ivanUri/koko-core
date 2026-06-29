@@ -22,6 +22,8 @@ const GlobalEventHandler = global_event_handlers.Handler;
 const Frame = @import("../../browser/Frame.zig");
 const Node = @import("../../dom/Node.zig");
 const Element = @import("../../dom/Element.zig");
+const CSSStyleProperties = @import("../css/CSSStyleProperties.zig");
+const DOMStringMap = @import("DOMStringMap.zig");
 
 pub const Anchor = @import("html/Anchor.zig");
 pub const Area = @import("html/Area.zig");
@@ -210,12 +212,13 @@ pub fn asEventTarget(self: *HtmlElement) *@import("../EventTarget.zig") {
 
 // innerText represents the **rendered** text content of a node and its
 // descendants.
-pub fn getInnerText(self: *HtmlElement, writer: *std.Io.Writer) !void {
-    var state = innerTextState{};
+pub fn getInnerText(self: *HtmlElement, writer: *std.Io.Writer, frame: *Frame) !void {
+    var state = innerTextState{ .frame = frame };
     return try self._getInnerText(writer, &state);
 }
 
 const innerTextState = struct {
+    frame: *Frame,
     pre_w: bool = false,
     trim_left: bool = true,
 };
@@ -225,17 +228,22 @@ fn _getInnerText(self: *HtmlElement, writer: *std.Io.Writer, state: *innerTextSt
     while (it.next()) |child| {
         switch (child._type) {
             .element => |e| switch (e._type) {
-                .html => |he| switch (he._type) {
-                    .br => {
-                        try writer.writeByte('\n');
-                        state.pre_w = false; // prevent a next pre space.
-                        state.trim_left = true;
-                    },
-                    .script, .style, .template => {
-                        state.pre_w = false; // prevent a next pre space.
-                        state.trim_left = true;
-                    },
-                    else => try he._getInnerText(writer, state), // TODO check if elt is hidden.
+                .html => |he| {
+                    if (state.frame._style_manager.hasDisplayNone(he.asElement())) {
+                        continue;
+                    }
+                    switch (he._type) {
+                        .br => {
+                            try writer.writeByte('\n');
+                            state.pre_w = false; // prevent a next pre space.
+                            state.trim_left = true;
+                        },
+                        .script, .style, .template => {
+                            state.pre_w = false; // prevent a next pre space.
+                            state.trim_left = true;
+                        },
+                        else => try he._getInnerText(writer, state),
+                    }
                 },
                 .svg => {},
             },
@@ -1269,6 +1277,30 @@ pub fn getOnWheel(self: *HtmlElement, frame: *Frame) !?js.Function.Global {
     return self.getAttributeFunction(.onwheel, frame);
 }
 
+pub fn getStyle(self: *HtmlElement, frame: *Frame) !*CSSStyleProperties {
+    return self.asElement().getOrCreateStyle(frame);
+}
+
+pub fn getDataset(self: *HtmlElement, frame: *Frame) !*DOMStringMap {
+    return self.asElement().getDataset(frame);
+}
+
+pub fn getOffsetTop(self: *HtmlElement, frame: *Frame) f64 {
+    return self.asElement().getOffsetTop(frame);
+}
+
+pub fn getOffsetLeft(self: *HtmlElement, frame: *Frame) f64 {
+    return self.asElement().getOffsetLeft(frame);
+}
+
+pub fn getOffsetWidth(self: *HtmlElement, frame: *Frame) f64 {
+    return self.asElement().getOffsetWidth(frame);
+}
+
+pub fn getOffsetHeight(self: *HtmlElement, frame: *Frame) f64 {
+    return self.asElement().getOffsetHeight(frame);
+}
+
 pub const JsApi = struct {
     pub const bridge = js.Bridge(HtmlElement);
 
@@ -1281,9 +1313,9 @@ pub const JsApi = struct {
     pub const constructor = bridge.constructor(HtmlElement.construct, .{ .new_target = true });
 
     pub const innerText = bridge.accessor(_innerText, HtmlElement.setInnerText, .{});
-    fn _innerText(self: *HtmlElement, frame: *const Frame) ![]const u8 {
+    fn _innerText(self: *HtmlElement, frame: *Frame) ![]const u8 {
         var buf = std.Io.Writer.Allocating.init(frame.call_arena);
-        try self.getInnerText(&buf.writer);
+        try self.getInnerText(&buf.writer, frame);
         return buf.written();
     }
     pub const insertAdjacentHTML = bridge.function(HtmlElement.insertAdjacentHTML, .{ .dom_exception = true });
@@ -1298,6 +1330,13 @@ pub const JsApi = struct {
     pub const title = bridge.accessor(HtmlElement.getTitle, HtmlElement.setTitle, .{});
     pub const accessKey = bridge.accessor(HtmlElement.getAccessKey, HtmlElement.setAccessKey, .{});
     pub const accessKeyLabel = bridge.accessor(HtmlElement.getAccessKeyLabel, null, .{ .null_as_undefined = true });
+
+    pub const style = bridge.accessor(HtmlElement.getStyle, null, .{});
+    pub const dataset = bridge.accessor(HtmlElement.getDataset, null, .{});
+    pub const offsetTop = bridge.accessor(HtmlElement.getOffsetTop, null, .{});
+    pub const offsetLeft = bridge.accessor(HtmlElement.getOffsetLeft, null, .{});
+    pub const offsetWidth = bridge.accessor(HtmlElement.getOffsetWidth, null, .{});
+    pub const offsetHeight = bridge.accessor(HtmlElement.getOffsetHeight, null, .{});
 
     pub const onabort = bridge.accessor(HtmlElement.getOnAbort, HtmlElement.setOnAbort, .{});
     pub const onanimationcancel = bridge.accessor(HtmlElement.getOnAnimationCancel, HtmlElement.setOnAnimationCancel, .{});

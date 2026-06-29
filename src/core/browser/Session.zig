@@ -84,6 +84,10 @@ _pending: ?*Page = null,
 // tick or before a new root navigation discards the pending page).
 _deferred_commit_pending: bool = false,
 
+// When set during CDP dispatch, `currentFrame()` resolves to this child frame
+// (iframe target session). Cleared after each command.
+cdp_frame_override: ?u32 = null,
+
 // IDs. Kept at Session level so IDs can remain unique across Page replacements.
 frame_id_gen: u32 = 0,
 loader_id_gen: u32 = 0,
@@ -135,7 +139,22 @@ pub fn deinit(self: *Session) void {
         self.discardPendingPage();
     }
     if (self._active != null) {
-        self.removePage();
+        // removePage bails when is_evaluating to avoid reentrant CDP teardown
+        // inside syncRequest. Final session destruction must always reclaim the
+        // active page or V8 contexts survive until Platform.deinit.
+        self.browser.env.waitForBackgroundTasks();
+        if (self.activeIsEvaluating()) {
+            self.browser.env.terminate();
+            self.browser.env.pumpMessageLoop();
+            self.browser.env.runMicrotasks(.unknown);
+            self.browser.env.cancelTerminate();
+        }
+        if (self._pending != null) {
+            self.discardPendingPage();
+        }
+        if (self._active != null) {
+            self.tearDownActivePage();
+        }
     }
     self.cookie_jar.deinit();
     self._client_hints_origins.deinit(self.arena);
@@ -285,12 +304,22 @@ pub fn pendingOrCurrentFrame(self: *Session) ?*Frame {
 
 pub fn currentFrame(self: *Session) ?*Frame {
     const page = self.currentPage() orelse return null;
+    if (self.cdp_frame_override) |frame_id| {
+        return page.findFrameByFrameId(frame_id) orelse &page.frame;
+    }
     return &page.frame;
 }
 
 pub fn findFrameByFrameId(self: *Session, frame_id: u32) ?*Frame {
     const page = self.currentPage() orelse return null;
     return page.findFrameByFrameId(frame_id);
+}
+
+/// Resolve HTTP frame_id to a real Frame (including dedicated-worker synthetic ids).
+pub fn findFrameForHttpAttribution(self: *Session, frame_id: u32) ?*Frame {
+    if (self.findFrameByFrameId(frame_id)) |frame| return frame;
+    const page = self.currentPage() orelse return null;
+    return page.findFrameForWorkerFrameId(frame_id);
 }
 
 pub fn runner(self: *Session, opts: Runner.Opts) !Runner {
@@ -623,6 +652,11 @@ pub fn commitPendingPage(self: *Session) !void {
     // frame.deinit calls http_client.abortFrame(frame_id) on the frame_id
     // shared with the pending page; the in-flight transfer survives via
     // protect_from_abort.
+    //
+    // Drain V8 background tasks tied to the old context before freeing it.
+    // Without this, platform worker threads can still be in Zig DOM hooks
+    // (e.g. img.src → domChanged) after destroyContext → UAF / segfault.
+    self.browser.env.waitForBackgroundTasks();
     self.destroyPage(old_active);
 }
 
@@ -713,6 +747,9 @@ pub const FinalizerCallback = struct {
         identity: *js.Identity,
         finalizer_ptr_id: usize,
         resolved_ptr_id: usize,
+        // Copy of the JS wrapper global so weak callbacks can reset it without
+        // touching identity_map (which is unsafe during V8 GC).
+        js_global: v8.Global = undefined,
         next: ?*Identity = null,
         done: bool = false,
     };

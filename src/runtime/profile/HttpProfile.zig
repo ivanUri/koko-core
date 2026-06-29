@@ -15,12 +15,23 @@ pub const firefox_document_accept =
 
 pub const subresource_accept = "Accept: */*";
 pub const accept_encoding = "Accept-Encoding: gzip, deflate, br";
-pub const accept_encoding_zstd = "Accept-Encoding: gzip, deflate, br, zstd";
+pub const accept_encoding_zstd = "Accept-Encoding: gzip, deflate, br, zstd, dcb, dcz";
 pub const document_priority = "Priority: u=0, i";
 
-/// Chrome document navigation defaults (HAR-aligned).
-pub const document_downlink: f64 = 10;
+/// Chrome document navigation defaults (HAR-aligned cold / first hop).
+pub const document_downlink: f64 = 9.8;
 pub const document_rtt: u32 = 50;
+
+/// In-search sei=/sg_ss= hops: guest Chrome CDP reports lower Network Information estimates.
+pub const in_session_downlink: f64 = 1.7;
+pub const in_session_rtt: u32 = 100;
+
+fn documentNetworkEstimates(opts: ChromeHeadersOpts) struct { downlink: f64, rtt: u32 } {
+    if (opts.omit_sec_fetch_user or opts.referer_url != null) {
+        return .{ .downlink = in_session_downlink, .rtt = in_session_rtt };
+    }
+    return .{ .downlink = document_downlink, .rtt = document_rtt };
+}
 
 pub const RequestContext = struct {
     request_url: [:0]const u8,
@@ -35,6 +46,7 @@ pub fn secFetchDest(resource_type: HttpClient.RequestParams.ResourceType) []cons
     return switch (resource_type) {
         .document => "document",
         .script => "script",
+        .worker => "worker",
         .image => "image",
         .fetch, .xhr, .beacon => "empty",
     };
@@ -44,6 +56,7 @@ pub fn secFetchMode(resource_type: HttpClient.RequestParams.ResourceType) []cons
     return switch (resource_type) {
         .document => "navigate",
         .script, .beacon, .image => "no-cors",
+        .worker => "same-origin",
         .fetch, .xhr => "cors",
     };
 }
@@ -156,11 +169,13 @@ fn appendChromeDocumentNavigationHeaders(
     try headers.add(accept_encoding_zstd);
     try headers.add(static.accept_language_header);
 
+    const net = documentNetworkEstimates(opts);
+
     if (opts.full_client_hints) {
         const downlink_hdr = try std.fmt.allocPrintSentinel(
             allocator,
-            "Downlink: {d:.2}",
-            .{document_downlink},
+            "Downlink: {d:.1}",
+            .{net.downlink},
             0,
         );
         try headers.add(downlink_hdr);
@@ -174,7 +189,7 @@ fn appendChromeDocumentNavigationHeaders(
     }
 
     if (opts.full_client_hints) {
-        const rtt_hdr = try std.fmt.allocPrintSentinel(allocator, "RTT: {d}", .{document_rtt}, 0);
+        const rtt_hdr = try std.fmt.allocPrintSentinel(allocator, "RTT: {d}", .{net.rtt}, 0);
         try headers.add(rtt_hdr);
 
         const color_hdr = try std.fmt.allocPrintSentinel(
@@ -223,20 +238,21 @@ fn appendChromeDocumentNavigationHeaders(
         try headers.add("Sec-Ch-Ua-Wow64: ?0");
     }
 
-    const site = secFetchSite(ctx);
-    const mode = secFetchMode(ctx.resource_type);
-    const dest = secFetchDest(ctx.resource_type);
-
-    const dest_hdr = try std.fmt.allocPrintSentinel(allocator, "Sec-Fetch-Dest: {s}", .{dest}, 0);
-    try headers.add(dest_hdr);
-
-    const mode_hdr = try std.fmt.allocPrintSentinel(allocator, "Sec-Fetch-Mode: {s}", .{mode}, 0);
-    try headers.add(mode_hdr);
-
-    const site_hdr = try std.fmt.allocPrintSentinel(allocator, "Sec-Fetch-Site: {s}", .{site}, 0);
-    try headers.add(site_hdr);
-
+    // Guest Chrome in-search sei=/sg_ss= hops omit all Sec-Fetch-* (CDP + wire probes).
     if (!opts.omit_sec_fetch_user) {
+        const site = secFetchSite(ctx);
+        const mode = secFetchMode(ctx.resource_type);
+        const dest = secFetchDest(ctx.resource_type);
+
+        const dest_hdr = try std.fmt.allocPrintSentinel(allocator, "Sec-Fetch-Dest: {s}", .{dest}, 0);
+        try headers.add(dest_hdr);
+
+        const mode_hdr = try std.fmt.allocPrintSentinel(allocator, "Sec-Fetch-Mode: {s}", .{mode}, 0);
+        try headers.add(mode_hdr);
+
+        const site_hdr = try std.fmt.allocPrintSentinel(allocator, "Sec-Fetch-Site: {s}", .{site}, 0);
+        try headers.add(site_hdr);
+
         try headers.add("Sec-Fetch-User: ?1");
     }
 
@@ -248,6 +264,87 @@ fn appendChromeDocumentNavigationHeaders(
         try headers.add(static.user_agent_header);
     } else if (opts.omit_sec_fetch_user) {
         try headers.add(static.user_agent_header);
+    }
+}
+
+/// High-entropy client hints + network estimates curl-impersonate defaults omit.
+/// Guest Chrome HAR (www.google.com.har) sends Downlink/RTT/Priority and full Sec-CH-UA
+/// on google.com document navigations even when curl default_headers are enabled.
+pub fn appendCurlImpersonateColdHopSupplements(
+    headers: *HttpClient.Headers,
+    allocator: std.mem.Allocator,
+    identity: *const Profile.IdentityProfile,
+    static: *const StaticHeaders,
+    ctx: RequestContext,
+    opts: ChromeHeadersOpts,
+    antidetect: bool,
+) !void {
+    if (!std.mem.startsWith(u8, ctx.request_url, "http")) return;
+    if (ctx.resource_type != .document) return;
+
+    if (antidetect) {
+        try headers.add(static.accept_language_header);
+        try headers.add(static.sec_ch_ua_header);
+    }
+
+    try headers.add(accept_encoding_zstd);
+    try headers.add("Cache-Control: no-cache");
+    try headers.add("Pragma: no-cache");
+
+    const downlink_hdr = try std.fmt.allocPrintSentinel(
+        allocator,
+        "Downlink: {d:.1}",
+        .{document_downlink},
+        0,
+    );
+    try headers.add(downlink_hdr);
+
+    try headers.add(document_priority);
+
+    const rtt_hdr = try std.fmt.allocPrintSentinel(allocator, "RTT: {d}", .{document_rtt}, 0);
+    try headers.add(rtt_hdr);
+
+    const color_hdr = try std.fmt.allocPrintSentinel(
+        allocator,
+        "Sec-Ch-Prefers-Color-Scheme: {s}",
+        .{opts.color_scheme},
+        0,
+    );
+    try headers.add(color_hdr);
+
+    try appendHighEntropyClientHintsAfterSecChUa(headers, allocator, identity, opts.brands);
+
+    const mobile_hdr = try std.fmt.allocPrintSentinel(
+        allocator,
+        "Sec-Ch-Ua-Mobile: {s}",
+        .{if (identity.ua_mobile) "?1" else "?0"},
+        0,
+    );
+    try headers.add(mobile_hdr);
+
+    try headers.add("Sec-Ch-Ua-Model: \"\"");
+
+    const platform_hdr = try std.fmt.allocPrintSentinel(
+        allocator,
+        "Sec-Ch-Ua-Platform: \"{s}\"",
+        .{identity.ua_data_platform},
+        0,
+    );
+    try headers.add(platform_hdr);
+
+    const platform_ver_hdr = try std.fmt.allocPrintSentinel(
+        allocator,
+        "Sec-Ch-Ua-Platform-Version: \"{s}\"",
+        .{identity.platform_version},
+        0,
+    );
+    try headers.add(platform_ver_hdr);
+    try headers.add("Sec-Ch-Ua-Wow64: ?0");
+
+    const site = secFetchSite(ctx);
+    if (!std.mem.eql(u8, site, "none")) {
+        const site_hdr = try std.fmt.allocPrintSentinel(allocator, "Sec-Fetch-Site: {s}", .{site}, 0);
+        try headers.add(site_hdr);
     }
 }
 
@@ -487,6 +584,101 @@ test "HttpProfile: secFetchSite same-origin" {
         .is_document_navigation = false,
     };
     try testing.expectEqualStrings("same-origin", secFetchSite(ctx));
+}
+
+test "HttpProfile: cold hop supplements include Downlink and high-entropy Sec-CH-UA" {
+    const alloc = testing.allocator;
+    var headers = try HttpClient.Headers.initEmpty();
+    defer headers.deinit();
+
+    const identity = Profile.macos_catalina_intel;
+    const static = StaticHeaders{
+        .user_agent_header = "User-Agent: test\x00",
+        .sec_ch_ua_header = "Sec-Ch-Ua: \"Google Chrome\";v=\"149\"\x00",
+        .accept_language_header = "Accept-Language: en-US,en;q=0.9\x00",
+    };
+    const ctx = RequestContext{
+        .request_url = "https://www.google.com/search?q=test\x00",
+        .resource_type = .document,
+        .is_document_navigation = true,
+        .prior_origin = "https://www.google.com",
+    };
+    const opts = ChromeHeadersOpts{
+        .full_client_hints = true,
+        .brands = &.{.{ .brand = "Google Chrome", .version = "149" }},
+        .color_scheme = "dark",
+    };
+    try appendCurlImpersonateColdHopSupplements(&headers, alloc, &identity, &static, ctx, opts, true);
+
+    var saw_downlink = false;
+    var saw_arch = false;
+    var saw_rtt = false;
+    var saw_cache_control = false;
+    var saw_pragma = false;
+    var saw_sec_fetch_site = false;
+    var it = headers.iterator();
+    while (it.next()) |hdr| {
+        if (std.mem.eql(u8, hdr.name, "Downlink")) saw_downlink = true;
+        if (std.mem.eql(u8, hdr.name, "Sec-Ch-Ua-Arch")) saw_arch = true;
+        if (std.mem.eql(u8, hdr.name, "RTT")) saw_rtt = true;
+        if (std.mem.eql(u8, hdr.name, "Cache-Control")) saw_cache_control = true;
+        if (std.mem.eql(u8, hdr.name, "Pragma")) saw_pragma = true;
+        if (std.mem.eql(u8, hdr.name, "Sec-Fetch-Site")) saw_sec_fetch_site = true;
+    }
+    try testing.expect(saw_downlink);
+    try testing.expect(saw_arch);
+    try testing.expect(saw_rtt);
+    try testing.expect(saw_cache_control);
+    try testing.expect(saw_pragma);
+    try testing.expect(saw_sec_fetch_site);
+}
+
+test "HttpProfile: in-session document hop uses lower Downlink and RTT" {
+    const alloc = testing.allocator;
+    var headers = try HttpClient.Headers.initEmpty();
+    defer headers.deinit();
+
+    const identity = Profile.macos_catalina_intel;
+    const static = StaticHeaders{
+        .user_agent_header = "User-Agent: test\x00",
+        .sec_ch_ua_header = "Sec-Ch-Ua: \"Google Chrome\";v=\"149\"\x00",
+        .accept_language_header = "Accept-Language: en-US,en;q=0.9\x00",
+    };
+    const ctx = RequestContext{
+        .request_url = "https://www.google.com/search?q=test&sei=abc\x00",
+        .resource_type = .document,
+        .is_document_navigation = true,
+        .prior_origin = "https://www.google.com",
+    };
+    const opts = ChromeHeadersOpts{
+        .full_client_hints = true,
+        .brands = &.{.{ .brand = "Google Chrome", .version = "149" }},
+        .color_scheme = "dark",
+        .omit_sec_fetch_user = true,
+        .referer_url = "https://www.google.com/search?q=test&hl=en",
+    };
+    try appendChromeHeaders(&headers, alloc, &identity, &static, ctx, opts);
+
+    var downlink: ?f64 = null;
+    var rtt: ?u32 = null;
+    var it = headers.iterator();
+    while (it.next()) |hdr| {
+        if (std.mem.eql(u8, hdr.name, "Downlink")) {
+            downlink = try std.fmt.parseFloat(f64, hdr.value);
+        }
+        if (std.mem.eql(u8, hdr.name, "RTT")) {
+            rtt = try std.fmt.parseInt(u32, hdr.value, 10);
+        }
+    }
+    try testing.expectEqual(in_session_downlink, downlink.?);
+    try testing.expectEqual(in_session_rtt, rtt.?);
+
+    var saw_sec_fetch = false;
+    it = headers.iterator();
+    while (it.next()) |hdr| {
+        if (std.mem.startsWith(u8, hdr.name, "Sec-Fetch")) saw_sec_fetch = true;
+    }
+    try testing.expect(!saw_sec_fetch);
 }
 
 test "HttpProfile: brandFullVersion maps Not A Brand to x.0.0.0" {

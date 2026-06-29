@@ -51,6 +51,11 @@ factory: Factory,
 // objects allocate out of this.
 frame_arena: Allocator,
 
+// Stable allocator for identity_map buckets and TaggedOpaque nodes. Kept
+// separate from frame_arena so hash-table metadata is not perturbed by high-
+// churn DOM/audio allocations and is only released on Page teardown.
+identity_arena: Allocator,
+
 // Origin map for same-origin context sharing. Entries live for the Page's
 // lifetime.
 origins: std.StringHashMapUnmanaged(*js.Origin) = .empty,
@@ -58,6 +63,10 @@ origins: std.StringHashMapUnmanaged(*js.Origin) = .empty,
 // Identity tracking for the main world. All main-world contexts in this Page
 // share this, ensuring object identity works across same-origin frames.
 identity: js.Identity = .{},
+
+// Zig ptr ids queued by V8 weak callbacks. identity_map is not mutated inside
+// weak callbacks (re-entrant GC during getOrPut would corrupt the table).
+pending_identity_removals: std.ArrayList(usize) = .empty,
 
 // Finalizer callbacks for Zig instances exposed to v8 in this Page. Keyed by
 // Zig instance ptr. The backing FinalizerCallback.Identity structs come from
@@ -131,15 +140,32 @@ pub fn init(self: *Page, session: *Session, frame_id: u32) !void {
     const frame_arena = try session.arena_pool.acquire(.large, "Page.frame_arena");
     errdefer session.arena_pool.release(frame_arena);
 
+    const identity_arena = try session.arena_pool.acquire(.medium, "Page.identity_arena");
+    errdefer session.arena_pool.release(identity_arena);
+
     self.* = .{
         .session = session,
         .frame = undefined,
         .frame_arena = frame_arena,
+        .identity_arena = identity_arena,
         .factory = Factory.init(frame_arena),
     };
     self.queued_navigation = &self.queued_navigation_1;
 
     try Frame.init(&self.frame, frame_id, self, null);
+}
+
+pub fn queueIdentityRemoval(self: *Page, resolved_ptr_id: usize) void {
+    self.pending_identity_removals.append(self.identity_arena, resolved_ptr_id) catch {};
+}
+
+pub fn flushPendingIdentityRemovals(self: *Page) void {
+    if (self.pending_identity_removals.items.len == 0) return;
+    for (self.pending_identity_removals.items) |ptr_id| {
+        // Global was already reset in the V8 weak callback; drop the stale entry.
+        _ = self.identity.identity_map.remove(ptr_id);
+    }
+    self.pending_identity_removals.clearRetainingCapacity();
 }
 
 // Tear down the Page and its root Frame. Equivalent to the old
@@ -157,8 +183,23 @@ pub fn deinit(self: *Page) void {
     const session = self.session;
     defer session.browser.env.memoryPressureNotification(.moderate);
 
+    // Invalidate outstanding V8 weak callbacks before releasing identity-map
+    // storage in frame_arena.
+    {
+        var fc_it = self.finalizer_callbacks.valueIterator();
+        while (fc_it.next()) |fc_ptr| {
+            var id = fc_ptr.*.identities;
+            while (id) |identity| {
+                identity.done = true;
+                id = identity.next;
+            }
+        }
+    }
+
+    self.flushPendingIdentityRemovals();
     self.identity.deinit();
     self.identity = .{};
+    self.pending_identity_removals = .empty;
 
     // Force cleanup all remaining finalized objects. Remove each callback from
     // the map before releasing it, because release_ref can re-enter
@@ -200,6 +241,7 @@ pub fn deinit(self: *Page) void {
         self.origins = .empty;
     }
 
+    session.arena_pool.release(self.identity_arena);
     session.arena_pool.release(self.frame_arena);
 }
 
@@ -293,6 +335,21 @@ pub fn scheduleNavigation(self: *Page, frame: *Frame) !void {
 
 pub fn findFrameByFrameId(self: *Page, frame_id: u32) ?*Frame {
     return findFrameBy(&self.frame, "_frame_id", frame_id);
+}
+
+/// Map a dedicated-worker's synthetic frame_id to its parent frame for CDP/network attribution.
+pub fn findFrameForWorkerFrameId(self: *Page, frame_id: u32) ?*Frame {
+    return findFrameForWorkerFrameIdInner(&self.frame, frame_id);
+}
+
+fn findFrameForWorkerFrameIdInner(frame: *Frame, frame_id: u32) ?*Frame {
+    for (frame.workers.items) |worker| {
+        if (worker._frame_id == frame_id) return frame;
+    }
+    for (frame.child_frames.items) |child| {
+        if (findFrameForWorkerFrameIdInner(child, frame_id)) |found| return found;
+    }
+    return null;
 }
 
 // Returns the popup Frame registered under `name`, or null.

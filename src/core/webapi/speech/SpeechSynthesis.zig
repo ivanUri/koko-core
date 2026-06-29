@@ -3,6 +3,8 @@
 // published by the Free Software Foundation, either version 3 of the
 // License, or (at your option) any later version.
 
+const std = @import("std");
+
 const js = @import("../../js/js.zig");
 const Frame = @import("../../browser/Frame.zig");
 
@@ -17,11 +19,16 @@ pub fn registerTypes() []const type {
 pub const SpeechSynthesisVoice = struct {
     _name: []const u8,
     _lang: []const u8,
+    _voice_uri: []const u8,
     _local_service: bool,
     _default: bool,
 
     pub fn getName(self: *const SpeechSynthesisVoice) []const u8 {
         return self._name;
+    }
+
+    pub fn getVoiceURI(self: *const SpeechSynthesisVoice) []const u8 {
+        return self._voice_uri;
     }
 
     pub fn getLang(self: *const SpeechSynthesisVoice) []const u8 {
@@ -45,6 +52,7 @@ pub const SpeechSynthesisVoice = struct {
         };
         pub const name = bridge.accessor(SpeechSynthesisVoice.getName, null, .{});
         pub const lang = bridge.accessor(SpeechSynthesisVoice.getLang, null, .{});
+        pub const voiceURI = bridge.accessor(SpeechSynthesisVoice.getVoiceURI, null, .{});
         pub const localService = bridge.accessor(SpeechSynthesisVoice.getLocalService, null, .{});
         pub const default = bridge.accessor(SpeechSynthesisVoice.getDefault, null, .{});
     };
@@ -179,8 +187,13 @@ pub const SpeechSynthesis = struct {
 
     pub fn getVoices(self: *const SpeechSynthesis, frame: *Frame) ![]*SpeechSynthesisVoice {
         if (!frame._speech_voices_ready) {
-            try scheduleVoiceLoad(self, frame);
-            return &.{};
+            if (frame.loadedProfile().speech_voices.len > 0) {
+                try loadLocalVoices(frame);
+                try loadRemoteVoices(frame);
+            } else {
+                try scheduleVoiceLoad(self, frame);
+                return &.{};
+            }
         }
 
         var count: usize = 0;
@@ -212,42 +225,118 @@ pub const SpeechSynthesis = struct {
         try frame.js.scheduler.add(data, struct {
             fn run(ctx: *anyopaque) !?u32 {
                 const d: *TaskData = @ptrCast(@alignCast(ctx));
-                loadVoices(d.frame) catch return null;
+                loadFallbackVoices(d.frame) catch return null;
                 fireVoicesChanged(d.synth, d.frame) catch {};
                 return null;
             }
         }.run, 0, .{ .name = "SpeechSynthesis.loadVoices" });
     }
 
-    fn loadVoices(frame: *Frame) !void {
+    /// Chrome loads macOS remote voices after the first getVoices snapshot CreepJS takes.
+    fn scheduleRemoteVoiceLoad(self: *const SpeechSynthesis, frame: *Frame) !void {
+        if (frame._speech_remote_load_scheduled) return;
+        const profile_voices = frame.loadedProfile().speech_voices;
+        var remote_count: usize = 0;
+        for (profile_voices) |spec| {
+            if (!spec.local_service) remote_count += 1;
+        }
+        if (remote_count == 0) return;
+        frame._speech_remote_load_scheduled = true;
+
+        const TaskData = struct {
+            synth: *const SpeechSynthesis,
+            frame: *Frame,
+        };
+        const data = try frame.arena.create(TaskData);
+        data.* = .{ .synth = self, .frame = frame };
+
+        // Delay past typical CreepJS voices probe (Chrome ~800ms, Velora ~2s).
+        try frame.js.scheduler.add(data, struct {
+            fn run(ctx: *anyopaque) !?u32 {
+                const d: *TaskData = @ptrCast(@alignCast(ctx));
+                loadRemoteVoices(d.frame) catch return null;
+                fireVoicesChanged(d.synth, d.frame) catch {};
+                return null;
+            }
+        }.run, 3500, .{ .name = "SpeechSynthesis.loadRemoteVoices", .low_priority = true });
+    }
+
+    fn loadLocalVoices(frame: *Frame) !void {
         if (frame._speech_voices_ready) return;
 
         const profile_voices = frame.loadedProfile().speech_voices;
-        const slots = if (profile_voices.len > 0) blk: {
-            const s = try frame._page.frame_arena.alloc(?*SpeechSynthesisVoice, profile_voices.len);
-            for (profile_voices, 0..) |spec, i| {
-                s[i] = try frame._factory.create(SpeechSynthesisVoice{
-                    ._name = spec.name,
-                    ._lang = spec.lang,
-                    ._local_service = spec.local_service,
-                    ._default = spec.default_voice,
-                });
-            }
-            break :blk s;
-        } else blk: {
-            const specs = &macos_chrome_voices;
-            const s = try frame._page.frame_arena.alloc(?*SpeechSynthesisVoice, specs.len);
-            for (specs, 0..) |spec, i| {
-                s[i] = try frame._factory.create(SpeechSynthesisVoice{
-                    ._name = spec.name,
-                    ._lang = spec.lang,
-                    ._local_service = true,
-                    ._default = spec.default_voice,
-                });
-            }
-            break :blk s;
-        };
+        var local_count: usize = 0;
+        for (profile_voices) |spec| {
+            if (spec.local_service) local_count += 1;
+        }
+
+        const slots = try frame._page.frame_arena.alloc(?*SpeechSynthesisVoice, local_count);
+        var i: usize = 0;
+        for (profile_voices) |spec| {
+            if (!spec.local_service) continue;
+            slots[i] = try frame._factory.create(SpeechSynthesisVoice{
+                ._name = spec.name,
+                ._lang = spec.lang,
+                ._voice_uri = spec.voice_uri,
+                ._local_service = spec.local_service,
+                ._default = spec.default_voice,
+            });
+            i += 1;
+        }
         frame._speech_voices = slots;
+        frame._speech_voices_ready = true;
+    }
+
+    fn loadRemoteVoices(frame: *Frame) !void {
+        if (frame._speech_remote_ready) return;
+        const profile_voices = frame.loadedProfile().speech_voices;
+
+        var remote_count: usize = 0;
+        for (profile_voices) |spec| {
+            if (!spec.local_service) remote_count += 1;
+        }
+        if (remote_count == 0) return;
+
+        const old_len = frame._speech_voices.len;
+        const new_slots = try frame._page.frame_arena.alloc(?*SpeechSynthesisVoice, old_len + remote_count);
+        @memcpy(new_slots[0..old_len], frame._speech_voices);
+
+        var i: usize = old_len;
+        for (profile_voices) |spec| {
+            if (spec.local_service) continue;
+            new_slots[i] = try frame._factory.create(SpeechSynthesisVoice{
+                ._name = spec.name,
+                ._lang = spec.lang,
+                ._voice_uri = spec.voice_uri,
+                ._local_service = spec.local_service,
+                ._default = spec.default_voice,
+            });
+            i += 1;
+        }
+        frame._speech_voices = new_slots;
+        frame._speech_remote_ready = true;
+    }
+
+    fn loadFallbackVoices(frame: *Frame) !void {
+        if (frame._speech_voices_ready) return;
+
+        const specs = &macos_chrome_voices;
+        const s = try frame._page.frame_arena.alloc(?*SpeechSynthesisVoice, specs.len);
+        for (specs, 0..) |spec, i| {
+            const voice_uri = try std.fmt.allocPrint(
+                frame._page.frame_arena,
+                "com.apple.voice.compact.{s}.{s}",
+                .{ spec.lang, spec.name },
+            );
+            s[i] = try frame._factory.create(SpeechSynthesisVoice{
+                ._name = spec.name,
+                ._lang = spec.lang,
+                ._voice_uri = voice_uri,
+                ._local_service = true,
+                ._default = spec.default_voice,
+            });
+        }
+        frame._speech_voices = s;
         frame._speech_voices_ready = true;
     }
 

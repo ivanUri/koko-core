@@ -80,6 +80,31 @@ const CDPFrame = struct {
     gatedAPIFeatures: [][]const u8 = &[0][]const u8{},
 };
 
+const FrameTreeNode = struct {
+    frame: CDPFrame,
+    childFrames: []const FrameTreeNode = &.{},
+};
+
+fn buildFrameTreeNode(arena: Allocator, frame: *Frame, bc: *CDP.BrowserContext) !FrameTreeNode {
+    const frame_id = try arena.dupe(u8, &id.toFrameId(frame._frame_id));
+    const loader_id = try arena.dupe(u8, &id.toLoaderId(frame._loader_id));
+    const url = if (frame.url.len > 0) frame.url else "about:blank";
+    var children = try arena.alloc(FrameTreeNode, frame.child_frames.items.len);
+    for (frame.child_frames.items, 0..) |child, i| {
+        children[i] = try buildFrameTreeNode(arena, child, bc);
+    }
+    return .{
+        .frame = .{
+            .id = frame_id,
+            .loaderId = loader_id,
+            .url = url,
+            .securityOrigin = frame.origin orelse bc.security_origin,
+            .secureContextType = bc.secure_context_type,
+        },
+        .childFrames = children,
+    };
+}
+
 fn getFrameTree(cmd: *CDP.Command) !void {
     // Stagehand parses the response and error if we don't return a
     // correct one for this call when browser context or target id are missing.
@@ -95,21 +120,15 @@ fn getFrameTree(cmd: *CDP.Command) !void {
         },
     };
     const bc = cmd.browser_context orelse return cmd.sendResult(startup, .{});
-    const target_id = bc.target_id orelse return cmd.sendResult(startup, .{});
+    if (bc.target_id == null) return cmd.sendResult(startup, .{});
 
-    const frame = bc.session.currentFrame();
-    const loader_id = if (frame) |f| &id.toLoaderId(f._loader_id) else "LID-STARTUP";
+    const frame = bc.session.currentFrame() orelse {
+        return cmd.sendResult(startup, .{});
+    };
 
+    const tree = try buildFrameTreeNode(cmd.arena, frame, bc);
     return cmd.sendResult(.{
-        .frameTree = .{
-            .frame = CDPFrame{
-                .id = &target_id,
-                .securityOrigin = bc.security_origin,
-                .loaderId = loader_id,
-                .url = bc.getURL() orelse "about:blank",
-                .secureContextType = bc.secure_context_type,
-            },
-        },
+        .frameTree = tree,
     }, .{});
 }
 
@@ -464,11 +483,19 @@ pub fn frameChildFrameCreated(bc: *CDP.BrowserContext, event: *const Notificatio
 
     const cdp = bc.cdp;
     const frame_id = &id.toFrameId(event.frame_id);
+    const child = bc.frameForId(event.frame_id);
 
     try cdp.sendEvent("Page.frameAttached", .{ .params = .{
         .frameId = frame_id,
         .parentFrameId = &id.toFrameId(event.parent_id),
     } }, .{ .session_id = session_id });
+
+    if (child) |frame| {
+        const info = try @import("target.zig").targetInfoForFrame(bc.notification_arena, frame, bc, false);
+        try cdp.sendEvent("Target.targetCreated", .{
+            .targetInfo = info,
+        }, .{});
+    }
 
     if (bc.page_life_cycle_events) {
         try cdp.sendEvent("Page.lifecycleEvent", LifecycleEvent{
@@ -813,9 +840,21 @@ fn printToPDF(cmd: *CDP.Command) !void {
     }, .{});
 }
 
+fn layoutViewportSize(cmd: *CDP.Command) struct { width: u32, height: u32 } {
+    if (cmd.browser_context) |bc| {
+        if (bc.session.currentFrame()) |frame| {
+            const window = frame.identityProfile().window;
+            return .{ .width = window.inner_width, .height = window.inner_height };
+        }
+    }
+    const window = cmd.cdp.browser.app.config.profile.identityPtr().window;
+    return .{ .width = window.inner_width, .height = window.inner_height };
+}
+
 fn getLayoutMetrics(cmd: *CDP.Command) !void {
-    const width = 1920;
-    const height = 1080;
+    const vp = layoutViewportSize(cmd);
+    const width = vp.width;
+    const height = vp.height;
 
     return cmd.sendResult(.{
         .layoutViewport = .{
@@ -973,8 +1012,9 @@ test "cdp.frame: getLayoutMetrics" {
 
     _ = try ctx.loadBrowserContext(.{ .id = "BID-9", .url = "hi.html", .target_id = "FID-000000000X".* });
 
-    const width = 1920;
-    const height = 1080;
+    const profile = ctx.cdp().browser.app.config.profile.identityPtr();
+    const width = profile.window.inner_width;
+    const height = profile.window.inner_height;
 
     try ctx.processMessage(.{ .id = 12, .method = "Page.getLayoutMetrics" });
     try ctx.expectSentResult(.{

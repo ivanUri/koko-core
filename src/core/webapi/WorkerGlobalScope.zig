@@ -391,6 +391,9 @@ pub fn postMessage(self: *WorkerGlobalScope, data: JS.Value, transfer: ?[]JS.Val
         &[_]*MessagePort{};
 
     try self._worker.receiveMessage(data, message_id, transferred_ports);
+    if (self._worker._bootstrap_complete) {
+        Worker.pumpBootstrapMessaging(&self.js.execution);
+    }
     // Defer macrotask pumping: Turnstile blob workers call postMessage from
     // eval/onmessage; running macrotasks synchronously there trips V8's
     // "Unexpected level after return from api call" check.
@@ -617,6 +620,9 @@ fn importScript(self: *WorkerGlobalScope, arena: Allocator, url: [:0]const u8) !
     };
 
     ls.local.runMacrotasks();
+    if (self._worker._bootstrap_complete) {
+        Worker.pumpBootstrapMessaging(&self.js.execution);
+    }
     session.browser.runMacrotasks() catch |err| {
         log.warn(.browser, "importScript pump", .{ .err = err });
     };

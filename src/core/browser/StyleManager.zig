@@ -17,6 +17,7 @@ const std = @import("std");
 const Frame = @import("Frame.zig");
 
 const CssParser = @import("css/Parser.zig");
+const Document = @import("../dom/Document.zig");
 const Element = @import("../dom/Element.zig");
 
 const Selector = @import("../webapi/selector/Selector.zig");
@@ -27,6 +28,7 @@ const CSSStyleRule = @import("../webapi/css/CSSStyleRule.zig");
 const CSSStyleSheet = @import("../webapi/css/CSSStyleSheet.zig");
 const CSSStyleProperties = @import("../webapi/css/CSSStyleProperties.zig");
 const CSSStyleProperty = @import("../webapi/css/CSSStyleDeclaration.zig").Property;
+const MediaQueryEval = @import("../webapi/css/MediaQueryEval.zig");
 
 const log = @import("../../support/log.zig");
 const String = @import("../../support/string.zig").String;
@@ -59,6 +61,13 @@ next_doc_order: u32 = 0,
 // When true, rules need to be rebuilt
 dirty: bool = false,
 
+// Cached getLayoutProperty results (key = elem ptr + property hash). Cleared on dom/style changes.
+_layout_prop_cache: std.AutoHashMapUnmanaged(u64, ?[]const u8) = .empty,
+_layout_prop_cache_version: usize = 0,
+
+// Custom properties from matching @media rules in <style> elements.
+custom_props: std.AutoHashMapUnmanaged(*Element, std.StringArrayHashMapUnmanaged([]const u8)) = .empty,
+
 pub fn init(frame: *Frame) !StyleManager {
     return .{
         .frame = frame,
@@ -76,17 +85,95 @@ fn parseSheet(self: *StyleManager, sheet: *CSSStyleSheet) !void {
             const style_rule = rule.is(CSSStyleRule) orelse continue;
             try self.addRule(style_rule);
         }
-        return;
     }
 
+    // CSSStyleSheet.replaceSync skips @media at-rules, but CreepJS probes read
+    // custom properties injected via @media blocks in <style> text — always
+    // parse the owner node's raw text for those rules.
     const owner_node = sheet.getOwnerNode() orelse return;
     if (owner_node.is(Element.Html.Style)) |style| {
         const text = try style.asNode().getTextContentAlloc(self.arena);
-        var it = CssParser.parseStylesheet(text);
+        try self.parseStyleText(text);
+    }
+}
+
+fn mediaViewport(self: *StyleManager) MediaQueryEval.Viewport {
+    const screen = self.frame.identityProfile().screen;
+    const scheme = self.frame.loadedProfile().http.prefers_color_scheme;
+    const color_scheme: MediaQueryEval.Viewport.ColorScheme = if (std.ascii.eqlIgnoreCase(scheme, "dark")) .dark else .light;
+    return .{
+        .width_px = screen.width,
+        .height_px = screen.height,
+        .device_width_px = screen.width,
+        .device_height_px = screen.height,
+        .device_pixel_ratio = screen.device_pixel_ratio,
+        .color_scheme = color_scheme,
+        .color_gamut = .p3,
+    };
+}
+
+fn parseStyleText(self: *StyleManager, text: []const u8) !void {
+    var pos: usize = 0;
+    while (std.mem.indexOfPos(u8, text, pos, "@media")) |at| {
+        pos = at + 6;
+        const cond_start = std.mem.indexOfScalar(u8, text[pos..], '{') orelse break;
+        const condition = std.mem.trim(u8, text[pos .. pos + cond_start], &std.ascii.whitespace);
+        pos += cond_start + 1;
+        var depth: u32 = 1;
+        const block_start = pos;
+        while (pos < text.len and depth > 0) : (pos += 1) {
+            switch (text[pos]) {
+                '{' => depth += 1,
+                '}' => depth -= 1,
+                else => {},
+            }
+        }
+        if (depth != 0) break;
+        const block = text[block_start .. pos - 1];
+        if (!MediaQueryEval.matches(condition, self.mediaViewport())) continue;
+        var it = CssParser.parseStylesheet(block);
         while (it.next()) |parsed_rule| {
             try self.addRawRule(parsed_rule.selector, parsed_rule.block);
+            try self.addCustomProps(parsed_rule.selector, parsed_rule.block);
         }
     }
+
+    var it = CssParser.parseStylesheet(text);
+    while (it.next()) |parsed_rule| {
+        try self.addRawRule(parsed_rule.selector, parsed_rule.block);
+        try self.addCustomProps(parsed_rule.selector, parsed_rule.block);
+    }
+}
+
+fn addCustomProps(self: *StyleManager, selector_text: []const u8, block_text: []const u8) !void {
+    const html_doc = self.frame.document.is(Document.HTMLDocument) orelse return;
+    const body = html_doc.getBody() orelse return;
+    const selectors = SelectorParser.parseList(self.arena, selector_text) catch return;
+    var matches_body = false;
+    for (selectors) |selector| {
+        const rightmost = if (selector.segments.len > 0) selector.segments[selector.segments.len - 1].compound else selector.first;
+        const bucket_key = getBucketKey(rightmost) orelse continue;
+        if (bucket_key == .tag and bucket_key.tag == .body) {
+            matches_body = true;
+            break;
+        }
+    }
+    if (!matches_body) return;
+
+    var it = CssParser.parseDeclarationsList(block_text);
+    while (it.next()) |decl| {
+        if (decl.name.len < 3 or decl.name[0] != '-' or decl.name[1] != '-') continue;
+        const gop = try self.custom_props.getOrPut(self.arena, body);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        const value = try self.arena.dupe(u8, decl.value);
+        try gop.value_ptr.put(self.arena, try self.arena.dupe(u8, decl.name), value);
+    }
+}
+
+pub fn getCustomProperty(self: *StyleManager, element: *Element, name: []const u8) ?[]const u8 {
+    self.rebuildIfDirty() catch return null;
+    const props = self.custom_props.get(element) orelse return null;
+    return props.get(name);
 }
 
 fn addRawRule(self: *StyleManager, selector_text: []const u8, block_text: []const u8) !void {
@@ -166,10 +253,16 @@ fn addRawRule(self: *StyleManager, selector_text: []const u8, block_text: []cons
 
 pub fn sheetRemoved(self: *StyleManager) void {
     self.dirty = true;
+    self.invalidateLayoutPropertyCache();
 }
 
 pub fn sheetModified(self: *StyleManager) void {
     self.dirty = true;
+    self.invalidateLayoutPropertyCache();
+}
+
+pub fn invalidateLayoutPropertyCache(self: *StyleManager) void {
+    self._layout_prop_cache_version = 0;
 }
 
 /// Rebuilds the rule list from all document stylesheets.
@@ -181,6 +274,7 @@ fn rebuildIfDirty(self: *StyleManager) !void {
 
     self.dirty = false;
     errdefer self.dirty = true;
+    self.invalidateLayoutPropertyCache();
     const id_rules_count = self.id_rules.count();
     const class_rules_count = self.class_rules.count();
     const tag_rules_count = self.tag_rules.count();
@@ -202,6 +296,8 @@ fn rebuildIfDirty(self: *StyleManager) !void {
     self.other_rules = .{};
     try self.other_rules.ensureTotalCapacity(self.arena, other_rules_count);
 
+    self.custom_props = .empty;
+
     const sheets = self.frame.document._style_sheets orelse return;
     for (sheets._sheets.items) |sheet| {
         self.parseSheet(sheet) catch |err| {
@@ -218,16 +314,21 @@ pub fn isHidden(self: *StyleManager, el: *Element, cache: ?*VisibilityCache, opt
     self.rebuildIfDirty() catch return false;
 
     var current: ?*Element = el;
+    var ancestor_guard: u32 = 0;
 
     while (current) |elem| {
+        ancestor_guard += 1;
+        if (ancestor_guard > 128) return false;
         // Check cache first (only when checking all properties for caching consistency)
         if (cache) |c| {
-            if (c.get(elem)) |hidden| {
-                if (hidden) {
-                    return true;
+            if (self.frame._layout_visibility_cache_version == self.frame.version) {
+                if (c.get(elem)) |hidden| {
+                    if (hidden) {
+                        return true;
+                    }
+                    current = elem.parentElement();
+                    continue;
                 }
-                current = elem.parentElement();
-                continue;
             }
         }
 
@@ -235,7 +336,11 @@ pub fn isHidden(self: *StyleManager, el: *Element, cache: ?*VisibilityCache, opt
 
         // Store in cache
         if (cache) |c| {
-            c.put(self.frame.call_arena, elem, hidden) catch |err| {
+            // Layout bulk reads use `_layout_visibility_cache`, which must survive
+            // `call_arena` reset between sequential CDP evaluates.
+            const cache_arena = if (self.frame.layoutResolveActive()) self.frame.arena else self.frame.call_arena;
+            self.frame._layout_visibility_cache_version = self.frame.version;
+            c.put(cache_arena, elem, hidden) catch |err| {
                 log.warn(.browser, "StyleManager cache", .{ .err = err, .src = "isHidden" });
             };
         }
@@ -367,6 +472,14 @@ fn isElementHidden(self: *StyleManager, el: *Element, options: CheckVisibilityOp
     // enough that uniform treatment is acceptable.
     if (options.check_display and display_priority != INLINE_PRIORITY) {
         if (matchesUaDisplayNoneRule(el)) return true;
+    }
+
+    // Bulk layout (offsetWidth/getBoundingClientRect) skips stylesheet cascade;
+    // matchesSelector is disabled while _layout_resolve_active.
+    if (self.frame.layoutResolveActive()) {
+        return (display_none orelse false) or
+            (visibility_hidden orelse false) or
+            (opacity_zero orelse false);
     }
 
     if (display_priority == INLINE_PRIORITY and visibility_priority == INLINE_PRIORITY and opacity_priority == INLINE_PRIORITY) {
@@ -557,8 +670,28 @@ fn elementHasPointerEventsNone(self: *StyleManager, el: *Element) bool {
     return result orelse false;
 }
 
+fn layoutPropertyCacheKey(el: *Element, property_name: []const u8) u64 {
+    var hash: u64 = @intFromPtr(el);
+    for (property_name) |c| hash *%= 31 +% @as(u64, c);
+    return hash;
+}
+
 /// Resolves a layout property (width/height) from inline styles and stylesheets.
 pub fn getLayoutProperty(self: *StyleManager, el: *Element, property_name: []const u8) ?[]const u8 {
+    const cache_valid = self._layout_prop_cache_version == self.frame.version;
+    const cache_key = layoutPropertyCacheKey(el, property_name);
+    if (cache_valid) {
+        if (self._layout_prop_cache.getPtr(cache_key)) |cached| return cached.*;
+    } else {
+        self._layout_prop_cache_version = self.frame.version;
+    }
+
+    const result = self.resolveLayoutProperty(el, property_name);
+    self._layout_prop_cache.put(self.frame.arena, cache_key, result) catch {};
+    return result;
+}
+
+fn resolveLayoutProperty(self: *StyleManager, el: *Element, property_name: []const u8) ?[]const u8 {
     const frame = self.frame;
     const wrapped = String.wrap(property_name);
 
@@ -566,6 +699,8 @@ pub fn getLayoutProperty(self: *StyleManager, el: *Element, property_name: []con
         const value = property._value.str();
         if (value.len > 0) return value;
     }
+
+    if (frame.layoutResolveActive()) return null;
 
     var result: ?[]const u8 = null;
     var best_priority: u64 = 0;
@@ -854,6 +989,9 @@ fn countCompoundSpecificity(compound: Selector.Compound, ids: *u32, classes: *u3
 }
 
 fn matchesSelector(el: *Element, selector: Selector.Selector, frame: *Frame) bool {
+    // Bulk layout (offsetWidth/getBoundingClientRect) uses inline + UA tag defaults only.
+    // Full stylesheet cascade runs outside layout via getComputedStyle paths.
+    if (frame.layoutResolveActive()) return false;
     const node = el.asNode();
     return SelectorList.matches(node, selector, node, frame);
 }

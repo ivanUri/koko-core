@@ -41,8 +41,19 @@ pub const Viewport = struct {
     device_pixel_ratio: f64,
     color_scheme: ColorScheme = .light,
     reduced_motion: bool = false,
+    monochrome_bits: u32 = 0,
+    inverted_colors: bool = false,
+    forced_colors: bool = false,
+    hover: HoverCapability = .hover,
+    pointer: PointerCapability = .fine,
+    display_mode: DisplayMode = .browser,
+    color_gamut: ColorGamut = .p3,
 
     pub const ColorScheme = enum { light, dark };
+    pub const HoverCapability = enum { hover, none };
+    pub const PointerCapability = enum { fine, coarse, none };
+    pub const DisplayMode = enum { fullscreen, standalone, @"minimal-ui", browser };
+    pub const ColorGamut = enum { rec2020, p3, srgb };
 };
 
 pub fn matches(query: []const u8, vp: Viewport) bool {
@@ -196,10 +207,16 @@ fn featureBoolean(feat: []const u8, vp: Viewport) bool {
     if (std.mem.eql(u8, feat, "device-height")) return vp.device_height_px > 0;
     if (std.mem.eql(u8, feat, "resolution")) return vp.device_pixel_ratio > 0;
     if (std.mem.eql(u8, feat, "color")) return true;
-    if (std.mem.eql(u8, feat, "any-pointer") or std.mem.eql(u8, feat, "pointer")) return true;
-    if (std.mem.eql(u8, feat, "any-hover") or std.mem.eql(u8, feat, "hover")) return true;
+    if (std.mem.eql(u8, feat, "monochrome")) return vp.monochrome_bits > 0;
+    if (std.mem.eql(u8, feat, "any-pointer") or std.mem.eql(u8, feat, "pointer")) return vp.pointer != .none;
+    if (std.mem.eql(u8, feat, "any-hover") or std.mem.eql(u8, feat, "hover")) return vp.hover == .hover;
     if (std.mem.eql(u8, feat, "prefers-color-scheme")) return true;
     if (std.mem.eql(u8, feat, "prefers-reduced-motion")) return true;
+    // macOS Chrome does not support inverted-colors — neither boolean nor value forms match.
+    if (std.mem.eql(u8, feat, "inverted-colors")) return false;
+    if (std.mem.eql(u8, feat, "forced-colors")) return vp.forced_colors;
+    if (std.mem.eql(u8, feat, "display-mode")) return true;
+    if (std.mem.eql(u8, feat, "color-gamut")) return true;
     return false;
 }
 
@@ -266,7 +283,54 @@ fn matchValue(
         if (want_no) return !vp.reduced_motion;
         return false;
     }
+    if (std.mem.eql(u8, feat, "monochrome")) {
+        const bits = std.fmt.parseInt(u32, std.mem.trim(u8, value_raw, &std.ascii.whitespace), 10) catch return vp.monochrome_bits > 0;
+        return vp.monochrome_bits == bits;
+    }
+    if (std.mem.eql(u8, feat, "inverted-colors")) return false;
+    if (std.mem.eql(u8, feat, "forced-colors")) {
+        if (std.ascii.eqlIgnoreCase(value_raw, "active")) return vp.forced_colors;
+        if (std.ascii.eqlIgnoreCase(value_raw, "none")) return !vp.forced_colors;
+        return false;
+    }
+    if (std.mem.eql(u8, feat, "any-hover") or std.mem.eql(u8, feat, "hover")) {
+        if (std.ascii.eqlIgnoreCase(value_raw, "hover")) return vp.hover == .hover;
+        if (std.ascii.eqlIgnoreCase(value_raw, "none")) return vp.hover == .none;
+        return false;
+    }
+    if (std.mem.eql(u8, feat, "any-pointer") or std.mem.eql(u8, feat, "pointer")) {
+        if (std.ascii.eqlIgnoreCase(value_raw, "fine")) return vp.pointer == .fine;
+        if (std.ascii.eqlIgnoreCase(value_raw, "coarse")) return vp.pointer == .coarse;
+        if (std.ascii.eqlIgnoreCase(value_raw, "none")) return vp.pointer == .none;
+        return false;
+    }
+    if (std.mem.eql(u8, feat, "device-aspect-ratio")) {
+        return aspectRatioMatches(value_raw, vp.device_width_px, vp.device_height_px);
+    }
+    if (std.mem.eql(u8, feat, "display-mode")) {
+        if (std.ascii.eqlIgnoreCase(value_raw, "fullscreen")) return vp.display_mode == .fullscreen;
+        if (std.ascii.eqlIgnoreCase(value_raw, "standalone")) return vp.display_mode == .standalone;
+        if (std.ascii.eqlIgnoreCase(value_raw, "minimal-ui")) return vp.display_mode == .@"minimal-ui";
+        if (std.ascii.eqlIgnoreCase(value_raw, "browser")) return vp.display_mode == .browser;
+        return false;
+    }
+    if (std.mem.eql(u8, feat, "color-gamut")) {
+        if (std.ascii.eqlIgnoreCase(value_raw, "rec2020")) return vp.color_gamut == .rec2020;
+        if (std.ascii.eqlIgnoreCase(value_raw, "p3")) return vp.color_gamut == .p3 or vp.color_gamut == .rec2020;
+        if (std.ascii.eqlIgnoreCase(value_raw, "srgb")) return true;
+        return false;
+    }
     return false;
+}
+
+fn aspectRatioMatches(value_raw: []const u8, width: u32, height: u32) bool {
+    const slash = std.mem.indexOfScalar(u8, value_raw, '/') orelse return false;
+    const w = std.fmt.parseInt(u32, std.mem.trim(u8, value_raw[0..slash], &std.ascii.whitespace), 10) catch return false;
+    const h = std.fmt.parseInt(u32, std.mem.trim(u8, value_raw[slash + 1 ..], &std.ascii.whitespace), 10) catch return false;
+    if (w == 0 or h == 0 or height == 0) return false;
+    const lhs = @as(u64, width) * h;
+    const rhs = @as(u64, height) * w;
+    return lhs == rhs;
 }
 
 fn parseLength(s: []const u8) ?u32 {

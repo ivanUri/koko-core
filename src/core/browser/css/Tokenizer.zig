@@ -778,6 +778,17 @@ pub fn next(self: *Tokenizer) ?Token {
                 return .cdc;
             }
 
+            // <dashed-ident> for CSS custom properties (--name).
+            if (self.hasAtLeast(2) and self.byteAt(1) == '-') {
+                const name_start = self.byteAt(2);
+                if (std.ascii.isAlphabetic(name_start) or name_start == '_' or name_start > 0x7F) {
+                    const start = self.position;
+                    self.advance(2);
+                    _ = self.consumeName();
+                    return .{ .ident = self.sliceFrom(start) };
+                }
+            }
+
             if (isIdentStart(self)) {
                 return self.consumeIdentLike();
             }

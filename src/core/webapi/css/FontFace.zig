@@ -54,7 +54,12 @@ pub fn acquireRef(self: *FontFace) void {
     self._rc.acquire();
 }
 
-pub fn getFamily(self: *const FontFace) []const u8 {
+/// Chrome returns multi-word families with literal quote characters (e.g. `"Helvetica Neue"`).
+pub fn getFamily(self: *const FontFace, frame: *Frame) []const u8 {
+    if (std.mem.indexOfScalar(u8, self._family, ' ')) |_| {
+        const formatted = std.fmt.bufPrint(&frame.buf, "\"{s}\"", .{self._family}) catch return self._family;
+        return formatted;
+    }
     return self._family;
 }
 

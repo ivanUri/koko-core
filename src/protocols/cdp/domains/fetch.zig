@@ -220,7 +220,7 @@ pub fn requestIntercept(bc: *CDP.BrowserContext, intercept: *const Notification.
         .frameId = &id.toFrameId(request.params.frame_id),
         .request = network.RequestWriter.init(request),
         .resourceType = switch (request.params.resource_type) {
-            .script => "Script",
+            .script, .worker => "Script",
             .xhr => "XHR",
             .document => "Document",
             .fetch => "Fetch",
@@ -448,7 +448,7 @@ pub fn requestAuthRequired(bc: *CDP.BrowserContext, intercept: *const Notificati
         .frameId = &id.toFrameId(request.params.frame_id),
         .request = network.RequestWriter.init(&request),
         .resourceType = switch (request.params.resource_type) {
-            .script => "Script",
+            .script, .worker => "Script",
             .xhr => "XHR",
             .document => "Document",
             .fetch => "Fetch",

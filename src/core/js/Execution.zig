@@ -67,6 +67,9 @@ url: *[:0]const u8,
 // Pointer to the charset field of the global (Page or WorkerGlobalScope).
 charset: *[]const u8,
 
+/// HTML timer nesting level — clamps nested setTimeout(0) to 4ms (spec §8.6.1).
+timer_nesting_level: u16 = 0,
+
 // Returns the current base URL of the global scope.
 pub fn base(self: *const Execution) [:0]const u8 {
     return self.context.global.base();
@@ -186,9 +189,9 @@ pub fn isChildFrame(self: *const Execution) bool {
 }
 
 pub fn canEnterJs(self: *const Execution, mode: JsEntryMode) bool {
-    // Circuit breaker: if the scheduler was suppressed due to runaway
-    // microtask execution, no JS entry is legal regardless of realm state.
-    if (self.schedulerSuppressed()) return false;
+    // scheduler_suppressed only gates microtask checkpoints (see Env.runMicrotasks).
+    // Macrotasks (setTimeout, rAF, etc.) must keep firing so CreepJS queueEvent
+    // and other async probes can make progress under parallel Promise.all load.
     const st = self.realmState();
     return switch (mode) {
         .strict_active => st == .active,

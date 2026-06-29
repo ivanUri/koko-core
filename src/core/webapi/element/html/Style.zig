@@ -73,6 +73,7 @@ pub fn setDisabled(self: *Style, disabled: bool, frame: *Frame) !void {
 
 const CSSStyleSheet = @import("../../css/CSSStyleSheet.zig");
 pub fn getSheet(self: *Style, frame: *Frame) !?*CSSStyleSheet {
+    const owner_frame = self.asNode().ownerFrame(frame);
     // Per spec, sheet is null for disconnected elements or non-CSS types.
     // Valid types: absent (defaults to "text/css"), empty string, or
     // case-insensitive match for "text/css".
@@ -87,28 +88,29 @@ pub fn getSheet(self: *Style, frame: *Frame) !?*CSSStyleSheet {
     }
 
     if (self._sheet) |sheet| return sheet;
-    const sheet = try CSSStyleSheet.initWithOwner(self.asElement(), frame);
+    const sheet = try CSSStyleSheet.initWithOwner(self.asElement(), owner_frame);
     self._sheet = sheet;
 
-    const sheets = try frame.document.getStyleSheets(frame);
-    try sheets.add(sheet, frame);
+    const sheets = try owner_frame.document.getStyleSheets(owner_frame);
+    try sheets.add(sheet, owner_frame);
 
     return sheet;
 }
 
 pub fn styleAddedCallback(self: *Style, frame: *Frame) !void {
+    const owner_frame = self.asNode().ownerFrame(frame);
     // Force stylesheet initialization so rules are parsed immediately
     if (self.getSheet(frame) catch null) |_| {
         // Notify StyleManager about the new stylesheet
-        frame._style_manager.sheetModified();
+        owner_frame._style_manager.sheetModified();
     }
 
     // if we're planning on navigating to another frame, don't trigger load event.
-    if (frame.isGoingAway()) {
+    if (owner_frame.isGoingAway()) {
         return;
     }
 
-    try frame.queueLoad(self._proto);
+    try owner_frame.queueLoad(self._proto);
 }
 
 pub const JsApi = struct {

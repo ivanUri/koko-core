@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Velora Worker Probe</title>
+</head>
+<body>
+  <h1>Worker Probe</h1>
+  <pre id="log"></pre>
+  <script>
+    const logEl = document.getElementById("log");
+    const log = (...args) => {
+      const line = args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ");
+      logEl.textContent += line + "\n";
+      console.log("[worker-probe]", ...args);
+    };
+
+    async function probeDedicated(scriptSource) {
+      return new Promise((resolve) => {
+        const giveUp = setTimeout(() => resolve({ error: "timeout" }), 3000);
+        let worker;
+        try {
+          worker = new Worker(scriptSource);
+        } catch (e) {
+          clearTimeout(giveUp);
+          resolve({ error: String(e) });
+          return;
+        }
+        worker.onmessage = (event) => {
+          clearTimeout(giveUp);
+          worker.terminate();
+          resolve(event.data);
+        };
+        worker.onerror = (event) => {
+          clearTimeout(giveUp);
+          resolve({ error: event.message || "worker error" });
+        };
+      });
+    }
+
+    (async () => {
+      log("start");
+      const mini = await probeDedicated("./worker-mini.js");
+      log("mini", mini);
+      window.__WORKER_MINI__ = mini;
+
+      const creep = await probeDedicated("./creep.js");
+      log("creep", creep && creep.userAgent ? "userAgent=" + creep.userAgent : creep);
+      window.__WORKER_CREEP__ = creep;
+      log("done");
+    })();
+  </script>
+</body>
+</html>

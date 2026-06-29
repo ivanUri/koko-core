@@ -64,6 +64,12 @@ pub fn schedule(
     const timer_id = self._timer_id +% 1;
     self._timer_id = timer_id;
 
+    var effective_delay = delay_ms;
+    if (exec.timer_nesting_level >= 5 and effective_delay < 4) {
+        effective_delay = 4;
+    }
+    exec.timer_nesting_level +%= 1;
+
     var persisted_params: []js.Value.Temp = &.{};
     if (opts.params.len > 0) {
         persisted_params = try arena.dupe(js.Value.Temp, opts.params);
@@ -91,7 +97,7 @@ pub fn schedule(
     };
     gop.value_ptr.* = callback;
 
-    try exec.context.scheduler.add(callback, ScheduleCallback.run, delay_ms, .{
+    try exec.context.scheduler.add(callback, ScheduleCallback.run, effective_delay, .{
         .name = opts.name,
         .low_priority = opts.low_priority,
         .finalizer = ScheduleCallback.cancelled,
@@ -187,6 +193,10 @@ const ScheduleCallback = struct {
             self.deinit();
             return null;
         };
+
+        if (self.exec.timer_nesting_level > 0) {
+            self.exec.timer_nesting_level -= 1;
+        }
 
         if (RealmLifecycleKernel.trace_enabled) {
             RealmLifecycleKernel.trace(.task_execute, self.traceFrameId(), current_epoch, self.timer_id);

@@ -19,7 +19,8 @@ import WebSocket from "ws";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(__dirname, "..");
 const VELORA_BIN = resolve(REPO, "zig-out/bin/velora");
-const CREEPJS_URL = "https://abrahamjuliot.github.io/creepjs/";
+const CREEPJS_ONLINE = "https://abrahamjuliot.github.io/creepjs/";
+const LOCAL_STATIC_PORT = 8765;
 const OUT_DIR = resolve(REPO, "code-check/tmp/creepjs-compare");
 const CHROME_CDP_PORT = 9334;
 const CHROME_PROFILE = resolve(os.tmpdir(), "creepjs-chrome-real-profile");
@@ -27,11 +28,21 @@ const CHROME_PROFILE = resolve(os.tmpdir(), "creepjs-chrome-real-profile");
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function parseArgs(argv) {
-    const out = { profile: "chrome-local-huys-macbook-pro", waitSec: 15, maxSec: 15 };
+    const out = {
+        profile: "chrome-local-huys-macbook-pro",
+        waitSec: 15,
+        maxSec: 15,
+        local: false,
+        url: CREEPJS_ONLINE,
+    };
     for (let i = 0; i < argv.length; i += 1) {
         const a = argv[i];
         if (a === "--profile") out.profile = argv[++i];
         else if (a === "--wait-sec" || a === "--max-sec") out.waitSec = out.maxSec = Number(argv[++i]);
+        else if (a === "--local") {
+            out.local = true;
+            out.url = `http://127.0.0.1:${LOCAL_STATIC_PORT}/index.html`;
+        } else if (a === "--url") out.url = argv[++i];
     }
     return out;
 }
@@ -141,14 +152,14 @@ async function spawnVelora(profile, port) {
     return { proc, endpoint };
 }
 
-async function spawnRealChrome() {
+async function spawnRealChrome(startUrl) {
     await mkdir(CHROME_PROFILE, { recursive: true });
     const proc = spawn(chromeExecutable(), [
         `--remote-debugging-port=${CHROME_CDP_PORT}`,
         `--user-data-dir=${CHROME_PROFILE}`,
         "--no-first-run",
         "--no-default-browser-check",
-        CREEPJS_URL,
+        startUrl,
     ], { stdio: "ignore" });
     const endpoint = `http://127.0.0.1:${CHROME_CDP_PORT}`;
     await waitCdp(endpoint, 45_000);
@@ -169,12 +180,18 @@ const EXTRACT_CREEPJS = `(() => {
         const m = block.match(/(\\d+(?:\\.\\d+)?)%/);
         return m ? Number(m[1]) : null;
     };
-    const fpId = line("FP ID:").replace(/^FP ID:\\s*/, "");
+    const fpEl = document.getElementById("creep-fingerprint")?.textContent ?? "";
+    const fpFromEl = fpEl.replace(/^FP ID:\\s*/i, "").trim();
+    const fpId = (line("FP ID:").replace(/^FP ID:\\s*/, "") || fpFromEl).trim();
     const screenMatch = body.match(/screen:\\s*(\\d+)\\s*x\\s*(\\d+)/i);
+    const audioPassed = body.includes("audio passed");
+    const speechPassed = body.includes("speech passed");
     return {
         fpId,
         fuzzy: line("Fuzzy:").replace(/^Fuzzy:\\s*/, ""),
-        ready: fpId.length > 0 && !fpId.includes("Computing"),
+        ready: fpId.length > 0 && !/computing/i.test(fpId),
+        audioPassed,
+        speechPassed,
         headless: {
             chromium: pct("chromium:"),
             likeHeadless: pct("like headless:"),
@@ -220,7 +237,7 @@ const EXTRACT_NAV = `(() => ({
     })(),
 }))()`;
 
-async function captureCreepJs(label, endpoint, waitSec, navigate = true) {
+async function captureCreepJs(label, endpoint, waitSec, creepUrl, navigate = true) {
     const t0 = Date.now();
     let client = null;
     try {
@@ -228,12 +245,12 @@ async function captureCreepJs(label, endpoint, waitSec, navigate = true) {
         client = conn.client;
 
         if (navigate) {
-            console.log(`[${label}] navigate ${CREEPJS_URL}`);
-            await client.send("Page.navigate", { url: CREEPJS_URL }, conn.sessionId);
+            console.log(`[${label}] navigate ${creepUrl}`);
+            await client.send("Page.navigate", { url: creepUrl }, conn.sessionId);
         } else {
             console.log(`[${label}] attach existing CreepJS tab`);
             const pages = await (await fetch(`${endpoint}/json/list`)).json();
-            const creepTab = pages.find((p) => p.url?.includes("creepjs"));
+            const creepTab = pages.find((p) => p.url?.includes("creepjs") || p.url?.includes("127.0.0.1:8765"));
             if (creepTab?.webSocketDebuggerUrl) {
                 client.close();
                 const ws = new WebSocket(creepTab.webSocketDebuggerUrl);
@@ -260,11 +277,15 @@ async function captureCreepJs(label, endpoint, waitSec, navigate = true) {
             const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
             process.stdout.write(`\r[${label}] ${elapsed}s fp=${(creep?.fpId || "").slice(0, 12)} headless=${creep?.headless?.likeHeadless ?? "?"}`);
             const headlessReady = creep?.headless?.likeHeadless != null;
-            if (creep?.ready && creep.bodyLen > 2500 && headlessReady) {
+            const milestones = creep?.audioPassed && creep?.speechPassed;
+            const fpReady = creep?.ready && creep.fpId.length >= 8;
+            const onlineReady = fpReady && creep.bodyLen > 2500 && headlessReady;
+            const localReady = milestones && fpReady;
+            if (localReady || onlineReady || (milestones && i >= polls - 2)) {
                 if (creep.fpId === lastFp) stable += 1;
                 else stable = 0;
                 lastFp = creep.fpId;
-                if (stable >= 2) break;
+                if (stable >= 2 || localReady || onlineReady) break;
             }
         }
         console.log("");
@@ -289,6 +310,8 @@ function sessionSummary(data) {
         fpId: c.fpId,
         fuzzy: c.fuzzy,
         headless: h,
+        audioPassed: c.audioPassed,
+        speechPassed: c.speechPassed,
         screenSize: c.screenSize,
         webdriver: data.navigator?.webdriver,
         languages: data.navigator?.languages,
@@ -347,17 +370,26 @@ async function main() {
 
     let chromeProc = null;
     let veloraProc = null;
+    let staticProc = null;
     const hardKill = setTimeout(() => {
         console.error(`\n[HARD LIMIT ${args.maxSec}s] killing all browsers`);
         if (veloraProc && !veloraProc.killed) veloraProc.kill("SIGKILL");
         if (chromeProc && !chromeProc.killed) chromeProc.kill("SIGKILL");
+        if (staticProc && !staticProc.killed) staticProc.kill("SIGKILL");
     }, args.maxSec * 1000);
 
     try {
-        console.log("Khởi động Chrome thật + Velora song song...");
+        if (args.local) {
+            staticProc = spawn(process.execPath, [
+                resolve(REPO, "scripts/serve-creep-local.mjs"),
+                "--port", String(LOCAL_STATIC_PORT),
+            ], { cwd: REPO, stdio: "ignore" });
+            await delay(400);
+        }
+        console.log(`Khởi động Chrome thật + Velora (${args.url})...`);
         const veloraPort = await getFreePort();
         const [chromeLaunch, veloraLaunch] = await Promise.all([
-            spawnRealChrome(),
+            spawnRealChrome(args.url),
             spawnVelora(args.profile, veloraPort),
         ]);
         chromeProc = chromeLaunch.proc;
@@ -365,8 +397,8 @@ async function main() {
 
         console.log(`Capture CreepJS (tối đa ~${args.waitSec}s mỗi bên, thoát sớm khi ổn định)...`);
         const [chrome, velora] = await Promise.all([
-            captureCreepJs("chrome-real", `http://127.0.0.1:${CHROME_CDP_PORT}`, args.waitSec, false),
-            captureCreepJs("velora", `http://127.0.0.1:${veloraPort}`, args.waitSec, true),
+            captureCreepJs("chrome-real", `http://127.0.0.1:${CHROME_CDP_PORT}`, args.waitSec, args.url, false),
+            captureCreepJs("velora", `http://127.0.0.1:${veloraPort}`, args.waitSec, args.url, true),
         ]);
 
         const chromeSummary = sessionSummary(chrome);
@@ -374,7 +406,7 @@ async function main() {
 
         const comparison = {
             generatedAt: new Date().toISOString(),
-            creepjsUrl: CREEPJS_URL,
+            creepjsUrl: args.url,
             profile: args.profile,
             sessions: {
                 "chrome-real": { description: "Chrome thật (spawn + CDP)", raw: chrome, summary: chromeSummary },
@@ -397,8 +429,21 @@ async function main() {
         console.log("\n--- summary ---");
         console.log(`Chrome FP:  ${chromeSummary.fpId}`);
         console.log(`Velora FP:  ${veloraSummary.fpId}`);
-        console.log(`Chrome headless: like ${chromeSummary.headless?.likeHeadless}% / headless ${chromeSummary.headless?.headless}%`);
-        console.log(`Velora headless: like ${veloraSummary.headless?.likeHeadless}% / headless ${veloraSummary.headless?.headless}%`);
+        console.log(`Chrome audio/speech: ${chromeSummary.audioPassed}/${chromeSummary.speechPassed}`);
+        console.log(`Velora audio/speech: ${veloraSummary.audioPassed}/${veloraSummary.speechPassed}`);
+        if (chromeSummary.headless?.likeHeadless != null) {
+            console.log(`Chrome headless: like ${chromeSummary.headless?.likeHeadless}% / headless ${chromeSummary.headless?.headless}%`);
+            console.log(`Velora headless: like ${veloraSummary.headless?.likeHeadless}% / headless ${veloraSummary.headless?.headless}%`);
+        }
+        const diffs = comparison.diffs.velora_vs_chrome;
+        if (diffs.length) {
+            console.log("\n--- khác biệt ---");
+            for (const d of diffs) {
+                console.log(`  ${d.field}: chrome=${JSON.stringify(d.chrome_real)} velora=${JSON.stringify(d.velora)}`);
+            }
+        } else {
+            console.log("\nKhông có khác biệt ở các field summary.");
+        }
         console.log(`\nSaved: ${OUT_DIR}`);
     } finally {
         clearTimeout(hardKill);
@@ -408,6 +453,7 @@ async function main() {
             await delay(1500);
             if (!chromeProc.killed) chromeProc.kill("SIGKILL");
         }
+        if (staticProc && !staticProc.killed) staticProc.kill("SIGKILL");
     }
 }
 

@@ -122,6 +122,11 @@ pub const AsyncJob = struct {
         if (std.posix.getenv("VELORA_ROOT")) |root| {
             child.cwd = root;
         }
+        var env_map = try std.process.getEnvMap(self.arena);
+        if (env_map.get("VELORA_CHROME_SPAWN") == null) {
+            try env_map.put("VELORA_CHROME_SPAWN", "1");
+        }
+        child.env_map = &env_map;
         child.stdin_behavior = .Pipe;
         child.stdout_behavior = .Pipe;
         child.stderr_behavior = .Pipe;

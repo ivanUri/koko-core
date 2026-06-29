@@ -726,6 +726,7 @@ fn PrototypeType(comptime T: type) ?type {
 }
 
 fn flattenTypes(comptime Types: []const type) [countFlattenedTypes(Types)]type {
+    @setEvalBranchQuota(10_000);
     var index: usize = 0;
     var flat: [countFlattenedTypes(Types)]type = undefined;
     for (Types) |T| {
@@ -743,6 +744,7 @@ fn flattenTypes(comptime Types: []const type) [countFlattenedTypes(Types)]type {
 }
 
 fn countFlattenedTypes(comptime Types: []const type) usize {
+    @setEvalBranchQuota(10_000);
     var c: usize = 0;
     for (Types) |T| {
         c += if (@hasDecl(T, "registerTypes")) T.registerTypes().len else 1;
@@ -889,7 +891,9 @@ pub const PageJsApis = flattenTypes(&.{
     @import("../dom/DOMImplementation.zig"),
     @import("../dom/DOMTreeWalker.zig"),
     @import("../dom/DOMNodeIterator.zig"),
+    @import("../dom/DOMRectReadOnly.zig"),
     @import("../dom/DOMRect.zig"),
+    @import("../dom/SVGRect.zig"),
     @import("../dom/DOMParser.zig"),
     @import("../webapi/XMLSerializer.zig"),
     @import("../webapi/AbstractRange.zig"),
@@ -1009,6 +1013,7 @@ pub const PageJsApis = flattenTypes(&.{
     @import("../webapi/shared_worker.zig"),
     @import("../webapi/Worker.zig"),
     @import("../webapi/media/MediaError.zig"),
+    @import("../webapi/media/MediaRecorder.zig"),
     @import("../webapi/media/MediaSource.zig"),
     @import("../webapi/media/SourceBuffer.zig"),
     @import("../webapi/media/TextTrackCue.zig"),
@@ -1061,12 +1066,14 @@ pub const PageJsApis = flattenTypes(&.{
     @import("../webapi/canvas/CanvasRenderingContext2D.zig"),
     @import("../webapi/canvas/TextMetrics.zig"),
     @import("../webapi/canvas/WebGLRenderingContext.zig"),
+    @import("../webapi/canvas/WebGL2RenderingContext.zig").WebGL2RenderingContext,
     @import("../webapi/canvas/OffscreenCanvas.zig"),
     @import("../webapi/canvas/OffscreenCanvasRenderingContext2D.zig"),
     @import("../webapi/SubtleCrypto.zig"),
     @import("../webapi/CryptoKey.zig"),
     @import("../webapi/Selection.zig"),
     @import("../webapi/ImageData.zig"),
+    @import("../webapi/window_stubs.zig"),
 });
 
 // APIs available on Worker context globals (constructors like URL, Headers, etc.)
@@ -1108,6 +1115,7 @@ pub const WorkerJsApis = flattenTypes(&.{
     @import("../webapi/canvas/OffscreenCanvas.zig"),
     @import("../webapi/canvas/OffscreenCanvasRenderingContext2D.zig"),
     @import("../webapi/canvas/WebGLRenderingContext.zig"),
+    @import("../webapi/canvas/WebGL2RenderingContext.zig").WebGL2RenderingContext,
     @import("../webapi/net/XMLHttpRequest.zig"),
     @import("../webapi/net/XMLHttpRequestEventTarget.zig"),
     @import("../webapi/FileReader.zig"),

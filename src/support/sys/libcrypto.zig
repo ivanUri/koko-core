@@ -262,6 +262,45 @@ pub extern fn EVP_MD_CTX_new() ?*EVP_MD_CTX;
 pub extern fn EVP_MD_CTX_free(ctx: ?*EVP_MD_CTX) void;
 pub const struct_evp_md_ctx_st = opaque {};
 pub const EVP_MD_CTX = struct_evp_md_ctx_st;
+pub const struct_evp_cipher_st = opaque {};
+pub const EVP_CIPHER = struct_evp_cipher_st;
+pub const struct_evp_cipher_ctx_st = opaque {};
+pub const EVP_CIPHER_CTX = struct_evp_cipher_ctx_st;
+
+pub const EVP_CTRL_AEAD_SET_IVLEN: c_int = 0x9;
+pub const EVP_CTRL_AEAD_GET_TAG: c_int = 0x10;
+
+pub extern fn EVP_aes_128_gcm() *const EVP_CIPHER;
+pub extern fn EVP_aes_192_gcm() *const EVP_CIPHER;
+pub extern fn EVP_aes_256_gcm() *const EVP_CIPHER;
+
+pub extern fn EVP_CIPHER_CTX_new() ?*EVP_CIPHER_CTX;
+pub extern fn EVP_CIPHER_CTX_free(ctx: ?*EVP_CIPHER_CTX) void;
+pub extern fn EVP_EncryptInit_ex(
+    ctx: ?*EVP_CIPHER_CTX,
+    cipher: ?*const EVP_CIPHER,
+    impl: ?*ENGINE,
+    key: ?[*]const u8,
+    iv: ?[*]const u8,
+) c_int;
+pub extern fn EVP_EncryptUpdate(
+    ctx: ?*EVP_CIPHER_CTX,
+    out: ?[*]u8,
+    out_len: *c_int,
+    in: ?[*]const u8,
+    in_len: c_int,
+) c_int;
+pub extern fn EVP_EncryptFinal_ex(
+    ctx: ?*EVP_CIPHER_CTX,
+    out: ?[*]u8,
+    out_len: *c_int,
+) c_int;
+pub extern fn EVP_CIPHER_CTX_ctrl(
+    ctx: ?*EVP_CIPHER_CTX,
+    type: c_int,
+    arg: c_int,
+    ptr: ?*anyopaque,
+) c_int;
 
 /// Returns the desired digest by its name.
 pub fn findDigest(name: []const u8) error{Invalid}!*const EVP_MD {

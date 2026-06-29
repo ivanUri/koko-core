@@ -2515,57 +2515,31 @@
         [-29.83786964416504]: [35.10893232002854, 35.10893253237009],
     };
     const AUDIO_TRAP = Math.random();
-    const audioDbg = (...args) => {
-        if (typeof window !== 'undefined' && !window.CREEP_AUDIO_DEBUG)
-            return;
-        const t = performance.now().toFixed(1);
-        console.log(`%c[velora-audio ${t}ms]`, 'color:#7ec8e3;font-weight:bold', ...args);
-    };
     async function hasFakeAudio() {
-        audioDbg('hasFakeAudio: begin');
         const context = new OfflineAudioContext(1, 100, 44100);
-        audioDbg('hasFakeAudio: context created', { length: context.length, sampleRate: context.sampleRate });
         const oscillator = context.createOscillator();
         oscillator.frequency.value = 0;
         oscillator.start(0);
-        const renderPromise = context.startRendering();
-        audioDbg('hasFakeAudio: startRendering returned', { isPromise: !!renderPromise?.then });
+        context.startRendering();
         return new Promise((resolve) => {
             context.oncomplete = (event) => {
-                audioDbg('hasFakeAudio: oncomplete fired', {
-                    bufferLength: event?.renderedBuffer?.length,
-                    sampleRate: event?.renderedBuffer?.sampleRate,
-                });
                 const channelData = event.renderedBuffer.getChannelData?.(0);
-                if (!channelData) {
-                    audioDbg('hasFakeAudio: no channelData → false');
+                if (!channelData)
                     resolve(false);
-                    return;
-                }
-                const unique = [...new Set(channelData)];
-                const isFake = '' + unique !== '0';
-                audioDbg('hasFakeAudio: resolved', { uniqueCount: unique.length, isFake, first3: unique.slice(0, 3) });
-                resolve(isFake);
+                resolve('' + [...new Set(channelData)] !== '0');
             };
-        }).finally(() => {
-            audioDbg('hasFakeAudio: finally (disconnect oscillator)');
-            oscillator.disconnect();
-        });
+        }).finally(() => oscillator.disconnect());
     }
     async function getOfflineAudioContext() {
         try {
-            audioDbg('getOfflineAudioContext: begin');
             const timer = createTimer();
             await queueEvent(timer);
             try {
                 // @ts-expect-error if unsupported
                 window.OfflineAudioContext = OfflineAudioContext || webkitOfflineAudioContext;
             }
-            catch (err) {
-                audioDbg('getOfflineAudioContext: OfflineAudioContext assign error', err?.message || err);
-            }
+            catch (err) { }
             if (!window.OfflineAudioContext) {
-                audioDbg('getOfflineAudioContext: OfflineAudioContext missing');
                 logTestResult({ test: 'audio', passed: false });
                 return;
             }
@@ -2622,7 +2596,6 @@
                 ['OscillatorNode.frequency.minValue']: attempt(() => oscillator.frequency.minValue),
             };
             const getRenderedBuffer = (context) => (new Promise((resolve) => {
-                audioDbg('getRenderedBuffer: begin', { length: context.length, sampleRate: context.sampleRate });
                 const analyser = context.createAnalyser();
                 const oscillator = context.createOscillator();
                 const dynamicsCompressor = context.createDynamicsCompressor();
@@ -2633,21 +2606,13 @@
                     dynamicsCompressor.knee.value = 40;
                     dynamicsCompressor.attack.value = 0;
                 }
-                catch (err) {
-                    audioDbg('getRenderedBuffer: setup error', err?.message || err);
-                }
+                catch (err) { }
                 oscillator.connect(dynamicsCompressor);
                 dynamicsCompressor.connect(analyser);
                 dynamicsCompressor.connect(context.destination);
                 oscillator.start(0);
-                const renderPromise = context.startRendering();
-                audioDbg('getRenderedBuffer: startRendering returned', { isPromise: !!renderPromise?.then });
-                const listenerAdded = context.addEventListener('complete', (event) => {
-                    audioDbg('getRenderedBuffer: complete event fired', {
-                        bufferLength: event?.renderedBuffer?.length,
-                        bufferSampleRate: event?.renderedBuffer?.sampleRate,
-                        eventType: event?.type,
-                    });
+                context.startRendering();
+                return context.addEventListener('complete', (event) => {
                     try {
                         dynamicsCompressor.disconnect();
                         oscillator.disconnect();
@@ -2657,10 +2622,6 @@
                         if ('getFloatTimeDomainData' in analyser) {
                             analyser.getFloatTimeDomainData(floatTimeDomainData);
                         }
-                        audioDbg('getRenderedBuffer: resolve with data', {
-                            freqSum: [...floatFrequencyData].reduce((a, n) => a + Math.abs(n), 0),
-                            timeSum: [...floatTimeDomainData].reduce((a, n) => a + Math.abs(n), 0),
-                        });
                         return resolve({
                             floatFrequencyData,
                             floatTimeDomainData,
@@ -2672,28 +2633,15 @@
                         });
                     }
                     catch (error) {
-                        audioDbg('getRenderedBuffer: complete handler error', error?.message || error);
                         return resolve(null);
                     }
                 });
-                audioDbg('getRenderedBuffer: addEventListener(complete) done', { listenerAdded });
             }));
             await queueEvent(timer);
-            audioDbg('getOfflineAudioContext: launching Promise.all (5000 + hasFakeAudio)');
-            const promiseAllStart = performance.now();
             const [audioData, audioIsFake,] = await Promise.all([
                 getRenderedBuffer(new OfflineAudioContext(1, bufferLen, 44100)),
-                hasFakeAudio().catch((err) => {
-                    audioDbg('hasFakeAudio: caught error', err?.message || err);
-                    return false;
-                }),
+                hasFakeAudio().catch(() => false),
             ]);
-            audioDbg('getOfflineAudioContext: Promise.all done', {
-                elapsedMs: (performance.now() - promiseAllStart).toFixed(1),
-                hasAudioData: !!audioData,
-                audioIsFake,
-                bufferLen: audioData?.buffer?.length,
-            });
             const { floatFrequencyData, floatTimeDomainData, buffer, compressorGainReduction, } = audioData || {};
             await queueEvent(timer);
             const getSnapshot = (arr, start, end) => {
@@ -2891,13 +2839,6 @@
                 LowerEntropy.AUDIO = true;
                 sendToTrash('AudioBuffer', 'suspicious frequency data');
             }
-            audioDbg('getOfflineAudioContext: passed', {
-                sampleSum,
-                noise,
-                lied,
-                totalUniqueSamples,
-                pattern: '' + [compressorGainReduction, floatFrequencyDataSum, floatTimeDomainDataSum],
-            });
             logTestResult({ time: timer.stop(), test: 'audio', passed: true });
             return {
                 totalUniqueSamples,
@@ -2913,7 +2854,6 @@
             };
         }
         catch (error) {
-            audioDbg('getOfflineAudioContext: FAILED', error?.message || error, error?.stack);
             logTestResult({ test: 'audio', passed: false });
             captureError(error, 'OfflineAudioContext failed or blocked by client');
             return;

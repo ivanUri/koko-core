@@ -215,19 +215,15 @@ pub fn getElementById(self: *Document, id: []const u8, frame: *Frame) ?*Element 
         return element;
     }
 
-    //ID was removed but might have duplicates
-    if (self._removed_ids.remove(id)) {
-        var tw = @import("TreeWalker.zig").Full.Elements.init(self.asNode(), .{});
-        while (tw.next()) |el| {
-            const element_id = el.getAttributeSafe(comptime .wrap("id")) orelse continue;
-            if (std.mem.eql(u8, element_id, id)) {
-                // we ignore this error to keep getElementById easy to call
-                // if it really failed, then we're out of memory and nothing's
-                // going to work like it should anyways.
-                const owned_id = frame.dupeString(id) catch return null;
-                self._elements_by_id.put(frame.arena, owned_id, el) catch return null;
-                return el;
-            }
+    // Slow path: id map miss (innerHTML / importNode / adoption may skip indexing).
+    _ = self._removed_ids.remove(id);
+    var tw = @import("TreeWalker.zig").Full.Elements.init(self.asNode(), .{});
+    while (tw.next()) |el| {
+        const element_id = el.getAttributeSafe(comptime .wrap("id")) orelse continue;
+        if (std.mem.eql(u8, element_id, id)) {
+            const owned_id = frame.dupeString(id) catch return null;
+            self._elements_by_id.put(frame.arena, owned_id, el) catch return null;
+            return el;
         }
     }
 
@@ -1235,8 +1231,8 @@ pub const JsApi = struct {
     pub const lastElementChild = bridge.accessor(Document.getLastElementChild, null, .{});
     pub const childElementCount = bridge.accessor(Document.getChildElementCount, null, .{});
     pub const adoptedStyleSheets = bridge.accessor(Document.getAdoptedStyleSheets, Document.setAdoptedStyleSheets, .{});
-    pub const hidden = bridge.property(false, .{ .template = false, .readonly = true });
-    pub const visibilityState = bridge.property("visible", .{ .template = false, .readonly = true });
+    pub const hidden = bridge.attribute(false, .{});
+    pub const visibilityState = bridge.attribute("visible", .{});
     pub const defaultView = bridge.accessor(struct {
         fn defaultView(self: *const Document, frame: *Frame) *@import("../webapi/Window.zig") {
             const doc_frame = self._frame orelse frame;
@@ -1245,11 +1241,11 @@ pub const JsApi = struct {
     }.defaultView, null, .{});
     pub const hasFocus = bridge.function(Document.hasFocus, .{});
 
-    pub const prerendering = bridge.property(false, .{ .template = false });
+    pub const prerendering = bridge.attribute(false, .{});
     pub const characterSet = bridge.accessor(getCharacterSet, null, .{});
     pub const charset = bridge.accessor(getCharacterSet, null, .{});
     pub const inputEncoding = bridge.accessor(getCharacterSet, null, .{});
-    pub const compatMode = bridge.property("CSS1Compat", .{ .template = false });
+    pub const compatMode = bridge.attribute("CSS1Compat", .{});
 
     fn getCharacterSet(self: *const Document) []const u8 {
         const doc_frame = self._frame orelse return "UTF-8";

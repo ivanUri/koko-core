@@ -22,6 +22,7 @@ const URL = @import("../../../core/browser/URL.zig");
 const js = @import("../../../core/js/js.zig");
 
 const log = @import("../../../support/log.zig");
+const Frame = @import("../../../core/browser/Frame.zig");
 
 pub fn processMessage(cmd: *CDP.Command) !void {
     const action = std.meta.stringToEnum(enum {
@@ -59,29 +60,77 @@ pub fn processMessage(cmd: *CDP.Command) !void {
     }
 }
 
+fn parseTargetFrameId(target_id: []const u8) !u32 {
+    if (std.mem.startsWith(u8, target_id, "FID-")) {
+        return id.parseFrameId(target_id);
+    }
+    if (std.mem.startsWith(u8, target_id, "TID-") and target_id.len >= 14) {
+        var buf: [14]u8 = undefined;
+        @memcpy(buf[0..4], "FID-");
+        @memcpy(buf[4..], target_id[4..]);
+        return id.parseFrameId(&buf);
+    }
+    return error.UnknownTargetId;
+}
+
+pub fn targetInfoForFrame(arena: std.mem.Allocator, frame: *Frame, bc: *CDP.BrowserContext, is_root: bool) !TargetInfo {
+    const target_id = try arena.dupe(u8, &id.toFrameId(frame._frame_id));
+    const title = (frame.getTitle() catch "") orelse "";
+    const title_copy = try arena.dupe(u8, title);
+    const url = if (frame.url.len > 0) frame.url else "about:blank";
+    const url_copy = try arena.dupe(u8, url);
+    return .{
+        .targetId = target_id,
+        .type = if (is_root) "page" else "iframe",
+        .title = title_copy,
+        .url = url_copy,
+        .attached = isFrameAttached(bc, frame._frame_id),
+        .canAccessOpener = false,
+        .browserContextId = bc.id,
+    };
+}
+
+fn isFrameAttached(bc: *CDP.BrowserContext, frame_id: u32) bool {
+    if (bc.session.currentFrame()) |root| {
+        if (root._frame_id == frame_id) return bc.session_id != null;
+    }
+    var it = bc.frame_sessions.iterator();
+    while (it.next()) |entry| {
+        if (entry.value_ptr.* == frame_id) return true;
+    }
+    return false;
+}
+
+fn appendFrameTargets(
+    arena: std.mem.Allocator,
+    bc: *CDP.BrowserContext,
+    frame: *Frame,
+    list: *std.ArrayList(TargetInfo),
+    is_root: bool,
+) !void {
+    try list.append(arena, try targetInfoForFrame(arena, frame, bc, is_root));
+    for (frame.child_frames.items) |child| {
+        try appendFrameTargets(arena, bc, child, list, false);
+    }
+}
+
 fn getTargets(cmd: *CDP.Command) !void {
-    // If no context available, return an empty array.
     const bc = cmd.browser_context orelse {
         return cmd.sendResult(.{
             .targetInfos = [_]TargetInfo{},
         }, .{ .include_session_id = false });
     };
 
-    const target_id = &(bc.target_id orelse {
+    const root = bc.session.currentFrame() orelse {
         return cmd.sendResult(.{
             .targetInfos = [_]TargetInfo{},
         }, .{ .include_session_id = false });
-    });
+    };
 
+    var list: std.ArrayList(TargetInfo) = .empty;
+    try appendFrameTargets(cmd.arena, bc, root, &list, true);
     return cmd.sendResult(.{
-        .targetInfos = [_]TargetInfo{.{
-            .targetId = target_id,
-            .type = "page",
-            .title = bc.getTitle() orelse "",
-            .url = bc.getURL() orelse "about:blank",
-            .attached = true,
-            .canAccessOpener = false,
-        }},
+        .targetInfos = try list.toOwnedSlice(cmd.arena),
     }, .{ .include_session_id = false });
 }
 
@@ -241,14 +290,30 @@ fn attachToTarget(cmd: *CDP.Command) !void {
     })) orelse return error.InvalidParams;
 
     const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
-    const target_id = &(bc.target_id orelse return error.TargetNotLoaded);
-    if (std.mem.eql(u8, target_id, params.targetId) == false) {
-        return error.UnknownTargetId;
+    const root_target = &(bc.target_id orelse return error.TargetNotLoaded);
+
+    if (std.mem.eql(u8, root_target, params.targetId)) {
+        try doAttachtoTarget(cmd, root_target);
+        return cmd.sendResult(.{ .sessionId = bc.session_id }, .{});
     }
 
-    try doAttachtoTarget(cmd, target_id);
+    const frame_id = parseTargetFrameId(params.targetId) catch return error.UnknownTargetId;
+    const frame = bc.frameForId(frame_id) orelse return error.UnknownTargetId;
+    const root = bc.session.currentFrame() orelse return error.TargetNotLoaded;
+    if (frame._frame_id == root._frame_id) {
+        try doAttachtoTarget(cmd, root_target);
+        return cmd.sendResult(.{ .sessionId = bc.session_id }, .{});
+    }
 
-    return cmd.sendResult(.{ .sessionId = bc.session_id }, .{});
+    const session_id = cmd.cdp.session_id_gen.next();
+    try bc.registerFrameSession(session_id, frame_id);
+
+    try cmd.sendEvent("Target.attachedToTarget", AttachToTarget{
+        .sessionId = session_id,
+        .targetInfo = try targetInfoForFrame(cmd.arena, frame, bc, false),
+    }, .{ .session_id = bc.session_id });
+
+    return cmd.sendResult(.{ .sessionId = session_id }, .{});
 }
 
 fn attachToBrowserTarget(cmd: *CDP.Command) !void {
@@ -318,20 +383,15 @@ fn getTargetInfo(cmd: *CDP.Command) !void {
 
     if (params.targetId) |param_target_id| {
         const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
-        const target_id = &(bc.target_id orelse return error.TargetNotLoaded);
-        if (std.mem.eql(u8, target_id, param_target_id) == false) {
-            return error.UnknownTargetId;
-        }
+        _ = bc.target_id orelse return error.TargetNotLoaded;
+
+        const frame_id = parseTargetFrameId(param_target_id) catch return error.UnknownTargetId;
+        const frame = bc.frameForId(frame_id) orelse return error.UnknownTargetId;
+        const root = bc.session.currentFrame() orelse return error.TargetNotLoaded;
+        const is_root = frame._frame_id == root._frame_id;
 
         return cmd.sendResult(.{
-            .targetInfo = TargetInfo{
-                .targetId = target_id,
-                .type = "page",
-                .title = bc.getTitle() orelse "",
-                .url = bc.getURL() orelse "about:blank",
-                .attached = true,
-                .canAccessOpener = false,
-            },
+            .targetInfo = try targetInfoForFrame(cmd.arena, frame, bc, is_root),
         }, .{ .include_session_id = false });
     }
 
@@ -378,13 +438,37 @@ fn sendMessageToTarget(cmd: *CDP.Command) !void {
 }
 
 fn detachFromTarget(cmd: *CDP.Command) !void {
+    const DetachParams = struct {
+        sessionId: ?[]const u8 = null,
+    };
+    const params = (try cmd.params(DetachParams)) orelse DetachParams{};
+
     if (cmd.browser_context) |bc| {
-        if (bc.session_id) |session_id| {
+        if (params.sessionId) |detach_sid| {
+            if (bc.session_id) |main_sid| {
+                if (std.mem.eql(u8, detach_sid, main_sid)) {
+                    try cmd.sendEvent("Target.detachedFromTarget", .{
+                        .sessionId = detach_sid,
+                    }, .{});
+                    bc.session_id = null;
+                } else {
+                    bc.unregisterFrameSession(detach_sid);
+                    try cmd.sendEvent("Target.detachedFromTarget", .{
+                        .sessionId = detach_sid,
+                    }, .{});
+                }
+            } else {
+                bc.unregisterFrameSession(detach_sid);
+                try cmd.sendEvent("Target.detachedFromTarget", .{
+                    .sessionId = detach_sid,
+                }, .{});
+            }
+        } else if (bc.session_id) |session_id| {
             try cmd.sendEvent("Target.detachedFromTarget", .{
                 .sessionId = session_id,
             }, .{});
+            bc.session_id = null;
         }
-        bc.session_id = null;
     }
 
     return cmd.sendResult(null, .{});
@@ -476,6 +560,12 @@ fn doAttachtoTarget(cmd: *CDP.Command, target_id: []const u8) !void {
     }, .{ .session_id = bc.session_id });
 
     bc.session_id = session_id;
+
+    if (bc.session.currentFrame()) |frame| {
+        bc.registerFrameSession(session_id, frame._frame_id) catch |err| {
+            log.warn(.cdp, "register main frame session", .{ .err = err });
+        };
+    }
 }
 
 const AttachToTarget = struct {

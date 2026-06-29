@@ -675,7 +675,19 @@ pub fn getClientRects(self: *const Range, frame: *Frame) ![]DOMRect {
 }
 
 fn getContainerElement(self: *const Range) ?*Node.Element {
-    const container = self._proto.getCommonAncestorContainer();
+    const proto = self._proto;
+
+    // selectNode sets start/end on the parent with end_offset = start_offset + 1.
+    // Common ancestor is the parent; rects must come from the selected child.
+    if (proto._start_container == proto._end_container and
+        proto._end_offset == proto._start_offset + 1)
+    {
+        if (proto._start_container.getChildAt(proto._start_offset)) |child| {
+            if (child.is(Node.Element)) |el| return el;
+        }
+    }
+
+    const container = proto.getCommonAncestorContainer();
     if (container.is(Node.Element)) |el| return el;
     const parent = container.parentNode() orelse return null;
     return parent.is(Node.Element);

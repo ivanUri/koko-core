@@ -12,6 +12,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+const std = @import("std");
 const js = @import("../js/js.zig");
 const ProfileStore = @import("../../runtime/profile/ProfileStore.zig");
 
@@ -49,25 +50,40 @@ pub fn toJSON(self: *const NavigatorUAData, exec: *js.Execution) struct {
     };
 }
 
+fn hintMatches(hint: []const u8, comptime name: []const u8) bool {
+    return std.mem.eql(u8, hint, name);
+}
+
 pub fn getHighEntropyValues(_: *const NavigatorUAData, hints: []const []const u8, exec: *js.Execution) !js.Promise {
-    _ = hints;
-
+    const local = exec.context.local orelse return error.NotHandled;
     const profile = exec.identityProfile();
-    const brands = brandsFromProfile(exec.loadedProfile());
 
-    return exec.context.local.?.resolvePromise(.{
-        .brands = brands,
-        .mobile = profile.ua_mobile,
-        .platform = profile.ua_data_platform,
-        .architecture = profile.ua_architecture,
-        .bitness = profile.ua_bitness,
-        .model = "",
-        .platformVersion = profile.platform_version,
-        .uaFullVersion = profile.ua_full_version,
-        .fullVersionList = brands,
-        .wow64 = false,
-        .formFactor = [_][]const u8{"Desktop"},
-    });
+    var obj = local.newObject();
+    for (hints) |hint| {
+        if (hintMatches(hint, "platform")) {
+            if ((try obj.set("platform", profile.ua_data_platform, .{})) == false) return error.CreateObjectFailure;
+        } else if (hintMatches(hint, "platformVersion")) {
+            if ((try obj.set("platformVersion", profile.platform_version, .{})) == false) return error.CreateObjectFailure;
+        } else if (hintMatches(hint, "architecture")) {
+            if ((try obj.set("architecture", profile.ua_architecture, .{})) == false) return error.CreateObjectFailure;
+        } else if (hintMatches(hint, "bitness")) {
+            if ((try obj.set("bitness", profile.ua_bitness, .{})) == false) return error.CreateObjectFailure;
+        } else if (hintMatches(hint, "model")) {
+            if ((try obj.set("model", "", .{})) == false) return error.CreateObjectFailure;
+        } else if (hintMatches(hint, "uaFullVersion")) {
+            if ((try obj.set("uaFullVersion", profile.ua_full_version, .{})) == false) return error.CreateObjectFailure;
+        } else if (hintMatches(hint, "fullVersionList")) {
+            const brands = brandsFromProfile(exec.loadedProfile());
+            if ((try obj.set("fullVersionList", brands, .{})) == false) return error.CreateObjectFailure;
+        } else if (hintMatches(hint, "wow64")) {
+            if ((try obj.set("wow64", false, .{})) == false) return error.CreateObjectFailure;
+        } else if (hintMatches(hint, "formFactor")) {
+            const form_factor = [_][]const u8{"Desktop"};
+            if ((try obj.set("formFactor", form_factor, .{})) == false) return error.CreateObjectFailure;
+        }
+    }
+
+    return local.resolvePromise(obj);
 }
 
 pub const JsApi = struct {

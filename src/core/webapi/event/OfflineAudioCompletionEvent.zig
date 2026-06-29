@@ -17,9 +17,13 @@ pub fn initTrusted(rendered_buffer: *AudioBuffer, frame: *Frame) !*OfflineAudioC
 
 pub fn initTrustedOnArena(rendered_buffer: *AudioBuffer, frame: *Frame) !*OfflineAudioCompletionEvent {
     const typ = String.wrap("complete");
+    // Must not use frame.arena (page.frame_arena): Event.deinit releases _arena on
+    // GC and would tear down the entire page allocation pool while still active.
+    const event_arena = try frame._page.getArena(.tiny, "OfflineAudioCompletionEvent");
+    errdefer frame._page.releaseArena(event_arena);
 
     const event = try frame._factory.event(
-        frame.arena,
+        event_arena,
         typ,
         OfflineAudioCompletionEvent{
             ._proto = undefined,

@@ -97,8 +97,28 @@ pub fn loadTimes(self: *const Chrome) LoadTimes {
     };
 }
 
+/// Chromium `GetCSI`: pageT = (base::Time::Now() - navigationStart).InMillisecondsF().
+/// See chrome/renderer/loadtimes_extension_bindings.cc.
+pub fn csiPageT(
+    navigation_start_ms: f64,
+    start_e_ms: u64,
+    epoch_now_ms: u64,
+    frozen_page_t: ?f64,
+) f64 {
+    if (frozen_page_t) |frozen| return frozen;
+    const nav_start: f64 = if (navigation_start_ms > 0)
+        navigation_start_ms
+    else if (start_e_ms > 0)
+        @as(f64, @floatFromInt(start_e_ms))
+    else
+        @as(f64, @floatFromInt(epoch_now_ms)) - 400.0;
+    const epoch_now: f64 = @as(f64, @floatFromInt(epoch_now_ms));
+    return @max(epoch_now - nav_start, 0.0);
+}
+
 pub fn csi(self: *const Chrome, frame: *Frame) Csi {
-    const timing = frame.window._performance._timing;
+    const perf = &frame.window._performance;
+    const timing = perf._timing;
     const now_ms: u64 = @intCast(@max(std.time.milliTimestamp(), 0));
 
     const start_e: u64 = if (timing.navigation_start > 0)
@@ -108,15 +128,16 @@ pub fn csi(self: *const Chrome, frame: *Frame) Csi {
     else
         now_ms -| 400;
 
-    const onload_t: u64 = if (timing.load_event_end > 0)
+    const onload_t: u64 = if (timing.dom_content_loaded_event_end > 0)
+        @intFromFloat(timing.dom_content_loaded_event_end)
+    else if (timing.load_event_end > 0)
         @intFromFloat(timing.load_event_end)
     else if (self._onload_ms > 0)
         self._onload_ms
     else
         now_ms;
 
-    // Blink: chrome.csi().pageT tracks performance.now(), not epoch delta.
-    const page_t = frame.window._performance.now();
+    const page_t = csiPageT(timing.navigation_start, self._start_e_ms, now_ms, perf.frozenNowMs());
 
     return .{
         .startE = start_e,
@@ -228,6 +249,18 @@ pub const ChromeAppRunningState = struct {
         pub const RUNNING = bridge.property("running", .{ .template = false, .readonly = true });
     };
 };
+
+const testing = @import("../../testing/testing.zig");
+
+test "Chrome.csiPageT: epoch delta matches Chromium GetCSI" {
+    const page_t = csiPageT(1_000_000.0, 0, 1_000_192, null);
+    try testing.expectApproxEqAbs(@as(f64, 192.0), page_t, 0.001);
+}
+
+test "Chrome.csiPageT: frozen knitsail window wins over epoch delta" {
+    const page_t = csiPageT(1_000_000.0, 0, 1_000_303, 192.59999999403954);
+    try testing.expectApproxEqAbs(192.59999999403954, page_t, 0.0001);
+}
 
 pub const JsApi = struct {
     pub const bridge = js.Bridge(Chrome);

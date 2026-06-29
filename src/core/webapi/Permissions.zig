@@ -34,10 +34,33 @@ const QueryDescriptor = struct {
     name: []const u8,
 };
 fn defaultPermissionState(name: []const u8) []const u8 {
-    // macOS Chrome defaults for common probes.
-    if (std.mem.eql(u8, name, "notifications")) return "denied";
-    if (std.mem.eql(u8, name, "geolocation")) return "prompt";
-    return "prompt";
+    // macOS Chrome 149 permission registry defaults (CreepJS probe set).
+    const granted = [_][]const u8{
+        "accelerometer",
+        "background-fetch",
+        "background-sync",
+        "gyroscope",
+        "magnetometer",
+        "screen-wake-lock",
+    };
+    for (granted) |n| {
+        if (std.mem.eql(u8, name, n)) return "granted";
+    }
+
+    const prompt = [_][]const u8{
+        "camera",
+        "display-capture",
+        "geolocation",
+        "microphone",
+        "midi",
+        "notifications",
+        "persistent-storage",
+    };
+    for (prompt) |n| {
+        if (std.mem.eql(u8, name, n)) return "prompt";
+    }
+
+    return "unknown";
 }
 
 pub fn query(_: *const Permissions, qd: QueryDescriptor, frame: *Frame) !js.Promise {

@@ -363,18 +363,38 @@ pub fn httpCacheDir(self: *const Config) ?[]const u8 {
     };
 }
 
-pub fn cookieFile(self: *const Config) ?[]const u8 {
+/// Explicit CLI `--cookie` only (does not include profile seed).
+pub fn cookieCliOverride(self: *const Config) ?[]const u8 {
     return switch (self.mode) {
         inline .serve, .fetch, .mcp => |opts| opts.cookie,
         else => null,
     };
 }
 
+/// @deprecated Use cookieCliOverride or profileCookieSeedFile.
+pub fn cookieFile(self: *const Config) ?[]const u8 {
+    return self.cookieCliOverride();
+}
+
+/// Baked cookie snapshot path from browser profile JSON (`session.cookieSeedFile`).
+pub fn profileCookieSeedFile(self: *const Config) ?[]const u8 {
+    if (self.profile.session.cookie_seed_file.len > 0) {
+        return self.profile.session.cookie_seed_file;
+    }
+    return null;
+}
+
+/// Runtime cookie jar: CLI `--cookie-jar` overrides `session.cookieRuntimeFile` on the profile.
 pub fn cookieJarFile(self: *const Config) ?[]const u8 {
-    return switch (self.mode) {
+    const cli_jar = switch (self.mode) {
         inline .serve, .fetch, .mcp => |opts| opts.cookie_jar,
         else => null,
     };
+    if (cli_jar != null) return cli_jar;
+    if (self.profile.session.cookie_runtime_file.len > 0) {
+        return self.profile.session.cookie_runtime_file;
+    }
+    return null;
 }
 
 pub fn port(self: *const Config) u16 {
@@ -423,8 +443,8 @@ pub fn googleChromeTransport(self: *const Config) bool {
         inline .serve, .fetch, .mcp => |opts| opts.google_chrome_transport,
         else => unreachable,
     };
-    // sg_ss= document hops stall in curl-impersonate multi; auto-enable Chrome
-    // transport when the spawn helper is configured (see google-search policy).
+    // Explicit flag or env override. Antidetect profiles also enable this from
+    // Frame.navigate (google-search sg_ss= policy uses real Chrome network).
     return flag or std.posix.getenv("VELORA_CHROME_SPAWN") != null;
 }
 
@@ -737,10 +757,10 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\                only stops waiting, --terminate-ms aborts the page.
         \\                Defaults to no terminate.
         \\
-        \\--cookie        Path to a JSON file to load cookies from (read-only).
+        \\--cookie        Path to a JSON file to load cookies from (CLI override; profile seed loads automatically).
         \\                Defaults to no cookie loading.
         \\
-        \\--cookie-jar    Path to a JSON file to save cookies to on exit (write-only).
+        \\--cookie-jar    Path to runtime cookie jar (overrides profile session.cookieRuntimeFile).
         \\                Available for fetch and mcp commands.
         \\                Defaults to no cookie saving.
         \\
@@ -770,7 +790,7 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\                Maximum pending connections in the accept queue.
         \\                Defaults to 128.
         \\
-        \\--cookie        Path to a JSON file to load cookies from (read-only).
+        \\--cookie        Path to a JSON file to load cookies from (CLI override; profile seed loads automatically).
         \\                Defaults to no cookie loading.
         \\
     ++ common_options ++
@@ -779,10 +799,10 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\Starts an MCP (Model Context Protocol) server over stdio
         \\Example: {0s} mcp
         \\
-        \\--cookie        Path to a JSON file to load cookies from (read-only).
+        \\--cookie        Path to a JSON file to load cookies from (CLI override; profile seed loads automatically).
         \\                Defaults to no cookie loading.
         \\
-        \\--cookie-jar    Path to a JSON file to save cookies to on exit (write-only).
+        \\--cookie-jar    Path to runtime cookie jar (overrides profile session.cookieRuntimeFile).
         \\                Available for fetch and mcp commands.
         \\                Defaults to no cookie saving.
         \\

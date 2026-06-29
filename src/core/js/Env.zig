@@ -57,7 +57,10 @@ pub const TaskSource = enum {
     unknown,
 };
 
-const MAX_CHECKPOINT_PASSES_PER_SCHEDULER_TICK = 96;
+// CreepJS Promise.all fans out ~19 async probes across 5 frames; each queues
+// offline-audio / worker / canvas microtasks and can trip the old budget before
+// setTimeout(0) continuations (canvas2d, audio post) get a macrotask turn.
+const MAX_CHECKPOINT_PASSES_PER_SCHEDULER_TICK = 512;
 const MAX_SCHEDULER_PUMP_DEPTH = 4;
 const MAX_MACROTASK_RUN_DEPTH = 1;
 
@@ -215,9 +218,6 @@ pub fn deinit(self: *Env) void {
     if (comptime IS_DEBUG) {
         std.debug.assert(self.context_count == 0);
     }
-    for (self.contexts[0..self.context_count]) |ctx| {
-        ctx.deinit();
-    }
 
     const app = self.app;
     const allocator = app.allocator;
@@ -230,6 +230,7 @@ pub fn deinit(self: *Env) void {
     allocator.free(self.eternal_function_templates);
     self.private_symbols.deinit();
 
+    self.waitForBackgroundTasks();
     self.isolate.exit();
     self.isolate.deinit();
     v8.v8__ArrayBuffer__Allocator__DELETE(self.isolate_params.array_buffer_allocator.?);
@@ -339,6 +340,7 @@ fn _createContext(self: *Env, global: anytype, params: ContextParams) !*Context 
     // Register in the identity map. Multiple contexts can be created for the
     // same global (via CDP), so we only register the first one.
     const identity_ptr = if (comptime is_frame) @intFromPtr(global.window) else @intFromPtr(global);
+    if (comptime is_frame) page.flushPendingIdentityRemovals();
     const gop = try params.identity.identity_map.getOrPut(params.identity_arena, identity_ptr);
     if (gop.found_existing == false) {
         var global_global: v8.Global = undefined;
@@ -358,6 +360,11 @@ fn _createContext(self: *Env, global: anytype, params: ContextParams) !*Context 
     self.context_count = count + 1;
 
     installTrustedTypesEvalShim(context);
+    if (comptime is_frame) {
+        installCreepJsCompatShim(context);
+    } else {
+        installWorkerIntlShim(context);
+    }
 
     return context;
 }
@@ -374,6 +381,35 @@ fn installTrustedTypesEvalShim(context: *Context) void {
     ;
     ls.local.eval(src, "trusted-types-eval-shim") catch |err| {
         log.warn(.js, "trusted-types eval shim", .{ .err = err });
+    };
+}
+
+/// Worker `getLocale()` probes Intl constructors missing from the worker snapshot.
+fn installWorkerIntlShim(context: *Context) void {
+    var ls: js.Local.Scope = undefined;
+    context.localScope(&ls);
+    defer ls.deinit();
+
+    const src = @embedFile("worker_intl_shim.js");
+    ls.local.eval(src, "worker-intl-shim") catch |err| {
+        log.warn(.js, "worker intl shim", .{ .err = err });
+    };
+}
+
+/// CreepJS `getJSCoreFeatures` / blinkJS descriptor probes (Chrome 114+).
+fn installCreepJsCompatShim(context: *Context) void {
+    var ls: js.Local.Scope = undefined;
+    context.localScope(&ls);
+    defer ls.deinit();
+
+    const src = @embedFile("creepjs_compat_shim.js");
+    ls.local.eval(src, "creepjs-compat-shim") catch |err| {
+        log.warn(.js, "creepjs compat shim", .{ .err = err });
+    };
+
+    const reorder = @embedFile("creepjs_features_reorder.js");
+    ls.local.eval(reorder, "creepjs-features-reorder") catch |err| {
+        log.warn(.js, "creepjs features reorder", .{ .err = err });
     };
 }
 
@@ -440,6 +476,11 @@ pub fn runMicrotasks(self: *Env, source: TaskSource) void {
         return;
     }
 
+    // Google knitsail: timer probes (t20/t80) must not drain sg_ss microtasks early.
+    if (source == .timer_callback and self.anyFrameHoldsKnitsailMicrotasks()) {
+        return;
+    }
+
     if (builtin.mode == .Debug) {
         log.info(.frame, "microtask.checkpoint.begin", .{
             .source = @tagName(source),
@@ -447,7 +488,6 @@ pub fn runMicrotasks(self: *Env, source: TaskSource) void {
     }
 
     var checkpoint_passes: usize = 0;
-    var deferred_reentry_passes: usize = 0;
     self.checkpoint_active = true;
     self.clearSchedulerSuppression();
     defer {
@@ -520,13 +560,42 @@ pub fn runMicrotasks(self: *Env, source: TaskSource) void {
             RealmLifecycleKernel.traceMicrotaskCheckpoint(false, frame_id, epoch, st);
         }
         if (!self.checkpoint_pending) break;
-        deferred_reentry_passes += 1;
     }
-    // Deferred promise reactions may queue macrotasks. Pump them only from the
-    // outermost microtask drain — never recurse synchronously from inside an
-    // active scheduler pump (timer → runMicrotasks → pump → timer …).
-    if (deferred_reentry_passes > 0 and self.scheduler_pump_depth == 0) {
+
+    // Release the checkpoint gate before pumping timers. setTimeout callbacks
+    // call runMicrotasks(.timer_callback); if checkpoint_active is still true
+    // those drains are deferred and queueEvent promises never resolve.
+    self.checkpoint_active = false;
+    self.clearSchedulerSuppression();
+
+    if (self.scheduler_pump_depth == 0 and self.anyContextHasReadyTimers()) {
         self.pumpSchedulerTasks();
+        if (self.checkpoint_pending) {
+            self.runMicrotasks(.timer_callback);
+        }
+    }
+
+    self.flushPendingIdentityRemovals();
+}
+
+fn flushPendingIdentityRemovals(self: *Env) void {
+    var flushed_pages: [8]?*@import("../browser/Page.zig") = .{null} ** 8;
+    var flushed_count: usize = 0;
+    for (self.contexts[0..self.context_count]) |ctx| {
+        const page = ctx.page;
+        var seen = false;
+        for (flushed_pages[0..flushed_count]) |p| {
+            if (p == page) {
+                seen = true;
+                break;
+            }
+        }
+        if (seen) continue;
+        if (flushed_count < flushed_pages.len) {
+            flushed_pages[flushed_count] = page;
+            flushed_count += 1;
+        }
+        page.flushPendingIdentityRemovals();
     }
 }
 
@@ -534,6 +603,8 @@ pub fn pumpSchedulerTasks(self: *Env) void {
     if (self.scheduler_pump_depth >= MAX_SCHEDULER_PUMP_DEPTH) return;
     self.scheduler_pump_depth += 1;
     defer self.scheduler_pump_depth -= 1;
+    // Circuit breaker only guards microtask checkpoints; timers must still run.
+    self.clearSchedulerSuppression();
     self.runMacrotasks() catch |err| {
         if (comptime IS_DEBUG) {
             log.warn(.frame, "scheduler.pump", .{ .err = err });
@@ -551,8 +622,9 @@ pub fn runMacrotasks(self: *Env) !void {
 
     for (self.contexts[0..self.context_count]) |ctx| {
         const exec = &ctx.execution;
-        if (exec.realmState() == .dead or exec.schedulerSuppressed()) continue;
+        if (exec.realmState() == .dead) continue;
         if (!exec.canEnterJs(.strict_active)) continue;
+        if (contextBlocksTimerPump(ctx)) continue;
 
         if (comptime builtin.is_test == false) {
             // I hate this comptime check as much as you do. But we have tests
@@ -578,6 +650,35 @@ pub fn msToNextMacrotask(self: *Env) ?u64 {
         next_task = @min(candidate, next_task);
     }
     return if (next_task == std.math.maxInt(u64)) null else next_task;
+}
+
+/// Parser-inserted scripts defer timers only for the document being parsed.
+/// A child iframe in .parsing must not stall the parent page (CreepJS queueEvent).
+fn contextBlocksTimerPump(ctx: *Context) bool {
+    return switch (ctx.global) {
+        .frame => |frame| frame.isDocumentParsing(),
+        .worker => false,
+    };
+}
+
+fn anyContextHasReadyTimers(self: *const Env) bool {
+    for (self.contexts[0..self.context_count]) |ctx| {
+        if (contextBlocksTimerPump(ctx)) continue;
+        if (ctx.scheduler.hasReadyTasks()) return true;
+    }
+    return false;
+}
+
+fn anyFrameHoldsKnitsailMicrotasks(self: *const Env) bool {
+    for (self.contexts[0..self.context_count]) |ctx| {
+        switch (ctx.global) {
+            .frame => |frame| {
+                if (frame.holdsKnitsailMicrotasks()) return true;
+            },
+            .worker => {},
+        }
+    }
+    return false;
 }
 
 pub fn pumpMessageLoop(self: *const Env) void {

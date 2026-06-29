@@ -48,7 +48,26 @@ fn emptyInterface(comptime interface_name: []const u8) type {
     };
 }
 
-pub const Bluetooth = emptyInterface("Bluetooth");
+pub const Bluetooth = struct {
+    _pad: bool = false,
+
+    pub fn getAvailability(self: *const Bluetooth, frame: *Frame) !js.Promise {
+        _ = self;
+        const local = frame.js.local orelse return error.NotHandled;
+        return local.resolvePromise(@as(bool, true));
+    }
+
+    pub const JsApi = struct {
+        pub const bridge = js.Bridge(Bluetooth);
+        pub const Meta = struct {
+            pub const name = "Bluetooth";
+            pub const prototype_chain = bridge.prototypeChain();
+            pub var class_id: bridge.ClassId = undefined;
+            pub const empty_with_no_proto = true;
+        };
+        pub const getAvailability = bridge.function(Bluetooth.getAvailability, .{});
+    };
+};
 pub const GPU = struct {
     _pad: bool = false,
 
@@ -74,14 +93,26 @@ pub const GPU = struct {
 pub const GPUAdapter = struct {
     _pad: bool = false,
 
+    fn adapterInfoObject(exec: *Execution) !js.Object {
+        const local = exec.context.local orelse return error.NotHandled;
+        const info = local.newObject();
+        _ = try info.set("vendor", "apple", .{});
+        _ = try info.set("architecture", "metal-3", .{});
+        _ = try info.set("device", "", .{});
+        _ = try info.set("description", "", .{});
+        return info;
+    }
+
+    pub fn getInfo(self: *const GPUAdapter, exec: *Execution) !js.Value {
+        _ = self;
+        const info = try adapterInfoObject(exec);
+        return info.toValue();
+    }
+
     pub fn requestAdapterInfo(self: *const GPUAdapter, exec: *Execution) !js.Promise {
         _ = self;
         const local = exec.context.local orelse return error.NotHandled;
-        const info = local.newObject();
-        _ = try info.set("vendor", "google", .{});
-        _ = try info.set("architecture", "angle", .{});
-        _ = try info.set("device", "", .{});
-        _ = try info.set("description", "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)", .{});
+        const info = try adapterInfoObject(exec);
         return local.resolvePromise(info);
     }
 
@@ -103,14 +134,42 @@ pub const GPUAdapter = struct {
         _ = self;
         const local = exec.context.local orelse return error.NotHandled;
         const limits = local.newObject();
-        _ = try limits.set("maxTextureDimension1D", @as(u32, 8192), .{});
-        _ = try limits.set("maxTextureDimension2D", @as(u32, 8192), .{});
+        // macOS Chrome 149 WebGPU limits (M-series Metal).
+        _ = try limits.set("maxTextureDimension1D", @as(u32, 16384), .{});
+        _ = try limits.set("maxTextureDimension2D", @as(u32, 16384), .{});
         _ = try limits.set("maxTextureDimension3D", @as(u32, 2048), .{});
-        _ = try limits.set("maxTextureArrayLayers", @as(u32, 256), .{});
+        _ = try limits.set("maxTextureArrayLayers", @as(u32, 2048), .{});
         _ = try limits.set("maxBindGroups", @as(u32, 4), .{});
+        _ = try limits.set("maxBindGroupsPlusVertexBuffers", @as(u32, 24), .{});
         _ = try limits.set("maxBindingsPerBindGroup", @as(u32, 1000), .{});
+        _ = try limits.set("maxDynamicUniformBuffersPerPipelineLayout", @as(u32, 10), .{});
+        _ = try limits.set("maxDynamicStorageBuffersPerPipelineLayout", @as(u32, 8), .{});
+        _ = try limits.set("maxSampledTexturesPerShaderStage", @as(u32, 48), .{});
+        _ = try limits.set("maxSamplersPerShaderStage", @as(u32, 16), .{});
+        _ = try limits.set("maxStorageBuffersPerShaderStage", @as(u32, 10), .{});
+        _ = try limits.set("maxStorageTexturesPerShaderStage", @as(u32, 8), .{});
         _ = try limits.set("maxUniformBuffersPerShaderStage", @as(u32, 12), .{});
-        _ = try limits.set("maxStorageBuffersPerShaderStage", @as(u32, 8), .{});
+        _ = try limits.set("maxUniformBufferBindingSize", @as(u32, 65536), .{});
+        _ = try limits.set("maxStorageBufferBindingSize", @as(u64, 4294967292), .{});
+        _ = try limits.set("minUniformBufferOffsetAlignment", @as(u32, 256), .{});
+        _ = try limits.set("minStorageBufferOffsetAlignment", @as(u32, 256), .{});
+        _ = try limits.set("maxVertexBuffers", @as(u32, 8), .{});
+        _ = try limits.set("maxBufferSize", @as(u64, 4294967292), .{});
+        _ = try limits.set("maxVertexAttributes", @as(u32, 30), .{});
+        _ = try limits.set("maxVertexBufferArrayStride", @as(u32, 2048), .{});
+        _ = try limits.set("maxInterStageShaderVariables", @as(u32, 28), .{});
+        _ = try limits.set("maxColorAttachments", @as(u32, 8), .{});
+        _ = try limits.set("maxColorAttachmentBytesPerSample", @as(u32, 128), .{});
+        _ = try limits.set("maxComputeWorkgroupStorageSize", @as(u32, 32768), .{});
+        _ = try limits.set("maxComputeInvocationsPerWorkgroup", @as(u32, 1024), .{});
+        _ = try limits.set("maxComputeWorkgroupSizeX", @as(u32, 1024), .{});
+        _ = try limits.set("maxComputeWorkgroupSizeY", @as(u32, 1024), .{});
+        _ = try limits.set("maxComputeWorkgroupSizeZ", @as(u32, 64), .{});
+        _ = try limits.set("maxComputeWorkgroupsPerDimension", @as(u32, 65535), .{});
+        _ = try limits.set("maxStorageBuffersInFragmentStage", @as(u32, 10), .{});
+        _ = try limits.set("maxStorageTexturesInFragmentStage", @as(u32, 8), .{});
+        _ = try limits.set("maxStorageBuffersInVertexStage", @as(u32, 10), .{});
+        _ = try limits.set("maxStorageTexturesInVertexStage", @as(u32, 8), .{});
         return limits.toValue();
     }
 
@@ -122,7 +181,8 @@ pub const GPUAdapter = struct {
             pub var class_id: bridge.ClassId = undefined;
             pub const empty_with_no_proto = true;
         };
-        pub const name = bridge.attribute("ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)", .{});
+        pub const name = bridge.attribute("", .{});
+        pub const info = bridge.accessor(GPUAdapter.getInfo, null, .{});
         pub const features = bridge.accessor(GPUAdapter.getFeatures, null, .{});
         pub const limits = bridge.accessor(GPUAdapter.getLimits, null, .{});
         pub const isFallbackAdapter = bridge.attribute(false, .{});
@@ -395,6 +455,8 @@ pub const ContactsManager = struct {
             pub const prototype_chain = bridge.prototypeChain();
             pub var class_id: bridge.ClassId = undefined;
             pub const empty_with_no_proto = true;
+            // Chrome macOS: navigator.contacts exists but ContactsManager is not on window.
+            pub const skip_global = true;
         };
         pub const select = bridge.function(ContactsManager.select, .{ .dom_exception = true });
     };

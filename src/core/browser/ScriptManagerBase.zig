@@ -174,7 +174,10 @@ pub const Owner = union(enum) {
                 .request_url = request_url,
                 .resource_type = resource_type,
             }),
-            .worker => {},
+            .worker => |w| try w.headersForRequest(headers, .{
+                .request_url = request_url,
+                .resource_type = resource_type,
+            }),
         }
     }
 };
@@ -895,10 +898,15 @@ pub const Script = struct {
         }
 
         defer {
-            local.runMacrotasks(); // also runs microtasks
-            _ = frame.js.scheduler.run() catch |err| {
-                log.err(.frame, "scheduler", .{ .err = err });
-            };
+            // Parser-inserted scripts: defer microtasks + timers until the HTML
+            // parser finishes (Blink/Chromium). knitsail reads readyState at nav.
+            if (!frame.isDocumentParsing()) {
+                local.ctx.env.runMicrotasks(.after_evaluate);
+                local.runMacrotasks();
+                _ = frame.js.scheduler.run() catch |err| {
+                    log.err(.frame, "scheduler", .{ .err = err });
+                };
+            }
         }
 
         if (success) {

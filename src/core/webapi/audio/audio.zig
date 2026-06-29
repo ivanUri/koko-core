@@ -37,6 +37,7 @@ const AudioContextState = struct {
     probe: AudioIntelligent.ProbeState = .{},
     baseline_samples: ?[]const f32 = null,
     baseline_freq: ?[]const f32 = null,
+    baseline_time_domain: ?[]const f32 = null,
 };
 
 const RenderSource = union(enum) {
@@ -371,6 +372,16 @@ const AnalyserNode = struct {
 
     pub fn getFloatTimeDomainData(self: *const AnalyserNode, arr: js.TypedArray(f32)) void {
         const values = @constCast(arr.values);
+        if (self._node._state.probe.matchesStandardProbe()) {
+            if (self._node._state.baseline_time_domain) |baseline| {
+                const count = @min(values.len, baseline.len);
+                @memcpy(values[0..count], baseline[0..count]);
+                if (count < values.len) {
+                    @memset(values[count..], 0);
+                }
+                return;
+            }
+        }
         const render_data = self._render_data orelse {
             @memset(values, 0);
             return;
@@ -749,13 +760,12 @@ const GainNode = struct {
     };
 };
 
-fn audioBufferBackingDeleter(_: ?*anyopaque, _: usize, _: ?*anyopaque) callconv(.c) void {}
-
 pub const AudioBuffer = struct {
     _channels: u32,
     _length: u32,
     _sample_rate: f64,
     _data: []f32,
+    _array_buffer: ?js.v8.Global = null,
     _channel_views: [8]?js.v8.Global = [_]?js.v8.Global{null} ** 8,
 
     pub fn constructor(arg0: js.Value, arg1: ?js.Value, arg2: ?js.Value, frame: *Frame) !*AudioBuffer {
@@ -784,21 +794,62 @@ pub const AudioBuffer = struct {
     }
 
     fn create(channels: u32, length: u32, sample_rate: f64, frame: *Frame) !*AudioBuffer {
+        if (frame.js.local == null) return error.NotHandled;
+        const isolate = frame.js.isolate;
         const total_len = @as(usize, channels) * @as(usize, length);
-        const data = try frame.arena.alloc(f32, total_len);
-        @memset(data, 0);
-        return frame._factory.create(AudioBuffer{
+        const byte_len = total_len * @sizeOf(f32);
+
+        var array_buffer_global: ?js.v8.Global = null;
+        var data: []f32 = &[_]f32{};
+
+        if (byte_len > 0) {
+            const store = js.v8.v8__ArrayBuffer__NewBackingStore(isolate.handle, byte_len) orelse return error.NotHandled;
+            const backing_store_ptr = js.v8.v8__BackingStore__TO_SHARED_PTR(store);
+            const array_buffer = js.v8.v8__ArrayBuffer__New2(isolate.handle, &backing_store_ptr).?;
+            const backing_store_handle = js.v8.std__shared_ptr__v8__BackingStore__get(&backing_store_ptr) orelse return error.NotHandled;
+            const data_ptr = js.v8.v8__BackingStore__Data(backing_store_handle) orelse return error.NotHandled;
+            data = @as([*]f32, @ptrCast(@alignCast(data_ptr)))[0..total_len];
+            @memset(data, 0);
+
+            var global: js.v8.Global = undefined;
+            js.v8.v8__Global__New(isolate.handle, @ptrCast(array_buffer), &global);
+            try frame.js.trackGlobal(global);
+            array_buffer_global = global;
+        }
+
+        // Pin on frame arena — slab reuse can recycle the slot while JS/V8 globals
+        // (getChannelData views) still reference the previous AudioBuffer.
+        const buffer = try frame.arena.create(AudioBuffer);
+        buffer.* = .{
             ._channels = channels,
             ._length = length,
             ._sample_rate = sample_rate,
             ._data = data,
-        });
+            ._array_buffer = array_buffer_global,
+        };
+        return buffer;
     }
 
     fn channelSlice(self: *const AudioBuffer, channel: u32) []f32 {
         const start = @as(usize, channel) * @as(usize, self._length);
         const end = start + @as(usize, self._length);
         return self._data[start..end];
+    }
+
+    /// Re-resolve channel samples from the live ArrayBuffer backing store.
+    /// Cached `_data` slices can outlive reclamation under parallel CreepJS load.
+    fn liveChannelSlice(self: *const AudioBuffer, channel: u32, frame: *Frame) ![]const f32 {
+        if (channel >= self._channels) return error.IndexSizeError;
+        const isolate = frame.js.isolate;
+        const ab_global = self._array_buffer orelse return error.NotHandled;
+        const ab: *const js.v8.ArrayBuffer = @ptrCast(js.v8.v8__Global__Get(&ab_global, isolate.handle) orelse return error.NotHandled);
+        const backing_store_ptr = js.v8.v8__ArrayBuffer__GetBackingStore(ab);
+        const backing_store_handle = js.v8.std__shared_ptr__v8__BackingStore__get(&backing_store_ptr) orelse return error.NotHandled;
+        const data = js.v8.v8__BackingStore__Data(backing_store_handle) orelse return error.NotHandled;
+        const byte_offset = @as(usize, channel) * @as(usize, self._length) * @sizeOf(f32);
+        const base: [*]const u8 = @ptrCast(data);
+        const ptr: [*]const f32 = @ptrCast(@alignCast(base + byte_offset));
+        return ptr[0..@as(usize, self._length)];
     }
 
     fn syncChannelFromView(self: *AudioBuffer, channel: u32, frame: *Frame) void {
@@ -850,52 +901,45 @@ pub const AudioBuffer = struct {
         const local = frame.js.local orelse return error.NotHandled;
         const isolate = frame.js.isolate;
 
-        if (channel < self._channel_views.len) {
-            if (self._channel_views[channel]) |cached| {
-                self.syncChannelToView(channel, frame);
-                const handle = js.v8.v8__Global__Get(&cached, isolate.handle) orelse return error.NotHandled;
-                return .{ .local = local, .handle = handle };
-            }
-        }
+        // Return a fresh view each call. Caching globals in _channel_views caused
+        // v8__Global__Reset segfaults under parallel CreepJS OfflineAudioContext load.
+        const array_buffer: *const js.v8.ArrayBuffer = if (self._array_buffer) |ab_global|
+            @ptrCast(js.v8.v8__Global__Get(&ab_global, isolate.handle) orelse return error.NotHandled)
+        else
+            js.v8.v8__ArrayBuffer__New(isolate.handle, 0).?;
 
-        const slice = self.channelSlice(channel);
-        const byte_len = slice.len * @sizeOf(f32);
-
-        const array_buffer: *const js.v8.ArrayBuffer = if (byte_len == 0)
-            js.v8.v8__ArrayBuffer__New(isolate.handle, 0).?
-        else blk: {
-            const store = js.v8.v8__ArrayBuffer__NewBackingStore2(
-                slice.ptr,
-                byte_len,
-                audioBufferBackingDeleter,
-                null,
-            ) orelse return error.NotHandled;
-            const backing_store_ptr = js.v8.v8__BackingStore__TO_SHARED_PTR(store);
-            break :blk js.v8.v8__ArrayBuffer__New2(isolate.handle, &backing_store_ptr).?;
-        };
-
-        const handle: *const js.v8.Value = if (slice.len == 0)
+        const byte_offset = @as(usize, channel) * @as(usize, self._length) * @sizeOf(f32);
+        const handle: *const js.v8.Value = if (self._length == 0)
             @ptrCast(js.v8.v8__Float32Array__New(array_buffer, 0, 0).?)
         else
-            @ptrCast(js.v8.v8__Float32Array__New(array_buffer, 0, slice.len).?);
-
-        if (channel < self._channel_views.len) {
-            var global: js.v8.Global = undefined;
-            js.v8.v8__Global__New(isolate.handle, handle, &global);
-            try frame.js.trackGlobal(global);
-            self._channel_views[channel] = global;
-        }
+            @ptrCast(js.v8.v8__Float32Array__New(array_buffer, byte_offset, self._length).?);
 
         return .{ .local = local, .handle = handle };
     }
 
-    pub fn copyFromChannel(self: *AudioBuffer, destination: js.TypedArray(f32), channel: u32, buffer_offset_: ?u32, frame: *Frame) !void {
+    fn readValidatedF32View(value: js.Value, _: *const js.Local) ![]f32 {
+        if (!value.isFloat32Array()) return error.InvalidArgument;
+        const view: *const js.v8.ArrayBufferView = @ptrCast(value.handle);
+        const byte_len = js.v8.v8__ArrayBufferView__ByteLength(view);
+        const byte_offset = js.v8.v8__ArrayBufferView__ByteOffset(view);
+        const array_buffer = js.v8.v8__ArrayBufferView__Buffer(view) orelse return error.NotHandled;
+        const ab_byte_len = js.v8.v8__ArrayBuffer__ByteLength(array_buffer);
+        if (byte_offset > ab_byte_len or byte_len > ab_byte_len - byte_offset) {
+            return error.IndexSizeError;
+        }
+        const slice = typedArrayData(f32, value.handle) orelse return error.InvalidArgument;
+        return @constCast(slice);
+    }
+
+    pub fn copyFromChannel(self: *AudioBuffer, destination: js.Value, channel: u32, buffer_offset_: ?u32, frame: *Frame) !void {
         if (channel >= self._channels) return error.IndexSizeError;
-        self.syncChannelFromView(channel, frame);
+        const local = frame.js.local orelse return error.NotHandled;
         const buffer_offset = buffer_offset_ orelse 0;
         if (buffer_offset > self._length) return error.IndexSizeError;
+        // Use the pinned Zig slice; getChannelData views write the same backing store.
+        // Re-resolving through V8 during CreepJS getNoiseFactor tripped weak-callback races.
         const source = self.channelSlice(channel);
-        const dst = @constCast(destination.values);
+        const dst = try readValidatedF32View(destination, local);
         const available = source[@as(usize, buffer_offset)..];
         const count = @min(dst.len, available.len);
         if (count > 0) {
@@ -908,6 +952,9 @@ pub const AudioBuffer = struct {
 
     fn readF32Source(source: js.Value, frame: *Frame) ![]const f32 {
         const local = frame.js.local orelse return error.NotHandled;
+        if (source.isFloat32Array()) {
+            return try readValidatedF32View(source, local);
+        }
         if (source.isTypedArray() or source.isArrayBufferView()) {
             const typed = try local.jsValueToZig(js.TypedArray(f32), source);
             return typed.values;
@@ -927,7 +974,6 @@ pub const AudioBuffer = struct {
 
     pub fn copyToChannel(self: *AudioBuffer, source: js.Value, channel: u32, buffer_offset_: ?u32, frame: *Frame) !void {
         if (channel >= self._channels) return error.IndexSizeError;
-        self.syncChannelFromView(channel, frame);
         const buffer_offset = buffer_offset_ orelse 0;
         if (buffer_offset > self._length) return error.IndexSizeError;
         const values = try readF32Source(source, frame);
@@ -937,7 +983,6 @@ pub const AudioBuffer = struct {
         if (count > 0) {
             @memcpy(available[0..count], values[0..count]);
         }
-        self.syncChannelToView(channel, frame);
     }
 
     pub const JsApi = struct {
@@ -977,6 +1022,13 @@ fn leadingUniqueSum(channel: []const f32, count: usize) f32 {
     var sum: f32 = 0;
     for (unique[0..unique_count]) |v| sum += v;
     return sum;
+}
+
+fn renderDataIsSilent(render_data: *const AudioRenderData) bool {
+    for (render_data.left) |sample| {
+        if (sample != 0) return false;
+    }
+    return true;
 }
 
 fn applySessionAudioSeed(channel: []f32, count: usize, seed: u64) void {
@@ -1214,8 +1266,11 @@ pub const AudioContext = struct {
             }
         }
 
-        applySessionAudioSeed(buffer.channelSlice(0), @min(buf_len, 100), frame._session.fingerprint_seed);
-        normalizeLeadingUniqueSum(buffer.channelSlice(0), @min(buf_len, 100));
+        // CreepJS hasFakeAudio: disconnected OfflineAudioContext must stay all zeros.
+        if (!renderDataIsSilent(render_data)) {
+            applySessionAudioSeed(buffer.channelSlice(0), @min(buf_len, 100), frame._session.fingerprint_seed);
+            normalizeLeadingUniqueSum(buffer.channelSlice(0), @min(buf_len, 100));
+        }
 
         const buf_sample_100 = if (length > 100) buffer.channelSlice(0)[100] else 0;
         log.info(.js, "AudioContext.renderOffline.done", .{ .channel_0_first = buffer.channelSlice(0)[0], .channel_0_sample_100 = buf_sample_100, .channel_1_first = if (channels > 1) buffer.channelSlice(1)[0] else 0 });
@@ -1390,6 +1445,14 @@ fn flushOfflineAudioCompleteMicrotask(ctx: *js.Context) void {
         log.info(.js, "OfflineAudioContext.flush.resolved", .{ .length = delivery.length });
     }
     @memset(frame._offline_audio_pending[0..8], null);
+
+    // Parallel Promise.all may call startRendering() after the first schedule
+    // queued this microtask — drain any late entries on the next turn.
+    if (frame._offline_audio_pending_len > 0 and !frame._offline_audio_flush_queued) {
+        frame._offline_audio_flush_queued = true;
+        frame.js.queueMicrotaskCallback(flushOfflineAudioCompleteMicrotask);
+        log.info(.js, "OfflineAudioContext.flush.requeue", .{ .pending_len = frame._offline_audio_pending_len });
+    }
 }
 
 fn scheduleOfflineAudioCompleteDelivery(
@@ -1434,6 +1497,7 @@ pub const OfflineAudioContext = struct {
         if (AudioIntelligent.baseline(frame)) |bl| {
             state.baseline_samples = bl.samples;
             state.baseline_freq = bl.freq;
+            state.baseline_time_domain = bl.time_domain;
         }
         state.probe.recordOffline(channels, length, sample_rate);
         const destination = try AudioContext.createDestination(state, frame);

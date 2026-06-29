@@ -30,6 +30,7 @@ const EventTarget = @import("../webapi/EventTarget.zig");
 const XMLHttpRequestEventTarget = @import("../webapi/net/XMLHttpRequestEventTarget.zig");
 const Blob = @import("../webapi/Blob.zig");
 const AbstractRange = @import("../webapi/AbstractRange.zig");
+const DOMRectReadOnly = @import("../dom/DOMRectReadOnly.zig");
 
 const log = @import("../../support/log.zig");
 const String = @import("../../support/string.zig").String;
@@ -433,6 +434,24 @@ pub fn create(self: *Factory, value: anytype) !*@TypeOf(value) {
     const ptr = try self.createT(@TypeOf(value));
     ptr.* = value;
     return ptr;
+}
+
+pub fn svgRect(self: *Factory, x: f64, y: f64, width: f64, height: f64) !*@import("../dom/SVGRect.zig") {
+    const SVGRect = @import("../dom/SVGRect.zig");
+    const allocator = self._slab.allocator();
+    const chain = try PrototypeChain(
+        &.{ DOMRectReadOnly, SVGRect },
+    ).allocate(allocator);
+
+    chain.get(0).* = .{
+        ._x = x,
+        ._y = y,
+        ._width = width,
+        ._height = height,
+        ._skip_quantize = true,
+    };
+    chain.setLeaf(1, @as(SVGRect, .{ ._proto = undefined }));
+    return chain.get(1);
 }
 
 fn unionInit(comptime T: type, value: anytype) T {

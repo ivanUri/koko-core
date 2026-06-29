@@ -19,7 +19,6 @@ const Execution = js.Execution;
 const Canvas = @import("../element/html/Canvas.zig");
 const OffscreenCanvas = @import("OffscreenCanvas.zig");
 const Frame = @import("../../browser/Frame.zig");
-
 pub fn registerTypes() []const type {
     return &.{
         WebGLRenderingContext,
@@ -47,6 +46,7 @@ _canvas: ?*Canvas = null,
 /// Reference to the parent OffscreenCanvas element, or null if created from HTMLCanvasElement.
 /// https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext/canvas
 _offscreen_canvas: ?*OffscreenCanvas = null,
+_is_webgl2: bool = false,
 
 pub const ARRAY_BUFFER: u64 = 0x8892;
 pub const ELEMENT_ARRAY_BUFFER: u64 = 0x8893;
@@ -92,6 +92,38 @@ pub const LOW_FLOAT: u64 = 0x8DF0;
 pub const HIGH_INT: u64 = 0x8DF5;
 pub const MEDIUM_INT: u64 = 0x8DF4;
 pub const LOW_INT: u64 = 0x8DF3;
+pub const STENCIL_VALUE_MASK: u64 = 0x0B93;
+pub const STENCIL_WRITEMASK: u64 = 0x0B94;
+pub const STENCIL_BACK_VALUE_MASK: u64 = 0x8CA4;
+pub const STENCIL_BACK_WRITEMASK: u64 = 0x8CA5;
+pub const SUBPIXEL_BITS: u64 = 0x0D50;
+pub const MAX_3D_TEXTURE_SIZE: u64 = 0x8073;
+pub const MAX_ELEMENTS_VERTICES: u64 = 0x80E8;
+pub const MAX_ELEMENTS_INDICES: u64 = 0x80E9;
+pub const MAX_TEXTURE_LOD_BIAS: u64 = 0x84FD;
+pub const MAX_DRAW_BUFFERS: u64 = 0x8824;
+pub const MAX_FRAGMENT_UNIFORM_COMPONENTS: u64 = 0x8B49;
+pub const MAX_VERTEX_UNIFORM_COMPONENTS: u64 = 0x8B4A;
+pub const MAX_ARRAY_TEXTURE_LAYERS: u64 = 0x88FF;
+pub const MAX_PROGRAM_TEXEL_OFFSET: u64 = 0x8905;
+pub const MAX_VARYING_COMPONENTS: u64 = 0x8B4B;
+pub const MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS: u64 = 0x8C80;
+pub const MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS: u64 = 0x8C8A;
+pub const MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS: u64 = 0x8C8B;
+pub const MAX_COLOR_ATTACHMENTS: u64 = 0x8CDF;
+pub const MAX_SAMPLES: u64 = 0x8D57;
+pub const MAX_VERTEX_UNIFORM_BLOCKS: u64 = 0x8A2B;
+pub const MAX_FRAGMENT_UNIFORM_BLOCKS: u64 = 0x8A2D;
+pub const MAX_COMBINED_UNIFORM_BLOCKS: u64 = 0x8A2E;
+pub const MAX_UNIFORM_BUFFER_BINDINGS: u64 = 0x8A2F;
+pub const MAX_UNIFORM_BLOCK_SIZE: u64 = 0x8A30;
+pub const MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS: u64 = 0x8A31;
+pub const MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS: u64 = 0x8A33;
+pub const MAX_VERTEX_OUTPUT_COMPONENTS: u64 = 0x9122;
+pub const MAX_FRAGMENT_INPUT_COMPONENTS: u64 = 0x9125;
+pub const MAX_SERVER_WAIT_TIMEOUT: u64 = 0x9111;
+pub const MAX_ELEMENT_INDEX: u64 = 0x8D6A;
+pub const MAX_CLIENT_WAIT_TIMEOUT_WEBGL: u64 = 0x9247;
 
 // Pixel format / type constants used in readPixels
 pub const RGBA: u64 = 0x1908;
@@ -305,6 +337,18 @@ pub fn getDrawingBufferHeight(self: *const WebGLRenderingContext) u32 {
 /// support any though.
 pub fn getParameter(_: *const WebGLRenderingContext, pname: u32, exec: *Execution) !js.Value {
     const local = exec.context.local orelse return error.NotHandled;
+    if (exec.loadedProfile().mode == .antidetect) {
+        const frame = switch (exec.context.global) {
+            .frame => |f| f,
+            else => null,
+        };
+        if (frame) |f| {
+            const WebGLIntelligent = @import("../../../runtime/profile/WebGLIntelligent.zig");
+            if (try WebGLIntelligent.parameterJsValue(f, pname, local)) |value| {
+                return value;
+            }
+        }
+    }
     const profile = exec.identityProfile().webgl;
     switch (pname) {
         VERSION => return (try local.zigValueToJs(profile.version, .{})),
@@ -357,14 +401,27 @@ pub fn getShaderPrecisionFormat(_: *const WebGLRenderingContext, _: u32, precisi
     return obj.toValue();
 }
 
-pub fn readPixels(_: *const WebGLRenderingContext, x: i32, y: i32, width: i32, height: i32, _: u32, _: u32, pixels: js.Value, exec: *Execution) !void {
-    _ = exec;
+pub fn readPixels(self: *const WebGLRenderingContext, x: i32, y: i32, width: i32, height: i32, _: u32, _: u32, pixels: js.Value, exec: *Execution) !void {
     if (!pixels.isTypedArray()) return;
     const safe_width: usize = @intCast(@max(width, 0));
     const safe_height: usize = @intCast(@max(height, 0));
     const count = safe_width * safe_height * 4;
     if (pixels.toZig(js.TypedArray(u8))) |arr| {
         const out = @constCast(arr.values[0..@min(arr.values.len, count)]);
+        const WebGLIntelligent = @import("../../../runtime/profile/WebGLIntelligent.zig");
+        if (exec.loadedProfile().mode == .antidetect) {
+            const frame = switch (exec.context.global) {
+                .frame => |f| f,
+                else => null,
+            };
+            if (frame) |f| {
+                if (WebGLIntelligent.readPixelsBaseline(f, self, x, y, width, height)) |bl| {
+                    const n = @min(out.len, bl.len);
+                    @memcpy(out[0..n], bl[0..n]);
+                    return;
+                }
+            }
+        }
         for (0..out.len / 4) |i| {
             const px = i % safe_width;
             const py = i / safe_width;
@@ -495,8 +552,10 @@ pub fn getExtension(_: *const WebGLRenderingContext, name: []const u8, exec: *Ex
 }
 
 /// Returns a list of all the supported WebGL extensions.
-pub fn getSupportedExtensions(_: *const WebGLRenderingContext, exec: *Execution) []const []const u8 {
-    return exec.identityProfile().webgl.extensions;
+pub fn getSupportedExtensions(self: *const WebGLRenderingContext, exec: *Execution) []const []const u8 {
+    const webgl = exec.identityProfile().webgl;
+    if (self._is_webgl2 and webgl.extensions_webgl2.len > 0) return webgl.extensions_webgl2;
+    return webgl.extensions;
 }
 
 pub const JsApi = struct {
@@ -571,6 +630,30 @@ pub const JsApi = struct {
     pub const drawingBufferWidth = bridge.accessor(WebGLRenderingContext.getDrawingBufferWidth, null, .{});
     pub const drawingBufferHeight = bridge.accessor(WebGLRenderingContext.getDrawingBufferHeight, null, .{});
 
+    // CreepJS enumerates getParameter names via Object.getOwnPropertyNames(proto) — order must match Chrome WebGL2.
+    pub const ALIASED_POINT_SIZE_RANGE = bridge.property(WebGLRenderingContext.ALIASED_POINT_SIZE_RANGE, .{ .template = false, .readonly = true });
+    pub const ALIASED_LINE_WIDTH_RANGE = bridge.property(WebGLRenderingContext.ALIASED_LINE_WIDTH_RANGE, .{ .template = false, .readonly = true });
+    pub const STENCIL_VALUE_MASK = bridge.property(WebGLRenderingContext.STENCIL_VALUE_MASK, .{ .template = false, .readonly = true });
+    pub const STENCIL_WRITEMASK = bridge.property(WebGLRenderingContext.STENCIL_WRITEMASK, .{ .template = false, .readonly = true });
+    pub const STENCIL_BACK_VALUE_MASK = bridge.property(WebGLRenderingContext.STENCIL_BACK_VALUE_MASK, .{ .template = false, .readonly = true });
+    pub const STENCIL_BACK_WRITEMASK = bridge.property(WebGLRenderingContext.STENCIL_BACK_WRITEMASK, .{ .template = false, .readonly = true });
+    pub const MAX_TEXTURE_SIZE = bridge.property(WebGLRenderingContext.MAX_TEXTURE_SIZE, .{ .template = false, .readonly = true });
+    pub const MAX_VIEWPORT_DIMS = bridge.property(WebGLRenderingContext.MAX_VIEWPORT_DIMS, .{ .template = false, .readonly = true });
+    pub const SUBPIXEL_BITS = bridge.property(WebGLRenderingContext.SUBPIXEL_BITS, .{ .template = false, .readonly = true });
+    pub const MAX_VERTEX_ATTRIBS = bridge.property(WebGLRenderingContext.MAX_VERTEX_ATTRIBS, .{ .template = false, .readonly = true });
+    pub const MAX_VERTEX_UNIFORM_VECTORS = bridge.property(WebGLRenderingContext.MAX_VERTEX_UNIFORM_VECTORS, .{ .template = false, .readonly = true });
+    pub const MAX_VARYING_VECTORS = bridge.property(WebGLRenderingContext.MAX_VARYING_VECTORS, .{ .template = false, .readonly = true });
+    pub const MAX_COMBINED_TEXTURE_IMAGE_UNITS = bridge.property(WebGLRenderingContext.MAX_COMBINED_TEXTURE_IMAGE_UNITS, .{ .template = false, .readonly = true });
+    pub const MAX_VERTEX_TEXTURE_IMAGE_UNITS = bridge.property(WebGLRenderingContext.MAX_VERTEX_TEXTURE_IMAGE_UNITS, .{ .template = false, .readonly = true });
+    pub const MAX_TEXTURE_IMAGE_UNITS = bridge.property(WebGLRenderingContext.MAX_TEXTURE_IMAGE_UNITS, .{ .template = false, .readonly = true });
+    pub const MAX_FRAGMENT_UNIFORM_VECTORS = bridge.property(WebGLRenderingContext.MAX_FRAGMENT_UNIFORM_VECTORS, .{ .template = false, .readonly = true });
+    pub const SHADING_LANGUAGE_VERSION = bridge.property(WebGLRenderingContext.SHADING_LANGUAGE_VERSION, .{ .template = false, .readonly = true });
+    pub const VENDOR = bridge.property(WebGLRenderingContext.VENDOR, .{ .template = false, .readonly = true });
+    pub const RENDERER = bridge.property(WebGLRenderingContext.RENDERER, .{ .template = false, .readonly = true });
+    pub const VERSION = bridge.property(WebGLRenderingContext.VERSION, .{ .template = false, .readonly = true });
+    pub const MAX_CUBE_MAP_TEXTURE_SIZE = bridge.property(WebGLRenderingContext.MAX_CUBE_MAP_TEXTURE_SIZE, .{ .template = false, .readonly = true });
+    pub const MAX_RENDERBUFFER_SIZE = bridge.property(WebGLRenderingContext.MAX_RENDERBUFFER_SIZE, .{ .template = false, .readonly = true });
+
     pub const ARRAY_BUFFER = bridge.property(WebGLRenderingContext.ARRAY_BUFFER, .{ .template = false, .readonly = true });
     pub const ELEMENT_ARRAY_BUFFER = bridge.property(WebGLRenderingContext.ELEMENT_ARRAY_BUFFER, .{ .template = false, .readonly = true });
     pub const STATIC_DRAW = bridge.property(WebGLRenderingContext.STATIC_DRAW, .{ .template = false, .readonly = true });
@@ -585,23 +668,6 @@ pub const JsApi = struct {
     pub const FRAGMENT_SHADER = bridge.property(WebGLRenderingContext.FRAGMENT_SHADER, .{ .template = false, .readonly = true });
     pub const COMPILE_STATUS = bridge.property(WebGLRenderingContext.COMPILE_STATUS, .{ .template = false, .readonly = true });
     pub const LINK_STATUS = bridge.property(WebGLRenderingContext.LINK_STATUS, .{ .template = false, .readonly = true });
-    pub const VERSION = bridge.property(WebGLRenderingContext.VERSION, .{ .template = false, .readonly = true });
-    pub const VENDOR = bridge.property(WebGLRenderingContext.VENDOR, .{ .template = false, .readonly = true });
-    pub const RENDERER = bridge.property(WebGLRenderingContext.RENDERER, .{ .template = false, .readonly = true });
-    pub const SHADING_LANGUAGE_VERSION = bridge.property(WebGLRenderingContext.SHADING_LANGUAGE_VERSION, .{ .template = false, .readonly = true });
-    pub const MAX_TEXTURE_SIZE = bridge.property(WebGLRenderingContext.MAX_TEXTURE_SIZE, .{ .template = false, .readonly = true });
-    pub const MAX_CUBE_MAP_TEXTURE_SIZE = bridge.property(WebGLRenderingContext.MAX_CUBE_MAP_TEXTURE_SIZE, .{ .template = false, .readonly = true });
-    pub const MAX_RENDERBUFFER_SIZE = bridge.property(WebGLRenderingContext.MAX_RENDERBUFFER_SIZE, .{ .template = false, .readonly = true });
-    pub const MAX_VIEWPORT_DIMS = bridge.property(WebGLRenderingContext.MAX_VIEWPORT_DIMS, .{ .template = false, .readonly = true });
-    pub const MAX_VERTEX_ATTRIBS = bridge.property(WebGLRenderingContext.MAX_VERTEX_ATTRIBS, .{ .template = false, .readonly = true });
-    pub const MAX_VERTEX_UNIFORM_VECTORS = bridge.property(WebGLRenderingContext.MAX_VERTEX_UNIFORM_VECTORS, .{ .template = false, .readonly = true });
-    pub const MAX_VARYING_VECTORS = bridge.property(WebGLRenderingContext.MAX_VARYING_VECTORS, .{ .template = false, .readonly = true });
-    pub const MAX_COMBINED_TEXTURE_IMAGE_UNITS = bridge.property(WebGLRenderingContext.MAX_COMBINED_TEXTURE_IMAGE_UNITS, .{ .template = false, .readonly = true });
-    pub const MAX_VERTEX_TEXTURE_IMAGE_UNITS = bridge.property(WebGLRenderingContext.MAX_VERTEX_TEXTURE_IMAGE_UNITS, .{ .template = false, .readonly = true });
-    pub const MAX_TEXTURE_IMAGE_UNITS = bridge.property(WebGLRenderingContext.MAX_TEXTURE_IMAGE_UNITS, .{ .template = false, .readonly = true });
-    pub const MAX_FRAGMENT_UNIFORM_VECTORS = bridge.property(WebGLRenderingContext.MAX_FRAGMENT_UNIFORM_VECTORS, .{ .template = false, .readonly = true });
-    pub const ALIASED_LINE_WIDTH_RANGE = bridge.property(WebGLRenderingContext.ALIASED_LINE_WIDTH_RANGE, .{ .template = false, .readonly = true });
-    pub const ALIASED_POINT_SIZE_RANGE = bridge.property(WebGLRenderingContext.ALIASED_POINT_SIZE_RANGE, .{ .template = false, .readonly = true });
     pub const HIGH_FLOAT = bridge.property(WebGLRenderingContext.HIGH_FLOAT, .{ .template = false, .readonly = true });
     pub const MEDIUM_FLOAT = bridge.property(WebGLRenderingContext.MEDIUM_FLOAT, .{ .template = false, .readonly = true });
     pub const LOW_FLOAT = bridge.property(WebGLRenderingContext.LOW_FLOAT, .{ .template = false, .readonly = true });
@@ -612,7 +678,7 @@ pub const JsApi = struct {
     pub const UNSIGNED_BYTE = bridge.property(WebGLRenderingContext.UNSIGNED_BYTE, .{ .template = false, .readonly = true });
 };
 
-const ContextAttributes = struct {
+pub const ContextAttributes = struct {
     alpha: bool = true,
     antialias: bool = true,
     depth: bool = true,
@@ -625,13 +691,13 @@ const ContextAttributes = struct {
     xrCompatible: bool = false,
 };
 
-const WebGLBuffer = opaqueResource("WebGLBuffer");
-const WebGLShader = opaqueResource("WebGLShader");
-const WebGLProgram = opaqueResource("WebGLProgram");
-const WebGLTexture = opaqueResource("WebGLTexture");
-const WebGLFramebuffer = opaqueResource("WebGLFramebuffer");
-const WebGLRenderbuffer = opaqueResource("WebGLRenderbuffer");
-const WebGLUniformLocation = opaqueResource("WebGLUniformLocation");
+pub const WebGLBuffer = opaqueResource("WebGLBuffer");
+pub const WebGLShader = opaqueResource("WebGLShader");
+pub const WebGLProgram = opaqueResource("WebGLProgram");
+pub const WebGLTexture = opaqueResource("WebGLTexture");
+pub const WebGLFramebuffer = opaqueResource("WebGLFramebuffer");
+pub const WebGLRenderbuffer = opaqueResource("WebGLRenderbuffer");
+pub const WebGLUniformLocation = opaqueResource("WebGLUniformLocation");
 
 fn opaqueResource(comptime type_name: []const u8) type {
     return struct {

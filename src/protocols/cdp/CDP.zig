@@ -111,11 +111,7 @@ pub fn init(
 }
 
 fn persistSessionState(session: *Session, config: *const @import("../../runtime/Config.zig")) void {
-    const jar_path = config.cookieJarFile() orelse return;
-    @import("../../runtime/cookies.zig").saveToFile(&session.cookie_jar, jar_path);
-    var storage_buf: [512]u8 = undefined;
-    const storage_path = std.fmt.bufPrint(&storage_buf, "{s}.storage.json", .{jar_path}) catch return;
-    @import("../../runtime/session_persist.zig").saveStorage(session, storage_path);
+    @import("../../runtime/profile_session.zig").persistCookies(session, config);
 }
 
 pub fn deinit(self: *CDP) void {
@@ -195,6 +191,9 @@ pub fn pageWait(self: *CDP, ms: u32) !Session.Runner.CDPWaitResult {
 }
 
 pub fn tick(self: *CDP) !bool {
+    self.browser.tick_mutex.lock();
+    defer self.browser.tick_mutex.unlock();
+
     // Drain any pending root navigation whose commit was deferred because a
     // previous tick landed inside reentrant HttpClient.perform with JS on the
     // stack (see Session._deferred_commit_pending). By the top of a fresh
@@ -262,6 +261,14 @@ pub fn dispatch(self: *CDP, arena: Allocator, sender: Command.Sender, str: []con
             command.sendError(-31999, @errorName(err), .{}) catch return err;
         };
     } else {
+        if (command.browser_context) |bc| {
+            bc.session.cdp_frame_override = bc.frameIdForSession(input.sessionId);
+            bc.inspector_reply_session_id = input.sessionId orelse bc.session_id;
+        }
+        defer if (command.browser_context) |bc| {
+            bc.session.cdp_frame_override = null;
+            bc.inspector_reply_session_id = null;
+        };
         dispatchCommand(&command, input.method) catch |err| {
             command.sendError(-31998, @errorName(err), .{}) catch return err;
         };
@@ -356,6 +363,7 @@ fn dispatchCommand(command: *Command, method: []const u8) !void {
 
 fn isValidSessionId(self: *const CDP, input_session_id: []const u8) bool {
     const browser_context = &(self.browser_context orelse return false);
+    if (browser_context.frame_sessions.get(input_session_id)) |_| return true;
     const session_id = browser_context.session_id orelse return false;
     return std.mem.eql(u8, session_id, input_session_id);
 }
@@ -503,6 +511,12 @@ pub const BrowserContext = struct {
     // own message arena.
     pending_dialog_response: ?Notification.DialogResponse = null,
 
+    // Iframe CDP targets: sessionId -> frame_id (child frame attach).
+    frame_sessions: std.StringHashMap(u32),
+
+    // Inspector replies echo this session (iframe attach uses a child session).
+    inspector_reply_session_id: ?[]const u8 = null,
+
     fn init(self: *BrowserContext, id: []const u8, cdp: *CDP) !void {
         const allocator = cdp.allocator;
 
@@ -511,14 +525,7 @@ pub const BrowserContext = struct {
         errdefer notification.deinit();
 
         const session = try cdp.browser.newSession(notification);
-        if (cdp.app.config.cookieFile()) |cookie_path| {
-            @import("../../runtime/cookies.zig").loadFromFile(session, cookie_path);
-        }
-        if (cdp.app.config.cookieJarFile()) |jar_path| {
-            const storage_path = try std.fmt.allocPrint(allocator, "{s}.storage.json", .{jar_path});
-            defer allocator.free(storage_path);
-            @import("../../runtime/session_persist.zig").loadStorage(session, storage_path);
-        }
+        @import("../../runtime/profile_session.zig").bootstrapCookies(session, cdp.app.config);
 
         const browser = &cdp.browser;
         const inspector_session = browser.env.inspector.?.startSession(self);
@@ -546,6 +553,7 @@ pub const BrowserContext = struct {
             .intercept_state = try InterceptState.init(allocator),
             .captured_responses = .empty,
             .notification = notification,
+            .frame_sessions = std.StringHashMap(u32).init(allocator),
         };
         self.node_search_list = Node.Search.List.init(allocator, &self.node_registry);
         errdefer self.deinit();
@@ -625,11 +633,39 @@ pub const BrowserContext = struct {
             browser.http_client.clearUserAgentOverride();
         }
         self.intercept_state.deinit();
+        self.frame_sessions.deinit();
     }
 
     pub fn reset(self: *BrowserContext) void {
         self.node_registry.reset();
         self.node_search_list.reset();
+    }
+
+    pub fn frameIdForSession(self: *const BrowserContext, session_id: ?[]const u8) ?u32 {
+        if (session_id) |sid| {
+            if (self.frame_sessions.get(sid)) |frame_id| return frame_id;
+            if (self.session_id) |main_sid| {
+                if (std.mem.eql(u8, sid, main_sid)) {
+                    if (self.session.currentFrame()) |f| return f._frame_id;
+                }
+            }
+            return null;
+        }
+        if (self.session.currentFrame()) |f| return f._frame_id;
+        return null;
+    }
+
+    pub fn registerFrameSession(self: *BrowserContext, session_id: []const u8, frame_id: u32) !void {
+        const key = try self.arena.dupe(u8, session_id);
+        try self.frame_sessions.put(key, frame_id);
+    }
+
+    pub fn unregisterFrameSession(self: *BrowserContext, session_id: []const u8) void {
+        _ = self.frame_sessions.remove(session_id);
+    }
+
+    pub fn frameForId(self: *const BrowserContext, frame_id: u32) ?*Frame {
+        return self.session.findFrameByFrameId(frame_id);
     }
 
     pub fn createIsolatedWorld(self: *BrowserContext, world_name: []const u8, grant_universal_access: bool) !*IsolatedWorld {
@@ -915,7 +951,7 @@ pub const BrowserContext = struct {
     // session_id onto it. Second, we're much more client/websocket aware than
     // we should be.
     fn sendInspectorMessage(self: *BrowserContext, msg: []const u8) !void {
-        const session_id = self.session_id orelse {
+        const session_id = self.inspector_reply_session_id orelse self.session_id orelse {
             // We no longer have an active session. What should we do
             // in this case?
             return;

@@ -259,8 +259,8 @@ pub const Plugin = struct {
         return null;
     }
 
-    pub fn getVersion(_: *const Plugin) []const u8 {
-        return "";
+    pub fn getVersion(_: *const Plugin) ?[]const u8 {
+        return null;
     }
 
     pub fn getIndexes(self: *const Plugin, frame: *Frame) !js.Array {
@@ -294,7 +294,7 @@ pub const Plugin = struct {
         pub const name = bridge.accessor(Plugin.getName, null, .{});
         pub const filename = bridge.accessor(Plugin.getFilename, null, .{});
         pub const description = bridge.accessor(Plugin.getDescription, null, .{});
-        pub const version = bridge.accessor(Plugin.getVersion, null, .{});
+        pub const version = bridge.accessor(Plugin.getVersion, null, .{ .null_as_undefined = true });
         pub const length = bridge.accessor(Plugin.getLength, null, .{});
         pub const @"[int]" = bridge.indexed(Plugin.getAtIndex, Plugin.getIndexes, .{ .null_as_undefined = true, .enumerable = true });
         pub const @"[str]" = bridge.namedIndexed(Plugin.getByName, null, null, Plugin.getNamedKeys, .{ .null_as_undefined = true, .enumerable = true });

@@ -13,8 +13,6 @@
     "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
     "platform": "MacIntel",
     "languages": [
-      "vi-VN",
-      "vi",
       "en-US",
       "en"
     ],
@@ -44,9 +42,9 @@
     "platformVersion": "15.3.0",
     "architecture": "arm",
     "bitness": "64",
-    "uaFullVersion": "149.0.7827.158",
+    "uaFullVersion": "149.0.7827.197",
     "mobile": false,
-    "prefersColorScheme": "light"
+    "prefersColorScheme": "dark"
   },
   "plugins": [
     {
@@ -86,13 +84,13 @@
     }
   ],
   "screen": {
-    "width": 1920,
-    "height": 1080,
-    "availWidth": 1920,
-    "availHeight": 966,
+    "width": 1680,
+    "height": 1050,
+    "availWidth": 1680,
+    "availHeight": 936,
     "devicePixelRatio": 1,
-    "colorDepth": 24,
-    "pixelDepth": 24,
+    "colorDepth": 30,
+    "pixelDepth": 30,
     "touch": false
   },
   "window": {
@@ -172,6 +170,44 @@
       "WEBGL_lose_context",
       "WEBGL_multi_draw",
       "WEBGL_polygon_mode"
+    ],
+    "extensions2": [
+      "EXT_clip_control",
+      "EXT_color_buffer_float",
+      "EXT_color_buffer_half_float",
+      "EXT_conservative_depth",
+      "EXT_depth_clamp",
+      "EXT_disjoint_timer_query_webgl2",
+      "EXT_float_blend",
+      "EXT_polygon_offset_clamp",
+      "EXT_render_snorm",
+      "EXT_texture_compression_bptc",
+      "EXT_texture_compression_rgtc",
+      "EXT_texture_filter_anisotropic",
+      "EXT_texture_mirror_clamp_to_edge",
+      "EXT_texture_norm16",
+      "KHR_parallel_shader_compile",
+      "NV_shader_noperspective_interpolation",
+      "OES_draw_buffers_indexed",
+      "OES_sample_variables",
+      "OES_shader_multisample_interpolation",
+      "OES_texture_float_linear",
+      "WEBGL_blend_func_extended",
+      "WEBGL_clip_cull_distance",
+      "WEBGL_compressed_texture_astc",
+      "WEBGL_compressed_texture_etc",
+      "WEBGL_compressed_texture_etc1",
+      "WEBGL_compressed_texture_pvrtc",
+      "WEBGL_compressed_texture_s3tc",
+      "WEBGL_compressed_texture_s3tc_srgb",
+      "WEBGL_debug_renderer_info",
+      "WEBGL_debug_shaders",
+      "WEBGL_lose_context",
+      "WEBGL_multi_draw",
+      "WEBGL_polygon_mode",
+      "WEBGL_provoking_vertex",
+      "WEBGL_render_shared_exponent",
+      "WEBGL_stencil_texturing"
     ]
   },
   "timezone": "Asia/Saigon",
@@ -187,5 +223,34 @@
   "speechVoicesFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-voices.json",
   "measureTextBaseline": {
     "dataFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-measuretext.json"
+  },
+  "webglProbe": {
+    "dataFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-webgl-probe.json"
+  },
+  "windowKeys": {
+    "dataFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-window-keys.json"
+  },
+  "navigatorKeys": {
+    "dataFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-navigator-keys.json"
+  },
+  "htmlElementKeys": {
+    "dataFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-html-element-keys.json"
+  },
+  "cssComputedKeys": {
+    "enumerableKeysFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-css-enumerable-keys.json",
+    "dataFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-css-computed-keys.json"
+  },
+  "mathsBaseline": {
+    "dataFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-maths-baseline.json"
+  },
+  "clientRectsBaseline": {
+    "dataFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-client-rects.json"
+  },
+  "svgBaseline": {
+    "dataFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-svg-baseline.json"
+  },
+  "session": {
+    "cookieSeedFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-session-cookies.json",
+    "cookieRuntimeFile": "browser/profiles/sessions/chrome-local-huys-macbook-pro-cookies.json"
   }
 }

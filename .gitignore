@@ -12,6 +12,7 @@ node_modules/.lp-cache/
 node_modules
 sdk/node_modules
 code-check/tmp
+google-search-debug/tmp/
 Kameleo-decode/
 diff.txt
 .clinerules

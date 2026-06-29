@@ -49,6 +49,7 @@ pub fn build(b: *Build) !void {
     opts.addOption([]const u8, "version_encoded", version_encoded);
     opts.addOption(?[]const u8, "snapshot_path", snapshot_path);
     opts.addOption(bool, "curl_impersonate", hasCurlImpersonate(b));
+    const strip_binaries = b.option(bool, "strip", "Strip debug symbols from velora binaries") orelse true;
     const enable_tsan = b.option(bool, "tsan", "Enable Thread Sanitizer") orelse false;
     const enable_asan = b.option(bool, "asan", "Enable Address Sanitizer") orelse false;
     const enable_csan = b.option(std.zig.SanitizeC, "csan", "Enable C Sanitizers");
@@ -122,7 +123,7 @@ pub fn build(b: *Build) !void {
                 .root_source_file = b.path("src/adapters/cli/main.zig"),
                 .target = target,
                 .optimize = optimize,
-                .strip = b.option(bool, "strip", "Strip debug symbols from velora binary") orelse true,
+                .strip = strip_binaries,
                 .sanitize_c = enable_csan,
                 .sanitize_thread = enable_tsan,
                 .imports = &.{

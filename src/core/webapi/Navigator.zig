@@ -143,10 +143,6 @@ pub fn getDoNotTrack(_: *const Navigator, _: *Frame) ?[]const u8 {
     return null;
 }
 
-pub fn getGlobalPrivacyControl(_: *const Navigator, frame: *Frame) bool {
-    return frame.navigatorState().globalPrivacyControl();
-}
-
 pub fn getOnLine(_: *const Navigator, _: *Frame) bool {
     return true;
 }
@@ -381,6 +377,16 @@ fn validateProtocolHandlerURL(url: [:0]const u8, frame: *const Frame) !void {
     }
 }
 
+pub fn setAppBadge(_: *const Navigator, _: ?js.Value, frame: *Frame) !js.Promise {
+    const local = frame.js.local orelse return error.NotHandled;
+    return local.resolvePromise(js.Undefined{});
+}
+
+pub fn clearAppBadge(_: *const Navigator, frame: *Frame) !js.Promise {
+    const local = frame.js.local orelse return error.NotHandled;
+    return local.resolvePromise(js.Undefined{});
+}
+
 pub const JsApi = struct {
     pub const bridge = js.Bridge(Navigator);
 
@@ -409,7 +415,6 @@ pub const JsApi = struct {
     pub const plugins = bridge.accessor(Navigator.getPlugins, null, .{});
     pub const mimeTypes = bridge.accessor(Navigator.getMimeTypes, null, .{});
     pub const doNotTrack = bridge.accessor(Navigator.getDoNotTrack, null, .{});
-    pub const globalPrivacyControl = bridge.accessor(Navigator.getGlobalPrivacyControl, null, .{});
     pub const registerProtocolHandler = bridge.function(Navigator.registerProtocolHandler, .{ .dom_exception = true });
     pub const unregisterProtocolHandler = bridge.function(Navigator.unregisterProtocolHandler, .{ .dom_exception = true });
 
@@ -435,10 +440,12 @@ pub const JsApi = struct {
     pub const contacts = bridge.accessor(Navigator.getContacts, null, .{});
     pub const serviceWorker = bridge.accessor(Navigator.getServiceWorker, null, .{});
     pub const pdfViewerEnabled = bridge.accessor(Navigator.getPdfViewerEnabled, null, .{});
-    pub const oscpu = bridge.accessor(Navigator.getOscpu, null, .{});
+    pub const oscpu = bridge.accessor(Navigator.getOscpu, null, .{ .null_as_undefined = true });
     pub const share = bridge.function(Navigator.share, .{ .dom_exception = true });
     pub const canShare = bridge.function(Navigator.canShare, .{});
     pub const sendBeacon = bridge.function(Navigator.sendBeacon, .{});
+    pub const setAppBadge = bridge.function(Navigator.setAppBadge, .{ .dom_exception = true });
+    pub const clearAppBadge = bridge.function(Navigator.clearAppBadge, .{ .dom_exception = true });
 };
 
 const testing = @import("../../testing/testing.zig");

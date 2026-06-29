@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Audio Heavy Probe</title></head>
+<body>
+<pre id="status">running...</pre>
+<script>
+const statusEl = document.getElementById('status');
+const dbg = (...a) => console.log('[audio-heavy]', ...a);
+const queueEvent = (t = 0) => new Promise(r => setTimeout(r, t));
+
+async function getRenderedBuffer(context) {
+    const bufferLen = context.length;
+    const analyser = context.createAnalyser();
+    const dynamicsCompressor = context.createDynamicsCompressor();
+    const oscillator = context.createOscillator();
+    oscillator.connect(dynamicsCompressor);
+    dynamicsCompressor.connect(analyser);
+    dynamicsCompressor.connect(context.destination);
+    oscillator.start(0);
+    return new Promise((resolve) => {
+        context.addEventListener('complete', (event) => {
+            try {
+                dynamicsCompressor.disconnect();
+                oscillator.disconnect();
+                const floatFrequencyData = new Float32Array(analyser.frequencyBinCount);
+                analyser.getFloatFrequencyData?.(floatFrequencyData);
+                const floatTimeDomainData = new Float32Array(analyser.fftSize);
+                if ('getFloatTimeDomainData' in analyser) {
+                    analyser.getFloatTimeDomainData(floatTimeDomainData);
+                }
+                resolve({
+                    floatFrequencyData,
+                    floatTimeDomainData,
+                    buffer: event.renderedBuffer,
+                    compressorGainReduction: dynamicsCompressor.reduction?.value || dynamicsCompressor.reduction,
+                });
+            } catch (e) { resolve(null); }
+        });
+        context.startRendering();
+    });
+}
+
+async function hasFakeAudio() {
+    const context = new OfflineAudioContext(1, 100, 44100);
+    const oscillator = context.createOscillator();
+    oscillator.frequency.value = 0;
+    oscillator.start(0);
+    context.startRendering();
+    return new Promise((resolve) => {
+        context.oncomplete = (event) => {
+            const channelData = event.renderedBuffer.getChannelData?.(0);
+            if (!channelData) return resolve(false);
+            resolve('' + [...new Set(channelData)] !== '0');
+        };
+    }).finally(() => oscillator.disconnect());
+}
+
+(async () => {
+    const bufferLen = 5000;
+    const AUDIO_TRAP = 0.0000000000000001;
+    const [audioData, audioIsFake] = await Promise.all([
+        getRenderedBuffer(new OfflineAudioContext(1, bufferLen, 44100)),
+        hasFakeAudio().catch(() => false),
+    ]);
+    dbg('Promise.all done');
+    await queueEvent(0);
+    const { floatFrequencyData, floatTimeDomainData, buffer } = audioData || {};
+    const getSnapshot = (arr, start, end) => { const c = []; for (let i = start; i < end; i++) c.push(arr[i]); return c; };
+    const getSum = (arr) => !arr ? 0 : [...arr].reduce((acc, curr) => (acc += Math.abs(curr)), 0);
+    getSum(floatFrequencyData);
+    getSum(floatTimeDomainData);
+    const copy = new Float32Array(bufferLen);
+    let bins = new Float32Array();
+    if (buffer) {
+        buffer.copyFromChannel?.(copy, 0);
+        bins = buffer.getChannelData?.(0) || [];
+    }
+    getSnapshot([...copy], 4500, 4600);
+    getSnapshot([...bins], 4500, 4600);
+    getSum(getSnapshot([...bins], 4500, bufferLen));
+    dbg('before unique count', bins.length);
+    const seenBins = {};
+    let totalUnique = 0;
+    for (let i = 0; i < bins.length; i++) {
+        const v = bins[i];
+        if (!seenBins[v]) { seenBins[v] = 1; totalUnique++; }
+    }
+    dbg('after unique count', totalUnique);
+
+    const getCopyFrom = (rand, buf, copyArr) => {
+        const { length } = buf;
+        const max = 20;
+        const start = Math.floor(Math.random() * (length - (max + 1) - 275)) + 275;
+        const mid = start + max / 2;
+        const end = start + max;
+        buf.getChannelData(0)[start] = rand;
+        buf.getChannelData(0)[mid] = rand;
+        buf.getChannelData(0)[end] = rand;
+        buf.copyFromChannel(copyArr, 0);
+        const attack = [
+            buf.getChannelData(0)[start] === 0 ? Math.random() : 0,
+            buf.getChannelData(0)[mid] === 0 ? Math.random() : 0,
+            buf.getChannelData(0)[end] === 0 ? Math.random() : 0,
+        ];
+        return [...new Set([...buf.getChannelData(0), ...copyArr, ...attack])].filter((x) => x !== 0);
+    };
+    const getCopyTo = (rand, buf, copyArr) => {
+        buf.copyToChannel(copyArr.map(() => rand), 0);
+        const frequency = buf.getChannelData(0)[0];
+        return [...buf.getChannelData(0)].map((x) => x !== frequency || !x ? Math.random() : x).filter((x) => x !== frequency);
+    };
+
+    dbg('before getNoiseFactor');
+    const length = 2000;
+    dbg('creating AudioBuffer 1');
+    const ab1 = new AudioBuffer({ length, sampleRate: 44100 });
+    dbg('creating AudioBuffer 2');
+    const ab2 = new AudioBuffer({ length, sampleRate: 44100 });
+    dbg('getCopyFrom');
+    const r1 = getCopyFrom(AUDIO_TRAP, ab1, new Float32Array(length));
+    dbg('getCopyTo');
+    const r2 = getCopyTo(AUDIO_TRAP, ab2, new Float32Array(length));
+    dbg('final Set');
+    const result = [...new Set([...r1, ...r2])];
+    const noiseFactor = +(result.length !== 1 && result.reduce((acc, n) => acc += +n, 0));
+    dbg('noiseFactor', noiseFactor);
+    statusEl.textContent = 'PASS noise=' + noiseFactor + ' unique=' + totalUnique;
+})();
+</script>
+</body>
+</html>
