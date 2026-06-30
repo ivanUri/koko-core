@@ -15,9 +15,8 @@ Fork thật giữ liên kết upstream trên GitHub, lịch sử git, và có th
 
 | Branch / tag | Nội dung |
 |--------------|----------|
-| `main` | Trùng upstream `v2.0.0a5` |
-| `velora/main` | + patch H3 fingerprint Velora |
-| `v2.0.0a5-velora.1` | Tag pin cho Velora submodule |
+| `main` | Upstream `v2.0.0a5` + patch H3 fingerprint Velora |
+| `v2.0.0a5-velora.1` | Tag pin (cùng commit với `main`) |
 
 ## Bước 2 — Clone fork (không clone lexiforest trực tiếp)
 
@@ -63,7 +62,7 @@ git push origin velora/main --tags
 [submodule "curl-impersonate"]
     path = curl-impersonate
     url = git@github-ivan:ivanUri/curl-impersonate.git
-    branch = velora/main
+    branch = main
 ```
 
 Clone Velora:
@@ -79,8 +78,8 @@ git clone --recurse-submodules git@github-ivan:ivanUri/velora.git
 ```bash
 cd curl-impersonate
 git fetch upstream --tags
-git checkout velora/main
-git merge v2.0.0a6    # tag mới từ lexiforest
+git checkout main
+git merge upstream/v2.0.0a6    # tag mới từ lexiforest
 ./scripts/apply-velora-patches.sh
 make build
 ```
