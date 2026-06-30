@@ -372,6 +372,7 @@ pub fn frameNavigate(bc: *CDP.BrowserContext, event: *const Notification.FrameNa
     // away the node_registry — the OLD page's nodes are still referenced
     // by client-held objectIds. The reset moves to frameRemove (commit).
     if (!event.is_pending_root) {
+        bc.intercept_state.clear();
         bc.reset();
     }
 
@@ -843,7 +844,7 @@ fn printToPDF(cmd: *CDP.Command) !void {
 fn layoutViewportSize(cmd: *CDP.Command) struct { width: u32, height: u32 } {
     if (cmd.browser_context) |bc| {
         if (bc.session.currentFrame()) |frame| {
-            const window = frame.identityProfile().window;
+            const window = frame.windowProfile();
             return .{ .width = window.inner_width, .height = window.inner_height };
         }
     }

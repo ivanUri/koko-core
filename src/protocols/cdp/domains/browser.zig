@@ -92,18 +92,53 @@ fn setWindowBounds(cmd: *CDP.Command) !void {
     return cmd.sendResult(null, .{});
 }
 
-// TODO: noop method
 fn grantPermissions(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        permissions: []const []const u8,
+        origin: ?[]const u8 = null,
+        browserContextId: ?[]const u8 = null,
+    })) orelse return error.InvalidParams;
+
+    _ = params.origin;
+    _ = params.browserContextId;
+
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    for (params.permissions) |permission| {
+        try bc.emulation.grantPermission(bc.arena, permission);
+    }
     return cmd.sendResult(null, .{});
 }
 
-// TODO: noop method
 fn setPermission(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        permission: struct {
+            name: []const u8,
+            setting: enum { granted, denied, prompt },
+        },
+        origin: []const u8,
+        browserContextId: ?[]const u8 = null,
+    })) orelse return error.InvalidParams;
+
+    _ = params.origin;
+    _ = params.browserContextId;
+
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    switch (params.permission.setting) {
+        .granted => try bc.emulation.grantPermission(bc.arena, params.permission.name),
+        .denied, .prompt => {},
+    }
     return cmd.sendResult(null, .{});
 }
 
-// TODO: noop method
 fn resetPermissions(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        browserContextId: ?[]const u8 = null,
+    })) orelse return error.InvalidParams;
+
+    _ = params.browserContextId;
+
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    bc.emulation.resetPermissions(bc.arena);
     return cmd.sendResult(null, .{});
 }
 

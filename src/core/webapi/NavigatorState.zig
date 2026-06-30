@@ -1,3 +1,5 @@
+const std = @import("std");
+
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Affero General Public License as
 // published by the Free Software Foundation, either version 3 of the
@@ -14,10 +16,12 @@
 const FingerprintProfile = @import("../profile/types.zig");
 const HttpClient = @import("../browser/HttpClient.zig");
 const NavigatorUAData = @import("NavigatorUAData.zig");
+const EmulationState = @import("../../protocols/cdp/EmulationState.zig");
 
 const NavigatorState = @This();
 
 profile: *const FingerprintProfile.IdentityProfile,
+emulation: ?*const EmulationState.State = null,
 
 pub fn userAgent(_: *const NavigatorState, http_client: *const HttpClient) []const u8 {
     return http_client.getUserAgent();
@@ -36,16 +40,35 @@ pub fn appVersion(self: *const NavigatorState) []const u8 {
 }
 
 pub fn platform(self: *const NavigatorState) []const u8 {
+    if (self.emulation) |em| {
+        if (em.platform) |override| return override;
+    }
     return self.profile.navigator_platform;
 }
 
 pub fn language(self: *const NavigatorState) []const u8 {
+    if (self.emulation) |em| {
+        if (em.locale) |locale| return locale;
+        if (em.accept_language) |accept| {
+            const comma = std.mem.indexOfScalar(u8, accept, ',') orelse accept.len;
+            const semi = std.mem.indexOfScalar(u8, accept[0..comma], ';') orelse comma;
+            if (semi > 0) return accept[0..semi];
+        }
+    }
     if (self.profile.languages.len == 0) return "en-US";
     return self.profile.languages[0];
 }
 
 pub fn languages(self: *const NavigatorState) []const []const u8 {
+    if (self.emulation) |em| {
+        if (em.locale) |locale| return &.{locale};
+    }
     return self.profile.languages;
+}
+
+pub fn timezone(self: *const NavigatorState) []const u8 {
+    if (self.emulation) |em| return em.effectiveTimezone(self.profile.timezone);
+    return self.profile.timezone;
 }
 
 pub fn onLine(_: *const NavigatorState) bool {
@@ -61,6 +84,7 @@ pub fn deviceMemory(self: *const NavigatorState) f64 {
 }
 
 pub fn maxTouchPoints(self: *const NavigatorState) u32 {
+    if (self.emulation) |em| return em.effectiveMaxTouchPoints(self.profile.max_touch_points);
     return self.profile.max_touch_points;
 }
 

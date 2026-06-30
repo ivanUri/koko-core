@@ -56,6 +56,9 @@ notification: *Notification,
 cookie_jar: storage.Cookie.Jar,
 fingerprint_seed: u64 = 0,
 
+/// CDP Emulation overrides for this session (set when attached via BrowserContext).
+emulation: ?*const @import("../../protocols/cdp/EmulationState.zig").State = null,
+
 // Shared allocator. Used by Session itself and borrowed by Pages.
 arena_pool: *ArenaPool,
 

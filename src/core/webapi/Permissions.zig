@@ -33,6 +33,13 @@ _pad: bool = false,
 const QueryDescriptor = struct {
     name: []const u8,
 };
+fn permissionState(name: []const u8, frame: *Frame) []const u8 {
+    if (frame._session.emulation) |em| {
+        if (em.isPermissionGranted(name)) return "granted";
+    }
+    return defaultPermissionState(name);
+}
+
 fn defaultPermissionState(name: []const u8) []const u8 {
     // macOS Chrome 149 permission registry defaults (CreepJS probe set).
     const granted = [_][]const u8{
@@ -70,7 +77,7 @@ pub fn query(_: *const Permissions, qd: QueryDescriptor, frame: *Frame) !js.Prom
     const status = try arena.create(PermissionStatus);
     status.* = .{
         ._arena = arena,
-        ._state = defaultPermissionState(qd.name),
+        ._state = permissionState(qd.name, frame),
         ._name = try arena.dupe(u8, qd.name),
     };
     return frame.js.local.?.resolvePromise(status);

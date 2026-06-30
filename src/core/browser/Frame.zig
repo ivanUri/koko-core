@@ -641,12 +641,27 @@ pub fn identityProfile(self: *const Frame) *const FingerprintProfile.IdentityPro
     return self._session.browser.app.config.profile.identityPtr();
 }
 
+pub fn windowProfile(self: *const Frame) FingerprintProfile.WindowProfile {
+    const profile_window = self.identityProfile().window;
+    if (self._session.emulation) |em| return em.windowProfile(profile_window);
+    return profile_window;
+}
+
+pub fn devicePixelRatio(self: *const Frame) f64 {
+    const profile_dpr = self.identityProfile().screen.device_pixel_ratio;
+    if (self._session.emulation) |em| return em.devicePixelRatio(profile_dpr);
+    return profile_dpr;
+}
+
 pub fn loadedProfile(self: *const Frame) *const ProfileStore.LoadedProfile {
     return &self._session.browser.app.config.profile;
 }
 
 pub fn navigatorState(self: *const Frame) NavigatorState {
-    return .{ .profile = self.identityProfile() };
+    return .{
+        .profile = self.identityProfile(),
+        .emulation = self._session.emulation,
+    };
 }
 
 pub fn base(self: *const Frame) [:0]const u8 {

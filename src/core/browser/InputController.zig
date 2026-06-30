@@ -46,6 +46,14 @@ pub fn dispatchActivationOnElement(element: *Element, frame: *Frame) !void {
     try dispatchActivationOnTarget(hit);
 }
 
+/// Fast activation for LP.clickNode — skip human pointer animation (avoids CDP hang).
+pub fn dispatchActivationOnElementFast(element: *Element, frame: *Frame) !void {
+    const hit = resolveEffectiveHit(makeHitForElement(element, frame));
+    try dispatchPointerOver(hit);
+    try dispatchPointerDown(hit);
+    try dispatchPointerUpAndClick(hit);
+}
+
 /// Press half of a primary-button activation (CDP `mousePressed`).
 pub fn dispatchPointerDownAt(root_frame: *Frame, x: f64, y: f64) !void {
     try dispatchPointerDownAtOpts(root_frame, x, y, default_ready_timeout_ms);

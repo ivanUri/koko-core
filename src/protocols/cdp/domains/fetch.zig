@@ -258,7 +258,10 @@ fn continueRequest(cmd: *CDP.Command) !void {
     var intercept_state = &bc.intercept_state;
     const request_id = try idFromRequestId(params.requestId);
 
-    const pending = intercept_state.remove(request_id) orelse return error.RequestNotFound;
+    const pending = intercept_state.remove(request_id) orelse {
+        // Navigation tore down the frame; stale intercept reply — noop success.
+        return cmd.sendResult(null, .{});
+    };
     var request = pending.request;
 
     log.debug(.cdp, "request intercept", .{
@@ -324,7 +327,9 @@ fn continueWithAuth(cmd: *CDP.Command) !void {
 
     var intercept_state = &bc.intercept_state;
     const request_id = try idFromRequestId(params.requestId);
-    const pending = intercept_state.remove(request_id) orelse return error.RequestNotFound;
+    const pending = intercept_state.remove(request_id) orelse {
+        return cmd.sendResult(null, .{});
+    };
     const transfer = pending.transfer;
     const request = transfer.req;
 
@@ -379,7 +384,9 @@ fn fulfillRequest(cmd: *CDP.Command) !void {
     var intercept_state = &bc.intercept_state;
     const request_id = try idFromRequestId(params.requestId);
 
-    const pending = intercept_state.remove(request_id) orelse return error.RequestNotFound;
+    const pending = intercept_state.remove(request_id) orelse {
+        return cmd.sendResult(null, .{});
+    };
     var request = pending.request;
 
     log.debug(.cdp, "request intercept", .{
@@ -413,7 +420,9 @@ fn failRequest(cmd: *CDP.Command) !void {
     var intercept_state = &bc.intercept_state;
     const request_id = try idFromRequestId(params.requestId);
 
-    const pending = intercept_state.remove(request_id) orelse return error.RequestNotFound;
+    const pending = intercept_state.remove(request_id) orelse {
+        return cmd.sendResult(null, .{});
+    };
     const request = pending.request;
 
     const client = &bc.cdp.browser.http_client;

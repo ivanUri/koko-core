@@ -289,19 +289,27 @@ pub fn httpRequestStart(bc: *CDP.BrowserContext, msg: *const Notification.Reques
         try req.params.headers.add(extra);
     }
 
-    // We're missing a bunch of fields, but, for now, this seems like enough
+    const request_id = id.toRequestId(req);
+
     try bc.cdp.sendEvent("Network.requestWillBeSent", .{
         .frameId = &id.toFrameId(frame_id),
-        .requestId = &id.toRequestId(req),
+        .requestId = &request_id,
         .loaderId = &id.toLoaderId(req.params.loader_id),
         .type = req.params.resource_type.string(),
         .documentURL = frame.url,
         .request = RequestWriter.init(req),
         .initiator = .{ .type = "other" },
-        .redirectHasExtraInfo = false, // TODO change after adding Network.requestWillBeSentExtraInfo
+        .redirectHasExtraInfo = true,
         .hasUserGesture = false,
         .timestamp = timestamp(.monotonic),
         .wallTime = timestamp(.clock),
+    }, .{ .session_id = session_id });
+
+    try bc.cdp.sendEvent("Network.requestWillBeSentExtraInfo", .{
+        .requestId = &request_id,
+        .associatedCookies = &.{},
+        .headers = RequestHeadersWriter.init(req),
+        .connectTiming = .{ .requestTime = timestamp(.monotonic) },
     }, .{ .session_id = session_id });
 }
 
@@ -312,15 +320,25 @@ pub fn httpResponseHeaderDone(arena: Allocator, bc: *CDP.BrowserContext, msg: *c
 
     const req = msg.request;
 
-    // We're missing a bunch of fields, but, for now, this seems like enough
+    const request_id = id.toRequestId(req);
+
     try bc.cdp.sendEvent("Network.responseReceived", .{
         .frameId = &id.toFrameId(req.params.frame_id),
-        .requestId = &id.toRequestId(req),
+        .requestId = &request_id,
         .loaderId = &id.toLoaderId(req.params.loader_id),
         .type = req.params.resource_type.string(),
         .request = RequestWriter.init(req),
         .response = ResponseWriter.init(arena, msg.response),
-        .hasExtraInfo = false, // TODO change after adding Network.responseReceivedExtraInfo
+        .hasExtraInfo = true,
+    }, .{ .session_id = session_id });
+
+    try bc.cdp.sendEvent("Network.responseReceivedExtraInfo", .{
+        .requestId = &request_id,
+        .blockedCookies = &.{},
+        .headers = ResponseHeadersWriter.init(arena, msg.response),
+        .resourceIPAddressSpace = "Unknown",
+        .statusCode = msg.response.status() orelse 0,
+        .cookiePartitionKey = .{ .topLevelSite = "", .hasCrossSiteAncestor = false },
     }, .{ .session_id = session_id });
 }
 
@@ -392,6 +410,66 @@ pub const RequestWriter = struct {
                 try jws.write(referer);
             }
             try jws.endObject();
+        }
+        try jws.endObject();
+    }
+};
+
+const RequestHeadersWriter = struct {
+    request: *Request,
+
+    pub fn init(request: *Request) RequestHeadersWriter {
+        return .{ .request = request };
+    }
+
+    pub fn jsonStringify(self: *const RequestHeadersWriter, jws: anytype) !void {
+        try jws.beginObject();
+        var it = self.request.params.headers.iterator();
+        while (it.next()) |hdr| {
+            try jws.objectField(hdr.name);
+            try jws.write(hdr.value);
+        }
+        if (try self.request.getCookieString()) |cookies| {
+            try jws.objectField("Cookie");
+            try jws.write(cookies);
+        }
+        if (self.request.params.referer) |referer| {
+            try jws.objectField("Referer");
+            try jws.write(referer);
+        }
+        try jws.endObject();
+    }
+};
+
+const ResponseHeadersWriter = struct {
+    arena: Allocator,
+    response: *const Response,
+
+    pub fn init(arena: Allocator, response: *const Response) ResponseHeadersWriter {
+        return .{ .arena = arena, .response = response };
+    }
+
+    pub fn jsonStringify(self: *const ResponseHeadersWriter, jws: anytype) !void {
+        self._jsonStringify(jws) catch return error.WriteFailed;
+    }
+
+    fn _jsonStringify(self: *const ResponseHeadersWriter, jws: anytype) !void {
+        var it = self.response.headerIterator();
+        var map: std.StringArrayHashMapUnmanaged([]const u8) = .empty;
+        while (it.next()) |hdr| {
+            const gop = try map.getOrPut(self.arena, hdr.name);
+            if (gop.found_existing) {
+                const joined = try std.fmt.allocPrint(self.arena, "{s}\n{s}", .{ gop.value_ptr.*, hdr.value });
+                gop.value_ptr.* = joined;
+            } else {
+                gop.value_ptr.* = try self.arena.dupe(u8, hdr.value);
+            }
+        }
+        try jws.beginObject();
+        var map_it = map.iterator();
+        while (map_it.next()) |entry| {
+            try jws.objectField(entry.key_ptr.*);
+            try jws.write(entry.value_ptr.*);
         }
         try jws.endObject();
     }

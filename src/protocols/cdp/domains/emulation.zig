@@ -16,6 +16,7 @@ const std = @import("std");
 
 const CDP = @import("../CDP.zig");
 const Config = @import("../../../runtime/Config.zig");
+const EmulationState = @import("../EmulationState.zig");
 
 const log = @import("../../../support/log.zig");
 
@@ -26,6 +27,11 @@ pub fn processMessage(cmd: *CDP.Command) !void {
         setDeviceMetricsOverride,
         setTouchEmulationEnabled,
         setUserAgentOverride,
+        setTimezoneOverride,
+        setLocaleOverride,
+        setGeolocationOverride,
+        setNavigatorOverrides,
+        clearDeviceMetricsOverride,
     }, cmd.input.action) orelse return error.UnknownMethod;
 
     switch (action) {
@@ -34,37 +40,143 @@ pub fn processMessage(cmd: *CDP.Command) !void {
         .setDeviceMetricsOverride => return setDeviceMetricsOverride(cmd),
         .setTouchEmulationEnabled => return setTouchEmulationEnabled(cmd),
         .setUserAgentOverride => return setUserAgentOverride(cmd),
+        .setTimezoneOverride => return setTimezoneOverride(cmd),
+        .setLocaleOverride => return setLocaleOverride(cmd),
+        .setGeolocationOverride => return setGeolocationOverride(cmd),
+        .setNavigatorOverrides => return setNavigatorOverrides(cmd),
+        .clearDeviceMetricsOverride => return clearDeviceMetricsOverride(cmd),
     }
 }
 
-// TODO: noop method
+fn browserContext(cmd: *CDP.Command) !*CDP.BrowserContext {
+    return cmd.browser_context orelse error.BrowserContextNotLoaded;
+}
+
 fn setEmulatedMedia(cmd: *CDP.Command) !void {
-    // const input = (try const incoming.params(struct {
-    //     media: ?[]const u8 = null,
-    //     features: ?[]struct{
-    //         name: []const u8,
-    //         value: [] const u8
-    //     } = null,
-    // })) orelse return error.InvalidParams;
+    const params = (try cmd.params(struct {
+        media: ?[]const u8 = null,
+    })) orelse return error.InvalidParams;
 
+    const bc = try browserContext(cmd);
+    if (params.media) |media| {
+        bc.emulation.emulated_media = try bc.emulation.dupString(bc.arena, media);
+    } else {
+        bc.emulation.emulated_media = null;
+    }
     return cmd.sendResult(null, .{});
 }
 
-// TODO: noop method
 fn setFocusEmulationEnabled(cmd: *CDP.Command) !void {
-    // const input = (try const incoming.params(struct {
-    //     enabled: bool,
-    // })) orelse return error.InvalidParams;
+    const params = (try cmd.params(struct {
+        enabled: bool,
+    })) orelse return error.InvalidParams;
+
+    const bc = try browserContext(cmd);
+    bc.emulation.focus_emulation_enabled = params.enabled;
     return cmd.sendResult(null, .{});
 }
 
-// TODO: noop method
 fn setDeviceMetricsOverride(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        width: i32,
+        height: i32,
+        deviceScaleFactor: f64,
+        mobile: bool,
+    })) orelse return error.InvalidParams;
+
+    const bc = try browserContext(cmd);
+
+    // Chrome: width=0 height=0 deviceScaleFactor=0 mobile=false clears override.
+    if (params.width == 0 and params.height == 0 and params.deviceScaleFactor == 0 and !params.mobile) {
+        bc.emulation.clearDeviceMetrics();
+        return cmd.sendResult(null, .{});
+    }
+
+    if (params.width <= 0 or params.height <= 0) return error.InvalidParams;
+
+    bc.emulation.setDeviceMetrics(.{
+        .width = @intCast(params.width),
+        .height = @intCast(params.height),
+        .device_scale_factor = if (params.deviceScaleFactor > 0) params.deviceScaleFactor else 1.0,
+        .mobile = params.mobile,
+    });
     return cmd.sendResult(null, .{});
 }
 
-// TODO: noop method
+fn clearDeviceMetricsOverride(cmd: *CDP.Command) !void {
+    const bc = try browserContext(cmd);
+    bc.emulation.clearDeviceMetrics();
+    return cmd.sendResult(null, .{});
+}
+
 fn setTouchEmulationEnabled(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        enabled: bool,
+        maxTouchPoints: ?u32 = null,
+    })) orelse return error.InvalidParams;
+
+    const bc = try browserContext(cmd);
+    bc.emulation.touch_enabled = params.enabled;
+    bc.emulation.max_touch_points = params.maxTouchPoints orelse if (params.enabled) 1 else 0;
+    return cmd.sendResult(null, .{});
+}
+
+fn setTimezoneOverride(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        timezoneId: []const u8,
+    })) orelse return error.InvalidParams;
+
+    const bc = try browserContext(cmd);
+    bc.emulation.timezone_id = try bc.emulation.dupString(bc.arena, params.timezoneId);
+    applyProcessTimezone(params.timezoneId);
+    return cmd.sendResult(null, .{});
+}
+
+extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, override: c_int) c_int;
+
+fn applyProcessTimezone(timezone_id: []const u8) void {
+    if (timezone_id.len == 0 or timezone_id.len >= 96) return;
+    var buf: [96:0]u8 = undefined;
+    @memcpy(buf[0..timezone_id.len], timezone_id);
+    buf[timezone_id.len] = 0;
+    _ = setenv("TZ", &buf, 1);
+}
+
+fn setLocaleOverride(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        locale: []const u8,
+    })) orelse return error.InvalidParams;
+
+    const bc = try browserContext(cmd);
+    bc.emulation.locale = try bc.emulation.dupString(bc.arena, params.locale);
+    return cmd.sendResult(null, .{});
+}
+
+fn setGeolocationOverride(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        latitude: f64,
+        longitude: f64,
+        accuracy: f64 = 1,
+    })) orelse return error.InvalidParams;
+
+    const bc = try browserContext(cmd);
+    bc.emulation.geolocation = .{
+        .latitude = params.latitude,
+        .longitude = params.longitude,
+        .accuracy = params.accuracy,
+    };
+    return cmd.sendResult(null, .{});
+}
+
+fn setNavigatorOverrides(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        platform: ?[]const u8 = null,
+    })) orelse return error.InvalidParams;
+
+    const bc = try browserContext(cmd);
+    if (params.platform) |platform| {
+        bc.emulation.platform = try bc.emulation.dupString(bc.arena, platform);
+    }
     return cmd.sendResult(null, .{});
 }
 
@@ -76,11 +188,13 @@ pub fn setUserAgentOverride(cmd: *CDP.Command) !void {
         platform: ?[]const u8 = null,
     })) orelse return error.InvalidParams;
 
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+
     if (params.acceptLanguage) |v| {
-        log.warn(.not_implemented, "Emulation.setUserAgentOverride", .{ .param = "acceptLanguage", .value = v });
+        bc.emulation.accept_language = try bc.emulation.dupString(bc.arena, v);
     }
     if (params.platform) |v| {
-        log.warn(.not_implemented, "Emulation.setUserAgentOverride", .{ .param = "platform", .value = v });
+        bc.emulation.platform = try bc.emulation.dupString(bc.arena, v);
     }
 
     const ua = params.userAgent;
@@ -93,7 +207,6 @@ pub fn setUserAgentOverride(cmd: *CDP.Command) !void {
         },
     };
 
-    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
     const http_client = &cmd.cdp.browser.http_client;
     try http_client.setUserAgentOverride(ua);
     bc.user_agent_changed = true;
@@ -102,6 +215,30 @@ pub fn setUserAgentOverride(cmd: *CDP.Command) !void {
 }
 
 const testing = @import("../testing.zig");
+
+test "cdp.Emulation: setDeviceMetricsOverride updates layout" {
+    var ctx = try testing.context();
+    defer ctx.deinit();
+    _ = try ctx.loadBrowserContext(.{ .id = "BID-DM1" });
+
+    try ctx.processMessage(.{
+        .id = 1,
+        .method = "Emulation.setDeviceMetricsOverride",
+        .params = .{
+            .width = 1024,
+            .height = 768,
+            .deviceScaleFactor = 2,
+            .mobile = false,
+        },
+    });
+    try ctx.expectSentResult(null, .{ .id = 1 });
+
+    const bc = ctx.cdp().browser_context.?;
+    const frame = bc.session.currentFrame().?;
+    try testing.expectEqual(@as(u32, 1024), frame.windowProfile().inner_width);
+    try testing.expectEqual(@as(u32, 768), frame.windowProfile().inner_height);
+    try testing.expectEqual(@as(f64, 2), frame.devicePixelRatio());
+}
 
 test "cdp.Emulation: setUserAgentOverride with valid user agent" {
     var ctx = try testing.context();
@@ -171,9 +308,6 @@ test "cdp.Emulation: setUserAgentOverride rejects non-printable characters" {
 }
 
 test "cdp.Emulation: setUserAgentOverride with optional params" {
-    const filter: testing.LogFilter = .init(&.{.not_implemented});
-    defer filter.deinit();
-
     var ctx = try testing.context();
     defer ctx.deinit();
     _ = try ctx.loadBrowserContext(.{ .id = "BID-UA5" });
