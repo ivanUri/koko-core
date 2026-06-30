@@ -1,4 +1,4 @@
-# zig-v8
+# v8-wrapper
 
 Builds V8 from official source and provides C bindings and a Zig API. This would be used for embedding the V8 runtime into your Zig or C ABI compatible projects.
 

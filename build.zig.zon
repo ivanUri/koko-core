@@ -5,7 +5,7 @@
     .minimum_zig_version = "0.15.2",
     .dependencies = .{
         .v8 = .{
-            .path = "vendor/zig-v8-fork",
+            .path = "vendor/v8-wrapper",
         },
         .brotli = .{
             // v1.2.0
