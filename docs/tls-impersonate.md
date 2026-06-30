@@ -19,7 +19,9 @@ The same `/sorry` page appears on **Playwright Chrome headless** from the same I
 
 HTTP stack: [`src/runtime/network/http.zig`](../src/runtime/network/http.zig) via libcurl.
 
-On macOS arm64, Velora links vendored [lexiforest/curl-impersonate](https://github.com/lexiforest/curl-impersonate) **v2.0.0a5** (`vendor/curl-impersonate/`, `curl 8.15.0-IMPERSONATE`, profile max `chrome146`).
+On macOS arm64, Velora links vendored libcurl-impersonate **v2.0.0a5** (`vendor/curl-impersonate/`, `curl 8.15.0-IMPERSONATE`, profile max `chrome146`).
+
+**Fork:** [ivanUri/curl-impersonate](https://github.com/ivanUri/curl-impersonate) — maintained fork of [lexiforest/curl-impersonate](https://github.com/lexiforest/curl-impersonate) (not lwthiker original). Includes Velora HTTP/3 fingerprint patches. Setup: [docs/curl-impersonate-fork.md](curl-impersonate-fork.md).
 
 ## Spike procedure
 
