@@ -1,4 +1,4 @@
 [submodule "curl-impersonate"]
 	path = curl-impersonate
 	url = git@github-ivan:ivanUri/curl-impersonate.git
-	branch = velora/main
+	branch = main
