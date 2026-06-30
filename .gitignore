@@ -9,6 +9,7 @@ src/snapshot.bin
 *.bak/
 node_modules/.lp-cache/
 .velora-cache
+curl-impersonate/
 node_modules
 sdk/node_modules
 code-check/tmp

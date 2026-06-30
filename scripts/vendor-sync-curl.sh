@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-FORK="${CURL_IMPERSONATE_ROOT:-$ROOT/curl-impersonate}"
+FORK="${CURL_IMPERSONATE_ROOT:-$ROOT/.velora-cache/curl-impersonate}"
 VENDOR="$ROOT/vendor/curl-impersonate"
 
 DYLIB_DIR=""
@@ -23,7 +23,8 @@ fi
 
 if [[ -z "$DYLIB_DIR" ]]; then
   echo "libcurl-impersonate not found under $FORK" >&2
-  echo "Build fork first: cd curl-impersonate && make build && ./scripts/apply-velora-patches.sh && make build" >&2
+  echo "Run: ./scripts/build-vendor-curl.sh" >&2
+  echo "Or clone: ./scripts/fetch-curl-impersonate.sh" >&2
   exit 1
 fi
 
