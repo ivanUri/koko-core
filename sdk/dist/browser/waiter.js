@@ -8,7 +8,7 @@ export class PageWaiter {
         this.network = network;
     }
     async waitForNavigation(options = {}) {
-        const waitUntil = options.waitUntil ?? "load";
+        const waitUntil = options.waitUntil ?? "done";
         if (waitUntil === "none" || waitUntil === "commit")
             return;
         const timeout = options.timeout ?? 30_000;
@@ -20,9 +20,13 @@ export class PageWaiter {
             await this.session.waitFor("Page.loadEventFired", { timeout });
             return;
         }
-        // networkidle: still wait for at least the load event before measuring idle.
+        // networkidle / done: wait for load (best-effort) then network idle.
         await this.session.waitFor("Page.loadEventFired", { timeout }).catch(() => undefined);
         await this.network.waitForIdle({ idleMs: options.networkIdleMs, timeout });
+        if (waitUntil === "done") {
+            await this.pollExpression("document.readyState === 'complete'", timeout, "Waiting for document complete");
+            await delay(32);
+        }
     }
     async waitForSelector(selector, options = {}) {
         const timeout = options.timeout ?? 30_000;
@@ -47,6 +51,12 @@ export class PageWaiter {
     /** Poll until a return-by-value expression is truthy (adaptive interval). */
     async pollUntilTruthy(expression, options = {}) {
         await this.pollExpression(expression, options.timeout ?? 30_000, options.label ?? "Waiting for condition");
+    }
+    async waitForURL(url, options = {}) {
+        const timeout = options.timeout ?? 30_000;
+        const label = "Waiting for URL";
+        const expression = `(() => ${buildUrlExpression(url)})()`;
+        await this.pollExpression(expression, timeout, label);
     }
     async pollDomSearch(selector, timeout, label) {
         const started = Date.now();
@@ -96,5 +106,14 @@ export class PageWaiter {
             }
         })(), { timeout, label });
     }
+}
+function buildUrlExpression(url) {
+    if (typeof url === "function") {
+        throw new ProtocolError("waitForURL: function matchers are not supported; use string or RegExp");
+    }
+    if (url instanceof RegExp) {
+        return `new RegExp(${JSON.stringify(url.source)}, ${JSON.stringify(url.flags)}).test(location.href)`;
+    }
+    return `location.href === ${JSON.stringify(url)} || location.href.startsWith(${JSON.stringify(url)})`;
 }
 //# sourceMappingURL=waiter.js.map

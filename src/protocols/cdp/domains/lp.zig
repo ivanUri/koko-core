@@ -35,6 +35,10 @@ pub fn processMessage(cmd: *CDP.Command) !void {
         clickNode,
         fillNode,
         scrollNode,
+        hoverNode,
+        pressKey,
+        selectOptionNode,
+        setCheckedNode,
         waitForSelector,
         handleJavaScriptDialog,
     }, cmd.input.action) orelse return error.UnknownMethod;
@@ -49,6 +53,10 @@ pub fn processMessage(cmd: *CDP.Command) !void {
         .clickNode => return clickNode(cmd),
         .fillNode => return fillNode(cmd),
         .scrollNode => return scrollNode(cmd),
+        .hoverNode => return hoverNode(cmd),
+        .pressKey => return pressKey(cmd),
+        .selectOptionNode => return selectOptionNode(cmd),
+        .setCheckedNode => return setCheckedNode(cmd),
         .waitForSelector => return waitForSelector(cmd),
         .handleJavaScriptDialog => return handleJavaScriptDialog(cmd),
     }
@@ -258,6 +266,93 @@ fn scrollNode(cmd: anytype) !void {
     }
 
     @import("../../../core/browser/actions.zig").scroll(target_node, params.x, params.y, frame) catch |err| {
+        if (err == error.InvalidNodeType) return error.InvalidParam;
+        return error.InternalError;
+    };
+
+    return cmd.sendResult(.{}, .{});
+}
+
+fn hoverNode(cmd: anytype) !void {
+    const Params = struct {
+        nodeId: ?Node.Id = null,
+        backendNodeId: ?Node.Id = null,
+    };
+    const params = (try cmd.params(Params)) orelse return error.InvalidParam;
+
+    const bc = cmd.browser_context orelse return error.NoBrowserContext;
+    const frame = bc.session.currentFrame() orelse return error.FrameNotLoaded;
+    const node_id = params.nodeId orelse params.backendNodeId orelse return error.InvalidParam;
+    const node = bc.node_registry.lookup_by_id.get(node_id) orelse return error.InvalidNodeId;
+
+    @import("../../../core/browser/actions.zig").hover(node.dom, frame) catch |err| {
+        if (err == error.InvalidNodeType) return error.InvalidParam;
+        return error.InternalError;
+    };
+
+    return cmd.sendResult(.{}, .{});
+}
+
+fn pressKey(cmd: anytype) !void {
+    const Params = struct {
+        key: []const u8,
+        nodeId: ?Node.Id = null,
+        backendNodeId: ?Node.Id = null,
+    };
+    const params = (try cmd.params(Params)) orelse return error.InvalidParam;
+
+    const bc = cmd.browser_context orelse return error.NoBrowserContext;
+    const frame = bc.session.currentFrame() orelse return error.FrameNotLoaded;
+
+    const target_dom: ?*DOMNode = if (params.nodeId != null or params.backendNodeId != null) blk: {
+        const node_id = params.nodeId orelse params.backendNodeId.?;
+        const node = bc.node_registry.lookup_by_id.get(node_id) orelse return error.InvalidNodeId;
+        break :blk node.dom;
+    } else null;
+
+    @import("../../../core/browser/actions.zig").press(target_dom, params.key, frame) catch |err| {
+        if (err == error.InvalidNodeType) return error.InvalidParam;
+        return error.InternalError;
+    };
+
+    return cmd.sendResult(.{}, .{});
+}
+
+fn selectOptionNode(cmd: anytype) !void {
+    const Params = struct {
+        nodeId: ?Node.Id = null,
+        backendNodeId: ?Node.Id = null,
+        value: []const u8,
+    };
+    const params = (try cmd.params(Params)) orelse return error.InvalidParam;
+
+    const bc = cmd.browser_context orelse return error.NoBrowserContext;
+    const frame = bc.session.currentFrame() orelse return error.FrameNotLoaded;
+    const node_id = params.nodeId orelse params.backendNodeId orelse return error.InvalidParam;
+    const node = bc.node_registry.lookup_by_id.get(node_id) orelse return error.InvalidNodeId;
+
+    @import("../../../core/browser/actions.zig").selectOption(node.dom, params.value, frame) catch |err| {
+        if (err == error.InvalidNodeType) return error.InvalidParam;
+        return error.InternalError;
+    };
+
+    return cmd.sendResult(.{}, .{});
+}
+
+fn setCheckedNode(cmd: anytype) !void {
+    const Params = struct {
+        nodeId: ?Node.Id = null,
+        backendNodeId: ?Node.Id = null,
+        checked: bool,
+    };
+    const params = (try cmd.params(Params)) orelse return error.InvalidParam;
+
+    const bc = cmd.browser_context orelse return error.NoBrowserContext;
+    const frame = bc.session.currentFrame() orelse return error.FrameNotLoaded;
+    const node_id = params.nodeId orelse params.backendNodeId orelse return error.InvalidParam;
+    const node = bc.node_registry.lookup_by_id.get(node_id) orelse return error.InvalidNodeId;
+
+    @import("../../../core/browser/actions.zig").setChecked(node.dom, params.checked, frame) catch |err| {
         if (err == error.InvalidNodeType) return error.InvalidParam;
         return error.InternalError;
     };

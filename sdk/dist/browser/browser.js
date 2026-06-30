@@ -1,9 +1,11 @@
 import { CDPClient } from "../cdp/client.js";
 import { BrowserContext } from "./context.js";
 import { Page } from "./page.js";
+import { launchVelora } from "./launch.js";
 export class Browser {
     client;
     pages = new Set();
+    _contexts = new Set();
     constructor(client) {
         this.client = client;
     }
@@ -13,6 +15,13 @@ export class Browser {
             await client.enableTargetTracking();
         }
         return new Browser(client);
+    }
+    /**
+     * Spawn a Velora server with antidetect profile/cookies and connect over CDP.
+     * Requires `zig-out/bin/velora` (run `zig build` first).
+     */
+    static async launch(options = {}) {
+        return launchVelora(options);
     }
     async newSession(url = "about:blank") {
         return this.client.newSession(url);
@@ -27,10 +36,20 @@ export class Browser {
         this.pages.add(page);
         return page;
     }
-    newContext() {
-        return new BrowserContext(this);
+    newContext(options = {}) {
+        const context = new BrowserContext(this, options);
+        this._contexts.add(context);
+        return context;
+    }
+    contexts() {
+        return [...this._contexts];
+    }
+    releaseContext(context) {
+        this._contexts.delete(context);
     }
     async close() {
+        await Promise.all([...this._contexts].map((ctx) => ctx.close().catch(() => undefined)));
+        this._contexts.clear();
         await Promise.all([...this.pages].map((page) => page.close().catch(() => undefined)));
         this.pages.clear();
         this.client.close();

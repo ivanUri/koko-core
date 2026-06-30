@@ -4,6 +4,24 @@ import { delay } from "../utils/timeout.js";
 import type { GotoWaitOptions } from "./waiter.js";
 import { PageWaiter } from "./waiter.js";
 import { NetworkTracker } from "./network.js";
+import { Locator, type GetByRoleOptions, type GetByTextOptions, type LocatorOptions } from "./locator.js";
+import type { ActionOptions, FillOptions, SelectOptions } from "./actions.js";
+import { LPClient } from "./lp-client.js";
+import { NodeHandle } from "./node-handle.js";
+import { searchGoogle } from "./google-search.js";
+import type {
+  DetectedForm,
+  DialogOptions,
+  FindElementOptions,
+  GoogleExtractResult,
+  GoogleSearchOptions,
+  InteractiveElement,
+  MarkdownOptions,
+  NodeDetails,
+  SemanticNode,
+  SemanticTreeOptions,
+  StructuredData,
+} from "./lp-types.js";
 
 export interface EvaluateOptions {
   timeout?: number;
@@ -39,6 +57,26 @@ export interface SearchOptions extends GotoWaitOptions {
   settleMs?: number;
 }
 
+export interface ScreenshotOptions {
+  timeout?: number;
+  type?: "png" | "jpeg";
+  quality?: number;
+  fullPage?: boolean;
+}
+
+export interface PdfOptions {
+  timeout?: number;
+}
+
+export interface ViewportSize {
+  width: number;
+  height: number;
+}
+
+export interface ClickOptions extends ActionOptions {
+  waitForNavigation?: boolean | GotoWaitOptions;
+}
+
 const DEFAULT_TTFX = `(() => {
   const el = document.querySelector("#firstHeading") || document.querySelector("h1");
   return el?.textContent?.trim() || null;
@@ -65,6 +103,8 @@ const CONTENT_EXPR = `(() => {
 export class Page {
   readonly network: NetworkTracker;
   readonly waiter: PageWaiter;
+  /** Velora LP domain — AI extraction and backend-node agent actions. */
+  readonly agent: LPClient;
   private initialized = false;
   private mainFrameId?: string;
   private readonly closeHooks = new Set<() => void>();
@@ -72,6 +112,7 @@ export class Page {
   constructor(readonly session: CDPSession) {
     this.network = new NetworkTracker(session);
     this.waiter = new PageWaiter(session, this.network);
+    this.agent = new LPClient(this, session);
   }
 
   /** Register cleanup when page.close() runs (used by Browser/Context). */
@@ -165,21 +206,144 @@ export class Page {
     return this.waiter.waitForFunction(fn, options);
   }
 
-  async type(selector: string, text: string, options: TypeOptions = {}): Promise<void> {
+  waitForNavigation(options: GotoWaitOptions = {}): Promise<void> {
+    return this.waiter.waitForNavigation(options);
+  }
+
+  waitForURL(url: string | RegExp | ((current: string) => boolean), options?: { timeout?: number }): Promise<void> {
+    return this.waiter.waitForURL(url, options);
+  }
+
+  // --- Playwright-style locators ---
+
+  locator(selector: string, options?: LocatorOptions): Locator {
+    return new Locator(this, [{ kind: "css", selector }], options);
+  }
+
+  getByRole(role: string, options: GetByRoleOptions = {}): Locator {
+    return new Locator(this, [{ kind: "role", role, name: options.name, exact: options.exact }]);
+  }
+
+  getByText(text: string | RegExp, options: GetByTextOptions = {}): Locator {
+    return new Locator(this, [{ kind: "text", text, exact: options.exact }]);
+  }
+
+  getByLabel(text: string | RegExp, options: GetByTextOptions = {}): Locator {
+    return new Locator(this, [{ kind: "label", text, exact: options.exact }]);
+  }
+
+  getByPlaceholder(text: string | RegExp, options: GetByTextOptions = {}): Locator {
+    return new Locator(this, [{ kind: "placeholder", text, exact: options.exact }]);
+  }
+
+  getByAltText(text: string | RegExp, options: GetByTextOptions = {}): Locator {
+    return new Locator(this, [{ kind: "alt", text, exact: options.exact }]);
+  }
+
+  getByTitle(text: string | RegExp, options: GetByTextOptions = {}): Locator {
+    return new Locator(this, [{ kind: "title", text, exact: options.exact }]);
+  }
+
+  getByTestId(testId: string | RegExp): Locator {
+    return new Locator(this, [{ kind: "testId", testId }]);
+  }
+
+  // --- Element actions (selector sugar over Locator) ---
+
+  async click(selector: string, options: ClickOptions = {}): Promise<void> {
+    const nav = options.waitForNavigation
+      ? this.waitForNavigation(typeof options.waitForNavigation === "object" ? options.waitForNavigation : {})
+      : undefined;
+    nav?.catch(() => undefined);
+    await this.locator(selector).click(options);
+    if (nav) await nav;
+  }
+
+  async fill(selector: string, text: string, options: FillOptions = {}): Promise<void> {
+    return this.locator(selector).fill(text, options);
+  }
+
+  async hover(selector: string, options: ActionOptions = {}): Promise<void> {
+    return this.locator(selector).hover(options);
+  }
+
+  async check(selector: string, options: ActionOptions = {}): Promise<void> {
+    return this.locator(selector).check(options);
+  }
+
+  async uncheck(selector: string, options: ActionOptions = {}): Promise<void> {
+    return this.locator(selector).uncheck(options);
+  }
+
+  async selectOption(selector: string, values: SelectOptions["values"], options: SelectOptions = {}): Promise<string[]> {
+    return this.locator(selector).selectOption(values, options);
+  }
+
+  // --- Page metadata & navigation ---
+
+  async title(): Promise<string> {
     await this.init();
-    const timeout = options.timeout ?? 30_000;
-    await this.waitForSelector(selector, { timeout });
-    const clearFirst = options.clear !== false;
-    await this.evaluate(`(() => {
-      const el = document.querySelector(${JSON.stringify(selector)});
-      if (!el || !('value' in el)) throw new Error('type: not an input element');
-      if (${clearFirst ? "true" : "false"}) el.value = '';
-      el.focus();
-      el.value = ${JSON.stringify(text)};
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
-    })()`, { timeout });
+    return this.evaluate<string>("document.title");
+  }
+
+  async url(): Promise<string> {
+    await this.init();
+    return this.evaluate<string>("location.href");
+  }
+
+  async reload(options: GotoWaitOptions = {}): Promise<void> {
+    await this.init();
+    this.network.reset();
+    const waitPromise = this.waiter.waitForNavigation(options);
+    waitPromise.catch(() => undefined);
+    await this.session.send("Page.reload", { ignoreCache: false }, options.timeout);
+    await waitPromise;
+  }
+
+  async goBack(options: GotoWaitOptions = {}): Promise<void> {
+    await this.historyStep(-1, options);
+  }
+
+  async goForward(options: GotoWaitOptions = {}): Promise<void> {
+    await this.historyStep(1, options);
+  }
+
+  async screenshot(options: ScreenshotOptions = {}): Promise<Buffer> {
+    await this.init();
+    const format = options.type === "jpeg" ? "jpeg" : "png";
+    const result = await this.session.send<{ data: string }>("Page.captureScreenshot", {
+      format,
+      quality: options.quality,
+      fromSurface: true,
+      captureBeyondViewport: options.fullPage ?? false,
+    }, options.timeout);
+    return Buffer.from(result.data, "base64");
+  }
+
+  async pdf(options: PdfOptions = {}): Promise<Buffer> {
+    await this.init();
+    const result = await this.session.send<{ data: string }>("Page.printToPDF", {}, options.timeout);
+    return Buffer.from(result.data, "base64");
+  }
+
+  async addInitScript(source: string | Function): Promise<void> {
+    await this.init();
+    const script = typeof source === "function" ? `(${source.toString()})();` : source;
+    await this.session.send("Page.addScriptToEvaluateOnNewDocument", { source: script });
+  }
+
+  async setViewportSize(size: ViewportSize): Promise<void> {
+    await this.init();
+    await this.session.send("Emulation.setDeviceMetricsOverride", {
+      width: size.width,
+      height: size.height,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+  }
+
+  async type(selector: string, text: string, options: TypeOptions = {}): Promise<void> {
+    return this.fill(selector, text, options);
   }
 
   async press(key: string, options: PressOptions = {}): Promise<void> {
@@ -200,6 +364,58 @@ export class Page {
       windowsVirtualKeyCode: spec.vk,
       nativeVirtualKeyCode: spec.vk,
     }, timeout);
+  }
+
+  // --- Velora-specific (LP domain + agent workflows) ---
+
+  markdown(options?: MarkdownOptions): Promise<string> {
+    return this.agent.markdown(options);
+  }
+
+  semanticTree(options?: SemanticTreeOptions): Promise<string | SemanticNode> {
+    return this.agent.semanticTree(options);
+  }
+
+  getInteractiveElements(options?: { nodeId?: number; timeout?: number }): Promise<InteractiveElement[]> {
+    return this.agent.getInteractiveElements(options);
+  }
+
+  getStructuredData(options?: { timeout?: number }): Promise<StructuredData> {
+    return this.agent.getStructuredData(options);
+  }
+
+  detectForms(options?: { timeout?: number }): Promise<DetectedForm[]> {
+    return this.agent.detectForms(options);
+  }
+
+  findElement(options: FindElementOptions): Promise<InteractiveElement[]> {
+    return this.agent.findElement(options);
+  }
+
+  getNodeDetails(backendNodeId: number, options?: { timeout?: number }): Promise<NodeDetails> {
+    return this.agent.getNodeDetails(backendNodeId, options);
+  }
+
+  links(options?: { timeout?: number }): Promise<string[]> {
+    return this.agent.links(options);
+  }
+
+  node(backendNodeId: number): NodeHandle {
+    return new NodeHandle(this, backendNodeId);
+  }
+
+  async waitForSelectorHandle(selector: string, options?: { timeout?: number }): Promise<NodeHandle> {
+    const id = await this.agent.waitForSelectorNode(selector, options);
+    return new NodeHandle(this, id);
+  }
+
+  armDialog(options: DialogOptions): Promise<void> {
+    return this.agent.armDialog(options);
+  }
+
+  /** Google SERP agent workflow: navigate + TTFX probe + top-N organic extract + block detection. */
+  searchGoogle(options: GoogleSearchOptions): Promise<GoogleExtractResult> {
+    return searchGoogle(this, options);
   }
 
   async search(searchPageUrl: string, query: string, options: SearchOptions = {}): Promise<void> {
@@ -228,6 +444,15 @@ export class Page {
 
   get frameId(): string | undefined {
     return this.mainFrameId;
+  }
+
+  private async historyStep(delta: -1 | 1, options: GotoWaitOptions = {}): Promise<void> {
+    await this.init();
+    this.network.reset();
+    const waitPromise = this.waiter.waitForNavigation(options);
+    waitPromise.catch(() => undefined);
+    await this.evaluate(delta === -1 ? "history.back()" : "history.forward()");
+    await waitPromise;
   }
 }
 

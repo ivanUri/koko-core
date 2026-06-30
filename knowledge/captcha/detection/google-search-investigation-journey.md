@@ -2,272 +2,232 @@
 
 > **Canonical conclusion (2026-06-29):** Velora Google Search works when the session is **warmed with a mature Chrome cookie jar** (`NID` + signed-in session cookies). Cold start without that jar → long bootstrap path → `knitsail` / `sg_ss` / `/sorry`. Most earlier notes over-weighted fingerprint, knitsail JS, and wire-header diffs relative to this single gate.
 
-This document replaces the *implicit narrative* scattered across older Google Search notes. Read this first; other files are kept for detail but may describe symptoms, not the primary fix.
+This document is the **canonical narrative** for Google Search antibot work at Velora. Read it first. Companion deep dives: [Flow Architecture](google-search-flow-architecture.md) (hop-by-hop state machine) and [Signal Inventory](google-search-signal-inventory.md) (layered signal catalog with production priorities).
 
 ---
 
-## Phase 0 — Symptom
+## Summary
 
-**What we saw**
+For months, Velora Google Search behaved like a fingerprint problem: CreepJS sections were green, wire headers were tuned, `knitsail` encode was patched — yet the same query on the same IP still returned a **~91 KB bootstrap shell** instead of Chrome’s **~270–600 KB SERP** on hop 1. The breakthrough was not another JS shim. It was **session cookie state**: a **mature `NID`** (and associated signed-in cookies) exported from the user’s real Chrome profile flips Google’s server-side trust tier before any client fingerprint runs.
 
-- Velora antidetect profile on Google Search: often **long path** (~91 KB bootstrap HTML, `knitsail`, client redirect to `sei` or `sg_ss`, sometimes `/sorry`).
-- Chrome on the same machine: often **short path** (SERP ~270–600 KB on hop 1 or fast `sei` SERP, **0× `knitsail.a`** in probes).
-- CreepJS / canvas / audio / window-keys could be green while Google still blocked or sorry’d.
+**Executive summary for operators:**
 
-**Early intuition (wrong weighting)**
+| Symptom | Likely tier | First action |
+|---------|-------------|--------------|
+| Hop-1 body ~91 KB, `knitsail` present | Cold / low trust | [Live-export jar](#solution), reload profile |
+| Hop-1 body ~270–600 KB, title matches query | Warm / SERP | Parse results; monitor jar expiry |
+| URL contains `sg_ss` ~2.8 KB | Long-path encode in flight | Refresh jar; cool IP between probes |
+| `/sorry` after long path | Token or rate rejection | Sorry parity forensics; don’t start here |
 
-> “Google must be detecting our JS fingerprint. We need CreepJS parity, then search will work.”
-
-That intuition sent us deep into fingerprint and bootstrap JS before we measured the **server trust tier** correctly.
-
----
-
-## Phase 1 — “Fix fingerprint first” (CreepJS sweep)
-
-### What we thought
-
-Google uses the same class of signals as CreepJS: canvas, audio, WebGL, `window` keys, TLS JA3/JA4, navigator, fonts, etc. If Velora matches Chrome on CreepJS, Search should match.
-
-### What we tested
-
-- `cdp-creepjs-*` section compares (canvas, audio, window keys, client rects, maths, worker, …).
-- Profile baselines from real Chrome (`chrome-local-huys-macbook-pro`).
-- Window-keys prune fixes so `knitsail` is not deleted before bootstrap.
-
-### What passed
-
-- Many CreepJS sections improved or matched.
-- `knitsail` surviving on `window` (window-keys allowlist) — **necessary** for long path, not sufficient for short path.
-
-### What we realized
-
-CreepJS green ≠ Google SERP. Google hop-1 is largely **server-chosen HTML shape** (bootstrap vs full SERP), not a client-side fingerprint score rendered in CreepJS. We were optimizing layer 4 while layer 0 (session trust) was empty.
-
-**Verdict:** Fingerprint work is **real but secondary**. Do not block Search on CreepJS sweep completion.
+**Production unlock:** export cookies from daily Chrome (`export-chrome-live-cookies.mjs`), bake into browser profile `session.cookieSeedFile`, persist runtime jar on exit. Fingerprint and wire work remain valuable for antidetect product quality and long-path robustness — they are **secondary** to warmup.
 
 ---
 
-## Phase 2 — “TLS / HTTP wire must be wrong”
+## Problem
 
-### What we thought
+Velora is an antidetect browser built on curl-impersonate, CDP, and injected compatibility shims. Google Search is the hardest real-world gate: not a single `GET /search`, but a **multi-hop trust state machine** where the server chooses HTML shape on hop 1.
 
-Velora uses curl-impersonate; maybe JA3/JA4, ALPN, header order, `Sec-Fetch-*`, Downlink/RTT, referer on `sei` hops are wrong → Google downgrades us to automation tier.
+**What we observed consistently:**
 
-### What we tested
+- **Velora (cold start):** hop-1 HTML ~91 KB, inline `sclm=false`, empty `ussv`/`sp`, `knitsail` loader (~62 KB), client `location.replace` to `sei` with **`sg_ss`** blob (~2.8 KB), sometimes second bootstrap at `sei`, often `/sorry` on hot IPs.
+- **Chrome (same machine, warm profile):** fast replace to `sei` (~184 ms), hop-`sei` or hop-1 SERP ~270–600 KB, **`knitsail.a()` count = 0** in probes, query in document title.
+- **Contradiction:** CreepJS / canvas / audio / WebGL / window-keys could score green while Google still sorry’d or stayed on the long path.
 
-- `capture-wire-search-hops.mjs`, `diff-hop1-request.mjs`, `diff-sei-request.mjs`.
-- Chrome net-log vs Velora wire captures.
-- Fixes: in-session Downlink/RTT (1.7/100), omit all `Sec-Fetch-*` on in-session hops, `search_q_only` referer, `x-browser` headers, h2 policy for `sg_ss`.
+The product impact was severe: agents could not reliably parse organic results; debugging consumed weeks because **symptoms on the long path looked like root causes** (missing `knitsail`, wrong `pageT`, bad `sg_ss` encode) when Chrome often **never entered that path at all**.
 
-### What passed
-
-- Wire diffs narrowed; Velora in-session headers closer to guest Chrome HAR.
-- Some cold-IP runs reached SERP **without** matching every Chrome header on hop 1.
-
-### What we realized
-
-Wire parity is **necessary hygiene** but did not explain why **same IP, same query** produced ~91 KB bootstrap for Velora and ~270 KB SERP for Chrome. Headers alone do not flip `sclm` / bootstrap tier if the session cookie state differs.
-
-**Verdict:** Keep wire fixes; stop treating them as the primary trust unlock.
-
----
-
-## Phase 3 — “Bootstrap / knitsail / `pageT` / `google.tick` is the root cause”
-
-### What we thought
-
-Long path HTML always has `sclm=false`, `ussv=''`, `sp=''` → short-path JS branch fails → `la()` → `knitsail.a()` → `sg_ss`. If we fix:
-
-- `pageT` freeze through async knitsail,
-- `window.td` / `ha()` / `google.tick`,
-- inject script patching `google` in-place,
-
-…then encode will succeed and we’ll match Chrome’s path.
-
-### What we tested
-
-- `probe-bootstrap-hop2.mjs` — `pageT` at knitsail call ~303 ms vs Chroma ~192 ms.
-- `probe-knitsail-io.mjs` — knitsail call counts per hop.
-- `google.tick()` implementation, `td.qs`/`td.fs` seeding in `Frame.zig`.
-- `sg_ss` curl replay, encode blob diffs.
-
-### What passed
-
-- `google.tick`, inject script, `pageT` tuning — improved long-path behavior; reCAPTCHA cfgClients parity on `/sorry`.
-- Understanding of SGS script order (scripts 0–4, knitsail loader, `la()` branch).
-
-### What we realized
-
-We were **engineering the long path better** while Chrome often **never entered** that path. Fixing knitsail encode does not help if the server would have served SERP directly with a trusted session. Bootstrap bugs matter **only when you are already on the low-trust tier**.
-
-**Verdict:** Knitsail/`pageT`/`td` fixes are **conditional** — relevant for cold/low-trust sessions, not the happy path.
+```mermaid
+stateDiagram-v2
+    [*] --> MeasureHop1
+    MeasureHop1 --> ColdTier: body ~91KB
+    MeasureHop1 --> WarmTier: body ~270-600KB
+    ColdTier --> LongPath: knitsail sg_ss sei
+    WarmTier --> ShortPath: SERP parse
+    LongPath --> SorryRisk: /sorry 429
+    ShortPath --> [*]
+    SorryRisk --> [*]
+```
 
 ---
 
-## Phase 4 — “Sorry / path parity — make `/sorry` identical to Chrome”
+## Root Cause
 
-### What we thought
+Google Search **trust tier selection on cold `/search` is primarily driven by mature session cookies**, especially the **`NID` payload** from an established Chrome profile, plus signed-in `SID` / `SAPISID` family when present. The server decodes cookie state **before** generating hop-1 HTML. That decision determines:
 
-Even on `/sorry`, Chrome and Velora must fail the same way (same document hops, same `continue` URL shape). Maybe parity there reveals the real bug.
+- Bootstrap shell (~91 KB) vs full SERP (~270–600 KB)
+- Whether `ussv` / `sp` short-path gates are populated (trusted) or empty (automation tier)
+- Whether `knitsail.a()` must run at all
 
-### What we tested
+**What is *not* the primary root cause** (though often correlated on cold sessions):
 
-- `npm run google:sorry-parity` — compare document timeline, `continue.hasSgSs`, recaptcha chain.
-- `grecaptcha` / `HTMLElement.style` shim for cfgClients parity.
+| Over-weighted hypothesis | Actual role |
+|------------------------|-------------|
+| CreepJS / canvas / audio fingerprint | Product antidetect quality; **does not flip hop-1 tier** |
+| TLS JA3/JA4, header order | Necessary wire hygiene; **tier unchanged** when jar cold |
+| `knitsail` / `pageT` / `google.tick` | **Conditional** — fixes long path when already on low trust |
+| Client-forging `sclm` / `ussv` / `sp` | Server-set; **cannot fake tier** — earn it with jar |
+| Guest `NID` from fresh Chrome spawn | Same cookie **name**, different **trust encoding** — useless |
 
-### What passed
+Cookie ablation (`probe-cookie-ablation.mjs`) ended the debate:
 
-- reCAPTCHA cfgClients parity (1 vs 1) after HTMLElement.style fix.
-- Clear documentation: Chrome sorry often **search → sorry** (no `sei` 200); Velora sorry often **search → sei → sorry** with fat `sg_ss` in `continue`.
+- **Mature jar, `NID` only** → short path (~267 KB), 1 hop.
+- **Remove `NID`** → long path (~91 KB), 2+ hops.
+- **`DV` only** → long path; **`DV` optional** when mature `NID` present.
+- **Guest 4-cookie / guest `NID` only** → always long path.
 
-### What we realized
+Live export via `browser-cookie3` + macOS Keychain: **154 cookies**, `NID` length **1119** (vs guest ~231–280 chars) — different encoded trust state, not merely “more cookies.”
 
-Sorry parity is a **valuable diagnostic** for path divergence, but optimizing `sg_ss` encode before earning **short path** is backwards. Chrome’s sorry path skips the long bootstrap when IP is hot; Velora’s sorry path often carries a **self-inflicted** `sg_ss` blob from long path.
-
-**Verdict:** North-star for antibot forensics; not the first production fix.
-
----
-
-## Phase 5 — “Velora has no cookies” (first cookie hypothesis)
-
-### What we thought
-
-Velora cold start sends **zero cookies** on hop 1; Chrome has `NID`, `AEC`, etc. Maybe injecting guest cookies flips trust tier.
-
-### What we tested
-
-- `export-chrome-cookies.mjs` — spawn **fresh** Chrome, visit `google.com`, export 4 cookies.
-- `test-velora-chrome-cookies.mjs` — A/B no cookie vs guest cookie.
-- `--cookie` on `spawnVelora`.
-
-### What passed
-
-- Velora **does** send cookies when `--cookie` / `--cookie-jar` loaded.
-- Guest 4-cookie inject: cookies on wire (**438 B**), but **`sclm` still `false`**, ~91 KB bootstrap, 2 hops.
-
-### What we realized
-
-**Having cookies ≠ having trust.** Fresh Chrome `NID` is a different payload than a mature profile `NID`. Google decodes cookie state server-side; guest export is not warmup.
-
-**Verdict:** Cookie hypothesis directionally right; **guest cookie export was the wrong experiment.**
+See technical ablation tables in [`2026-06-29-google-search-nid-trust-tier.md`](../../bugs/2026-06-29-google-search-nid-trust-tier.md) and signal layer detail in [Signal Inventory](google-search-signal-inventory.md).
 
 ---
 
-## Phase 6 — Breakthrough: mature session cookie jar (warmup)
+## Investigation
 
-### What we thought (refined)
+The investigation spanned six hypothesis phases. Each phase produced real fixes; only Phase 6 explained why Chrome and Velora diverged on **the same IP with the same query**.
 
-> “We need the user’s **real Chrome account session**, not a spawned guest profile.”
+### Decision tree (where to spend the next hour)
 
-### What we tested
+```mermaid
+flowchart TD
+    Start["Google Search failing?"] --> H1{"Hop-1 body size?"}
+    H1 -->|"~91 KB"| Jar["Export live Chrome jar\nre-run search"]
+    H1 -->|"~270-600 KB"| Parse["Parse SERP — tier OK"]
+    Jar --> H2{"Still ~91 KB?"}
+    H2 -->|yes| NID["Verify mature NID in seed\nnot guest export"]
+    H2 -->|no| Done["Short path unlocked"]
+    NID --> H3{"NID present, still bootstrap?"}
+    H3 -->|yes| IP["Cool IP 20-30s gaps\nrefresh STRP/NID expiry"]
+    H3 -->|no| Wire["Secondary: wire hygiene\nsee Signal Inventory L2"]
+    Parse --> H4{"/sorry anyway?"}
+    H4 -->|yes| Sorry["Sorry parity probe\nIP rate limit"]
+    H4 -->|no| OK["Production OK"]
+```
 
-1. User curl with full session cookies (`NID` ~280 chars + `DV` + `__Secure-*`) → **271 KB SERP** in curl.
+---
+
+### Phase 0 — Symptom catalog
+
+**What we saw:** long path metrics (~91 KB bootstrap, `knitsail`, `sg_ss`, `/sorry`) vs Chrome short path (SERP on hop 1 or fast `sei`, 0× `knitsail.a`).
+
+**Early intuition (wrong weighting):** “Google detects our JS fingerprint; CreepJS parity will unlock Search.”
+
+That sent us deep into client-side signals before measuring **server trust tier** via hop-1 body size — the thermometer documented in [Flow Architecture](google-search-flow-architecture.md#hop-sei--document-type-is-the-smoking-gun).
+
+---
+
+### Phase 1 — “Fix fingerprint first” (CreepJS sweep)
+
+**Hypothesis:** Google uses CreepJS-class signals; matching Chrome on canvas, audio, WebGL, window keys, TLS → Search parity.
+
+**Tests:** `cdp-creepjs-*` section compares; profile baselines (`chrome-local-huys-macbook-pro`); window-keys allowlist so `knitsail` survives bootstrap.
+
+**Passed:** Many CreepJS sections improved; `knitsail` on `window` — **necessary** for long path, **not sufficient** for short path.
+
+**Realized:** CreepJS green ≠ Google SERP. Hop-1 shape is **server-chosen HTML tier**, not a client fingerprint score. We optimized layer 4 while layer 0 (session trust) was empty.
+
+**Verdict:** Fingerprint is **real but secondary**. Do not block Search on CreepJS sweep completion.
+
+---
+
+### Phase 2 — “TLS / HTTP wire must be wrong”
+
+**Hypothesis:** curl-impersonate JA3/JA4, ALPN, `Sec-Fetch-*`, Downlink/RTT, referer on `sei` hops downgrade us.
+
+**Tests:** `capture-wire-search-hops.mjs`, `diff-hop1-request.mjs`, `diff-sei-request.mjs`; Chrome net-log vs Velora wire.
+
+**Fixes applied:** in-session Downlink/RTT (1.7/100), omit `Sec-Fetch-*` on in-session hops, `search_q_only` referer, `x-browser` headers, h2 policy for `sg_ss`.
+
+**Passed:** Wire diffs narrowed; some cold-IP runs reached SERP without matching every Chrome hop-1 header.
+
+**Realized:** Wire parity is **hygiene** but does not explain same IP / same query → 91 KB vs 270 KB. Headers do not flip tier if cookie state differs.
+
+**Verdict:** Keep wire fixes; stop treating them as primary trust unlock. Details: [Signal Inventory Layer 2](google-search-signal-inventory.md#layer-2--http-headers-hygiene).
+
+---
+
+### Phase 3 — “Bootstrap / knitsail / `pageT` is root cause”
+
+**Hypothesis:** `sclm=false`, empty `ussv`/`sp` force `la()` → `knitsail.a()` → `sg_ss`. Fix `pageT`, `window.td`, `google.tick`, inject patching → encode succeeds → Chrome path.
+
+**Tests:** `probe-bootstrap-hop2.mjs` (`pageT` ~303 ms vs Chroma ~192 ms); `probe-knitsail-io.mjs`; `google.tick()` in `Frame.zig`; `sg_ss` curl replay.
+
+**Passed:** Improved long-path behavior; reCAPTCHA cfgClients parity on `/sorry`; SGS script order documented (scripts 0–4).
+
+**Realized:** We **engineered the long path better** while Chrome **never entered** it. Knitsail fixes matter **only when already on low-trust tier**.
+
+**Verdict:** Conditional fixes. See [Flow Architecture — bootstrap anatomy](google-search-flow-architecture.md#hop-1--bootstrap-shell-anatomy-velora-capture).
+
+---
+
+### Phase 4 — “Sorry / path parity”
+
+**Hypothesis:** `/sorry` document timeline must match Chrome to reveal the bug.
+
+**Tests:** `npm run google:sorry-parity`; `grecaptcha` / `HTMLElement.style` shim.
+
+**Passed:** cfgClients parity (1 vs 1); documented Chrome sorry often **search → sorry** (no `sei` 200) vs Velora **search → sei → sorry** with fat `sg_ss` in `continue`.
+
+**Realized:** Valuable forensic; optimizing `sg_ss` before earning short path is backwards.
+
+**Verdict:** North-star for antibot forensics; not first production fix.
+
+---
+
+### Phase 5 — “Velora has no cookies” (first cookie hypothesis)
+
+**Hypothesis:** Cold Velora sends zero hop-1 cookies; inject guest cookies → tier flip.
+
+**Tests:** `export-chrome-cookies.mjs` (fresh Chrome, 4 cookies); `test-velora-chrome-cookies.mjs` A/B; `--cookie` on `spawnVelora`.
+
+**Passed:** Velora sends cookies when jar loaded (438 B on wire).
+
+**Failed tier flip:** `sclm` still `false`, ~91 KB bootstrap, 2 hops.
+
+**Realized:** **Having cookies ≠ having trust.** Guest `NID` ≠ mature profile `NID`. Copying Chrome profile dir on macOS yields encrypted DB → 4 guest cookies only.
+
+**Verdict:** Directionally right; **wrong experiment** (guest export).
+
+---
+
+### Phase 6 — Breakthrough: mature session cookie jar
+
+**Refined hypothesis:** Need **real Chrome account session**, not spawned guest profile.
+
+**Tests:**
+
+1. User curl with full session cookies (`NID` ~280 chars + `DV` + `__Secure-*`) → **271 KB SERP**.
 2. Same cookies in Velora → **~266 KB SERP**, 1 hop, `knitsail=0`.
-3. **Cookie ablation** (`probe-cookie-ablation.mjs`):
-   - Mature jar: **`NID` alone** → short path.
-   - Remove `NID` → long path.
-   - `DV` alone → long path; remove `DV` with mature `NID` → still short.
-   - Guest `NID` only → always long path.
-4. **Live export** (`export-chrome-live-cookies.mjs` via `browser-cookie3` + macOS Keychain):
-   - **154 cookies**, `NID` length **1119**, includes `SID`/`SAPISID`/signed-in state.
-5. Production probes:
-   - `velora` search → **606 KB SERP**, title match, 1 hop.
-   - `coingloo.com` → top 5 organic results parsed after jar refresh.
-
-### What passed
+3. Cookie ablation — `NID` alone sufficient; guest `NID` never sufficient.
+4. Live export — 154 cookies, `NID` 1119 chars, `SID`/`SAPISID` signed-in state.
+5. Production: `velora` search → **606 KB SERP**; `coingloo.com` → top 5 organic parsed.
 
 | State | Hop-1 body | Hops | `knitsail` | SERP |
 |-------|-----------|------|------------|------|
-| Cold Velora (no jar) | ~91 KB | 2+ | yes | sometimes after sei |
+| Cold Velora (no jar) | ~91 KB | 2+ | yes | sometimes after `sei` |
 | Warm Velora (mature jar) | ~266–606 KB | 1 | 0 | yes |
 
-### What we finally understood
-
-**Bản chất: warmup cookie jar.**
-
-Google Search trust tier on cold `/search` is dominated by **mature session cookies** (especially `NID` and signed-in `SID` family), not by CreepJS fingerprint on first paint.
-
-```
-Cold Velora
-  → server: low trust
-  → ~91 KB bootstrap (sclm=false, empty ussv/sp)
-  → knitsail pipeline
-  → sei / sg_ss / sorry risk
-
-Warm Velora (Chrome account jar)
-  → server: high trust
-  → full SERP on hop 1
-  → no knitsail gate
-  → parse results, done
+```mermaid
+flowchart LR
+    subgraph cold [Cold Velora]
+        A1[GET /search] --> A2["~91KB bootstrap\nsclm=false"]
+        A2 --> A3[knitsail pipeline]
+        A3 --> A4["sei / sg_ss / sorry"]
+    end
+    subgraph warm [Warm Velora - Chrome jar]
+        B1[GET /search] --> B2["~266-606KB SERP"]
+        B2 --> B3[parse results]
+    end
 ```
 
-This explains **months of apparent contradictions**:
+**What finally explained months of contradictions:**
 
-- Same IP, different path → cookie/session state differed.
-- Wire fixes helped marginally but did not flip tier → cookies were the flip.
-- Knitsail fixes “worked” on long path but Chrome never needed them on short path.
-- CreepJS parity unrelated to hop-1 HTML size → server already decided before client fingerprint ran.
+- Same IP, different path → cookie/session state differed, not fingerprint.
+- Wire fixes helped marginally but did not flip tier.
+- Knitsail fixes “worked” on long path; Chrome never needed them on short path.
+- CreepJS unrelated to hop-1 HTML size → server decided before client fingerprint.
 
 ---
 
-## What older knowledge got wrong (or overstated)
-
-| Old belief | Reality |
-|------------|---------|
-| “Primary blocker is knitsail / bootstrap JS” | Primary blocker is **cold session** (no mature jar). |
-| “`sclm` / `ussv` / `sp` client bugs” | Server-set gates on **low-trust** HTML; don’t fake them — **earn tier with jar**. |
-| “CreepJS sweep required for Google Search” | Helpful for antidetect product; **not** the Search unlock. |
-| “Chrome guest vs Velora = fingerprint delta” | Often **cookie delta** + IP rate limit; guest Chrome also has no cookies on in-session hops. |
-| “Copy Chrome profile dir for cookies” | macOS Keychain encrypts DB; copy yields **4 guest cookies**. Use **live export**. |
-| “`DV` cookie required” | Optional when mature `NID` present. |
-| “`--cookie-jar` persists session” | Was save-only; **load on start added 2026-06-29** — must export + jar round-trip. |
-
----
-
-## What still matters (secondary, after warmup)
-
-1. **Wire hygiene** — `Sec-Fetch`, Downlink/RTT on in-session hops, referer shape (see bootstrap-divergence §13–15).
-2. **Long-path robustness** — knitsail, `pageT`, `google.tick`, window-keys allowlist — when jar expires or IP forces bootstrap.
-3. **Sorry parity** — forensic compare when both engines should sorry; reCAPTCHA chain.
-4. **IP rate limit** — parallel probes heat IP; sequential 20–30 s gaps; refresh jar if `sg_ss` appears.
-5. **Fingerprint / CreepJS** — product quality, not Search tier gate.
-
----
-
-## Production recipe (warmup)
-
-Profile-baked session (agent-native, no CLI flags):
-
-```json
-// browser/profiles/chrome-local-huys-macbook-pro.json
-"session": {
-  "cookieSeedFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-session-cookies.json",
-  "cookieRuntimeFile": "browser/profiles/sessions/chrome-local-huys-macbook-pro-cookies.json"
-}
-```
-
-```bash
-cd /Users/huydev/Desktop/velora
-
-# Provision once (refresh seed from Chrome account)
-node google-search-debug/scripts/export-chrome-live-cookies.mjs \
-  --out browser/profiles/assets/chrome-local-huys-macbook-pro-session-cookies.json
-
-# Agent: just start Velora with profile — cookies auto-load
-zig-out/bin/velora serve --browser-profile chrome-local-huys-macbook-pro
-
-# Search (no --cookie / --cookie-jar flags)
-node google-search-debug/scripts/google-search-top-results.mjs --query "coingloo.com"
-```
-
-**Bootstrap order:** runtime jar (if non-empty) → profile seed → CLI `--cookie` override.  
-**Persist:** runtime jar + `.storage.json` on exit (skips empty jar).
-
-**Re-export seed when:** hop-1 ~91 KB, `knitsail` returns, or `sg_ss` in URL.
-
----
-
-## Investigation timeline (compressed)
+### Investigation timeline (compressed)
 
 | Order | Hypothesis | Test | Outcome |
 |-------|------------|------|---------|
@@ -280,24 +240,98 @@ node google-search-debug/scripts/google-search-top-results.mjs --query "coingloo
 
 ---
 
-## Related notes (read with caution)
+## Solution
 
-| File | Status |
-|------|--------|
-| **This file** | **Canonical narrative** |
-| `bugs/2026-06-29-google-search-nid-trust-tier.md` | Technical detail for Phase 6 |
-| `bugs/2026-06-29-google-search-bootstrap-divergence.md` | Long-path symptom catalog; **superseded as root-cause story** |
-| `captcha/detection/google-search-flow-architecture.md` | Path machine diagram; add “tier decided by jar” |
-| `captcha/detection/google-search-signal-inventory.md` | Layer list; Layer 0 (cookies) is now **primary** |
-| `bugs/2026-06-29-google-search-knitsail-window-keys-prune.md` | Valid long-path fix |
-| `bugs/2026-06-29-grecaptcha-htmlelement-style-shim.md` | Valid sorry-path fix |
+### Immediate production recipe (warmup)
+
+Profile-baked session (agent-native, no CLI flags required per search):
+
+```json
+// browser/profiles/chrome-local-huys-macbook-pro.json
+"session": {
+  "cookieSeedFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-session-cookies.json",
+  "cookieRuntimeFile": "browser/profiles/sessions/chrome-local-huys-macbook-pro-cookies.json"
+}
+```
+
+```bash
+cd /Users/huydev/Desktop/velora
+
+# Provision once — refresh seed from Chrome account (Keychain-backed live export)
+node google-search-debug/scripts/export-chrome-live-cookies.mjs \
+  --out browser/profiles/assets/chrome-local-huys-macbook-pro-session-cookies.json
+
+# Agent: start Velora with profile — cookies auto-load
+zig-out/bin/velora serve --browser-profile chrome-local-huys-macbook-pro
+
+# Search (no --cookie / --cookie-jar flags per query)
+node google-search-debug/scripts/google-search-top-results.mjs --query "coingloo.com"
+```
+
+**Bootstrap order:** runtime jar (if non-empty) → profile seed → CLI `--cookie` override.  
+**Persist:** runtime jar + `.storage.json` on exit (skips empty jar).  
+**Load on start:** `--cookie-jar` round-trip added 2026-06-29 (`CDP.zig`, `MCP Server.zig`).
+
+**Re-export seed when:** hop-1 ~91 KB returns, `knitsail` reappears, or `sg_ss` in URL.
+
+### What still matters (secondary, after warmup)
+
+1. **Wire hygiene** — `Sec-Fetch`, Downlink/RTT on in-session hops, referer shape ([Signal Inventory L2](google-search-signal-inventory.md)).
+2. **Long-path robustness** — knitsail, `pageT`, `google.tick`, window-keys allowlist when jar expires.
+3. **Sorry parity** — forensic compare when both engines should sorry.
+4. **IP rate limit** — sequential probes 20–30 s gaps; parallel Chrome+Velora heats IP.
+5. **Fingerprint / CreepJS** — antidetect product quality, not Search tier gate.
+
+### What older knowledge got wrong (or overstated)
+
+| Old belief | Reality |
+|------------|---------|
+| Primary blocker is knitsail / bootstrap JS | Primary blocker is **cold session** (no mature jar) |
+| `sclm` / `ussv` / `sp` client bugs | Server-set on low-trust HTML; **earn tier with jar** |
+| CreepJS sweep required for Search | Helpful product work; **not** Search unlock |
+| Chrome guest vs Velora = fingerprint delta | Often **cookie delta** + IP rate limit |
+| Copy Chrome profile dir for cookies | macOS Keychain encrypts; use **live export** |
+| `DV` cookie required | Optional when mature `NID` present |
+| `--cookie-jar` persists session | Was save-only until 2026-06-29 — need load + export round-trip |
 
 ---
 
-## Lessons (durable)
+## Lessons Learned
 
-1. **Measure hop-1 body size first** (~91 KB vs ~270 KB) — instant trust-tier thermometer.
-2. **Ablation beats theory** — `NID`-only vs guest `NID` ended the debate.
-3. **Do not optimize knitsail before earning short path** — fight the war you’re in.
-4. **Warmup is operational, not code magic** — export jar from real Chrome; persist with `--cookie-jar`.
-5. **Old knowledge documents symptoms well** — this journey doc explains **which symptoms mattered for production**.
+1. **Measure hop-1 body size first** (~91 KB vs ~270 KB) — instant trust-tier thermometer before touching JS.
+2. **Ablation beats theory** — `NID`-only vs guest `NID` ended months of debate in one script run.
+3. **Do not optimize knitsail before earning short path** — fight the war you are in; see [Flow Architecture two-path diagram](google-search-flow-architecture.md#two-paths-not-interchangeable).
+4. **Warmup is operational, not code magic** — export jar from real Chrome; persist runtime jar; refresh on expiry signals.
+5. **Symptom docs are not root-cause docs** — bootstrap divergence catalog remains valid for **long path** debugging, superseded as **primary** narrative by jar warmup.
+6. **Server decides before client runs** — reorder investigation layers: cookies → IP → wire → bootstrap JS → fingerprint.
+
+---
+
+## References
+
+| Artifact | Purpose |
+|----------|---------|
+| `google-search-debug/scripts/probe-cookie-ablation.mjs` | `NID` ablation matrix |
+| `google-search-debug/scripts/export-chrome-live-cookies.mjs` | Live Keychain export (~154 cookies) |
+| `google-search-debug/scripts/test-velora-chrome-cookies.mjs` | A/B no-cookie vs session |
+| `google-search-debug/scripts/google-search-top-results.mjs` | End-to-end SERP parse |
+| `google-search-debug/scripts/probe-search-flow-deep.mjs` | Chrome vs Velora hop timeline |
+| `browser/policies/google-search.json` | `omitCookies: in_session` |
+| `knowledge/bugs/2026-06-29-google-search-nid-trust-tier.md` | Phase 6 technical detail |
+| `knowledge/bugs/2026-06-29-google-search-bootstrap-divergence.md` | Long-path symptom catalog |
+| `knowledge/bugs/2026-06-29-google-search-knitsail-window-keys-prune.md` | Valid long-path fix |
+| `knowledge/bugs/2026-06-29-grecaptcha-htmlelement-style-shim.md` | Valid sorry-path fix |
+
+---
+
+## Related Knowledge
+
+| Document | Relationship |
+|----------|--------------|
+| **[Flow Architecture](google-search-flow-architecture.md)** | Hop-by-hop state machine, bootstrap script anatomy, `gen_204` beacons — read after this journey for **how** paths differ |
+| **[Signal Inventory](google-search-signal-inventory.md)** | Layer 0–7 prioritized signal list — read for **what to fix first** in production |
+| `bugs/2026-06-29-google-search-nid-trust-tier.md` | Ablation tables and curl reproduction |
+| `bugs/2026-06-29-google-search-bootstrap-divergence.md` | Long-path-only symptoms; superseded as root-cause story |
+| `captcha/detection/` (other notes) | May describe symptoms; verify against canonical conclusion above |
+
+**Reading order:** Journey (this file) → Signal Inventory (priorities) → Flow Architecture (mechanics).

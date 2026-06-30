@@ -49,21 +49,30 @@ Copy `_template.md` into the appropriate directory. Name files descriptively:
 ```
 Bug / discovery
       ↓
-Knowledge note (this directory)
+Knowledge note (this directory) — write at blog length immediately
       ↓
-Engineering summary
+Edit / polish for `blog/` if needed (usually light trim only)
       ↓
-Public blog (`blog/`)
+Public blog post
 ```
 
-Knowledge is written first. Blog posts are generated from knowledge notes later.
+Knowledge is the **canonical draft**. Do not write a short note and expand later — write the full post here first using `_template.md`.
 
-## Style
+## Style (blog-post length)
 
-- Concise engineering language.
-- Prefer diagrams and explanations over code dumps.
-- Record reasoning, trade-offs, and failed ideas.
-- Document discoveries, not opinions.
+Each knowledge article is written to become **one public blog page** later. Stubs are not acceptable.
+
+| Article type | Target words | Sections |
+|--------------|-------------:|----------|
+| Bug post-mortem | 900–1,500 | Full `_template.md` |
+| Fingerprint / parity | 900–1,200 | Full template + probe commands |
+| Investigation / architecture | 1,800–2,500 | Phases OK if Summary + Lessons are strong |
+| Benchmark / SDK ops | 1,200–1,800 | Full template + reproduction |
+
+- Prefer **diagrams** (mermaid), **tables**, and **command blocks** over code dumps.
+- Record reasoning, trade-offs, and **failed hypotheses** — not only the winning fix.
+- English only (per agent rule).
+- Every article ends with **Related Knowledge** links to peers in this tree.
 
 ## Questions This Should Answer
 

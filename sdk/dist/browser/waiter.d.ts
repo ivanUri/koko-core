@@ -1,6 +1,6 @@
 import type { CDPSession } from "../cdp/session.js";
 import type { NetworkTracker } from "./network.js";
-export type WaitUntil = "none" | "commit" | "domcontentloaded" | "load" | "networkidle";
+export type WaitUntil = "none" | "commit" | "domcontentloaded" | "load" | "networkidle" | "done";
 export interface GotoWaitOptions {
     waitUntil?: WaitUntil;
     timeout?: number;
@@ -29,6 +29,9 @@ export declare class PageWaiter {
     pollUntilTruthy(expression: string, options?: {
         timeout?: number;
         label?: string;
+    }): Promise<void>;
+    waitForURL(url: string | RegExp | ((url: string) => boolean), options?: {
+        timeout?: number;
     }): Promise<void>;
     private pollDomSearch;
     private pollExpression;

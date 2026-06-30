@@ -1,7 +1,8 @@
 import { CDPClient } from "../cdp/client.js";
 import type { WebSocketTransportOptions } from "../transport/websocket.js";
-import { BrowserContext } from "./context.js";
+import { BrowserContext, type BrowserContextOptions } from "./context.js";
 import { Page } from "./page.js";
+import { launchVelora, type LaunchedVelora, type VeloraLaunchOptions } from "./launch.js";
 
 export interface BrowserConnectOptions extends WebSocketTransportOptions {
   /** Enable Target.setDiscoverTargets + setAutoAttach (default: true). */
@@ -10,6 +11,7 @@ export interface BrowserConnectOptions extends WebSocketTransportOptions {
 
 export class Browser {
   private readonly pages = new Set<Page>();
+  private readonly _contexts = new Set<BrowserContext>();
 
   private constructor(readonly client: CDPClient) {}
 
@@ -19,6 +21,14 @@ export class Browser {
       await client.enableTargetTracking();
     }
     return new Browser(client);
+  }
+
+  /**
+   * Spawn a Velora server with antidetect profile/cookies and connect over CDP.
+   * Requires `zig-out/bin/velora` (run `zig build` first).
+   */
+  static async launch(options: VeloraLaunchOptions = {}): Promise<LaunchedVelora> {
+    return launchVelora(options);
   }
 
   async newSession(url = "about:blank") {
@@ -35,11 +45,23 @@ export class Browser {
     return page;
   }
 
-  newContext(): BrowserContext {
-    return new BrowserContext(this);
+  newContext(options: BrowserContextOptions = {}): BrowserContext {
+    const context = new BrowserContext(this, options);
+    this._contexts.add(context);
+    return context;
+  }
+
+  contexts(): BrowserContext[] {
+    return [...this._contexts];
+  }
+
+  releaseContext(context: BrowserContext): void {
+    this._contexts.delete(context);
   }
 
   async close(): Promise<void> {
+    await Promise.all([...this._contexts].map((ctx) => ctx.close().catch(() => undefined)));
+    this._contexts.clear();
     await Promise.all([...this.pages].map((page) => page.close().catch(() => undefined)));
     this.pages.clear();
     this.client.close();

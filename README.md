@@ -103,6 +103,16 @@ The goal is not only to run a page, but to provide the foundation for browser-na
 
 ## Quick Start
 
+### Install with Homebrew (macOS)
+
+```bash
+brew tap ivanUri/tap
+brew install velora
+velora serve --host 127.0.0.1 --port 9222
+```
+
+See [docs/homebrew.md](docs/homebrew.md) for publishing releases to the tap.
+
 ### Build Velora
 
 ```bash
