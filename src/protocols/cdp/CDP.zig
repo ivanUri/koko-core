@@ -511,6 +511,9 @@ pub const BrowserContext = struct {
     // own message arena.
     pending_dialog_response: ?Notification.DialogResponse = null,
 
+    /// CDP Emulation domain overrides (viewport, timezone, permissions, …).
+    emulation: @import("EmulationState.zig").State = .{},
+
     // Iframe CDP targets: sessionId -> frame_id (child frame attach).
     frame_sessions: std.StringHashMap(u32),
 
@@ -567,6 +570,8 @@ pub const BrowserContext = struct {
         try notification.register(.frame_dom_content_loaded, self, onFrameDOMContentLoaded);
         try notification.register(.frame_loaded, self, onFrameLoaded);
         try notification.register(.javascript_dialog_opening, self, onJavascriptDialogOpening);
+
+        session.emulation = &self.emulation;
     }
 
     pub fn deinit(self: *BrowserContext) void {
@@ -633,6 +638,7 @@ pub const BrowserContext = struct {
             browser.http_client.clearUserAgentOverride();
         }
         self.intercept_state.deinit();
+        self.emulation.deinit(self.arena);
         self.frame_sessions.deinit();
     }
 
@@ -1038,21 +1044,17 @@ const IsolatedWorld = struct {
     // This also means this pointer becomes invalid after removePage until a new frame is created.
     // Currently we have only 1 frame and thus also only 1 state in the isolate world.
     pub fn createContext(self: *IsolatedWorld, frame: *Frame) !*js.Context {
-        if (self.context == null) {
-            const ctx = try self.browser.env.createContext(frame, .{
-                .identity = &self.identity,
-                .identity_arena = self.arena,
-                .call_arena = self.call_arena,
-                .debug_name = "IsolatedContext",
-            });
-            self.context = ctx;
-        } else {
-            log.warn(.cdp, "not implemented", .{
-                .feature = "createContext: Not implemented second isolated context creation",
-                .info = "reuse existing context",
-            });
+        if (self.context != null) {
+            self.removeContext();
         }
-        return self.context.?;
+        const ctx = try self.browser.env.createContext(frame, .{
+            .identity = &self.identity,
+            .identity_arena = self.arena,
+            .call_arena = self.call_arena,
+            .debug_name = "IsolatedContext",
+        });
+        self.context = ctx;
+        return ctx;
     }
 };
 

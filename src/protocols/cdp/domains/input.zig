@@ -35,8 +35,13 @@ fn dispatchKeyEvent(cmd: *CDP.Command) !void {
         type: Type,
         key: []const u8 = "",
         code: ?[]const u8 = null,
+        text: ?[]const u8 = null,
+        unmodifiedText: ?[]const u8 = null,
+        windowsVirtualKeyCode: ?i32 = null,
+        nativeVirtualKeyCode: ?i32 = null,
         modifiers: u4 = 0,
-        // Many optional parameters are not implemented yet, see documentation url.
+        location: ?u32 = null,
+        isKeypad: ?bool = null,
 
         const Type = enum {
             keyDown,
@@ -45,6 +50,13 @@ fn dispatchKeyEvent(cmd: *CDP.Command) !void {
             char,
         };
     })) orelse return error.InvalidParams;
+
+    _ = params.text;
+    _ = params.unmodifiedText;
+    _ = params.windowsVirtualKeyCode;
+    _ = params.nativeVirtualKeyCode;
+    _ = params.location;
+    _ = params.isKeypad;
 
     try cmd.sendResult(null, .{});
 
@@ -78,7 +90,13 @@ fn dispatchMouseEvent(cmd: *CDP.Command) !void {
         x: f64,
         y: f64,
         type: Type,
-        // Many optional parameters are not implemented yet, see documentation url.
+        button: ?enum { none, left, middle, right, back, forward } = null,
+        buttons: ?i32 = null,
+        clickCount: ?i32 = null,
+        deltaX: ?f64 = null,
+        deltaY: ?f64 = null,
+        modifiers: ?u4 = null,
+        pointerType: ?[]const u8 = null,
 
         const Type = enum {
             mousePressed,
@@ -87,6 +105,12 @@ fn dispatchMouseEvent(cmd: *CDP.Command) !void {
             mouseWheel,
         };
     })) orelse return error.InvalidParams;
+
+    _ = params.button;
+    _ = params.buttons;
+    _ = params.clickCount;
+    _ = params.modifiers;
+    _ = params.pointerType;
 
     try cmd.sendResult(null, .{});
 
@@ -103,7 +127,8 @@ fn dispatchMouseEvent(cmd: *CDP.Command) !void {
         .mouseWheel => {
             const bc = cmd.browser_context orelse return;
             const frame = bc.session.currentFrame() orelse return;
-            try HumanInput.wheelScroll(frame, 120, .{ .steps = 4, .step_delay_ms = 8 });
+            const delta_y = params.deltaY orelse 120;
+            try HumanInput.wheelScroll(frame, delta_y, .{ .steps = 4, .step_delay_ms = 8 });
         },
         .mousePressed => {
             const bc = cmd.browser_context orelse return;

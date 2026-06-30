@@ -431,12 +431,30 @@ fn getContentQuads(cmd: *CDP.Command) !void {
     // visibility: hidden
     // display: none
 
-    const element = node.dom.is(DOMNode.Element) orelse return error.NodeIsNotAnElement;
-    // TODO implement for document or text
-    // Most likely document would require some hierachgy in the renderer. It is left unimplemented till we have a good example.
-    // Text may be tricky, multiple quads in case of multiple lines? empty quads of text  = ""?
-    // Elements like SVGElement may have multiple quads.
+    if (node.dom.is(DOMNode.Document)) |doc| {
+        const wp = frame.windowProfile();
+        const w: f64 = @floatFromInt(wp.inner_width);
+        const h: f64 = @floatFromInt(wp.inner_height);
+        const quad = rectToQuad(.{ ._x = 0, ._y = 0, ._width = w, ._height = h });
+        _ = doc;
+        return cmd.sendResult(.{ .quads = &.{quad} }, .{});
+    }
 
+    const Text = @import("../../../core/webapi/cdata/Text.zig");
+    if (node.dom.is(Text)) |text| {
+        if (text.getWholeText().len == 0) {
+            const empty_quad: Quad = .{0} ** 8;
+            return cmd.sendResult(.{ .quads = &.{empty_quad} }, .{});
+        }
+        if (text._proto.asNode().parentElement()) |parent_el| {
+            const quad = rectToQuad(parent_el.getBoundingClientRect(frame));
+            return cmd.sendResult(.{ .quads = &.{quad} }, .{});
+        }
+        const empty_quad: Quad = .{0} ** 8;
+        return cmd.sendResult(.{ .quads = &.{empty_quad} }, .{});
+    }
+
+    const element = node.dom.is(DOMNode.Element) orelse return error.NodeIsNotAnElement;
     const quad = rectToQuad(element.getBoundingClientRect(frame));
     return cmd.sendResult(.{ .quads = &.{quad} }, .{});
 }

@@ -2,6 +2,7 @@ import { NavigationError, ProtocolError, TargetClosedError } from "../cdp/errors
 import { delay } from "../utils/timeout.js";
 import { PageWaiter } from "./waiter.js";
 import { NetworkTracker } from "./network.js";
+import { RouteRegistry } from "./route.js";
 import { Locator } from "./locator.js";
 import { LPClient } from "./lp-client.js";
 import { NodeHandle } from "./node-handle.js";
@@ -32,11 +33,13 @@ export class Page {
     waiter;
     /** Velora LP domain — AI extraction and backend-node agent actions. */
     agent;
+    routes;
     initialized = false;
     mainFrameId;
     closeHooks = new Set();
     constructor(session) {
         this.session = session;
+        this.routes = new RouteRegistry(session);
         this.network = new NetworkTracker(session);
         this.waiter = new PageWaiter(session, this.network);
         this.agent = new LPClient(this, session);
@@ -233,6 +236,14 @@ export class Page {
             mobile: false,
         });
     }
+    /** Intercept network requests (Playwright-style `page.route`). */
+    async route(pattern, handler) {
+        await this.init();
+        await this.routes.route(pattern, handler);
+    }
+    async unroute(pattern, handler) {
+        await this.routes.unroute(pattern, handler);
+    }
     async type(selector, text, options = {}) {
         return this.fill(selector, text, options);
     }
@@ -309,6 +320,7 @@ export class Page {
         await nav;
     }
     async close() {
+        this.routes.dispose();
         this.network.dispose();
         if (this.session.targetId)
             await this.session.client.closeTarget(this.session.targetId).catch(() => undefined);

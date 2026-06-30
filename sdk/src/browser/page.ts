@@ -4,6 +4,7 @@ import { delay } from "../utils/timeout.js";
 import type { GotoWaitOptions } from "./waiter.js";
 import { PageWaiter } from "./waiter.js";
 import { NetworkTracker } from "./network.js";
+import { RouteRegistry, type RouteHandler, type RoutePattern } from "./route.js";
 import { Locator, type GetByRoleOptions, type GetByTextOptions, type LocatorOptions } from "./locator.js";
 import type { ActionOptions, FillOptions, SelectOptions } from "./actions.js";
 import { LPClient } from "./lp-client.js";
@@ -105,11 +106,13 @@ export class Page {
   readonly waiter: PageWaiter;
   /** Velora LP domain — AI extraction and backend-node agent actions. */
   readonly agent: LPClient;
+  private readonly routes: RouteRegistry;
   private initialized = false;
   private mainFrameId?: string;
   private readonly closeHooks = new Set<() => void>();
 
   constructor(readonly session: CDPSession) {
+    this.routes = new RouteRegistry(session);
     this.network = new NetworkTracker(session);
     this.waiter = new PageWaiter(session, this.network);
     this.agent = new LPClient(this, session);
@@ -342,6 +345,16 @@ export class Page {
     });
   }
 
+  /** Intercept network requests (Playwright-style `page.route`). */
+  async route(pattern: RoutePattern, handler: RouteHandler): Promise<void> {
+    await this.init();
+    await this.routes.route(pattern, handler);
+  }
+
+  async unroute(pattern?: RoutePattern, handler?: RouteHandler): Promise<void> {
+    await this.routes.unroute(pattern, handler);
+  }
+
   async type(selector: string, text: string, options: TypeOptions = {}): Promise<void> {
     return this.fill(selector, text, options);
   }
@@ -435,6 +448,7 @@ export class Page {
   }
 
   async close(): Promise<void> {
+    this.routes.dispose();
     this.network.dispose();
     if (this.session.targetId) await this.session.client.closeTarget(this.session.targetId).catch(() => undefined);
     await this.session.detach().catch(() => undefined);

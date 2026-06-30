@@ -215,8 +215,8 @@ fn clickNode(cmd: anytype) !void {
     const node_id = params.nodeId orelse params.backendNodeId orelse return error.InvalidParam;
     const node = bc.node_registry.lookup_by_id.get(node_id) orelse return error.InvalidNodeId;
 
-    @import("../../../core/browser/actions.zig").click(node.dom, frame) catch |err| {
-        if (err == error.InvalidNodeType) return error.InvalidParam;
+    const el = node.dom.is(@import("../../../core/dom/Element.zig")) orelse return error.InvalidParam;
+    @import("../../../core/browser/InputController.zig").dispatchActivationOnElementFast(el, frame) catch {
         return error.InternalError;
     };
 

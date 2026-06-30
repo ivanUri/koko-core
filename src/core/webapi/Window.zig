@@ -1136,23 +1136,23 @@ pub const JsApi = struct {
     pub const isSecureContext = bridge.attribute(false, .{});
 
     pub fn getInnerWidth(_: *const Window, frame: *Frame) u32 {
-        return frame.identityProfile().window.inner_width;
+        return frame.windowProfile().inner_width;
     }
 
     pub fn getInnerHeight(_: *const Window, frame: *Frame) u32 {
-        return frame.identityProfile().window.inner_height;
+        return frame.windowProfile().inner_height;
     }
 
     pub fn getOuterWidth(_: *const Window, frame: *Frame) u32 {
-        return frame.identityProfile().window.outer_width;
+        return frame.windowProfile().outer_width;
     }
 
     pub fn getOuterHeight(_: *const Window, frame: *Frame) u32 {
-        return frame.identityProfile().window.outer_height;
+        return frame.windowProfile().outer_height;
     }
 
     pub fn getDevicePixelRatio(_: *const Window, frame: *Frame) f64 {
-        return frame.identityProfile().screen.device_pixel_ratio;
+        return frame.devicePixelRatio();
     }
 
     pub const innerWidth = bridge.accessor(getInnerWidth, null, .{});
