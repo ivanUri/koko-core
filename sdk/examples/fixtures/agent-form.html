@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Velora Agent Fixture</title>
+  <meta property="og:title" content="Agent Form Demo" />
+  <script type="application/ld+json">{"@type":"WebPage","name":"Agent Form"}</script>
+</head>
+<body>
+  <h1>Agent workflow fixture</h1>
+  <p>Use semantic tree + findElement + NodeHandle to fill and submit.</p>
+  <form id="demo" action="#" method="get" onsubmit="return false">
+    <label for="q">Search query</label>
+    <input id="q" name="q" type="search" placeholder="Type here" value="" />
+    <button type="button" id="go">Search</button>
+  </form>
+  <a href="https://example.com/">Example link</a>
+  <script>
+    document.getElementById("go").addEventListener("click", function () {
+      document.body.dataset.submitted = document.getElementById("q").value || "";
+    });
+  </script>
+</body>
+</html>

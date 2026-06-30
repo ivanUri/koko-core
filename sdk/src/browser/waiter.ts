@@ -3,7 +3,7 @@ import { ProtocolError, TimeoutError } from "../cdp/errors.js";
 import { delay, withTimeout } from "../utils/timeout.js";
 import type { NetworkTracker } from "./network.js";
 
-export type WaitUntil = "none" | "commit" | "domcontentloaded" | "load" | "networkidle";
+export type WaitUntil = "none" | "commit" | "domcontentloaded" | "load" | "networkidle" | "done";
 
 export interface GotoWaitOptions {
   waitUntil?: WaitUntil;
@@ -22,7 +22,7 @@ export class PageWaiter {
   constructor(private readonly session: CDPSession, private readonly network: NetworkTracker) {}
 
   async waitForNavigation(options: InternalWaitOptions = {}): Promise<void> {
-    const waitUntil = options.waitUntil ?? "load";
+    const waitUntil = options.waitUntil ?? "done";
     if (waitUntil === "none" || waitUntil === "commit") return;
     const timeout = options.timeout ?? 30_000;
 
@@ -34,9 +34,13 @@ export class PageWaiter {
       await this.session.waitFor("Page.loadEventFired", { timeout });
       return;
     }
-    // networkidle: still wait for at least the load event before measuring idle.
+    // networkidle / done: wait for load (best-effort) then network idle.
     await this.session.waitFor("Page.loadEventFired", { timeout }).catch(() => undefined);
     await this.network.waitForIdle({ idleMs: options.networkIdleMs, timeout });
+    if (waitUntil === "done") {
+      await this.pollExpression("document.readyState === 'complete'", timeout, "Waiting for document complete");
+      await delay(32);
+    }
   }
 
   async waitForSelector(selector: string, options: { timeout?: number; visible?: boolean } = {}): Promise<void> {
@@ -65,6 +69,16 @@ export class PageWaiter {
   /** Poll until a return-by-value expression is truthy (adaptive interval). */
   async pollUntilTruthy(expression: string, options: { timeout?: number; label?: string } = {}): Promise<void> {
     await this.pollExpression(expression, options.timeout ?? 30_000, options.label ?? "Waiting for condition");
+  }
+
+  async waitForURL(
+    url: string | RegExp | ((url: string) => boolean),
+    options: { timeout?: number } = {},
+  ): Promise<void> {
+    const timeout = options.timeout ?? 30_000;
+    const label = "Waiting for URL";
+    const expression = `(() => ${buildUrlExpression(url)})()`;
+    await this.pollExpression(expression, timeout, label);
   }
 
   private async pollDomSearch(selector: string, timeout: number, label: string): Promise<void> {
@@ -111,4 +125,14 @@ export class PageWaiter {
       }
     })(), { timeout, label });
   }
+}
+
+function buildUrlExpression(url: string | RegExp | ((current: string) => boolean)): string {
+  if (typeof url === "function") {
+    throw new ProtocolError("waitForURL: function matchers are not supported; use string or RegExp");
+  }
+  if (url instanceof RegExp) {
+    return `new RegExp(${JSON.stringify(url.source)}, ${JSON.stringify(url.flags)}).test(location.href)`;
+  }
+  return `location.href === ${JSON.stringify(url)} || location.href.startsWith(${JSON.stringify(url)})`;
 }

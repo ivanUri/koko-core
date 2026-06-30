@@ -2,6 +2,10 @@ import { NavigationError, ProtocolError, TargetClosedError } from "../cdp/errors
 import { delay } from "../utils/timeout.js";
 import { PageWaiter } from "./waiter.js";
 import { NetworkTracker } from "./network.js";
+import { Locator } from "./locator.js";
+import { LPClient } from "./lp-client.js";
+import { NodeHandle } from "./node-handle.js";
+import { searchGoogle } from "./google-search.js";
 const DEFAULT_TTFX = `(() => {
   const el = document.querySelector("#firstHeading") || document.querySelector("h1");
   return el?.textContent?.trim() || null;
@@ -26,6 +30,8 @@ export class Page {
     session;
     network;
     waiter;
+    /** Velora LP domain — AI extraction and backend-node agent actions. */
+    agent;
     initialized = false;
     mainFrameId;
     closeHooks = new Set();
@@ -33,6 +39,7 @@ export class Page {
         this.session = session;
         this.network = new NetworkTracker(session);
         this.waiter = new PageWaiter(session, this.network);
+        this.agent = new LPClient(this, session);
     }
     /** Register cleanup when page.close() runs (used by Browser/Context). */
     onClose(hook) {
@@ -117,21 +124,117 @@ export class Page {
     waitForFunction(fn, options) {
         return this.waiter.waitForFunction(fn, options);
     }
-    async type(selector, text, options = {}) {
+    waitForNavigation(options = {}) {
+        return this.waiter.waitForNavigation(options);
+    }
+    waitForURL(url, options) {
+        return this.waiter.waitForURL(url, options);
+    }
+    // --- Playwright-style locators ---
+    locator(selector, options) {
+        return new Locator(this, [{ kind: "css", selector }], options);
+    }
+    getByRole(role, options = {}) {
+        return new Locator(this, [{ kind: "role", role, name: options.name, exact: options.exact }]);
+    }
+    getByText(text, options = {}) {
+        return new Locator(this, [{ kind: "text", text, exact: options.exact }]);
+    }
+    getByLabel(text, options = {}) {
+        return new Locator(this, [{ kind: "label", text, exact: options.exact }]);
+    }
+    getByPlaceholder(text, options = {}) {
+        return new Locator(this, [{ kind: "placeholder", text, exact: options.exact }]);
+    }
+    getByAltText(text, options = {}) {
+        return new Locator(this, [{ kind: "alt", text, exact: options.exact }]);
+    }
+    getByTitle(text, options = {}) {
+        return new Locator(this, [{ kind: "title", text, exact: options.exact }]);
+    }
+    getByTestId(testId) {
+        return new Locator(this, [{ kind: "testId", testId }]);
+    }
+    // --- Element actions (selector sugar over Locator) ---
+    async click(selector, options = {}) {
+        const nav = options.waitForNavigation
+            ? this.waitForNavigation(typeof options.waitForNavigation === "object" ? options.waitForNavigation : {})
+            : undefined;
+        nav?.catch(() => undefined);
+        await this.locator(selector).click(options);
+        if (nav)
+            await nav;
+    }
+    async fill(selector, text, options = {}) {
+        return this.locator(selector).fill(text, options);
+    }
+    async hover(selector, options = {}) {
+        return this.locator(selector).hover(options);
+    }
+    async check(selector, options = {}) {
+        return this.locator(selector).check(options);
+    }
+    async uncheck(selector, options = {}) {
+        return this.locator(selector).uncheck(options);
+    }
+    async selectOption(selector, values, options = {}) {
+        return this.locator(selector).selectOption(values, options);
+    }
+    // --- Page metadata & navigation ---
+    async title() {
         await this.init();
-        const timeout = options.timeout ?? 30_000;
-        await this.waitForSelector(selector, { timeout });
-        const clearFirst = options.clear !== false;
-        await this.evaluate(`(() => {
-      const el = document.querySelector(${JSON.stringify(selector)});
-      if (!el || !('value' in el)) throw new Error('type: not an input element');
-      if (${clearFirst ? "true" : "false"}) el.value = '';
-      el.focus();
-      el.value = ${JSON.stringify(text)};
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
-    })()`, { timeout });
+        return this.evaluate("document.title");
+    }
+    async url() {
+        await this.init();
+        return this.evaluate("location.href");
+    }
+    async reload(options = {}) {
+        await this.init();
+        this.network.reset();
+        const waitPromise = this.waiter.waitForNavigation(options);
+        waitPromise.catch(() => undefined);
+        await this.session.send("Page.reload", { ignoreCache: false }, options.timeout);
+        await waitPromise;
+    }
+    async goBack(options = {}) {
+        await this.historyStep(-1, options);
+    }
+    async goForward(options = {}) {
+        await this.historyStep(1, options);
+    }
+    async screenshot(options = {}) {
+        await this.init();
+        const format = options.type === "jpeg" ? "jpeg" : "png";
+        const result = await this.session.send("Page.captureScreenshot", {
+            format,
+            quality: options.quality,
+            fromSurface: true,
+            captureBeyondViewport: options.fullPage ?? false,
+        }, options.timeout);
+        return Buffer.from(result.data, "base64");
+    }
+    async pdf(options = {}) {
+        await this.init();
+        const result = await this.session.send("Page.printToPDF", {}, options.timeout);
+        return Buffer.from(result.data, "base64");
+    }
+    async addInitScript(source) {
+        await this.init();
+        const script = typeof source === "function" ? `(${source.toString()})();` : source;
+        await this.session.send("Page.addScriptToEvaluateOnNewDocument", { source: script });
+    }
+    async setViewportSize(size) {
+        await this.init();
+        await this.session.send("Emulation.setDeviceMetricsOverride", {
+            width: size.width,
+            height: size.height,
+            deviceScaleFactor: 1,
+            mobile: false,
+        });
+    }
+    async type(selector, text, options = {}) {
+        return this.fill(selector, text, options);
     }
     async press(key, options = {}) {
         await this.init();
@@ -151,6 +254,45 @@ export class Page {
             windowsVirtualKeyCode: spec.vk,
             nativeVirtualKeyCode: spec.vk,
         }, timeout);
+    }
+    // --- Velora-specific (LP domain + agent workflows) ---
+    markdown(options) {
+        return this.agent.markdown(options);
+    }
+    semanticTree(options) {
+        return this.agent.semanticTree(options);
+    }
+    getInteractiveElements(options) {
+        return this.agent.getInteractiveElements(options);
+    }
+    getStructuredData(options) {
+        return this.agent.getStructuredData(options);
+    }
+    detectForms(options) {
+        return this.agent.detectForms(options);
+    }
+    findElement(options) {
+        return this.agent.findElement(options);
+    }
+    getNodeDetails(backendNodeId, options) {
+        return this.agent.getNodeDetails(backendNodeId, options);
+    }
+    links(options) {
+        return this.agent.links(options);
+    }
+    node(backendNodeId) {
+        return new NodeHandle(this, backendNodeId);
+    }
+    async waitForSelectorHandle(selector, options) {
+        const id = await this.agent.waitForSelectorNode(selector, options);
+        return new NodeHandle(this, id);
+    }
+    armDialog(options) {
+        return this.agent.armDialog(options);
+    }
+    /** Google SERP agent workflow: navigate + TTFX probe + top-N organic extract + block detection. */
+    searchGoogle(options) {
+        return searchGoogle(this, options);
     }
     async search(searchPageUrl, query, options = {}) {
         await this.init();
@@ -177,6 +319,14 @@ export class Page {
     }
     get frameId() {
         return this.mainFrameId;
+    }
+    async historyStep(delta, options = {}) {
+        await this.init();
+        this.network.reset();
+        const waitPromise = this.waiter.waitForNavigation(options);
+        waitPromise.catch(() => undefined);
+        await this.evaluate(delta === -1 ? "history.back()" : "history.forward()");
+        await waitPromise;
     }
 }
 function keySpec(key) {

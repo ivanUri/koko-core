@@ -10,7 +10,10 @@ export { CDPError, TimeoutError, ProtocolError, NavigationError, TargetClosedErr
 
 export { Browser } from "./browser/browser.js";
 export type { BrowserConnectOptions } from "./browser/browser.js";
+export { launchVelora } from "./browser/launch.js";
+export type { VeloraLaunchOptions, LaunchedVelora } from "./browser/launch.js";
 export { BrowserContext } from "./browser/context.js";
+export type { BrowserContextOptions } from "./browser/context.js";
 export { Page } from "./browser/page.js";
 export type {
   EvaluateOptions,
@@ -19,7 +22,41 @@ export type {
   TypeOptions,
   PressOptions,
   SearchOptions,
+  ScreenshotOptions,
+  PdfOptions,
+  ViewportSize,
+  ClickOptions,
 } from "./browser/page.js";
+export { Locator } from "./browser/locator.js";
+export type { LocatorOptions, GetByRoleOptions, GetByTextOptions, LocatorPressOptions } from "./browser/locator.js";
+export type { ActionOptions, FillOptions, SelectOptions, SelectOptionValue } from "./browser/actions.js";
+export { LPClient } from "./browser/lp-client.js";
+export { NodeHandle } from "./browser/node-handle.js";
+export type { NodeActionOptions, NodePressOptions } from "./browser/node-handle.js";
+export {
+  searchGoogle,
+  buildGoogleSearchUrl,
+  buildGoogleExtractExpression,
+  validateGoogleExtract,
+  GOOGLE_TTFX_EXPR,
+} from "./browser/google-search.js";
+export type {
+  SemanticTreeOptions,
+  SemanticNode,
+  MarkdownOptions,
+  InteractiveElement,
+  StructuredData,
+  StructuredDataProperty,
+  FormField,
+  DetectedForm,
+  NodeDetails,
+  FindElementOptions,
+  DialogOptions,
+  ScrollOptions,
+  GoogleSearchResult,
+  GoogleExtractResult,
+  GoogleSearchOptions,
+} from "./browser/lp-types.js";
 export { createCrawlWorker } from "./browser/crawl.js";
 export type { CrawlItem, CrawlPageResult, CrawlWorker, CrawlWorkerOptions } from "./browser/crawl.js";
 export { PageWaiter } from "./browser/waiter.js";
