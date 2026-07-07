@@ -42,9 +42,14 @@ jobs:
         run: |
           ASSET="${{ steps.meta.outputs.asset }}"
           VERSION="${{ steps.meta.outputs.version }}"
-          URL="https://github.com/ivanUri/velora/releases/download/v${VERSION}/${ASSET}"
-          if ! curl -fsSL -o "$ASSET" "$URL"; then
-            echo "Release asset missing; using local build artifact path is not supported in CI." >&2
+          RELEASE_URL="https://github.com/ivanUri/velora/releases/download/v${VERSION}/${ASSET}"
+          TAP_URL="https://raw.githubusercontent.com/ivanUri/homebrew-tap/main/bottles/${ASSET}"
+          if curl -fsSL -o "$ASSET" "$RELEASE_URL"; then
+            echo "Downloaded from GitHub Release"
+          elif curl -fsSL -o "$ASSET" "$TAP_URL"; then
+            echo "Downloaded from homebrew-tap bottle"
+          else
+            echo "Could not download ${ASSET}" >&2
             exit 1
           fi
 
@@ -71,6 +76,7 @@ jobs:
     needs: release
     if: always() && needs.release.result == 'success'
     runs-on: ubuntu-latest
+    continue-on-error: true
     permissions:
       administration: write
       contents: read
