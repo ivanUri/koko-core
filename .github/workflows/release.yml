@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 1.0.0)"
+        required: true
+        default: "1.0.0"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "asset=velora-${VERSION}-darwin-arm64.tar.gz" >> "$GITHUB_OUTPUT"
+          NOTES=".github/release-notes/v${VERSION}.md"
+          if [ ! -f "$NOTES" ]; then
+            NOTES=".github/release-notes/RELEASE.md"
+          fi
+          echo "notes=${NOTES}" >> "$GITHUB_OUTPUT"
+
+      - name: Download release tarball
+        run: |
+          curl -fsSL \
+            -o "${{ steps.meta.outputs.asset }}" \
+            "https://raw.githubusercontent.com/ivanUri/homebrew-tap/main/bottles/${{ steps.meta.outputs.asset }}"
+
+      - name: Verify tarball
+        run: |
+          ASSET="${{ steps.meta.outputs.asset }}"
+          test -s "$ASSET"
+          sha256sum "$ASSET"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: Velora ${{ steps.meta.outputs.tag }}
+          body_path: ${{ steps.meta.outputs.notes }}
+          files: ${{ steps.meta.outputs.asset }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          fail_on_unmatched_files: true

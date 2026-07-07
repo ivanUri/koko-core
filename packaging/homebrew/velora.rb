@@ -13,12 +13,9 @@ class Velora < Formula
   on_macos do
     on_arm do
       url "https://github.com/ivanUri/velora/releases/download/v1.0.0/velora-1.0.0-darwin-arm64.tar.gz"
-      sha256 "REPLACE_WITH_ARM64_SHA256"
+      sha256 "b324d5abcde4b34a1a3447adc3adf685d6fa6c424d7f6744a1913214df57d11c"
     end
-    on_intel do
-      url "https://github.com/ivanUri/velora/releases/download/v1.0.0/velora-1.0.0-darwin-x86_64.tar.gz"
-      sha256 "REPLACE_WITH_X86_64_SHA256"
-    end
+
   end
 
   def install
