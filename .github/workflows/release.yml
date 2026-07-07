@@ -40,9 +40,13 @@ jobs:
 
       - name: Download release tarball
         run: |
-          curl -fsSL \
-            -o "${{ steps.meta.outputs.asset }}" \
-            "https://raw.githubusercontent.com/ivanUri/homebrew-tap/main/bottles/${{ steps.meta.outputs.asset }}"
+          ASSET="${{ steps.meta.outputs.asset }}"
+          VERSION="${{ steps.meta.outputs.version }}"
+          URL="https://github.com/ivanUri/velora/releases/download/v${VERSION}/${ASSET}"
+          if ! curl -fsSL -o "$ASSET" "$URL"; then
+            echo "Release asset missing; using local build artifact path is not supported in CI." >&2
+            exit 1
+          fi
 
       - name: Verify tarball
         run: |
@@ -61,3 +65,27 @@ jobs:
           prerelease: false
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+  profile:
+    name: Update repo profile
+    needs: release
+    if: always() && needs.release.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      administration: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply repository profile
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          DESC="$(jq -r '.description' .github/repo-profile.json)"
+          HOME="$(jq -r '.homepage' .github/repo-profile.json)"
+          gh api "repos/${{ github.repository }}" -X PATCH \
+            -f description="$DESC" \
+            -f homepage="$HOME"
+          jq -c '{names: .topics}' .github/repo-profile.json | \
+            gh api "repos/${{ github.repository }}/topics" -X PUT --input -
