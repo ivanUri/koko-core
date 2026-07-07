@@ -8,7 +8,6 @@ on:
   workflow_dispatch:
 
 permissions:
-  administration: write
   contents: read
 
 jobs:
@@ -21,14 +20,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           DESC="$(jq -r '.description' .github/repo-profile.json)"
           HOME="$(jq -r '.homepage // ""' .github/repo-profile.json)"
-          TOPICS="$(jq -c '.topics // []' .github/repo-profile.json)"
 
-          gh api repos/${{ github.repository }} -X PATCH \
-            -f description="$DESC" \
-            -f homepage="$HOME"
+          gh repo edit "${{ github.repository }}" \
+            --description "$DESC" \
+            --homepage "$HOME"
 
-          gh api repos/${{ github.repository }}/topics -X PUT \
-            -H "Accept: application/vnd.github+json" \
-            --input - <<< "{\"names\": ${TOPICS}}"
+          TOPICS="$(jq -r '.topics[]' .github/repo-profile.json | paste -sd, -)"
+          IFS=',' read -ra ARR <<< "$TOPICS"
+          ARGS=()
+          for t in "${ARR[@]}"; do
+            ARGS+=(--add-topic "$t")
+          done
+          gh repo edit "${{ github.repository }}" "${ARGS[@]}"
