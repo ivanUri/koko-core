@@ -1,0 +1,16 @@
+{
+  "description": "AI-first headless browser runtime for automation, agents, and programmable web execution.",
+  "homepage": "https://github.com/ivanUri/velora#readme",
+  "topics": [
+    "ai",
+    "ai-agents",
+    "automation",
+    "browser",
+    "browser-automation",
+    "cdp",
+    "headless-browser",
+    "mcp",
+    "web-scraping",
+    "zig"
+  ]
+}

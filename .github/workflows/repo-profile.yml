@@ -1,0 +1,34 @@
+name: Repo Profile
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/repo-profile.json
+  workflow_dispatch:
+
+permissions:
+  administration: write
+  contents: read
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply repository profile
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DESC="$(jq -r '.description' .github/repo-profile.json)"
+          HOME="$(jq -r '.homepage // ""' .github/repo-profile.json)"
+          TOPICS="$(jq -c '.topics // []' .github/repo-profile.json)"
+
+          gh api repos/${{ github.repository }} -X PATCH \
+            -f description="$DESC" \
+            -f homepage="$HOME"
+
+          gh api repos/${{ github.repository }}/topics -X PUT \
+            -H "Accept: application/vnd.github+json" \
+            --input - <<< "{\"names\": ${TOPICS}}"
