@@ -25,10 +25,12 @@ const TransformStream = @This();
 pub const DefaultController = TransformStreamDefaultController;
 
 pub const ZigTransformFn = *const fn (*TransformStreamDefaultController, js.Value) anyerror!void;
+pub const ZigFlushFn = *const fn (*TransformStreamDefaultController) anyerror!void;
 
 _readable: *ReadableStream,
 _writable: *WritableStream,
 _controller: *TransformStreamDefaultController,
+_zig_user_data: ?*anyopaque = null,
 
 const Transformer = struct {
     start: ?js.Function = null,
@@ -50,6 +52,7 @@ pub fn init(transformer_: ?Transformer, exec: *const Execution) !*TransformStrea
         if (transformer_) |t| t.transform else null,
         if (transformer_) |t| t.flush else null,
         null,
+        null,
         exec,
     );
     self._controller = transform_controller;
@@ -65,7 +68,11 @@ pub fn init(transformer_: ?Transformer, exec: *const Execution) !*TransformStrea
     return self;
 }
 
-pub fn initWithZigTransform(zig_transform: ZigTransformFn, exec: *const Execution) !*TransformStream {
+pub fn initWithZigTransform(
+    zig_transform: ZigTransformFn,
+    zig_flush: ?ZigFlushFn,
+    exec: *const Execution,
+) !*TransformStream {
     const readable = try ReadableStream.init(null, null, exec);
 
     const self = try exec._factory.create(TransformStream{
@@ -74,7 +81,7 @@ pub fn initWithZigTransform(zig_transform: ZigTransformFn, exec: *const Executio
         ._controller = undefined,
     });
 
-    const transform_controller = try TransformStreamDefaultController.init(self, null, null, zig_transform, exec);
+    const transform_controller = try TransformStreamDefaultController.init(self, null, null, zig_transform, zig_flush, exec);
     self._controller = transform_controller;
 
     self._writable = try WritableStream.initForTransform(self, exec);
@@ -100,7 +107,9 @@ pub fn transformWrite(self: *TransformStream, chunk: js.Value, exec: *const Exec
 }
 
 pub fn transformClose(self: *TransformStream, exec: *const Execution) !void {
-    if (self._controller._flush_fn) |flush_fn| {
+    if (self._controller._zig_flush_fn) |flush_fn| {
+        try flush_fn(self._controller);
+    } else if (self._controller._flush_fn) |flush_fn| {
         var ls: js.Local.Scope = undefined;
         exec.context.localScope(&ls);
         defer ls.deinit();
@@ -145,12 +154,14 @@ pub const TransformStreamDefaultController = struct {
     _transform_fn: ?js.Function.Global,
     _flush_fn: ?js.Function.Global,
     _zig_transform_fn: ?ZigTransformFn,
+    _zig_flush_fn: ?ZigFlushFn,
 
     pub fn init(
         stream: *TransformStream,
         transform_fn: ?js.Function.Global,
         flush_fn: ?js.Function.Global,
         zig_transform_fn: ?ZigTransformFn,
+        zig_flush_fn: ?ZigFlushFn,
         exec: *const Execution,
     ) !*TransformStreamDefaultController {
         return exec._factory.create(TransformStreamDefaultController{
@@ -158,6 +169,7 @@ pub const TransformStreamDefaultController = struct {
             ._transform_fn = transform_fn,
             ._flush_fn = flush_fn,
             ._zig_transform_fn = zig_transform_fn,
+            ._zig_flush_fn = zig_flush_fn,
         });
     }
 

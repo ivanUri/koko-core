@@ -255,5 +255,5 @@ await page.press("Enter");
 
 - [`2026-06-30-benchmark-folder.md`](../performance/benchmarks/2026-06-30-benchmark-folder.md) — `bench:suite` SDK LP benchmarks (tests 10–18)
 - [`2026-06-29-microbench-baseline.md`](../performance/benchmarks/2026-06-29-microbench-baseline.md) — engine performance context for crawl TTFX
-- [`docs/benchmarks/crawl-wikipedia-latest.md`](../../docs/benchmarks/crawl-wikipedia-latest.md) — 100-page Velora vs Chromium crawl
-- [`knowledge/captcha/detection/google-search-flow-architecture.md`](../captcha/detection/google-search-flow-architecture.md) — background for `searchGoogle` limits
+- [`knowledge/performance/benchmarks/2026-06-benchmark-harness.md`](../performance/benchmarks/2026-06-benchmark-harness.md) — crawl + microbench harness
+- [`knowledge/captcha/detection/google-search-investigation-journey.md`](../captcha/detection/google-search-investigation-journey.md) — cookie warmup gate for `searchGoogle`

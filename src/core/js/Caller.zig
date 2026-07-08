@@ -76,6 +76,13 @@ pub fn initFromHandle(self: *Caller, handle: ?*const v8.FunctionCallbackInfo) bo
     return self.init(isolate);
 }
 
+fn isInsideEventDispatch(ctx: *Context) bool {
+    return switch (ctx.global) {
+        .frame => |frame| frame._event_manager.base.dispatch_depth > 0,
+        .worker => |wgs| wgs._event_manager.dispatch_depth > 0,
+    };
+}
+
 pub fn deinit(self: *Caller) void {
     const ctx = self.local.ctx;
     const call_depth = ctx.call_depth - 1;
@@ -91,25 +98,84 @@ pub fn deinit(self: *Caller) void {
     //
     // Therefore, we keep a call_depth, and only reset the call_arena
     // when a top-level (call_depth == 0) function ends.
-    if (call_depth == 0) {
-        const arena: *ArenaAllocator = @ptrCast(@alignCast(ctx.call_arena.ptr));
-        _ = arena.reset(.{ .retain_with_limit = CALL_ARENA_RETAIN });
-    }
-
     ctx.call_depth = call_depth;
     ctx.local = self.prev_local;
     ctx.global.setJs(self.prev_context);
+
+    // Nested DOM APIs (appendChild → iframe onload) queue Promise reactions that
+    // must run before the outer load() callback returns to the event loop.
+    // Skip when the callback threw: checkpoint can drain the pending exception
+    // before it reaches in-script try/catch (WPT assert_throws_* on first run).
+    // Also skip while an event dispatch is suspended (e.g. dispatchEvent from a
+    // listener): draining microtasks here can reorder the outer capture/bubble walk.
+    if (!ctx.pending_callback_exception and !isInsideEventDispatch(ctx)) {
+        ctx.env.performMicrotaskCheckpoint(ctx);
+    }
+
+    if (call_depth == 0) {
+        const had_callback_exception = ctx.pending_callback_exception;
+        ctx.pending_callback_exception = false;
+        const arena: *ArenaAllocator = @ptrCast(@alignCast(ctx.call_arena.ptr));
+        _ = arena.reset(.{ .retain_with_limit = CALL_ARENA_RETAIN });
+        if (!had_callback_exception) {
+            // Fingerprint load() calls yb(Y) synchronously; drain Y.ip before get().
+            const is_fp = switch (ctx.global) {
+                .frame => |f| std.mem.indexOf(u8, f.url, "fingerprint.com") != null,
+                .worker => false,
+            };
+            if (is_fp) {
+                ctx.env.drainFingerprintYbMicrotasks(ctx);
+            } else {
+                var pass: u8 = 0;
+                while (pass < 24) : (pass += 1) {
+                    ctx.env.performMicrotaskCheckpoint(ctx);
+                    if (ctx.env.checkpoint_active) break;
+                    ctx.env.runMicrotasks(.event_handler);
+                    if (!ctx.env.checkpoint_pending) break;
+                }
+            }
+        }
+    } else switch (ctx.global) {
+        .frame => |frame| {
+            if (std.mem.indexOf(u8, frame.url, "fingerprint.com") != null) {
+                // yb() Promise executor returns after appendChild + I(); drain Y.ip
+                // continuations before outer load() reaches vv()'s 2s race.
+                ctx.env.drainFingerprintYbMicrotasks(ctx);
+            }
+        },
+        .worker => {},
+    }
 }
 
 pub const CallOpts = struct {
     dom_exception: bool = false,
     null_as_undefined: bool = false,
     as_typed_array: bool = false,
+    /// When true, resolve `this` by walking the JSObject prototype chain so
+    /// named/indexed handlers work on objects that inherit from a legacy
+    /// platform object (HTMLCollection, HTMLAllCollection, etc.).
+    legacy_platform_receiver: bool = false,
     // Constructor-only. When true, `new.target` is pulled from the
     // FunctionCallbackInfo and passed as the first argument to the Zig
     // function (as a js.Function). See bridge.Constructor.Opts.
     new_target: bool = false,
 };
+
+fn resolveIndexedReceiver(comptime T: type, info: PropertyCallbackInfo, comptime opts: CallOpts) !*T {
+    if (comptime opts.legacy_platform_receiver) {
+        return TaggedOpaque.fromJSLegacyPlatformReceiver(*T, info.getThis());
+    }
+    return TaggedOpaque.fromJS(*T, info.getThis());
+}
+
+fn setBooleanReturn(local: *const Local, value: bool, info: PropertyCallbackInfo) void {
+    const js_bool = local.zigValueToJs(value, .{}) catch {
+        const fallback = js.simpleZigValueToJs(local.isolate, value, true, false);
+        info.getReturnValue().set(fallback);
+        return;
+    };
+    info.getReturnValue().set(js_bool);
+}
 
 pub fn constructor(self: *Caller, comptime T: type, func: anytype, handle: *const v8.FunctionCallbackInfo, comptime opts: CallOpts) void {
     const local = &self.local;
@@ -186,7 +252,7 @@ pub fn getIndex(self: *Caller, comptime T: type, func: anytype, idx: u32, handle
 fn _getIndex(comptime T: type, local: *const Local, func: anytype, idx: u32, info: PropertyCallbackInfo, comptime opts: CallOpts) !u8 {
     const F = @TypeOf(func);
     var args: ParameterTypes(F) = undefined;
-    @field(args, "0") = try TaggedOpaque.fromJS(*T, info.getThis());
+    @field(args, "0") = try resolveIndexedReceiver(T, info, opts);
     @field(args, "1") = idx;
     if (@typeInfo(F).@"fn".params.len == 3) {
         @field(args, "2") = getGlobalArg(@TypeOf(args.@"2"), local.ctx);
@@ -213,7 +279,7 @@ pub fn getNamedIndex(self: *Caller, comptime T: type, func: anytype, name: *cons
 fn _getNamedIndex(comptime T: type, local: *const Local, func: anytype, name: *const v8.Name, info: PropertyCallbackInfo, comptime opts: CallOpts) !u8 {
     const F = @TypeOf(func);
     var args: ParameterTypes(F) = undefined;
-    @field(args, "0") = try TaggedOpaque.fromJS(*T, info.getThis());
+    @field(args, "0") = try resolveIndexedReceiver(T, info, opts);
     @field(args, "1") = try nameToString(local, @TypeOf(args.@"1"), name);
     if (@typeInfo(F).@"fn".params.len == 3) {
         @field(args, "2") = getGlobalArg(@TypeOf(args.@"2"), local.ctx);
@@ -237,17 +303,70 @@ pub fn setNamedIndex(self: *Caller, comptime T: type, func: anytype, name: *cons
     };
 }
 
+pub fn setIndex(self: *Caller, comptime T: type, func: anytype, idx: u32, js_value: *const v8.Value, handle: *const v8.PropertyCallbackInfo, comptime opts: CallOpts) u8 {
+    const local = &self.local;
+
+    var hs: js.HandleScope = undefined;
+    hs.init(local.isolate);
+    defer hs.deinit();
+
+    const info = PropertyCallbackInfo{ .handle = handle };
+    return _setIndex(T, local, func, idx, .{ .local = &self.local, .handle = js_value }, info, opts) catch |err| {
+        handleError(T, @TypeOf(func), local, err, info, opts);
+        return 0;
+    };
+}
+
+fn _setIndex(comptime T: type, local: *const Local, func: anytype, idx: u32, js_value: js.Value, info: PropertyCallbackInfo, comptime opts: CallOpts) !u8 {
+    const F = @TypeOf(func);
+    var args: ParameterTypes(F) = undefined;
+    @field(args, "0") = try resolveIndexedReceiver(T, info, opts);
+    @field(args, "1") = idx;
+    @field(args, "2") = try local.jsValueToZig(@TypeOf(@field(args, "2")), js_value);
+    if (@typeInfo(F).@"fn".params.len == 4) {
+        @field(args, "3") = getGlobalArg(@TypeOf(args.@"3"), local.ctx);
+    }
+    const ret = @call(.auto, func, args);
+    return handlePropertyMutationReturn(T, F, local, ret, info, opts);
+}
+
 fn _setNamedIndex(comptime T: type, local: *const Local, func: anytype, name: *const v8.Name, js_value: js.Value, info: PropertyCallbackInfo, comptime opts: CallOpts) !u8 {
     const F = @TypeOf(func);
     var args: ParameterTypes(F) = undefined;
-    @field(args, "0") = try TaggedOpaque.fromJS(*T, info.getThis());
+    @field(args, "0") = try resolveIndexedReceiver(T, info, opts);
     @field(args, "1") = try nameToString(local, @TypeOf(args.@"1"), name);
     @field(args, "2") = try local.jsValueToZig(@TypeOf(@field(args, "2")), js_value);
     if (@typeInfo(F).@"fn".params.len == 4) {
         @field(args, "3") = getGlobalArg(@TypeOf(args.@"3"), local.ctx);
     }
     const ret = @call(.auto, func, args);
-    return handleIndexedReturn(T, F, false, local, ret, info, opts);
+    return handlePropertyMutationReturn(T, F, local, ret, info, opts);
+}
+
+pub fn deleteIndex(self: *Caller, comptime T: type, func: anytype, idx: u32, handle: *const v8.PropertyCallbackInfo, comptime opts: CallOpts) u8 {
+    const local = &self.local;
+
+    var hs: js.HandleScope = undefined;
+    hs.init(local.isolate);
+    defer hs.deinit();
+
+    const info = PropertyCallbackInfo{ .handle = handle };
+    return _deleteIndex(T, local, func, idx, info, opts) catch |err| {
+        handleError(T, @TypeOf(func), local, err, info, opts);
+        return 0;
+    };
+}
+
+fn _deleteIndex(comptime T: type, local: *const Local, func: anytype, idx: u32, info: PropertyCallbackInfo, comptime opts: CallOpts) !u8 {
+    const F = @TypeOf(func);
+    var args: ParameterTypes(F) = undefined;
+    @field(args, "0") = try resolveIndexedReceiver(T, info, opts);
+    @field(args, "1") = idx;
+    if (@typeInfo(F).@"fn".params.len == 3) {
+        @field(args, "2") = getGlobalArg(@TypeOf(args.@"2"), local.ctx);
+    }
+    const ret = @call(.auto, func, args);
+    return handlePropertyMutationReturn(T, F, local, ret, info, opts);
 }
 
 pub fn deleteNamedIndex(self: *Caller, comptime T: type, func: anytype, name: *const v8.Name, handle: *const v8.PropertyCallbackInfo, comptime opts: CallOpts) u8 {
@@ -267,13 +386,13 @@ pub fn deleteNamedIndex(self: *Caller, comptime T: type, func: anytype, name: *c
 fn _deleteNamedIndex(comptime T: type, local: *const Local, func: anytype, name: *const v8.Name, info: PropertyCallbackInfo, comptime opts: CallOpts) !u8 {
     const F = @TypeOf(func);
     var args: ParameterTypes(F) = undefined;
-    @field(args, "0") = try TaggedOpaque.fromJS(*T, info.getThis());
+    @field(args, "0") = try resolveIndexedReceiver(T, info, opts);
     @field(args, "1") = try nameToString(local, @TypeOf(args.@"1"), name);
     if (@typeInfo(F).@"fn".params.len == 3) {
         @field(args, "2") = getGlobalArg(@TypeOf(args.@"2"), local.ctx);
     }
     const ret = @call(.auto, func, args);
-    return handleIndexedReturn(T, F, false, local, ret, info, opts);
+    return handlePropertyMutationReturn(T, F, local, ret, info, opts);
 }
 
 pub fn getEnumerator(self: *Caller, comptime T: type, func: anytype, handle: *const v8.PropertyCallbackInfo, comptime opts: CallOpts) u8 {
@@ -303,7 +422,7 @@ fn makeEnumerableDataDescriptor(local: *const Local, value: js.Value) !js.Value 
 fn resolveIndexValue(comptime T: type, local: *const Local, func: anytype, idx: u32, info: PropertyCallbackInfo, comptime opts: CallOpts) !?js.Value {
     const F = @TypeOf(func);
     var args: ParameterTypes(F) = undefined;
-    @field(args, "0") = try TaggedOpaque.fromJS(*T, info.getThis());
+    @field(args, "0") = try resolveIndexedReceiver(T, info, opts);
     @field(args, "1") = idx;
     if (@typeInfo(F).@"fn".params.len == 3) {
         @field(args, "2") = getGlobalArg(@TypeOf(args.@"2"), local.ctx);
@@ -332,7 +451,7 @@ fn resolveIndexValue(comptime T: type, local: *const Local, func: anytype, idx: 
 fn resolveNamedIndexValue(comptime T: type, local: *const Local, func: anytype, name: *const v8.Name, info: PropertyCallbackInfo, comptime opts: CallOpts) !?js.Value {
     const F = @TypeOf(func);
     var args: ParameterTypes(F) = undefined;
-    @field(args, "0") = try TaggedOpaque.fromJS(*T, info.getThis());
+    @field(args, "0") = try resolveIndexedReceiver(T, info, opts);
     @field(args, "1") = try nameToString(local, @TypeOf(args.@"1"), name);
     if (@typeInfo(F).@"fn".params.len == 3) {
         @field(args, "2") = getGlobalArg(@TypeOf(args.@"2"), local.ctx);
@@ -401,12 +520,38 @@ pub fn getNamedDescriptor(self: *Caller, comptime T: type, func: anytype, name: 
 fn _getEnumerator(comptime T: type, local: *const Local, func: anytype, info: PropertyCallbackInfo, comptime opts: CallOpts) !u8 {
     const F = @TypeOf(func);
     var args: ParameterTypes(F) = undefined;
-    @field(args, "0") = try TaggedOpaque.fromJS(*T, info.getThis());
+    @field(args, "0") = try resolveIndexedReceiver(T, info, opts);
     if (@typeInfo(F).@"fn".params.len == 2) {
         @field(args, "1") = getGlobalArg(@TypeOf(args.@"1"), local.ctx);
     }
     const ret = @call(.auto, func, args);
     return handleIndexedReturn(T, F, true, local, ret, info, opts);
+}
+
+fn handlePropertyMutationReturn(comptime T: type, comptime F: type, local: *const Local, ret: anytype, info: PropertyCallbackInfo, comptime opts: CallOpts) !u8 {
+    if (@TypeOf(ret) == void) {
+        return handleIndexedReturn(T, F, false, local, ret, info, opts);
+    }
+
+    const non_error_ret = switch (@typeInfo(@TypeOf(ret))) {
+        .error_union => |eu| blk: {
+            break :blk ret catch |err| {
+                if (isInErrorSet(error.NotHandled, eu.error_set) and err == error.NotHandled) {
+                    return 0;
+                }
+                handleError(T, F, local, err, info, opts);
+                return 0;
+            };
+        },
+        else => ret,
+    };
+
+    if (@TypeOf(non_error_ret) == bool) {
+        setBooleanReturn(local, non_error_ret, info);
+        return 1;
+    }
+
+    return handleIndexedReturn(T, F, false, local, ret, info, opts);
 }
 
 fn handleIndexedReturn(comptime T: type, comptime F: type, comptime with_value: bool, local: *const Local, ret: anytype, info: PropertyCallbackInfo, comptime opts: CallOpts) !u8 {
@@ -457,6 +602,65 @@ fn nameToString(local: *const Local, comptime T: type, name: *const v8.Name) !T 
     return try js.String.toSlice(.{ .local = local, .handle = handle });
 }
 
+fn throwViaJsConstructHelper(local: *const Local, err: anyerror) bool {
+    const global_handle = v8.v8__Context__Global(local.handle).?;
+    const global = js.Object{ .local = local, .handle = global_handle };
+    const helper_val = global.get("__veloraConstructThrow") catch return false;
+    if (!helper_val.isFunction()) return false;
+
+    const type_name: []const u8 = switch (err) {
+        error.TypeError, error.InvalidArgument => "TypeError",
+        error.RangeError => "RangeError",
+        else => "Error",
+    };
+    const type_val = local.isolate.initStringHandle(type_name);
+    const args = [_]?*const v8.Value{type_val};
+    _ = v8.v8__Function__Call(
+        @ptrCast(helper_val.handle),
+        local.handle,
+        global_handle,
+        1,
+        @ptrCast(&args),
+    );
+    return true;
+}
+
+pub fn throwViaJsRethrowHelper(local: *const Local, ex: js.Value) void {
+    const global_handle = v8.v8__Context__Global(local.handle).?;
+    const global = js.Object{ .local = local, .handle = global_handle };
+    const helper_val = global.get("__veloraRethrow") catch return;
+    if (!helper_val.isFunction()) return;
+
+    const args = [_]?*const v8.Value{ex.handle};
+    _ = v8.v8__Function__Call(
+        @ptrCast(helper_val.handle),
+        local.handle,
+        global_handle,
+        1,
+        @ptrCast(&args),
+    );
+}
+
+fn throwViaJsDomExceptionHelper(local: *const Local, ex: @import("../dom/DOMException.zig")) bool {
+    const global_handle = v8.v8__Context__Global(local.handle).?;
+    const global = js.Object{ .local = local, .handle = global_handle };
+    const helper_val = global.get("__veloraDomExceptionThrow") catch return false;
+    if (!helper_val.isFunction()) return false;
+
+    const name_val = local.isolate.initStringHandle(ex.getName());
+    const msg_val = local.isolate.initStringHandle(ex.getMessage());
+    const args = [_]?*const v8.Value{ name_val, msg_val };
+    const result = v8.v8__Function__Call(
+        @ptrCast(helper_val.handle),
+        local.handle,
+        global_handle,
+        2,
+        @ptrCast(&args),
+    );
+    // null means the helper threw; pending exception is already on the isolate.
+    return result == null;
+}
+
 fn handleError(comptime T: type, comptime F: type, local: *const Local, err: anyerror, info: anytype, comptime opts: CallOpts) void {
     const isolate = local.isolate;
 
@@ -469,6 +673,9 @@ fn handleError(comptime T: type, comptime F: type, local: *const Local, err: any
             }
         }
     }
+
+    // V8 already has a pending exception (e.g. ToString threw during argument coercion).
+    if (err == error.JsException) return;
 
     const js_err: *const v8.Value = switch (err) {
         error.TryCatchRethrow => return,
@@ -489,8 +696,48 @@ fn handleError(comptime T: type, comptime F: type, local: *const Local, err: any
         },
     };
 
-    const js_exception = isolate.throwException(js_err);
-    info.getReturnValue().setValueHandle(js_exception);
+    if (@TypeOf(info) == FunctionCallbackInfo and info.isConstructCall()) {
+        // Native ThrowException does not reach in-script try/catch on 2nd+ Script::Run.
+        if (comptime opts.dom_exception) {
+            const DOMException = @import("../dom/DOMException.zig");
+            if (DOMException.fromError(err)) |ex| {
+                if (throwViaJsDomExceptionHelper(local, ex)) return;
+            }
+        }
+        if (throwViaJsConstructHelper(local, err)) return;
+    }
+
+    if (@TypeOf(info) == FunctionCallbackInfo and comptime opts.dom_exception) {
+        const DOMException = @import("../dom/DOMException.zig");
+        if (DOMException.fromError(err)) |ex| {
+            switch (local.ctx.global) {
+                .worker => {
+                    if (throwViaJsDomExceptionHelper(local, ex)) return;
+                },
+                .frame => {
+                    local.ctx.pending_callback_exception = true;
+                    _ = isolate.throwException(js_err);
+                    return;
+                },
+            }
+        }
+
+        switch (local.ctx.global) {
+            .worker => {
+                // Native throws from worker callbacks do not reach in-script try/catch.
+                switch (err) {
+                    error.TypeError, error.InvalidArgument, error.RangeError => {
+                        if (throwViaJsConstructHelper(local, err)) return;
+                    },
+                    else => {},
+                }
+            },
+            .frame => {},
+        }
+    }
+
+    local.ctx.pending_callback_exception = true;
+    _ = isolate.throwException(js_err);
 }
 
 // This is extracted to speed up compilation. When left inlined in handleError,
@@ -629,7 +876,7 @@ pub const FunctionCallbackInfo = struct {
         return .{ .handle = rv };
     }
 
-    fn isConstructCall(self: FunctionCallbackInfo) bool {
+    pub fn isConstructCall(self: FunctionCallbackInfo) bool {
         return v8.v8__FunctionCallbackInfo__IsConstructCall(self.handle);
     }
 };
@@ -671,6 +918,8 @@ const ReturnValue = struct {
 
 pub const Function = struct {
     pub const Opts = struct {
+        /// Override WebIDL "length" when Zig optional params under-count required args.
+        length: ?usize = null,
         noop: bool = false,
         static: bool = false,
         wpt_only: bool = false,
@@ -680,6 +929,8 @@ pub const Function = struct {
         null_as_undefined: bool = false,
         cache: ?Caching = null,
         embedded_receiver: bool = false,
+        /// Override the JavaScript property name (default: Zig field name).
+        js_name: ?[:0]const u8 = null,
 
         // We support two ways to cache a value directly into a v8::Object. The
         // difference between the two is like the difference between a Map
@@ -746,11 +997,29 @@ pub const Function = struct {
         }
     }
 
+    fn staticMethodSkipsReceiver(comptime F: type, comptime T: type) bool {
+        const params = @typeInfo(F).@"fn".params;
+        if (params.len == 0) return false;
+        const PT = params[0].type orelse return false;
+        return isTypeReceiver(PT, T);
+    }
+
+    fn isTypeReceiver(comptime PT: type, comptime T: type) bool {
+        const info = @typeInfo(PT);
+        if (info != .pointer) return false;
+        return info.pointer.child == T;
+    }
+
     fn _call(comptime T: type, local: *const Local, info: FunctionCallbackInfo, func: anytype, comptime opts: Opts) !js.Value {
         const F = @TypeOf(func);
         var args: ParameterTypes(F) = undefined;
         if (comptime opts.static) {
-            args = try getArgs(F, 0, local, info);
+            if (comptime staticMethodSkipsReceiver(F, T)) {
+                args = try getArgs(F, 1, local, info);
+                @field(args, "0") = undefined;
+            } else {
+                args = try getArgs(F, 0, local, info);
+            }
         } else if (comptime opts.embedded_receiver) {
             args = try getArgs(F, 1, local, info);
             @field(args, "0") = @ptrCast(@alignCast(info.getData() orelse unreachable));

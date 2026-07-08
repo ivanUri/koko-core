@@ -55,6 +55,10 @@ pub fn fromError(err: anyerror) ?DOMException {
         error.DataClone => .{ ._code = .data_clone_error },
         error.InvalidAccessError => .{ ._code = .invalid_access_error },
         error.OperationError => .{ ._code = .operation_error },
+        error.InvalidEventType => .{
+            ._code = .not_supported,
+            ._custom_message = "Failed to execute 'createEvent' on 'Document': The provided event type ('TouchEvent') is invalid.",
+        },
         else => null,
     };
 }

@@ -279,20 +279,31 @@ pub fn getAll(self: *HTMLDocument, frame: *Frame) !*collections.HTMLAllCollectio
     return frame._factory.create(collections.HTMLAllCollection.init(self.asNode(), frame));
 }
 
-pub fn getCookie(_: *HTMLDocument, frame: *Frame) ![]const u8 {
+pub fn getCookie(self: *HTMLDocument) ![]const u8 {
+    const doc = self.asDocument();
+    const doc_frame = doc.activeBrowsingContext() orelse return "";
+    const cookie_url = doc_frame.cookieURL();
     var buf: std.ArrayList(u8) = .empty;
-    try frame._session.cookie_jar.forRequest(frame.url, buf.writer(frame.call_arena), .{
+    try doc_frame._session.cookie_jar.forRequest(cookie_url, buf.writer(doc_frame.call_arena), .{
         .is_http = false,
         .is_navigation = true,
+        .origin_url = cookie_url,
+        .top_level_url = doc_frame.topLevelUrl(),
     });
     return buf.items;
 }
 
-pub fn setCookie(_: *HTMLDocument, cookie_str: []const u8, frame: *Frame) ![]const u8 {
+pub fn setCookie(self: *HTMLDocument, cookie_str: []const u8) ![]const u8 {
+    const doc = self.asDocument();
+    const doc_frame = doc.activeBrowsingContext() orelse return "";
+    const cookie_url = doc_frame.cookieURL();
+    const Cookie = @import("storage/Cookie.zig");
+    if (Cookie.isThirdPartyContext(doc_frame.topLevelUrl(), cookie_url)) {
+        return "";
+    }
     // we use the cookie jar's allocator to parse the cookie because it
     // outlives the frame's arena.
-    const Cookie = @import("storage/Cookie.zig");
-    const c = Cookie.parse(frame._session.cookie_jar.allocator, frame.url, cookie_str) catch {
+    const c = Cookie.parse(doc_frame._session.cookie_jar.allocator, cookie_url, cookie_str) catch {
         // Invalid cookies should be silently ignored, not throw errors
         return "";
     };
@@ -301,7 +312,7 @@ pub fn setCookie(_: *HTMLDocument, cookie_str: []const u8, frame: *Frame) ![]con
         c.deinit();
         return ""; // HttpOnly cookies cannot be set from JS
     }
-    try frame._session.cookie_jar.add(c, std.time.timestamp(), false);
+    try doc_frame._session.cookie_jar.addWithTopLevel(c, std.time.timestamp(), false, doc_frame.topLevelUrl());
     return cookie_str;
 }
 

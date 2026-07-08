@@ -190,6 +190,8 @@ exec_name: []const u8,
 profile: ProfileStore.LoadedProfile,
 profile_runtime: ProfileRuntime.ProfileRuntime,
 http_headers: HttpHeaders,
+/// Default HTTP cache directory when --http-cache-dir is omitted (serve/mcp).
+http_cache_dir_default: ?[]u8 = null,
 
 /// ProfileRuntime stores a pointer into Config.profile; must run after Config is at its final address.
 pub fn rebindProfilePointers(self: *Config) void {
@@ -210,7 +212,24 @@ pub fn initInPlace(self: *Config, allocator: Allocator, exec_name: []const u8, m
     self.profile_runtime = try ProfileRuntime.ProfileRuntime.init(allocator, &self.profile);
     errdefer self.profile_runtime.deinit(allocator);
     self.http_headers = try HttpHeaders.init(allocator, self);
+    self.http_cache_dir_default = null;
+    try self.ensureDefaultHttpCacheDir(allocator);
     self.rebindProfilePointers();
+}
+
+fn ensureDefaultHttpCacheDir(self: *Config, allocator: Allocator) !void {
+    const explicit: ?[]const u8 = switch (self.mode) {
+        .serve => |opts| opts.http_cache_dir,
+        .mcp => |opts| opts.http_cache_dir,
+        else => return,
+    };
+    if (explicit != null) return;
+
+    const tmp = std.process.getEnvVarOwned(allocator, "TMPDIR") catch
+        try allocator.dupe(u8, if (builtin.os.tag == .windows) "C:\\Temp" else "/tmp");
+    defer allocator.free(tmp);
+
+    self.http_cache_dir_default = try std.fs.path.join(allocator, &.{ tmp, "velora-http-cache" });
 }
 
 pub fn init(allocator: Allocator, exec_name: []const u8, mode: Mode) !Config {
@@ -222,6 +241,7 @@ pub fn init(allocator: Allocator, exec_name: []const u8, mode: Mode) !Config {
 }
 
 pub fn deinit(self: *Config, allocator: Allocator) void {
+    if (self.http_cache_dir_default) |path| allocator.free(path);
     self.http_headers.deinit(allocator);
     self.profile_runtime.deinit(allocator);
     self.profile.deinit();
@@ -284,7 +304,7 @@ pub fn httpTimeout(self: *const Config) u31 {
 }
 
 pub fn httpMaxRedirects(_: *const Config) u8 {
-    return 10;
+    return 20;
 }
 
 pub fn httpMaxResponseSize(self: *const Config) ?usize {
@@ -358,7 +378,9 @@ fn resolveBrowserProfileName(self: *const Config, allocator: Allocator) !?[]cons
 
 pub fn httpCacheDir(self: *const Config) ?[]const u8 {
     return switch (self.mode) {
-        inline .serve, .fetch, .mcp => |opts| opts.http_cache_dir,
+        .serve => |opts| opts.http_cache_dir orelse self.http_cache_dir_default,
+        .mcp => |opts| opts.http_cache_dir orelse self.http_cache_dir_default,
+        .fetch => |opts| opts.http_cache_dir,
         else => null,
     };
 }

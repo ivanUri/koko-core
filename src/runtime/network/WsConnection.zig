@@ -256,7 +256,7 @@ pub fn Reader(comptime EXPECT_MASK: bool) type {
         // 3 - We have part of the next message, but either it won't fight into the
         //     remaining buffer, or we don't know (because we don't have enough
         //     of the header to tell the length). We need to "compact" the buffer
-        fn compact(self: *Self) void {
+        pub fn compact(self: *Self) void {
             const pos = self.pos;
             const len = self.len;
 

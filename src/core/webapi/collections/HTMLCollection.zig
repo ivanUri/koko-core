@@ -66,6 +66,49 @@ pub fn getAtIndex(self: *HTMLCollection, index: usize, frame: *const Frame) ?*El
     };
 }
 
+fn indexedGet(self: *HTMLCollection, index: u32, frame: *Frame) ?*Element {
+    return self.getAtIndex(index, frame);
+}
+
+fn indexedSet(self: *HTMLCollection, index: u32, _: js.Value, frame: *Frame) bool {
+    _ = self;
+    _ = index;
+    _ = frame;
+    return false;
+}
+
+fn indexedDelete(self: *HTMLCollection, index: u32, frame: *Frame) error{NotHandled}!bool {
+    if (self.getAtIndex(index, frame) != null) {
+        return false;
+    }
+    return error.NotHandled;
+}
+
+fn namedSet(self: *HTMLCollection, name: []const u8, _: js.Value, frame: *Frame) error{NotHandled}!bool {
+    if (name.len == 0) return error.NotHandled;
+    if (self.getByName(name, frame) != null) {
+        return false;
+    }
+    return error.NotHandled;
+}
+
+fn namedDelete(self: *HTMLCollection, name: []const u8, frame: *Frame) error{NotHandled}!bool {
+    if (name.len == 0) return error.NotHandled;
+    if (self.getByName(name, frame) != null) {
+        return false;
+    }
+    return error.NotHandled;
+}
+
+fn getIndexes(self: *HTMLCollection, frame: *Frame) !js.Array {
+    const len = self.length(frame);
+    var arr = frame.js.local.?.newArray(len);
+    for (0..len) |i| {
+        _ = try arr.set(@intCast(i), i, .{});
+    }
+    return arr;
+}
+
 pub fn getByName(self: *HTMLCollection, name: []const u8, frame: *Frame) ?*Element {
     if (name.len == 0) {
         return null;
@@ -144,7 +187,13 @@ pub const JsApi = struct {
     };
 
     pub const length = bridge.accessor(HTMLCollection.length, null, .{});
-    pub const @"[int]" = bridge.indexed(HTMLCollection.getAtIndex, null, .{ .null_as_undefined = true });
+    pub const @"[int]" = bridge.indexedWithSetterDeleter(
+        HTMLCollection.indexedGet,
+        HTMLCollection.getIndexes,
+        HTMLCollection.indexedSet,
+        HTMLCollection.indexedDelete,
+        .{ .null_as_undefined = true, .enumerable = true, .legacy_platform_receiver = true },
+    );
     pub const @"[str]" = bridge.namedIndexed(struct {
         // The bridge interprets a null return value (with `null_as_undefined`)
         // as "intercepted with undefined", which makes `name in collection`
@@ -155,14 +204,11 @@ pub const JsApi = struct {
             if (name.len == 0) return error.NotHandled;
             return self.getByName(name, frame) orelse return error.NotHandled;
         }
-    }.wrap, null, null, null, .{ .null_as_undefined = true });
+    }.wrap, HTMLCollection.namedSet, HTMLCollection.namedDelete, null, .{ .null_as_undefined = true, .legacy_platform_receiver = true });
 
     pub const item = bridge.function(_item, .{});
-    fn _item(self: *HTMLCollection, index: i32, frame: *Frame) ?*Element {
-        if (index < 0) {
-            return null;
-        }
-        return self.getAtIndex(@intCast(index), frame);
+    fn _item(self: *HTMLCollection, index: u32, frame: *Frame) ?*Element {
+        return self.getAtIndex(index, frame);
     }
 
     pub const namedItem = bridge.function(HTMLCollection.getByName, .{});

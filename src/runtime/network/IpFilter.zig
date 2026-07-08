@@ -321,6 +321,25 @@ fn isBlockedV6(self: *const IpFilter, addr: Ipv6Addr) bool {
     return false;
 }
 
+/// Check if a resolved `std.net.Address` should be blocked (native WebSocket, etc.).
+/// Fail-closed: unknown address family -> true (blocked).
+pub fn isBlockedAddress(self: *const IpFilter, addr: std.net.Address) bool {
+    switch (addr.any.family) {
+        posix.AF.INET => {
+            const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&addr.any));
+            const bytes: [4]u8 = @bitCast(sin.addr);
+            return self.isBlockedV4(bytes);
+        },
+        posix.AF.INET6 => {
+            const sin6: *const posix.sockaddr.in6 = @ptrCast(@alignCast(&addr.any));
+            const addr_bytes: Ipv6Addr = sin6.addr;
+            if (isIpv4Mapped(addr_bytes)) |v4| return self.isBlockedV4(v4);
+            return self.isBlockedV6(addr_bytes);
+        },
+        else => return true,
+    }
+}
+
 /// Check if an address from curl's opensocket callback should be blocked.
 /// Extracts the IP directly from the sockaddr structure; no string parsing needed.
 /// Fail-closed: unknown address family -> true (blocked).

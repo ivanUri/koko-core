@@ -36,12 +36,11 @@ pub fn needsAscii(host: []const u8) bool {
 /// Convert a UTF-8 hostname to its ASCII (Punycode) form per UTS#46
 /// IDNA 2008 with non-transitional processing — the algorithm WHATWG URL
 /// invokes as "domain to ASCII". Returns an allocator-owned slice.
-pub fn toAscii(allocator: Allocator, host: []const u8) Error![]u8 {
+fn toAsciiWithFlags(allocator: Allocator, host: []const u8, flags: c_int) Error![]u8 {
     const host_z = try allocator.dupeZ(u8, host);
     defer allocator.free(host_z);
 
     var out_ptr: [*c]u8 = undefined;
-    const flags: c_int = c.IDN2_NFC_INPUT | c.IDN2_NONTRANSITIONAL;
     const rc = c.idn2_to_ascii_8z(host_z.ptr, &out_ptr, flags);
     if (rc != c.IDN2_OK) {
         return error.Idna;
@@ -49,6 +48,15 @@ pub fn toAscii(allocator: Allocator, host: []const u8) Error![]u8 {
     defer c.idn2_free(out_ptr);
 
     return try allocator.dupe(u8, std.mem.span(@as([*:0]const u8, @ptrCast(out_ptr))));
+}
+
+pub fn toAscii(allocator: Allocator, host: []const u8) Error![]u8 {
+    const flags: c_int = c.IDN2_NFC_INPUT | c.IDN2_NONTRANSITIONAL;
+    return toAsciiWithFlags(allocator, host, flags) catch {
+        // Symbol hosts (e.g. ☃ from %e2%98%83) fail non-transitional libidn2 but
+        // browsers/WPT still punycode them (ftp://%e2%98%83 → xn--n3h).
+        return toAsciiWithFlags(allocator, host, c.IDN2_NFC_INPUT | c.IDN2_TRANSITIONAL);
+    };
 }
 
 const testing = @import("../../testing/testing.zig");
@@ -72,4 +80,11 @@ test "idna: German sharp s with non-transitional processing" {
     const out = try toAscii(testing.allocator, "faß.de");
     defer testing.allocator.free(out);
     try testing.expectString("xn--fa-hia.de", out);
+}
+
+test "idna: snowman emoji host" {
+    const snowman = "\xe2\x98\x83"; // U+2603
+    const out = try toAscii(testing.allocator, snowman);
+    defer testing.allocator.free(out);
+    try testing.expectString("xn--n3h", out);
 }

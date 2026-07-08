@@ -85,6 +85,15 @@ _selection_end: u32 = 0,
 _selection_direction: Selection.SelectionDirection = .none,
 
 _on_selectionchange: ?js.Function.Global = null,
+_files: ?*@import("../../FileList.zig") = null,
+
+pub fn getFiles(self: *Input, frame: *Frame) !*@import("../../FileList.zig") {
+    if (self._files) |files| return files;
+    const FileList = @import("../../FileList.zig");
+    const files = try frame._factory.create(FileList{});
+    self._files = files;
+    return files;
+}
 
 pub fn getOnSelectionChange(self: *Input) ?js.Function.Global {
     return self._on_selectionchange;
@@ -1259,6 +1268,7 @@ pub const JsApi = struct {
     pub const size = bridge.accessor(Input.getSize, Input.setSize, .{});
     pub const src = bridge.accessor(Input.getSrc, Input.setSrc, .{});
     pub const form = bridge.accessor(Input.getForm, null, .{});
+    pub const files = bridge.accessor(Input.getFiles, null, .{ .dom_exception = true });
     pub const labels = bridge.accessor(Input.getLabels, null, .{});
     pub const indeterminate = bridge.accessor(Input.getIndeterminate, Input.setIndeterminate, .{});
     pub const placeholder = bridge.accessor(Input.getPlaceholder, Input.setPlaceholder, .{});

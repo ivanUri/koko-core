@@ -29,8 +29,8 @@ pub fn init(raw_url: [:0]const u8, frame: *Frame) !*Location {
     });
 }
 
-pub fn getPathname(self: *const Location) []const u8 {
-    return self._url.getPathname();
+pub fn getPathname(self: *const Location, exec: *const js.Execution) ![]const u8 {
+    return self._url.getPathname(exec);
 }
 
 pub fn getProtocol(self: *const Location) []const u8 {

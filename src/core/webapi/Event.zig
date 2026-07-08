@@ -43,6 +43,7 @@ _event_phase: EventPhase = .none,
 _time_stamp: u64,
 _needs_retargeting: bool = false,
 _is_trusted: bool = false,
+_in_passive_listener: bool = false,
 
 // There's a period of time between creating an event and handing it off to v8
 // where things can fail. If it does fail, we need to deinit the event. The timing
@@ -65,6 +66,7 @@ pub const Type = union(enum) {
     error_event: *@import("event/ErrorEvent.zig"),
     custom_event: *@import("event/CustomEvent.zig"),
     message_event: *@import("event/MessageEvent.zig"),
+    connect_event: *@import("event/ConnectEvent.zig"),
     progress_event: *@import("event/ProgressEvent.zig"),
     navigation_current_entry_change_event: *@import("event/NavigationCurrentEntryChangeEvent.zig"),
     page_transition_event: *@import("event/PageTransitionEvent.zig"),
@@ -121,13 +123,17 @@ fn initWithTrusted(arena: Allocator, typ: String, opts_: ?Options, comptime trus
     return event;
 }
 
+pub fn isBeingDispatched(self: *const Event) bool {
+    return self._event_phase != .none;
+}
+
 pub fn initEvent(
     self: *Event,
     event_string: []const u8,
     bubbles: ?bool,
     cancelable: ?bool,
 ) !void {
-    if (self._event_phase != .none) {
+    if (self.isBeingDispatched()) {
         return;
     }
 
@@ -169,6 +175,7 @@ pub fn is(self: *Event, comptime T: type) ?*T {
         .error_event => |e| return if (T == @import("event/ErrorEvent.zig")) e else null,
         .custom_event => |e| return if (T == @import("event/CustomEvent.zig")) e else null,
         .message_event => |e| return if (T == @import("event/MessageEvent.zig")) e else null,
+        .connect_event => |e| return if (T == @import("event/ConnectEvent.zig")) e else null,
         .progress_event => |e| return if (T == @import("event/ProgressEvent.zig")) e else null,
         .navigation_current_entry_change_event => |e| return if (T == @import("event/NavigationCurrentEntryChangeEvent.zig")) e else null,
         .page_transition_event => |e| return if (T == @import("event/PageTransitionEvent.zig")) e else null,
@@ -214,9 +221,14 @@ pub fn getCurrentTarget(self: *const Event) ?*EventTarget {
 }
 
 pub fn preventDefault(self: *Event) void {
+    if (self._in_passive_listener) return;
     if (self._cancelable) {
         self._prevent_default = true;
     }
+}
+
+pub fn setPassiveListener(self: *Event, passive: bool) void {
+    self._in_passive_listener = passive;
 }
 
 pub fn stopPropagation(self: *Event) void {
@@ -239,6 +251,7 @@ pub fn getReturnValue(self: *const Event) bool {
 pub fn setReturnValue(self: *Event, v: bool) void {
     if (!v) {
         // Setting returnValue=false is equivalent to preventDefault()
+        if (self._in_passive_listener) return;
         if (self._cancelable) {
             self._prevent_default = true;
         }

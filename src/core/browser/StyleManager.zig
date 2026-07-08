@@ -61,9 +61,11 @@ next_doc_order: u32 = 0,
 // When true, rules need to be rebuilt
 dirty: bool = false,
 
-// Cached getLayoutProperty results (key = elem ptr + property hash). Cleared on dom/style changes.
+// Cached getLayoutProperty results (key = elem ptr + property hash).
+// Values are duped into frame.arena — StyleManager.arena resets on rebuild.
 _layout_prop_cache: std.AutoHashMapUnmanaged(u64, ?[]const u8) = .empty,
-_layout_prop_cache_version: usize = 0,
+_layout_prop_cache_gen: u32 = 1,
+_layout_prop_cache_hit_gen: u32 = 0,
 
 // Custom properties from matching @media rules in <style> elements.
 custom_props: std.AutoHashMapUnmanaged(*Element, std.StringArrayHashMapUnmanaged([]const u8)) = .empty,
@@ -262,7 +264,8 @@ pub fn sheetModified(self: *StyleManager) void {
 }
 
 pub fn invalidateLayoutPropertyCache(self: *StyleManager) void {
-    self._layout_prop_cache_version = 0;
+    self._layout_prop_cache_gen +%= 1;
+    self._layout_prop_cache_hit_gen = 0;
 }
 
 /// Rebuilds the rule list from all document stylesheets.
@@ -678,17 +681,21 @@ fn layoutPropertyCacheKey(el: *Element, property_name: []const u8) u64 {
 
 /// Resolves a layout property (width/height) from inline styles and stylesheets.
 pub fn getLayoutProperty(self: *StyleManager, el: *Element, property_name: []const u8) ?[]const u8 {
-    const cache_valid = self._layout_prop_cache_version == self.frame.version;
+    const cache_valid = self._layout_prop_cache_hit_gen == self._layout_prop_cache_gen;
     const cache_key = layoutPropertyCacheKey(el, property_name);
     if (cache_valid) {
         if (self._layout_prop_cache.getPtr(cache_key)) |cached| return cached.*;
     } else {
-        self._layout_prop_cache_version = self.frame.version;
+        self._layout_prop_cache_hit_gen = self._layout_prop_cache_gen;
     }
 
     const result = self.resolveLayoutProperty(el, property_name);
-    self._layout_prop_cache.put(self.frame.arena, cache_key, result) catch {};
-    return result;
+    const owned: ?[]const u8 = if (result) |value|
+        self.frame.arena.dupe(u8, value) catch null
+    else
+        null;
+    self._layout_prop_cache.put(self.frame.arena, cache_key, owned) catch {};
+    return owned;
 }
 
 fn resolveLayoutProperty(self: *StyleManager, el: *Element, property_name: []const u8) ?[]const u8 {

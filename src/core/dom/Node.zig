@@ -192,6 +192,11 @@ pub fn parentElement(self: *const Node) ?*Element {
 
 // Validates that a node can be inserted as a child of parent.
 fn validateNodeInsertion(parent: *Node, node: *Node) !void {
+    // CharacterData nodes cannot have children.
+    if (parent._type == .cdata) {
+        return error.HierarchyError;
+    }
+
     // Check if parent is a valid type to have children
     if (parent._type != .document and parent._type != .element and parent._type != .document_fragment) {
         return error.HierarchyError;
@@ -251,6 +256,10 @@ pub fn appendChild(self: *Node, child: *Node, frame: *Frame) !*Node {
         .child_already_connected = child_connected,
         .adopting_to_new_document = adopting_to_new_document,
     });
+    frame.flushPendingSyncIframeLoads();
+    frame.drainMicrotasksAfterDomInsertion();
+    // yb() Promise executor calls I() after appendChild; drain await continuations.
+    frame.pumpSameTurnPromiseContinuations();
     return child;
 }
 
@@ -307,7 +316,7 @@ pub fn setTextContent(self: *Node, data: []const u8, frame: *Frame) !void {
             return el.replaceChildren(&.{.{ .text = data }}, frame);
         },
         // Per spec, setting textContent on CharacterData runs replaceData(0, length, value)
-        .cdata => |c| try c.replaceData(0, c.getLength(), data, frame),
+        .cdata => |c| try c.replaceData(0, c.getLength(), .{ .value = data }, frame),
         .document => {},
         .document_type => {},
         .document_fragment => |frag| {
@@ -522,6 +531,9 @@ pub fn ownerDocument(self: *const Node, frame: *const Frame) ?*Document {
 }
 
 pub fn ownerFrame(self: *const Node, default: *Frame) *Frame {
+    if (self._type == .document) {
+        return self._type.document._frame orelse default;
+    }
     const doc = self.ownerDocument(default) orelse return default;
     return doc._frame orelse default;
 }
@@ -663,7 +675,7 @@ pub fn setNodeValue(self: *const Node, value: ?String, frame: *Frame) !void {
         // Per spec, setting nodeValue on CharacterData runs replaceData(0, length, value)
         .cdata => |c| {
             const new_value: []const u8 = if (value) |v| v.str() else "";
-            try c.replaceData(0, c.getLength(), new_value, frame);
+            try c.replaceData(0, c.getLength(), .{ .value = new_value }, frame);
         },
         .attribute => |attr| try attr.setValue(value, frame),
         .element => {},

@@ -50,10 +50,7 @@ const names = [_][]const u8{
     "VirtualKeyboard",
     "DelegatedInkTrailPresenter",
     "Ink",
-    "Scheduler",
-    "TaskController",
     "TaskPriorityChangeEvent",
-    "TaskSignal",
     "VirtualKeyboardGeometryChangeEvent",
     // v95–96
     "URLPattern",
@@ -80,8 +77,6 @@ const names = [_][]const u8{
     // v111–115
     "ViewTransition",
     // CreepJS features (blinkWindow v72–v93) — in window-keys baseline, not full bridge types
-    "CompressionStream",
-    "DecompressionStream",
     "FeaturePolicy",
     "FragmentDirective",
     "PeriodicSyncManager",
@@ -97,9 +92,7 @@ const names = [_][]const u8{
     "ResizeObserverSize",
     "CSSPropertyRule",
     "CookieChangeEvent",
-    "CookieStore",
     "CookieStoreManager",
-    "Scheduling",
     "ReadableByteStreamController",
     "ReadableStreamBYOBReader",
     "ReadableStreamBYOBRequest",

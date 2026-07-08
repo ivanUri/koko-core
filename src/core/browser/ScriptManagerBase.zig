@@ -17,7 +17,9 @@ const assert = @import("../../support/assert.zig").assert;
 const builtin = @import("builtin");
 
 const HttpClient = @import("HttpClient.zig");
+const ContentSecurityPolicy = @import("ContentSecurityPolicy.zig");
 const http = @import("../../runtime/network/http.zig");
+const GoogleSigninDebug = @import("GoogleSigninDebug.zig");
 
 const js = @import("../js/js.zig");
 const URL = @import("URL.zig");
@@ -135,6 +137,13 @@ pub const Owner = union(enum) {
         };
     }
 
+    pub fn topLevelCookieUrl(self: Owner) [:0]const u8 {
+        return switch (self) {
+            .frame => |f| f.topLevelUrl(),
+            .worker => |w| w.url,
+        };
+    }
+
     pub fn frameId(self: Owner) u32 {
         return switch (self) {
             .frame => |f| f._frame_id,
@@ -163,22 +172,61 @@ pub const Owner = union(enum) {
         };
     }
 
-    pub fn addHeaders(
-        self: Owner,
-        headers: *HttpClient.Headers,
-        request_url: [:0]const u8,
-        resource_type: HttpClient.RequestParams.ResourceType,
-    ) !void {
+    pub fn addHeaders(self: Owner, headers: *HttpClient.Headers, opts: Frame.HeadersForRequestOpts) !void {
         switch (self) {
-            .frame => |f| try f.headersForRequest(headers, .{
-                .request_url = request_url,
-                .resource_type = resource_type,
-            }),
-            .worker => |w| try w.headersForRequest(headers, .{
-                .request_url = request_url,
-                .resource_type = resource_type,
-            }),
+            .frame => |f| try f.headersForRequest(headers, opts),
+            .worker => |w| try w.headersForRequest(headers, opts),
         }
+    }
+
+    pub fn omitCookies(self: Owner, request_url: [:0]const u8) bool {
+        return switch (self) {
+            .frame => false,
+            .worker => |w| !w._worker.shouldSendCookies(request_url),
+        };
+    }
+
+    pub fn parentFrame(self: Owner) *Frame {
+        return switch (self) {
+            .frame => |f| f,
+            .worker => |w| w._worker._frame,
+        };
+    }
+
+    pub fn cspAllowsStaticModuleImport(self: Owner, request_url: [:0]const u8) bool {
+        const frame = self.parentFrame();
+        const policy = frame.content_security_policy orelse return true;
+        return policy.allowsWorkerStaticImport(frame.arena, frame.url, request_url);
+    }
+
+    pub fn cspAllowsDynamicModuleImport(self: Owner, request_url: [:0]const u8) bool {
+        return switch (self) {
+            .frame => true,
+            .worker => |w| blk: {
+                const policy = w._worker._script_csp orelse return true;
+                const frame = w._worker._frame;
+                break :blk policy.allowsDynamicImport(frame.arena, frame.url, request_url);
+            },
+        };
+    }
+
+    pub fn hasOpaqueOrigin(self: Owner) bool {
+        return switch (self) {
+            .frame => false,
+            .worker => |w| w.origin == null,
+        };
+    }
+
+    pub fn opaqueOriginAllowsModuleFetch(self: Owner, response: HttpClient.Response, request_url: []const u8) bool {
+        if (!self.hasOpaqueOrigin()) return true;
+        if (std.mem.startsWith(u8, request_url, "data:")) return true;
+        var it = response.headerIterator();
+        while (it.next()) |hdr| {
+            if (std.ascii.eqlIgnoreCase(hdr.name, "access-control-allow-origin")) {
+                return hdr.value.len > 0;
+            }
+        }
+        return false;
     }
 };
 
@@ -190,9 +238,10 @@ is_evaluating: bool,
 // Only once this is true can deferred scripts be run
 static_scripts_done: bool,
 
-// List of async scripts. We don't care about the execution order of these, but
-// on shutdown/abort, we need to cleanup any pending ones. Used for both
-// frame-side .async scripts and .import / .import_async modules.
+// Async scripts and dynamic import() fetches. Frame .async classic scripts
+// execute in insertion order once each predecessor has finished loading
+// (boq-identity and similar loaders inject many async scripts in dependency
+// order but smaller chunks can finish downloading first).
 async_scripts: std.DoublyLinkedList,
 
 // List of deferred scripts. These must be executed in order, but only once
@@ -279,13 +328,50 @@ fn clearList(list: *std.DoublyLinkedList) void {
     }
 }
 
+pub const ModuleReferrerKind = enum {
+    none,
+    worker_static,
+    worker_dynamic,
+};
+
+fn moduleReferrerKind(self: *const ScriptManagerBase) ModuleReferrerKind {
+    return switch (self.owner) {
+        .worker => .worker_static,
+        .frame => .none,
+    };
+}
+
 pub fn getHeaders(
     self: *ScriptManagerBase,
     request_url: [:0]const u8,
     resource_type: HttpClient.RequestParams.ResourceType,
+    referrer_kind: ModuleReferrerKind,
 ) !http.Headers {
     var headers = try self.client.newHeaders();
-    try self.owner.addHeaders(&headers, request_url, resource_type);
+    const referrer_opts: Frame.HeadersForRequestOpts = switch (referrer_kind) {
+        .none => .{ .request_url = request_url, .resource_type = resource_type },
+        .worker_static => blk: {
+            const frame = self.owner.parentFrame();
+            break :blk .{
+                .request_url = request_url,
+                .resource_type = resource_type,
+                .referrer_source_url = self.owner.url(),
+                .referrer_policy = frame.referrer_policy,
+            };
+        },
+        .worker_dynamic => blk: {
+            break :blk switch (self.owner) {
+                .worker => |w| .{
+                    .request_url = request_url,
+                    .resource_type = resource_type,
+                    .referrer_source_url = self.owner.url(),
+                    .referrer_policy = w._worker._referrer_policy,
+                },
+                .frame => .{ .request_url = request_url, .resource_type = resource_type },
+            };
+        },
+    };
+    try self.owner.addHeaders(&headers, referrer_opts);
     return headers;
 }
 
@@ -309,6 +395,27 @@ pub fn scriptList(self: *ScriptManagerBase, script: *const Script) *std.DoublyLi
 }
 
 // Resolve a module specifier to a valid URL.
+fn completeDataUrlModuleScript(self: *ScriptManagerBase, script: *Script, owned_url: [:0]const u8) !void {
+    const body = WorkerGlobalScope.decodeDataUrlJavaScript(script.arena, owned_url) catch {
+        self.async_scripts.remove(&script.node);
+        if (self.imported_modules.getPtr(owned_url)) |entry| {
+            entry.state = .err;
+        }
+        script.deinit();
+        return;
+    };
+    script.status = 200;
+    script.complete = true;
+    try script.source.remote.appendSlice(script.arena, body);
+    self.async_scripts.remove(&script.node);
+    const entry = self.imported_modules.getPtr(owned_url) orelse {
+        script.deinit();
+        return error.UnknownModule;
+    };
+    entry.state = .{ .done = script };
+    entry.buffer = script.source.remote;
+}
+
 pub fn resolveSpecifier(self: *ScriptManagerBase, arena: Allocator, base: [:0]const u8, specifier: [:0]const u8) ![:0]const u8 {
     // If the specifier is mapped in the importmap, return the pre-resolved
     // value. For workers this map is empty.
@@ -320,6 +427,21 @@ pub fn resolveSpecifier(self: *ScriptManagerBase, arena: Allocator, base: [:0]co
 }
 
 pub fn preloadImport(self: *ScriptManagerBase, url: [:0]const u8, referrer: []const u8) !void {
+    switch (self.owner) {
+        .worker => {
+            if (!self.owner.cspAllowsStaticModuleImport(url)) {
+                const gop = try self.imported_modules.getOrPut(self.allocator, url);
+                if (!gop.found_existing) {
+                    const owned_url = try self.allocator.dupeZ(u8, url);
+                    gop.key_ptr.* = owned_url;
+                    gop.value_ptr.* = .{ .state = .err };
+                }
+                return;
+            }
+        },
+        .frame => {},
+    }
+
     if (self.imported_modules.get(url)) |entry| {
         switch (entry.state) {
             .done, .loading => {
@@ -381,6 +503,11 @@ pub fn preloadImport(self: *ScriptManagerBase, url: [:0]const u8, referrer: []co
     // called).
     self.async_scripts.append(&script.node);
 
+    if (std.mem.startsWith(u8, owned_url, "data:")) {
+        try self.completeDataUrlModuleScript(script, owned_url);
+        return;
+    }
+
     const session = self.owner.session();
     self.client.request(.{
         .ctx = script,
@@ -389,9 +516,11 @@ pub fn preloadImport(self: *ScriptManagerBase, url: [:0]const u8, referrer: []co
             .method = .GET,
             .frame_id = self.owner.frameId(),
             .loader_id = self.owner.loaderId(),
-            .headers = try self.getHeaders(owned_url, .script),
+            .headers = try self.getHeaders(owned_url, .script, self.moduleReferrerKind()),
             .cookie_jar = &session.cookie_jar,
             .cookie_origin = self.owner.url(),
+            .top_level_cookie_url = self.owner.topLevelCookieUrl(),
+            .omit_cookies = self.owner.omitCookies(owned_url),
             .resource_type = .script,
             .notification = session.notification,
         },
@@ -438,6 +567,42 @@ pub fn waitForImport(self: *ScriptManagerBase, url: [:0]const u8) !ModuleSource 
 }
 
 pub fn getAsyncImport(self: *ScriptManagerBase, url: [:0]const u8, cb: ImportAsync.Callback, cb_data: *anyopaque, referrer: []const u8) !void {
+    if (!self.owner.cspAllowsDynamicModuleImport(url)) {
+        cb(cb_data, error.Failed);
+        return;
+    }
+
+    if (std.mem.startsWith(u8, url, "data:")) {
+        const arena = try self.acquireArena(.large, "SM.getAsyncImport.data");
+        errdefer self.releaseArena(arena);
+        const body = WorkerGlobalScope.decodeDataUrlJavaScript(arena, url) catch {
+            cb(cb_data, error.Failed);
+            return;
+        };
+        const script = try arena.create(Script);
+        var buffer: std.ArrayList(u8) = .empty;
+        try buffer.appendSlice(arena, body);
+        script.* = .{
+            .arena = arena,
+            .url = url,
+            .node = .{},
+            .manager = self,
+            .complete = true,
+            .status = 200,
+            .source = .{ .remote = buffer },
+            .extra = .{ .import_async = .{
+                .callback = cb,
+                .data = cb_data,
+            } },
+        };
+        cb(cb_data, .{
+            .shared = false,
+            .script = script,
+            .buffer = buffer,
+        });
+        return;
+    }
+
     const arena = try self.acquireArena(.large, "SM.getAsyncImport");
     errdefer self.releaseArena(arena);
 
@@ -486,10 +651,12 @@ pub fn getAsyncImport(self: *ScriptManagerBase, url: [:0]const u8, cb: ImportAsy
             .method = .GET,
             .frame_id = self.owner.frameId(),
             .loader_id = self.owner.loaderId(),
-            .headers = try self.getHeaders(url, .script),
+            .headers = try self.getHeaders(url, .script, .worker_dynamic),
             .resource_type = .script,
             .cookie_jar = &session.cookie_jar,
             .cookie_origin = self.owner.url(),
+            .top_level_cookie_url = self.owner.topLevelCookieUrl(),
+            .omit_cookies = self.owner.omitCookies(url),
             .notification = session.notification,
         },
         .start_callback = if (log.enabled(.http, .debug)) Script.startCallback else null,
@@ -511,14 +678,36 @@ pub fn staticScriptsDone(self: *ScriptManagerBase) void {
     self.evaluate();
 }
 
+/// Run downloaded frame `.async` scripts in insertion order. Callable while a
+/// sync parent script is still evaluating — boq injects dependency chunks
+/// during bootstrap and expects them to run before the parent continues.
+pub fn drainOrderedAsyncScripts(self: *ScriptManagerBase) void {
+    drain_async: while (self.async_scripts.first) |n| {
+        var script: *Script = @fieldParentPtr("node", n);
+        switch (script.extra) {
+            .frame => |fe| {
+                if (fe.mode != .async) break :drain_async;
+                if (!script.complete) break :drain_async;
+                _ = self.async_scripts.popFirst();
+                defer script.deinit();
+                script.eval();
+            },
+            else => break :drain_async,
+        }
+    }
+}
+
 pub fn evaluate(self: *ScriptManagerBase) void {
     if (self.is_evaluating) {
-        // It's possible for a script.eval to cause evaluate to be called again.
+        // Defer/defer_scripts/tail_hook must not run during sync script eval.
+        // Async chunks still drain from doneCallback via drainOrderedAsyncScripts.
         return;
     }
 
     self.is_evaluating = true;
     defer self.is_evaluating = false;
+
+    self.drainOrderedAsyncScripts();
 
     while (self.ready_scripts.popFirst()) |n| {
         var script: *Script = @fieldParentPtr("node", n);
@@ -637,8 +826,8 @@ pub const Script = struct {
                 // defer_scripts, drained in document order.
                 @"defer",
                 // <script async> / dynamically-inserted scripts — queued in
-                // async_scripts; once HTTP completes, doneCallback moves to
-                // ready_scripts and evaluate drains them.
+                // async_scripts; doneCallback marks complete and evaluate()
+                // drains in insertion order.
                 async,
             };
         };
@@ -662,6 +851,13 @@ pub const Script = struct {
                 .status = response.status(),
                 .content_type = response.contentType(),
             });
+            return false;
+        }
+
+        if (self.extra == .import_async and
+            !self.manager.owner.opaqueOriginAllowsModuleFetch(response, self.url))
+        {
+            log.debug(.http, "opaque origin dynamic import blocked", .{ .url = self.url });
             return false;
         }
 
@@ -738,10 +934,7 @@ pub const Script = struct {
         const manager = self.manager;
         switch (self.extra) {
             .frame => |fe| switch (fe.mode) {
-                .async => {
-                    manager.async_scripts.remove(&self.node);
-                    manager.ready_scripts.append(&self.node);
-                },
+                .async => manager.drainOrderedAsyncScripts(),
                 .@"defer" => {}, // stays in defer_scripts; drained in order
                 .normal => unreachable, // syncRequest path doesn't go through callbacks
             },
@@ -807,6 +1000,20 @@ pub const Script = struct {
         manager.evaluate();
     }
 
+    fn pumpScriptScheduler(frame: *Frame, local: *const js.Local) void {
+        // Fingerprint loader yb() may schedule 10ms iframe polls at the tail of
+        // a long eval; drain overdue timers in a few passes so Y.ip settles.
+        var pass: u8 = 0;
+        while (pass < 12) : (pass += 1) {
+            _ = frame.js.scheduler.run() catch |err| {
+                log.err(.frame, "scheduler", .{ .err = err });
+                break;
+            };
+            local.ctx.env.runMicrotasks(.after_evaluate);
+            if (!frame.js.scheduler.hasReadyTasks()) break;
+        }
+    }
+
     // Frame-only. Asserts extra == .frame; callers from the worker path never
     // reach here (workers only produce .import / .import_async).
     pub fn eval(self: *Script) void {
@@ -863,10 +1070,6 @@ pub const Script = struct {
 
         defer frame._event_manager.clearIgnoreList();
 
-        var try_catch: js.TryCatch = undefined;
-        try_catch.init(local);
-        defer try_catch.deinit();
-
         const success = blk: {
             const content = self.source.content();
             if (jsCallLogEnabled()) {
@@ -874,11 +1077,20 @@ pub const Script = struct {
             }
             switch (fe.kind) {
                 .javascript => {
-                    const eval_content = if (jsCallLogEnabled())
-                        instrumentClassicScript(frame.call_arena, content, url) catch break :blk false
-                    else
-                        content;
-                    _ = local.eval(eval_content, url) catch break :blk false;
+                    const eval_content = blk2: {
+                        if (jsCallLogEnabled()) {
+                            break :blk2 instrumentClassicScript(frame.call_arena, content, url) catch break :blk false;
+                        }
+                        if (self.manager.is_evaluating and GoogleSigninDebug.isBoqScript(url)) {
+                            break :blk2 GoogleSigninDebug.prependBoqEvalShim(frame.call_arena, content) catch break :blk false;
+                        }
+                        break :blk2 content;
+                    };
+                    _ = local.eval(eval_content, url) catch |err| {
+                        log.warn(.js, "eval script", .{ .url = url, .err = err, .cacheable = cacheable });
+                        break :blk false;
+                    };
+                    frame.drainMicrotasksAfterDomInsertion();
                 },
                 .module => {
                     // We don't care about waiting for the evaluation here.
@@ -900,26 +1112,30 @@ pub const Script = struct {
         defer {
             // Parser-inserted scripts: defer microtasks + timers until the HTML
             // parser finishes (Blink/Chromium). knitsail reads readyState at nav.
-            if (!frame.isDocumentParsing()) {
-                local.ctx.env.runMicrotasks(.after_evaluate);
-                local.runMacrotasks();
-                _ = frame.js.scheduler.run() catch |err| {
-                    log.err(.frame, "scheduler", .{ .err = err });
-                };
+            const env = local.ctx.env;
+            const should_pump = !frame.isDocumentParsing() or !Frame.isGoogleKnitsailHost(frame.url);
+            if (should_pump) {
+                pumpScriptScheduler(frame, local);
+                if (!frame.isDocumentParsing()) {
+                    local.runMacrotasks();
+                }
+                // Fingerprint yb() resolves its iframe Promise after appendChild
+                // returns; await continuations need multiple checkpoint passes.
+                var pass: u8 = 0;
+                while (pass < 8) : (pass += 1) {
+                    env.runMicrotasks(.after_evaluate);
+                    if (!env.checkpoint_pending) break;
+                }
             }
         }
 
         if (success) {
+            if (fe.kind == .javascript and GoogleSigninDebug.isBoqScript(url) and GoogleSigninDebug.isAccountsGoogleUrl(frame.url)) {
+                _ = local.eval(GoogleSigninDebug.boq_zc_shim, "boq-zc-shim") catch {};
+            }
             self.executeCallback(comptime .wrap("load"));
             return;
         }
-
-        const caught = try_catch.caughtOrError(frame.call_arena, error.Unknown);
-        log.warn(.js, "eval script", .{
-            .url = url,
-            .caught = caught,
-            .cacheable = cacheable,
-        });
 
         self.executeCallback(comptime .wrap("error"));
     }

@@ -20,6 +20,8 @@
 const std = @import("std");
 
 const js = @import("../js/js.zig");
+const Frame = @import("../browser/Frame.zig");
+const WorkerGlobalScope = @import("WorkerGlobalScope.zig");
 
 const log = @import("../../support/log.zig");
 const RealmLifecycleKernel = @import("../../runtime/RealmLifecycleKernel.zig");
@@ -68,6 +70,12 @@ pub fn schedule(
     if (exec.timer_nesting_level >= 5 and effective_delay < 4) {
         effective_delay = 4;
     }
+    // Fingerprint yb() I() polls iframe readyState with setTimeout(10) from a
+    // Promise executor still nested inside appendChild. Chrome runs the poll on
+    // the next turn; Velora must not stall until a deferred macrotask pump.
+    if (exec.context.call_depth > 0 and effective_delay > 0 and effective_delay <= 10) {
+        effective_delay = 0;
+    }
     exec.timer_nesting_level +%= 1;
 
     var persisted_params: []js.Value.Temp = &.{};
@@ -102,6 +110,40 @@ pub fn schedule(
         .low_priority = opts.low_priority,
         .finalizer = ScheduleCallback.cancelled,
     });
+
+    // Fingerprint yb() I() polls with setTimeout(10) after appendChild returns
+    // from the Promise executor; run same-turn when nested (see effective_delay).
+    if (effective_delay <= 10 and exec.context.call_depth > 0) {
+        switch (exec.context.global) {
+            .frame => |frame| {
+                frame.pumpDueTimersNow(0);
+                const env = &frame._session.browser.env;
+                if (std.mem.indexOf(u8, frame.url, "fingerprint.com") != null) {
+                    env.drainFingerprintYbMicrotasks(frame.js);
+                } else {
+                    var mt: u8 = 0;
+                    while (mt < 8) : (mt += 1) {
+                        env.performMicrotaskCheckpoint(frame.js);
+                    }
+                }
+                frame.scheduleDeferredMacrotaskPump(0) catch |err| {
+                    log.warn(.js, "timer defer pump", .{ .err = err, .delay = effective_delay });
+                };
+            },
+            .worker => |wgs| {
+                // Nested worker setTimeout(≤10ms) is coerced to 0; defer pump to the
+                // next turn so clearTimeout in the same handler runs first.
+                wgs._worker._frame.scheduleDeferredMacrotaskPump(0) catch |err| {
+                    log.warn(.js, "worker timer defer pump", .{ .err = err, .delay = effective_delay });
+                };
+                if (effective_delay == 0) {
+                    wgs._worker._frame.scheduleDeferredMacrotaskPump(10) catch |err| {
+                        log.warn(.js, "worker timer defer pump10", .{ .err = err });
+                    };
+                }
+            },
+        }
+    }
 
     return timer_id;
 }
@@ -209,9 +251,7 @@ const ScheduleCallback = struct {
         switch (self.mode) {
             .idle => {
                 const IdleDeadline = @import("IdleDeadline.zig");
-                ls.toLocal(self.cb).call(void, .{IdleDeadline{}}) catch |err| {
-                    log.warn(.js, "idleCallback", .{ .name = self.name, .err = err });
-                };
+                invokeTimerCallback(&ls.local, self.exec, self.cb, .{IdleDeadline{}});
             },
             .animation_frame => {
                 // requestAnimationFrame is window-only; if a worker ever
@@ -220,15 +260,9 @@ const ScheduleCallback = struct {
                     .frame => |frame| frame.window,
                     .worker => unreachable,
                 };
-                ls.toLocal(self.cb).call(void, .{window._performance.now()}) catch |err| {
-                    log.warn(.js, "RAF", .{ .name = self.name, .err = err });
-                };
+                invokeTimerCallback(&ls.local, self.exec, self.cb, .{window._performance.now()});
             },
-            .normal => {
-                ls.toLocal(self.cb).call(void, self.params) catch |err| {
-                    log.warn(.js, "timer", .{ .name = self.name, .err = err });
-                };
-            },
+            .normal => invokeTimerCallback(&ls.local, self.exec, self.cb, self.params),
         }
         ls.local.ctx.env.runMicrotasks(.timer_callback);
 
@@ -240,3 +274,33 @@ const ScheduleCallback = struct {
         return null;
     }
 };
+
+fn invokeTimerCallback(local: *js.Local, exec: *js.Execution, cb: anytype, args: anytype) void {
+    var try_catch: js.TryCatch = undefined;
+    try_catch.init(local);
+    defer try_catch.deinit();
+
+    var caught: js.TryCatch.Caught = undefined;
+    local.toLocal(cb).tryCall(void, args, &caught) catch |err| {
+        if (err != error.JsException) {
+            log.warn(.js, "timer", .{ .err = err });
+            return;
+        }
+        const ex = try_catch.exceptionValue() orelse return;
+        const message = ex.toStringSlice() catch "Uncaught exception";
+        const filename = exec.base();
+        const line: u32 = caught.line orelse 0;
+        switch (exec.context.global) {
+            .frame => |frame| {
+                frame.window.reportUncaughtException(ex, message, filename, line, 0, frame) catch |report_err| {
+                    log.warn(.js, "timer uncaught", .{ .err = report_err });
+                };
+            },
+            .worker => |wsg| {
+                wsg.reportUncaughtException(ex, message, filename, line, 0) catch |report_err| {
+                    log.warn(.js, "timer uncaught", .{ .err = report_err });
+                };
+            },
+        }
+    };
+}

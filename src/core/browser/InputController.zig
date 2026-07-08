@@ -46,12 +46,15 @@ pub fn dispatchActivationOnElement(element: *Element, frame: *Frame) !void {
     try dispatchActivationOnTarget(hit);
 }
 
-/// Fast activation for LP.clickNode — skip human pointer animation (avoids CDP hang).
+/// Fast activation for LP.clickNode — synthetic click only (no pointer/focus path).
+/// Full pointer activation can deadlock Runtime.evaluate on the CDP transport thread.
 pub fn dispatchActivationOnElementFast(element: *Element, frame: *Frame) !void {
+    if (element.is(Element.Html)) |html| {
+        try html.click(frame);
+        return;
+    }
     const hit = resolveEffectiveHit(makeHitForElement(element, frame));
-    try dispatchPointerOver(hit);
-    try dispatchPointerDown(hit);
-    try dispatchPointerUpAndClick(hit);
+    try dispatchMouseEvent(hit, comptime .wrap("click"), baseEventOpts(hit));
 }
 
 /// Press half of a primary-button activation (CDP `mousePressed`).

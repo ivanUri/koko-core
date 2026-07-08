@@ -657,6 +657,71 @@ test "cdp.target: disposeBrowserContext" {
     }
 }
 
+test "cdp.target: dispose loaded page then recreate browser context" {
+    var ctx = try testing.context();
+    defer ctx.deinit();
+
+    _ = try ctx.loadBrowserContext(.{
+        .id = "BID-20",
+        .url = "hi.html",
+        .target_id = "FID-000000000X".*,
+    });
+    try testing.expect(ctx.cdp().browser_context != null);
+    try testing.expect(ctx.cdp().browser.session != null);
+
+    try ctx.processMessage(.{
+        .id = 9,
+        .method = "Target.disposeBrowserContext",
+        .params = .{ .browserContextId = "BID-20" },
+    });
+    try ctx.expectSentResult(null, .{ .id = 9 });
+    try testing.expectEqual(null, ctx.cdp().browser_context);
+    try testing.expectEqual(null, ctx.cdp().browser.session);
+
+    try ctx.processMessage(.{ .id = 10, .method = "Target.createBrowserContext" });
+    try testing.expect(ctx.cdp().browser_context != null);
+    try testing.expect(ctx.cdp().browser.session != null);
+    try ctx.expectSentResult(.{ .browserContextId = ctx.cdp().browser_context.?.id }, .{ .id = 10 });
+}
+
+test "cdp.target: dispose after Runtime.evaluate then recreate browser context" {
+    var ctx = try testing.context();
+    defer ctx.deinit();
+
+    const bc = try ctx.loadBrowserContext(.{
+        .id = "BID-30",
+        .url = "hi.html",
+        .target_id = "FID-000000000Y".*,
+        .session_id = "SID-EVAL",
+    });
+
+    try ctx.processMessage(.{
+        .id = 11,
+        .method = "Runtime.evaluate",
+        .params = .{
+            .expression = "document.title",
+            .returnByValue = true,
+            .awaitPromise = false,
+        },
+        .sessionId = bc.session_id.?,
+    });
+    try ctx.expectSentCount(1);
+
+    try ctx.processMessage(.{
+        .id = 12,
+        .method = "Target.disposeBrowserContext",
+        .params = .{ .browserContextId = "BID-30" },
+    });
+    try ctx.expectSentResult(null, .{ .id = 12 });
+    try testing.expectEqual(null, ctx.cdp().browser_context);
+    try testing.expectEqual(null, ctx.cdp().browser.session);
+
+    try ctx.processMessage(.{ .id = 13, .method = "Target.createBrowserContext" });
+    try testing.expect(ctx.cdp().browser_context != null);
+    try testing.expect(ctx.cdp().browser.session != null);
+    try ctx.expectSentResult(.{ .browserContextId = ctx.cdp().browser_context.?.id }, .{ .id = 13 });
+}
+
 test "cdp.target: createTarget" {
     {
         var ctx = try testing.context();

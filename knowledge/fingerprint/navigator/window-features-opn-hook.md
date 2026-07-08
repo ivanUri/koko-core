@@ -109,7 +109,7 @@ Steps:
 
 Install at **`_documentIsLoaded`**, not bare context creation—matches navigator keys and keeps CreepJS `lies` gate at 0 when prototype layouts are probed after document init.
 
-Related pruning work for Google Search: `knowledge/bugs/2026-06-29-google-search-knitsail-window-keys-prune.md`.
+Related pruning work for Google Search: `knowledge/captcha/detection/google-search-investigation-journey.md` (Phase 1 window-keys).
 
 ### What the hook does not fix
 
@@ -171,4 +171,4 @@ Document any baseline refresh in the PR: Chrome 150+ may add new globals that mu
 - [CreepJS navigator parity](./creepjs-navigator-parity.md) — `Object.keys` on prototype (different hook)
 - [CreepJS cssMedia parity](../css-media/creepjs-cssmedia-parity.md) — same probe harness, phantom iframe
 - [CreepJS css parity](../css/creepjs-css-parity.md) — another ordered key-list fingerprint
-- [Google Search window keys prune](../../bugs/2026-06-29-google-search-knitsail-window-keys-prune.md) — production pruning overlap
+- [Google Search investigation journey](../../captcha/detection/google-search-investigation-journey.md) — production pruning overlap

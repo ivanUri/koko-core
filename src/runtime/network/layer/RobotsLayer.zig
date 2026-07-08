@@ -112,6 +112,7 @@ fn fetchRobotsThenRequest(
                 .loader_id = req.params.loader_id,
                 .cookie_jar = req.params.cookie_jar,
                 .cookie_origin = req.params.cookie_origin,
+                .top_level_cookie_url = req.params.top_level_cookie_url,
                 .notification = req.params.notification,
                 .resource_type = .fetch,
             },

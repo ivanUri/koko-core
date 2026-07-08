@@ -87,6 +87,17 @@ fn request(ptr: *anyopaque, client: *Client, req: Request) anyerror!void {
     return unconditionalRequest(self, client, req);
 }
 
+fn requestHasClientValidators(cache_req: CacheRequest) bool {
+    for (cache_req.request_headers) |hdr| {
+        if (std.ascii.eqlIgnoreCase(hdr.name, "if-none-match") or
+            std.ascii.eqlIgnoreCase(hdr.name, "if-modified-since"))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 fn closeCachedData(data: *const CachedData) void {
     switch (data.*) {
         .buffer => |_| {},
@@ -128,7 +139,8 @@ fn conditionalRequest(
     cache_req: CacheRequest,
     stale: *const CachedResponse,
 ) !void {
-    const arena = req.params.arena;
+    var mutable_req = req;
+    const arena = mutable_req.params.arena;
 
     const stale_meta = try arena.create(CachedMetadata);
     stale_meta.* = stale.metadata;
@@ -139,26 +151,24 @@ fn conditionalRequest(
     cache_ctx.* = .{
         .arena = arena,
         .client = client,
-        .forward = Forward.fromRequest(req),
-        .req_url = req.params.url,
-        .req_headers = req.params.headers,
+        .forward = Forward.fromRequest(mutable_req),
+        .req_url = mutable_req.params.url,
+        .req_headers = mutable_req.params.headers,
         .stale_cached = stale_meta,
         .stale_body = stale_body,
         .cache_req = cache_req,
+        .expose_304_status = requestHasClientValidators(cache_req),
     };
 
-    var headers = req.params.headers;
     if (stale.metadata.etag) |etag| {
-        const hdr = try std.fmt.allocPrintSentinel(arena, "If-None-Match: {s}", .{etag}, 0);
-        try headers.add(hdr);
+        mutable_req.params.revalidate_etag = etag;
     }
     if (stale.metadata.last_modified) |lm| {
-        const hdr = try std.fmt.allocPrintSentinel(arena, "If-Modified-Since: {s}", .{lm}, 0);
-        try headers.add(hdr);
+        mutable_req.params.revalidate_last_modified = lm;
     }
 
     const wrapped = cache_ctx.forward.wrapRequest(
-        req,
+        mutable_req,
         cache_ctx,
         .{
             .start = CacheContext.startCallback,
@@ -241,6 +251,8 @@ const CacheContext = struct {
     stale_body: ?CachedData = null,
     cache_req: ?CacheRequest = null,
     served_stale: bool = false,
+    /// When the client sent If-None-Match / If-Modified-Since, surface 304 to Fetch.
+    expose_304_status: bool = false,
 
     fn startCallback(response: Response) anyerror!void {
         const self: *CacheContext = @ptrCast(@alignCast(response.ctx));
@@ -283,6 +295,28 @@ const CacheContext = struct {
                     }
                 }
 
+                {
+                    const x_status = blk: {
+                        if (transfer._conn) |conn| {
+                            if (conn.getResponseHeader("x-http-status", 0)) |h| break :blk h.value;
+                        }
+                        break :blk "304";
+                    };
+                    var headers: std.ArrayList(http.Header) = .empty;
+                    for (stale_meta.headers) |hdr| {
+                        if (std.ascii.eqlIgnoreCase(hdr.name, "X-HTTP-STATUS")) continue;
+                        try headers.append(allocator, .{
+                            .name = try allocator.dupe(u8, hdr.name),
+                            .value = try allocator.dupe(u8, hdr.value),
+                        });
+                    }
+                    try headers.append(allocator, .{
+                        .name = try allocator.dupe(u8, "X-HTTP-STATUS"),
+                        .value = try allocator.dupe(u8, x_status),
+                    });
+                    stale_meta.headers = try headers.toOwnedSlice(allocator);
+                }
+
                 const body = self.stale_body orelse return self.forward.forwardHeader(response);
                 switch (body) {
                     .buffer => |data| {
@@ -291,6 +325,10 @@ const CacheContext = struct {
                         };
                     },
                     .file => |_| {},
+                }
+
+                if (self.expose_304_status) {
+                    stale_meta.status = 304;
                 }
 
                 const cached = CachedResponse{

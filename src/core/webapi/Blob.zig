@@ -108,7 +108,7 @@ pub fn initFromBytes(data: []const u8, content_type: []const u8, validate_mime: 
 }
 
 /// Validates and normalizes MIME type according to spec.
-fn validateMimeType(arena: Allocator, mime_type: []const u8, full_validation: bool) ![]const u8 {
+pub fn validateMimeType(arena: Allocator, mime_type: []const u8, full_validation: bool) ![]const u8 {
     if (mime_type.len == 0) {
         return "";
     }
@@ -319,6 +319,15 @@ pub fn getSize(self: *const Blob) usize {
 /// Returns the type of Blob; likely a MIME type, yet anything can be given.
 pub fn getType(self: *const Blob) []const u8 {
     return self._mime;
+}
+
+pub fn getSlice(self: *const Blob) []const u8 {
+    return self._slice;
+}
+
+pub fn adoptBytes(self: *Blob, data: []const u8, mime: []const u8) void {
+    self._slice = data;
+    self._mime = mime;
 }
 
 pub const JsApi = struct {

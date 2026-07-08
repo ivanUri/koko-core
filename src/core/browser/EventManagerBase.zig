@@ -60,6 +60,12 @@ lookup: std.HashMapUnmanaged(
 ),
 dispatch_depth: usize,
 deferred_removals: std.ArrayList(struct { list: *std.DoublyLinkedList, listener: *Listener }),
+deferred_abort_fires: std.ArrayList(DeferredAbortFire),
+
+pub const DeferredAbortFire = struct {
+    signal: *@import("../webapi/AbortSignal.zig"),
+    exec: *const js.Execution,
+};
 
 pub fn init(arena: Allocator) EventManagerBase {
     return .{
@@ -69,14 +75,173 @@ pub fn init(arena: Allocator) EventManagerBase {
         .listener_pool = .init(arena),
         .dispatch_depth = 0,
         .deferred_removals = .{},
+        .deferred_abort_fires = .{},
     };
 }
+
+pub fn beginDispatch(self: *EventManagerBase) void {
+    self.dispatch_depth += 1;
+}
+
+pub fn endDispatch(self: *EventManagerBase) void {
+    if (self.dispatch_depth == 0) return;
+    self.dispatch_depth -= 1;
+    if (self.dispatch_depth == 0) {
+        for (self.deferred_removals.items) |removal| {
+            removal.list.remove(&removal.listener.node);
+            self.listener_pool.destroy(removal.listener);
+        }
+        self.deferred_removals.clearRetainingCapacity();
+
+        const AbortSignal = @import("../webapi/AbortSignal.zig");
+        AbortSignal.flushDeferredAbortFires(self);
+    }
+}
+
+fn reportListenerException(
+    local: *const js.Local,
+    ctx: *js.Context,
+    try_catch: js.TryCatch,
+    caught: js.TryCatch.Caught,
+) void {
+    const ex = try_catch.exceptionValue() orelse return;
+    const message = ex.toStringSlice() catch "Uncaught exception";
+    const line: u32 = caught.line orelse 0;
+
+    // Listener exceptions are reported on the listener's realm (incumbent), not the
+    // dispatch entry realm (WPT Event-dispatch-throwing-multiple-globals).
+    const report_ctx = blk: {
+        const v8_incumbent = js.v8.v8__Isolate__GetIncumbentContext(local.isolate.handle) orelse break :blk ctx;
+        break :blk js.Context.fromC(v8_incumbent) orelse ctx;
+    };
+
+    switch (report_ctx.global) {
+        .frame => |frame| {
+            frame.window.reportUncaughtException(ex, message, frame.base(), line, 0, frame) catch |err| {
+                log.warn(.event, "listener uncaught", .{ .err = err });
+            };
+        },
+        .worker => |wgs| {
+            wgs.reportUncaughtException(ex, message, wgs.base(), line, 0) catch |err| {
+                log.warn(.event, "listener uncaught", .{ .err = err });
+            };
+        },
+    }
+}
+
+pub fn invokeListener(
+    local: *const js.Local,
+    ctx: *js.Context,
+    func: js.Function,
+    this: anytype,
+    event: *Event,
+    context: []const u8,
+) void {
+    var try_catch: js.TryCatch = undefined;
+    try_catch.init(local);
+    defer try_catch.deinit();
+
+    var caught: js.TryCatch.Caught = undefined;
+    func.tryCallWithThis(void, this, .{event}, &caught) catch |err| {
+        if (err != error.JsException) {
+            log.warn(.event, "listener invocation failed", .{ .err = err, .context = context });
+            return;
+        }
+        ctx.pending_callback_exception = false;
+        reportListenerException(local, ctx, try_catch, caught);
+    };
+}
+
+pub fn invokeCallback(
+    local: *const js.Local,
+    ctx: *js.Context,
+    func: js.Function,
+    comptime T: type,
+    args: anytype,
+    context: []const u8,
+) ?T {
+    var try_catch: js.TryCatch = undefined;
+    try_catch.init(local);
+    defer try_catch.deinit();
+
+    var caught: js.TryCatch.Caught = undefined;
+    return func.tryCall(T, args, &caught) catch |err| {
+        if (err != error.JsException) {
+            log.warn(.event, "callback invocation failed", .{ .err = err, .context = context });
+            return null;
+        }
+        ctx.pending_callback_exception = false;
+        reportListenerException(local, ctx, try_catch, caught);
+        return null;
+    };
+}
+
+pub fn invokeListenerObject(
+    local: *const js.Local,
+    ctx: *js.Context,
+    obj: js.Object,
+    event: *Event,
+    context: []const u8,
+) void {
+    const handle_event = obj.getFunction("handleEvent") catch |err| blk: {
+        log.warn(.event, "listener handleEvent lookup failed", .{ .err = err, .context = context });
+        break :blk null;
+    };
+    if (handle_event) |handleEvent| {
+        invokeListener(local, ctx, handleEvent, obj, event, context);
+    }
+}
+
+pub fn invokeListenerString(
+    arena: Allocator,
+    local: *const js.Local,
+    ctx: *js.Context,
+    source: []const u8,
+    context: []const u8,
+) void {
+    const str = arena.dupeZ(u8, source) catch |err| {
+        log.warn(.event, "listener string dup failed", .{ .err = err, .context = context });
+        return;
+    };
+
+    var try_catch: js.TryCatch = undefined;
+    try_catch.init(local);
+    defer try_catch.deinit();
+
+    local.eval(str, null) catch |err| {
+        if (err != error.JsException) {
+            log.warn(.event, "listener string eval failed", .{ .err = err, .context = context });
+            return;
+        }
+        const caught = try_catch.caughtOrError(arena, err);
+        ctx.pending_callback_exception = false;
+        reportListenerException(local, ctx, try_catch, caught);
+    };
+}
+
+pub const SignalOption = union(enum) {
+    unset,
+    set: *@import("../webapi/AbortSignal.zig"),
+
+    pub fn fromJs(local: *const js.Local, js_val: js.Value) !SignalOption {
+        if (js_val.isUndefined()) return .unset;
+        if (js_val.isNull()) return error.TypeError;
+        return .{ .set = try local.jsValueToZig(*@import("../webapi/AbortSignal.zig"), js_val) };
+    }
+
+    pub fn get(self: SignalOption) ?*@import("../webapi/AbortSignal.zig") {
+        return switch (self) {
+            .unset => null,
+            .set => |signal| signal,
+        };
+    }
+};
 
 pub const RegisterOptions = struct {
     once: bool = false,
     capture: bool = false,
     passive: bool = false,
-    signal: ?*@import("../webapi/AbortSignal.zig") = null,
+    signal: SignalOption = .unset,
 };
 
 pub const Callback = union(enum) {
@@ -95,7 +260,7 @@ pub fn register(self: *EventManagerBase, target: *EventTarget, typ: []const u8, 
     }
 
     // If a signal is provided and already aborted, don't register the listener
-    if (opts.signal) |signal| {
+    if (opts.signal.get()) |signal| {
         if (signal.getAborted()) {
             return error.SignalAborted;
         }
@@ -139,7 +304,7 @@ pub fn register(self: *EventManagerBase, target: *EventTarget, typ: []const u8, 
         .capture = opts.capture,
         .passive = opts.passive,
         .function = func,
-        .signal = opts.signal,
+        .signal = opts.signal.get(),
         .typ = type_string,
     };
     // append the listener to the list of listeners for this target
@@ -148,9 +313,24 @@ pub fn register(self: *EventManagerBase, target: *EventTarget, typ: []const u8, 
     return listener;
 }
 
+/// Register a listener, silently ignoring spec-mandated no-ops (aborted signal,
+/// duplicate callback). Used by addEventListener in both window and worker realms.
+pub fn registerIgnoringNoops(
+    self: *EventManagerBase,
+    target: *EventTarget,
+    typ: []const u8,
+    callback: Callback,
+    opts: RegisterOptions,
+) !?*Listener {
+    return self.register(target, typ, callback, opts) catch |err| switch (err) {
+        error.SignalAborted, error.DuplicateListener => return null,
+        else => return err,
+    };
+}
+
 pub fn remove(self: *EventManagerBase, target: *EventTarget, typ: []const u8, callback: Callback, use_capture: bool) void {
     const list = self.lookup.get(.{
-        .type_string = .wrap(typ),
+        .type_string = String.wrap(typ),
         .event_target = @intFromPtr(target),
     }) orelse return;
     if (findListener(list, callback, use_capture)) |listener| {
@@ -159,6 +339,8 @@ pub fn remove(self: *EventManagerBase, target: *EventTarget, typ: []const u8, ca
 }
 
 pub fn removeListener(self: *EventManagerBase, list: *std.DoublyLinkedList, listener: *Listener) void {
+    if (listener.removed) return;
+
     // If we're in a dispatch, defer removal to avoid invalidating iteration
     if (self.dispatch_depth > 0) {
         listener.removed = true;
@@ -174,7 +356,7 @@ pub fn removeListener(self: *EventManagerBase, list: *std.DoublyLinkedList, list
 pub fn hasListeners(self: *EventManagerBase, target: *EventTarget, typ: []const u8) bool {
     return self.lookup.get(.{
         .event_target = @intFromPtr(target),
-        .type_string = .wrap(typ),
+        .type_string = String.wrap(typ),
     }) != null;
 }
 
@@ -199,6 +381,9 @@ pub const DispatchError = error{
 pub const DispatchDirectOptions = struct {
     context: []const u8 = "dispatchDirect",
     inject_target: bool = true,
+    /// Iframe unload/pagehide during parent DOM removal: do not drain microtasks
+    /// before returning to the outer V8 API callback.
+    skip_post_dispatch_microtasks: bool = false,
 };
 
 /// Direct dispatch for non-DOM targets. No propagation - just calls the property
@@ -239,16 +424,16 @@ pub fn dispatchDirect(
         break :blk &owned_scope.local;
     };
     defer if (!nested_in_api) {
-        local.ctx.env.runMicrotasks(.event_handler);
+        if (!opts.skip_post_dispatch_microtasks) {
+            local.ctx.env.runMicrotasks(.event_handler);
+        }
         owned_scope.deinit();
     };
 
     // Call the property handler (e.g., onmessage) if present
     if (getFunction(handler, local)) |func| {
         event._current_target = target;
-        _ = func.callWithThis(void, target, .{event}) catch |err| {
-            log.warn(.event, opts.context, .{ .err = err });
-        };
+        invokeListener(local, ctx, func, target, event, opts.context);
     }
 
     // Call listeners registered via addEventListener
@@ -257,22 +442,6 @@ pub fn dispatchDirect(
     // This is a slightly simplified version of what you'll find in EventManager.
     // dispatchPhase. It is simpler because, for direct dispatching, we know
     // there's no ancestors and only the single target phase.
-
-    // Track dispatch depth for deferred removal
-    self.dispatch_depth += 1;
-    defer {
-        const dispatch_depth = self.dispatch_depth;
-        // Only destroy deferred listeners when we exit the outermost dispatch
-        if (dispatch_depth == 1) {
-            for (self.deferred_removals.items) |removal| {
-                removal.list.remove(&removal.listener.node);
-                self.listener_pool.destroy(removal.listener);
-            }
-            self.deferred_removals.clearRetainingCapacity();
-        } else {
-            self.dispatch_depth = dispatch_depth - 1;
-        }
-    }
 
     // Use the last listener in the list as sentinel - listeners added during dispatch will be after it
     const last_node = list.last orelse return;
@@ -310,29 +479,17 @@ pub fn dispatchDirect(
 
         event._current_target = target;
 
+        event.setPassiveListener(listener.passive);
+        defer event.setPassiveListener(false);
+
         // Listener exceptions are reported, not propagated, so dispatch can continue.
         switch (listener.function) {
-            .value => |value| local.toLocal(value).callWithThis(void, target, .{event}) catch |err| {
-                log.warn(.event, opts.context, .{ .err = err });
+            .value => |value| {
+                const func = globalToFunction(value, local) orelse continue;
+                invokeListener(local, ctx, func, target, event, opts.context);
             },
-            .string => |string| {
-                const str = try arena.dupeZ(u8, string.str());
-                local.eval(str, null) catch |err| {
-                    log.warn(.event, opts.context, .{ .err = err });
-                };
-            },
-            .object => |obj_global| {
-                const obj = local.toLocal(obj_global);
-                const handle_event = obj.getFunction("handleEvent") catch |err| blk: {
-                    log.warn(.event, opts.context, .{ .err = err });
-                    break :blk null;
-                };
-                if (handle_event) |handleEvent| {
-                    handleEvent.callWithThis(void, obj, .{event}) catch |err| {
-                        log.warn(.event, opts.context, .{ .err = err });
-                    };
-                }
-            },
+            .string => |string| invokeListenerString(arena, local, ctx, string.str(), opts.context),
+            .object => |obj_global| invokeListenerObject(local, ctx, local.toLocal(obj_global), event, opts.context),
         }
 
         if (event._stop_immediate_propagation) {
@@ -354,9 +511,40 @@ fn getFunction(handler: anytype, local: *const js.Local) ?js.Function {
     return switch (T) {
         js.Function => handler,
         js.Function.Temp => local.toLocal(handler),
-        js.Function.Global => local.toLocal(handler),
+        js.Function.Global => globalToFunction(handler, local),
         else => @compileError("handler must be null or \\??js.Function(\\.(Temp|Global))?"),
     };
+}
+
+fn globalToFunction(handler: js.Function.Global, local: *const js.Local) ?js.Function {
+    const handle = js.v8.v8__Global__Get(&handler.handle, local.isolate.handle) orelse return null;
+    return .{
+        .local = local,
+        .handle = @ptrCast(handle),
+    };
+}
+
+/// Remove all listeners registered with the given abort signal.
+pub fn removeSignalListeners(self: *EventManagerBase, signal: *@import("../webapi/AbortSignal.zig")) void {
+    var pending = std.ArrayList(struct { list: *std.DoublyLinkedList, listener: *Listener }).empty;
+    defer pending.deinit(self.arena);
+
+    var it = self.lookup.iterator();
+    while (it.next()) |entry| {
+        const list = entry.value_ptr.*;
+        var node = list.first;
+        while (node) |n| {
+            const listener: *Listener = @alignCast(@fieldParentPtr("node", n));
+            if (listener.signal == signal) {
+                pending.append(self.arena, .{ .list = list, .listener = listener }) catch return;
+            }
+            node = n.next;
+        }
+    }
+
+    for (pending.items) |item| {
+        self.removeListener(item.list, item.listener);
+    }
 }
 
 /// Check if there are any listeners for a direct dispatch (non-DOM target).

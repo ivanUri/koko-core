@@ -34,6 +34,12 @@ pub fn init(frame: *Frame) !*CSSStyleSheet {
     return frame._factory.create(CSSStyleSheet{});
 }
 
+pub fn initWithHref(href: []const u8, frame: *Frame) !*CSSStyleSheet {
+    return frame._factory.create(CSSStyleSheet{
+        ._href = try frame.dupeString(href),
+    });
+}
+
 pub fn initWithOwner(owner: *Element, frame: *Frame) !*CSSStyleSheet {
     return frame._factory.create(CSSStyleSheet{ ._owner_node = owner });
 }

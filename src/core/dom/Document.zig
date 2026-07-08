@@ -64,7 +64,22 @@ _selection: Selection = .{ ._rc = .init(1) },
 // document.open/close/write/writeln must throw InvalidStateError.
 _throw_on_dynamic_markup_insertion_counter: u32 = 0,
 
+_visibility_hidden: bool = false,
+
 _on_selectionchange: ?js.Function.Global = null,
+_on_visibilitychange: ?js.Function.Global = null,
+
+pub fn getHidden(self: *const Document) bool {
+    return self._visibility_hidden;
+}
+
+pub fn getVisibilityState(self: *const Document) []const u8 {
+    return if (self._visibility_hidden) "hidden" else "visible";
+}
+
+pub fn markVisibilityHidden(self: *Document) void {
+    self._visibility_hidden = true;
+}
 
 pub fn getOnSelectionChange(self: *Document) ?js.Function.Global {
     return self._on_selectionchange;
@@ -75,6 +90,43 @@ pub fn setOnSelectionChange(self: *Document, listener: ?js.Function) !void {
         self._on_selectionchange = try listen.persistWithThis(self);
     } else {
         self._on_selectionchange = null;
+    }
+}
+
+pub fn getOnVisibilityChange(self: *const Document) ?js.Function.Global {
+    return self._on_visibilitychange;
+}
+
+pub fn setOnVisibilityChange(self: *Document, listener: ?js.Function) !void {
+    const doc_frame = self._frame orelse {
+        if (listener) |listen| {
+            self._on_visibilitychange = try listen.persist();
+        } else {
+            self._on_visibilitychange = null;
+        }
+        return;
+    };
+    const target = self.asEventTarget();
+    const em = &doc_frame._event_manager;
+
+    if (self._on_visibilitychange) |prev| {
+        var scope: js.Local.Scope = undefined;
+        doc_frame.js.localScope(&scope);
+        defer scope.deinit();
+        if (js.v8.v8__Global__Get(&prev.handle, scope.local.isolate.handle)) |handle| {
+            const prev_func = js.Function{
+                .local = &scope.local,
+                .handle = @ptrCast(handle),
+            };
+            em.remove(target, "visibilitychange", .{ .function = prev_func }, false);
+        }
+    }
+
+    if (listener) |listen| {
+        self._on_visibilitychange = try listen.persist();
+        try em.register(target, "visibilitychange", .{ .function = listen }, .{});
+    } else {
+        self._on_visibilitychange = null;
     }
 }
 
@@ -519,6 +571,12 @@ pub fn createEvent(_: *const Document, event_type: []const u8, frame: *Frame) !*
         return (try CompositionEvent.init("", null, frame)).asEvent();
     }
 
+    // Chrome rejects legacy createEvent for TouchEvent with a DOMException (not NotSupportedError).
+    // Google sign-in browserinfo probes this path for the touch-capability bit.
+    if (std.mem.eql(u8, normalized, "touchevent") or std.mem.eql(u8, normalized, "touchevents")) {
+        return error.InvalidEventType;
+    }
+
     return error.NotSupported;
 }
 
@@ -548,14 +606,22 @@ pub fn getReadyState(self: *const Document) []const u8 {
     return @tagName(self._ready_state);
 }
 
-pub fn getCookie(self: *Document, frame: *Frame) ![]const u8 {
-    const html_doc = self.is(HTMLDocument) orelse return "";
-    return HTMLDocument.getCookie(html_doc, frame);
+/// Active browsing context for this document, if any. Detached documents (e.g.
+/// after iframe navigation) have `_frame == null` or `frame.document != self`.
+pub fn activeBrowsingContext(self: *const Document) ?*Frame {
+    const frame = self._frame orelse return null;
+    if (frame.document != self) return null;
+    return frame;
 }
 
-pub fn setCookie(self: *Document, cookie_str: []const u8, frame: *Frame) ![]const u8 {
+pub fn getCookie(self: *Document, _: *Frame) ![]const u8 {
     const html_doc = self.is(HTMLDocument) orelse return "";
-    return HTMLDocument.setCookie(html_doc, cookie_str, frame);
+    return HTMLDocument.getCookie(html_doc);
+}
+
+pub fn setCookie(self: *Document, cookie_str: []const u8, _: *Frame) ![]const u8 {
+    const html_doc = self.is(HTMLDocument) orelse return "";
+    return HTMLDocument.setCookie(html_doc, cookie_str);
 }
 
 pub fn getActiveElement(self: *Document) ?*Element {
@@ -1172,6 +1238,7 @@ pub const JsApi = struct {
     }
 
     pub const onselectionchange = bridge.accessor(Document.getOnSelectionChange, Document.setOnSelectionChange, .{});
+    pub const onvisibilitychange = bridge.accessor(Document.getOnVisibilityChange, Document.setOnVisibilityChange, .{});
     pub const URL = bridge.accessor(Document.getURL, null, .{});
     pub const documentURI = bridge.accessor(Document.getURL, null, .{});
     pub const documentElement = bridge.accessor(Document.getDocumentElement, null, .{});
@@ -1231,8 +1298,8 @@ pub const JsApi = struct {
     pub const lastElementChild = bridge.accessor(Document.getLastElementChild, null, .{});
     pub const childElementCount = bridge.accessor(Document.getChildElementCount, null, .{});
     pub const adoptedStyleSheets = bridge.accessor(Document.getAdoptedStyleSheets, Document.setAdoptedStyleSheets, .{});
-    pub const hidden = bridge.attribute(false, .{});
-    pub const visibilityState = bridge.attribute("visible", .{});
+    pub const hidden = bridge.accessor(Document.getHidden, null, .{});
+    pub const visibilityState = bridge.accessor(Document.getVisibilityState, null, .{});
     pub const defaultView = bridge.accessor(struct {
         fn defaultView(self: *const Document, frame: *Frame) *@import("../webapi/Window.zig") {
             const doc_frame = self._frame orelse frame;

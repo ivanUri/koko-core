@@ -45,20 +45,55 @@ pub fn classifySearchDocument(url: []const u8, resource_type: HttpClient.Request
     return SearchHop.classify(url);
 }
 
+pub const AccountsKind = enum {
+    document,
+    xhr,
+
+    pub fn classify(url: []const u8, resource_type: HttpClient.RequestParams.ResourceType) ?AccountsKind {
+        if (std.mem.indexOf(u8, url, "accounts.google.com") == null) return null;
+        return switch (resource_type) {
+            .document => .document,
+            .xhr, .fetch => .xhr,
+            else => null,
+        };
+    }
+
+    pub fn label(self: AccountsKind) []const u8 {
+        return switch (self) {
+            .document => "accounts_document",
+            .xhr => "accounts_xhr",
+        };
+    }
+};
+
+pub fn hopLabel(url: []const u8, resource_type: HttpClient.RequestParams.ResourceType) ?[]const u8 {
+    if (SearchHop.classify(url)) |hop| return hop.label();
+    if (AccountsKind.classify(url, resource_type)) |kind| return kind.label();
+    return null;
+}
+
 pub fn shouldCapture(url: []const u8, resource_type: HttpClient.RequestParams.ResourceType) bool {
-    return enabled() and classifySearchDocument(url, resource_type) != null;
+    if (!enabled()) return false;
+    if (classifySearchDocument(url, resource_type) != null) return true;
+    return AccountsKind.classify(url, resource_type) != null;
 }
 
 pub const Session = struct {
     url: []const u8,
+    resource_type: HttpClient.RequestParams.ResourceType,
     lines: std.ArrayList([]const u8),
     arena: Allocator,
     flushed: bool = false,
 
-    pub fn init(allocator: Allocator, url: []const u8) !*Session {
+    pub fn init(
+        allocator: Allocator,
+        url: []const u8,
+        resource_type: HttpClient.RequestParams.ResourceType,
+    ) !*Session {
         const self = try allocator.create(Session);
         self.* = .{
             .url = try allocator.dupe(u8, url),
+            .resource_type = resource_type,
             .lines = try std.ArrayList([]const u8).initCapacity(allocator, 32),
             .arena = allocator,
         };
@@ -104,12 +139,12 @@ pub const Session = struct {
 
         var out = try std.ArrayList(u8).initCapacity(self.arena, 4096);
         const w = out.writer(self.arena);
-        const hop = SearchHop.classify(self.url);
+        const hop = hopLabel(self.url, self.resource_type);
         try w.print("{{\"url\":", .{});
         try writeJsonString(w, self.url);
         try w.print(",\"hop\":", .{});
-        if (hop) |h| {
-            try writeJsonString(w, h.label());
+        if (hop) |label| {
+            try writeJsonString(w, label);
         } else {
             try w.writeAll("null");
         }
@@ -206,6 +241,14 @@ test "WireHeaderCapture: shouldCapture all search document hops" {
     try testing.expect(shouldCapture("https://www.google.com/search?q=test&sei=abc", .document));
     try testing.expect(shouldCapture("https://www.google.com/search?q=test&sg_ss=x", .document));
     try testing.expectEqual(SearchHop.sei, SearchHop.classify("https://www.google.com/search?q=t&sei=abc").?);
+}
+
+test "WireHeaderCapture: captures accounts.google.com document and xhr" {
+    try testing.expect(shouldCapture("https://accounts.google.com/signin/v2/identifier", .document));
+    try testing.expect(shouldCapture("https://accounts.google.com/_/IdentitySignInUi/data/batchexecute", .xhr));
+    try testing.expect(!shouldCapture("https://accounts.google.com/favicon.ico", .image));
+    try testing.expectEqualStrings("accounts_document", hopLabel("https://accounts.google.com/signin", .document).?);
+    try testing.expectEqualStrings("accounts_xhr", hopLabel("https://accounts.google.com/_/batchexecute", .xhr).?);
 }
 
 test "WireHeaderCapture: parseHeaderLine" {

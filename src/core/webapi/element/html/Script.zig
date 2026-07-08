@@ -26,8 +26,8 @@ const Script = @This();
 _proto: *HtmlElement,
 _src: []const u8 = "",
 _executed: bool = false,
-// dynamic scripts are forced to be async by default
-_force_async: bool = true,
+// Dynamic scripts without the async attribute block like Chrome (boq sets async=false).
+_force_async: bool = false,
 
 pub fn asElement(self: *Script) *Element {
     return self._proto._proto;
@@ -80,7 +80,8 @@ pub fn setCharset(self: *Script, value: []const u8, frame: *Frame) !void {
 }
 
 pub fn getAsync(self: *const Script) bool {
-    return self._force_async or self.asConstElement().getAttributeSafe(comptime .wrap("async")) != null;
+    if (self._force_async) return true;
+    return self.asConstElement().getAttributeSafe(comptime .wrap("async")) != null;
 }
 
 pub fn setAsync(self: *Script, value: bool, frame: *Frame) !void {

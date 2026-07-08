@@ -30,106 +30,224 @@ _type: Type,
 _proto: *Node,
 _data: String = .empty,
 
-/// Count UTF-16 code units in a UTF-8 string.
-/// 4-byte UTF-8 sequences (codepoints >= U+10000) produce 2 UTF-16 code units (surrogate pair),
-/// everything else produces 1.
+const Utf16Seq = struct {
+    byte_len: usize,
+    units: [2]u16,
+    unit_count: u8,
+
+    fn codeUnit(self: Utf16Seq, index: usize) u16 {
+        return self.units[index];
+    }
+};
+
+fn readUtf16Seq(data: []const u8, i: usize) Utf16Seq {
+    if (i >= data.len) return .{ .byte_len = 0, .units = .{ 0, 0 }, .unit_count = 0 };
+
+    const byte = data[i];
+    const seq_len = std.unicode.utf8ByteSequenceLength(byte) catch {
+        return .{ .byte_len = 1, .units = .{ data[i], 0 }, .unit_count = 1 };
+    };
+    if (i + seq_len > data.len) {
+        return .{ .byte_len = 1, .units = .{ data[i], 0 }, .unit_count = 1 };
+    }
+
+    if (seq_len == 4) {
+        const cp = std.unicode.utf8Decode(data[i .. i + 4]) catch {
+            return .{ .byte_len = 1, .units = .{ data[i], 0 }, .unit_count = 1 };
+        };
+        const v = cp - 0x10000;
+        return .{
+            .byte_len = 4,
+            .units = .{
+                @intCast(0xD800 + (v >> 10)),
+                @intCast(0xDC00 + (v & 0x3FF)),
+            },
+            .unit_count = 2,
+        };
+    }
+
+    // WTF-8 stores lone UTF-16 surrogates as 3-byte sequences. std.unicode.utf8Decode
+    // rejects U+D800..U+DFFF, so decode BMP manually (incl. surrogates).
+    if (seq_len == 3) {
+        const b0 = data[i];
+        const b1 = data[i + 1];
+        const b2 = data[i + 2];
+        const cp: u21 = ((@as(u21, b0) & 0x0F) << 12) |
+            ((@as(u21, b1) & 0x3F) << 6) |
+            (@as(u21, b2) & 0x3F);
+        return .{ .byte_len = 3, .units = .{ @intCast(cp), 0 }, .unit_count = 1 };
+    }
+
+    const cp = std.unicode.utf8Decode(data[i .. i + seq_len]) catch {
+        return .{ .byte_len = 1, .units = .{ data[i], 0 }, .unit_count = 1 };
+    };
+    return .{ .byte_len = seq_len, .units = .{ @intCast(cp), 0 }, .unit_count = 1 };
+}
+
+fn encodeBmpCodepoint(cp: u21, buf: *[4]u8) usize {
+    if (cp < 0x80) {
+        buf[0] = @intCast(cp);
+        return 1;
+    }
+    buf[0] = @intCast(0xE0 | ((cp >> 12) & 0x0F));
+    buf[1] = @intCast(0x80 | ((cp >> 6) & 0x3F));
+    buf[2] = @intCast(0x80 | (cp & 0x3F));
+    return 3;
+}
+
+fn appendUtf16CodeUnit(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, cu: u16) !void {
+    var buf: [4]u8 = undefined;
+    const len = encodeBmpCodepoint(cu, &buf);
+    try out.appendSlice(allocator, buf[0..len]);
+}
+
+fn appendUtf16CodeUnitPair(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, high: u16, low: u16) !void {
+    if (high >= 0xD800 and high <= 0xDBFF and low >= 0xDC00 and low <= 0xDFFF) {
+        const cp: u21 = 0x10000 + (@as(u21, high - 0xD800) << 10) + (low - 0xDC00);
+        var buf: [4]u8 = undefined;
+        const len = std.unicode.utf8Encode(cp, &buf) catch {
+            try appendUtf16CodeUnit(out, allocator, high);
+            try appendUtf16CodeUnit(out, allocator, low);
+            return;
+        };
+        try out.appendSlice(allocator, buf[0..len]);
+        return;
+    }
+    try appendUtf16CodeUnit(out, allocator, high);
+    try appendUtf16CodeUnit(out, allocator, low);
+}
+
+/// Encode UTF-16 code units as WTF-8 bytes (preserves lone surrogates).
+pub fn utf16ToWtf8(allocator: std.mem.Allocator, code_units: []const u16) ![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < code_units.len) {
+        const high = code_units[i];
+        if (high >= 0xD800 and high <= 0xDBFF and i + 1 < code_units.len) {
+            const low = code_units[i + 1];
+            if (low >= 0xDC00 and low <= 0xDFFF) {
+                try appendUtf16CodeUnitPair(&out, allocator, high, low);
+                i += 2;
+                continue;
+            }
+        }
+        try appendUtf16CodeUnit(&out, allocator, high);
+        i += 1;
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+/// Expand stored WTF-8/UTF-8 data to a UTF-16 code unit buffer.
+pub fn wtf8ToUtf16(allocator: std.mem.Allocator, data: []const u8) ![]u16 {
+    const len = utf16Len(data);
+    var out = try allocator.alloc(u16, len);
+    errdefer allocator.free(out);
+
+    var cu_index: usize = 0;
+    var i: usize = 0;
+    while (i < data.len) {
+        const seq = readUtf16Seq(data, i);
+        if (seq.byte_len == 0) break;
+        for (0..seq.unit_count) |sub| {
+            out[cu_index] = seq.codeUnit(sub);
+            cu_index += 1;
+        }
+        i += seq.byte_len;
+    }
+    return out;
+}
+
+/// Count UTF-16 code units in stored WTF-8/UTF-8 data.
 pub fn utf16Len(data: []const u8) usize {
     var count: usize = 0;
     var i: usize = 0;
     while (i < data.len) {
-        const byte = data[i];
-        const seq_len = std.unicode.utf8ByteSequenceLength(byte) catch {
-            // Invalid UTF-8 byte — count as 1 code unit, advance 1 byte
-            i += 1;
-            count += 1;
-            continue;
-        };
-        if (i + seq_len > data.len) {
-            // Truncated sequence
-            count += 1;
-            i += 1;
-            continue;
-        }
-        if (seq_len == 4) {
-            count += 2; // surrogate pair
-        } else {
-            count += 1;
-        }
-        i += seq_len;
+        const seq = readUtf16Seq(data, i);
+        if (seq.byte_len == 0) break;
+        count += seq.unit_count;
+        i += seq.byte_len;
     }
     return count;
 }
 
-/// Convert a UTF-16 code unit offset to a UTF-8 byte offset.
-/// Returns IndexSizeError if utf16_offset > utf16 length of data.
-pub fn utf16OffsetToUtf8(data: []const u8, utf16_offset: usize) error{IndexSizeError}!usize {
-    var utf16_pos: usize = 0;
+/// Extract `count` UTF-16 code units starting at `offset`, re-encoding as WTF-8/UTF-8.
+pub fn extractUtf16Range(allocator: std.mem.Allocator, data: []const u8, offset: usize, count: usize) ![]const u8 {
+    const total = utf16Len(data);
+    if (offset > total) return error.IndexSizeError;
+    const effective_count = @min(count, total - offset);
+    if (effective_count == 0) return try allocator.dupe(u8, "");
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    var cu_pos: usize = 0;
     var i: usize = 0;
-    while (i < data.len) {
-        if (utf16_pos == utf16_offset) return i;
-        const byte = data[i];
-        const seq_len = std.unicode.utf8ByteSequenceLength(byte) catch {
-            i += 1;
-            utf16_pos += 1;
-            continue;
-        };
-        if (i + seq_len > data.len) {
-            utf16_pos += 1;
-            i += 1;
-            continue;
+    var extracted: usize = 0;
+
+    while (i < data.len and extracted < effective_count) {
+        const seq = readUtf16Seq(data, i);
+        if (seq.byte_len == 0) break;
+
+        var sub: usize = 0;
+        while (sub < seq.unit_count and extracted < effective_count) : (sub += 1) {
+            if (cu_pos < offset) {
+                cu_pos += 1;
+                continue;
+            }
+
+            if (seq.unit_count == 2 and sub == 0 and extracted + 1 < effective_count and
+                cu_pos + 1 < offset + effective_count)
+            {
+                try appendUtf16CodeUnitPair(&out, allocator, seq.units[0], seq.units[1]);
+                extracted += 2;
+                cu_pos += 2;
+                sub += 1;
+                continue;
+            }
+
+            try appendUtf16CodeUnit(&out, allocator, seq.codeUnit(sub));
+            extracted += 1;
+            cu_pos += 1;
         }
-        if (seq_len == 4) {
-            utf16_pos += 2;
-        } else {
-            utf16_pos += 1;
-        }
-        i += seq_len;
+        i += seq.byte_len;
     }
-    // At end of string — valid only if offset equals total length
-    if (utf16_pos == utf16_offset) return i;
-    return error.IndexSizeError;
+
+    return try out.toOwnedSlice(allocator);
 }
 
-/// Convert a UTF-16 code unit range to UTF-8 byte offsets in a single pass.
-/// Returns IndexSizeError if utf16_start > utf16 length of data.
-/// Clamps utf16_end to the actual string length if it exceeds it.
-fn utf16RangeToUtf8(data: []const u8, utf16_start: usize, utf16_end: usize) !struct { start: usize, end: usize } {
+fn spliceUtf16(allocator: std.mem.Allocator, data: []const u8, offset: usize, delete_count: usize, insert: []const u8) ![]const u8 {
+    const total = utf16Len(data);
+    if (offset > total) return error.IndexSizeError;
+    const effective_delete = @min(delete_count, total - offset);
+
+    const prefix = try extractUtf16Range(allocator, data, 0, offset);
+    errdefer allocator.free(prefix);
+    const suffix = try extractUtf16Range(allocator, data, offset + effective_delete, total - offset - effective_delete);
+    errdefer allocator.free(suffix);
+
+    const result = try String.concat(allocator, &.{ prefix, insert, suffix });
+    // concat may return SSO on the stack; dupe before returning the slice.
+    return try allocator.dupe(u8, result.str());
+}
+
+/// Convert a UTF-16 code unit offset to a UTF-8 byte offset.
+/// Returns IndexSizeError if utf16_offset > utf16 length of data.
+/// Offsets that fall between surrogate halves map to the byte index of the pair.
+pub fn utf16OffsetToUtf8(data: []const u8, utf16_offset: usize) error{IndexSizeError}!usize {
+    var cu_pos: usize = 0;
     var i: usize = 0;
-    var utf16_pos: usize = 0;
-    var byte_start: ?usize = null;
-
     while (i < data.len) {
-        // Record start offset when we reach it
-        if (utf16_pos == utf16_start) {
-            byte_start = i;
-        }
-        // If we've found start and reached end, return both
-        if (utf16_pos == utf16_end and byte_start != null) {
-            return .{ .start = byte_start.?, .end = i };
-        }
-
-        const byte = data[i];
-        const seq_len = std.unicode.utf8ByteSequenceLength(byte) catch {
-            i += 1;
-            utf16_pos += 1;
-            continue;
-        };
-        if (i + seq_len > data.len) {
-            utf16_pos += 1;
-            i += 1;
-            continue;
-        }
-        utf16_pos += if (seq_len == 4) 2 else 1;
-        i += seq_len;
+        if (cu_pos == utf16_offset) return i;
+        const seq = readUtf16Seq(data, i);
+        if (seq.byte_len == 0) break;
+        if (cu_pos + seq.unit_count > utf16_offset) return i;
+        cu_pos += seq.unit_count;
+        i += seq.byte_len;
     }
-
-    // At end of string
-    if (utf16_pos == utf16_start) {
-        byte_start = i;
-    }
-    const start = byte_start orelse return error.IndexSizeError;
-    // End is either exactly at utf16_end or clamped to string end
-    return .{ .start = start, .end = i };
+    if (cu_pos == utf16_offset) return i;
+    return error.IndexSizeError;
 }
 
 pub const Type = union(enum) {
@@ -161,6 +279,10 @@ pub fn is(self: *CData, comptime T: type) ?*T {
 
 pub fn getData(self: *const CData) String {
     return self._data;
+}
+
+fn getDomData(self: *const CData, frame: *Frame) ![]const u16 {
+    return wtf8ToUtf16(frame.call_arena, self._data.str());
 }
 
 pub const RenderOpts = struct {
@@ -237,9 +359,12 @@ pub fn setData(self: *CData, value: ?[]const u8, frame: *Frame) !void {
 /// which includes live range updates.
 /// Handles [LegacyNullToEmptyString]: null → "" per spec.
 pub fn _setData(self: *CData, value: js.Value, frame: *Frame) !void {
-    const new_value: []const u8 = if (value.isNull()) "" else try value.toZig([]const u8);
+    const new_data: js.Wtf8String = if (value.isNull())
+        .{ .value = "" }
+    else
+        try value.toZig(js.Wtf8String);
     const length = self.getLength();
-    try self.replaceData(0, length, new_value, frame);
+    try self.replaceData(0, length, new_data, frame);
 }
 
 pub fn format(self: *const CData, writer: *std.io.Writer) !void {
@@ -271,76 +396,64 @@ pub fn isEqualNode(self: *const CData, other: *const CData) bool {
     return self._data.eql(other._data);
 }
 
-pub fn appendData(self: *CData, data: []const u8, frame: *Frame) !void {
+pub fn appendData(self: *CData, data: js.Wtf8String, frame: *Frame) !void {
     // Per DOM spec, appendData(data) is replaceData(length, 0, data).
     const length = self.getLength();
     try self.replaceData(length, 0, data, frame);
 }
 
 pub fn deleteData(self: *CData, offset: usize, count: usize, frame: *Frame) !void {
-    const end_utf16 = std.math.add(usize, offset, count) catch std.math.maxInt(usize);
-    const range = try utf16RangeToUtf8(self._data.str(), offset, end_utf16);
+    try self.replaceData(offset, count, .{ .value = "" }, frame);
+}
 
-    // Update live ranges per DOM spec replaceData steps (deleteData = replaceData with data="")
+pub fn insertData(self: *CData, offset: usize, data: js.Wtf8String, frame: *Frame) !void {
+    try self.replaceData(offset, 0, data, frame);
+}
+
+pub fn replaceData(self: *CData, offset: usize, count: usize, data: js.Wtf8String, frame: *Frame) !void {
+    const existing = self._data.str();
     const length = self.getLength();
+    if (offset > length) return error.IndexSizeError;
     const effective_count: u32 = @intCast(@min(count, length - offset));
-    frame.updateRangesForCharacterDataReplace(self.asNode(), @intCast(offset), effective_count, 0);
 
-    const old_data = self._data;
-    const old_value = old_data.str();
-    if (range.start == 0) {
-        self._data = try frame.dupeSSO(old_value[range.end..]);
-    } else if (range.end >= old_value.len) {
-        self._data = try frame.dupeSSO(old_value[0..range.start]);
-    } else {
-        // Deleting from middle - concat prefix and suffix
-        self._data = try String.concat(frame.arena, &.{
-            old_value[0..range.start],
-            old_value[range.end..],
-        });
+    frame.updateRangesForCharacterDataReplace(self.asNode(), @intCast(offset), effective_count, @intCast(utf16Len(data.value)));
+
+    const old_value = self._data;
+    const new_bytes = try spliceUtf16(frame.arena, existing, offset, count, data.value);
+    self._data = try frame.dupeSSO(new_bytes);
+    frame.characterDataChange(self.asNode(), old_value);
+}
+
+/// Extract UTF-16 code units directly from stored WTF-8/UTF-8 data.
+pub fn extractUtf16CodeUnits(allocator: std.mem.Allocator, data: []const u8, offset: usize, count: usize) ![]const u16 {
+    const total = utf16Len(data);
+    if (offset > total) return error.IndexSizeError;
+    const effective_count = @min(count, total - offset);
+    if (effective_count == 0) return &[_]u16{};
+
+    const out = try allocator.alloc(u16, effective_count);
+    errdefer allocator.free(out);
+
+    var cu_pos: usize = 0;
+    var out_idx: usize = 0;
+    var i: usize = 0;
+    while (i < data.len and out_idx < effective_count) {
+        const seq = readUtf16Seq(data, i);
+        if (seq.byte_len == 0) break;
+        for (0..seq.unit_count) |sub| {
+            if (cu_pos >= offset and out_idx < effective_count) {
+                out[out_idx] = seq.codeUnit(sub);
+                out_idx += 1;
+            }
+            cu_pos += 1;
+        }
+        i += seq.byte_len;
     }
-    frame.characterDataChange(self.asNode(), old_data);
+    return out;
 }
 
-pub fn insertData(self: *CData, offset: usize, data: []const u8, frame: *Frame) !void {
-    const byte_offset = try utf16OffsetToUtf8(self._data.str(), offset);
-
-    // Update live ranges per DOM spec replaceData steps (insertData = replaceData with count=0)
-    frame.updateRangesForCharacterDataReplace(self.asNode(), @intCast(offset), 0, @intCast(utf16Len(data)));
-
-    const old_value = self._data;
-    const existing = old_value.str();
-    self._data = try String.concat(frame.arena, &.{
-        existing[0..byte_offset],
-        data,
-        existing[byte_offset..],
-    });
-    frame.characterDataChange(self.asNode(), old_value);
-}
-
-pub fn replaceData(self: *CData, offset: usize, count: usize, data: []const u8, frame: *Frame) !void {
-    const end_utf16 = std.math.add(usize, offset, count) catch std.math.maxInt(usize);
-    const range = try utf16RangeToUtf8(self._data.str(), offset, end_utf16);
-
-    // Update live ranges per DOM spec replaceData steps
-    const length = self.getLength();
-    const effective_count: u32 = @intCast(@min(count, length - offset));
-    frame.updateRangesForCharacterDataReplace(self.asNode(), @intCast(offset), effective_count, @intCast(utf16Len(data)));
-
-    const old_value = self._data;
-    const existing = old_value.str();
-    self._data = try String.concat(frame.arena, &.{
-        existing[0..range.start],
-        data,
-        existing[range.end..],
-    });
-    frame.characterDataChange(self.asNode(), old_value);
-}
-
-pub fn substringData(self: *const CData, offset: usize, count: usize) ![]const u8 {
-    const end_utf16 = std.math.add(usize, offset, count) catch std.math.maxInt(usize);
-    const range = try utf16RangeToUtf8(self._data.str(), offset, end_utf16);
-    return self._data.str()[range.start..range.end];
+pub fn substringData(self: *const CData, offset: usize, count: usize, frame: *Frame) ![]const u16 {
+    return extractUtf16CodeUnits(frame.call_arena, self._data.str(), offset, count);
 }
 
 pub fn remove(self: *CData, frame: *Frame) !void {
@@ -417,7 +530,7 @@ pub const JsApi = struct {
         pub const enumerable = false;
     };
 
-    pub const data = bridge.accessor(CData.getData, CData._setData, .{});
+    pub const data = bridge.accessor(CData.getDomData, CData._setData, .{});
     pub const length = bridge.accessor(CData.getLength, null, .{});
 
     pub const appendData = bridge.function(CData.appendData, .{});
@@ -498,117 +611,65 @@ test "utf16Len" {
 }
 
 test "utf16OffsetToUtf8" {
-    // ASCII: offsets map 1:1
     try std.testing.expectEqual(@as(usize, 0), try utf16OffsetToUtf8("hello", 0));
     try std.testing.expectEqual(@as(usize, 3), try utf16OffsetToUtf8("hello", 3));
-    try std.testing.expectEqual(@as(usize, 5), try utf16OffsetToUtf8("hello", 5)); // end
-    try std.testing.expectError(error.IndexSizeError, utf16OffsetToUtf8("hello", 6)); // past end
+    try std.testing.expectEqual(@as(usize, 5), try utf16OffsetToUtf8("hello", 5));
+    try std.testing.expectError(error.IndexSizeError, utf16OffsetToUtf8("hello", 6));
 
-    // CJK "資料" (6 bytes, 2 UTF-16 code units)
-    try std.testing.expectEqual(@as(usize, 0), try utf16OffsetToUtf8("資料", 0)); // before 資
-    try std.testing.expectEqual(@as(usize, 3), try utf16OffsetToUtf8("資料", 1)); // before 料
-    try std.testing.expectEqual(@as(usize, 6), try utf16OffsetToUtf8("資料", 2)); // end
-    try std.testing.expectError(error.IndexSizeError, utf16OffsetToUtf8("資料", 3));
-
-    // Emoji "🌠AB" (4+1+1 = 6 bytes; 2+1+1 = 4 UTF-16 code units)
-    try std.testing.expectEqual(@as(usize, 0), try utf16OffsetToUtf8("🌠AB", 0)); // before 🌠
-    // offset 1 lands inside the surrogate pair — still valid UTF-16 offset
-    try std.testing.expectEqual(@as(usize, 4), try utf16OffsetToUtf8("🌠AB", 2)); // before A
-    try std.testing.expectEqual(@as(usize, 5), try utf16OffsetToUtf8("🌠AB", 3)); // before B
-    try std.testing.expectEqual(@as(usize, 6), try utf16OffsetToUtf8("🌠AB", 4)); // end
-
-    // Empty string: only offset 0 is valid
-    try std.testing.expectEqual(@as(usize, 0), try utf16OffsetToUtf8("", 0));
-    try std.testing.expectError(error.IndexSizeError, utf16OffsetToUtf8("", 1));
+    try std.testing.expectEqual(@as(usize, 0), try utf16OffsetToUtf8("🌠AB", 0));
+    // offset 1 lands inside the surrogate pair — maps to the pair's byte index
+    try std.testing.expectEqual(@as(usize, 0), try utf16OffsetToUtf8("🌠AB", 1));
+    try std.testing.expectEqual(@as(usize, 4), try utf16OffsetToUtf8("🌠AB", 2));
 }
 
-test "utf16RangeToUtf8" {
-    // ASCII: basic range
+test "extractUtf16Range" {
+    const allocator = std.testing.allocator;
+
+    try std.testing.expectEqualStrings("ell", try extractUtf16Range(allocator, "hello", 1, 3));
+    try std.testing.expectEqualStrings("hello", try extractUtf16Range(allocator, "hello", 0, 100));
+    try std.testing.expectEqualStrings("", try extractUtf16Range(allocator, "hello", 5, 1));
+
+    // Full supplementary character stays compact when both halves are extracted
+    try std.testing.expectEqualStrings("🌠", try extractUtf16Range(allocator, "🌠AB", 0, 2));
+    try std.testing.expectEqualStrings("A", try extractUtf16Range(allocator, "🌠AB", 2, 1));
+
+    // Splitting surrogate pairs produces lone surrogates (WTF-8)
     {
-        const result = try utf16RangeToUtf8("hello", 1, 4);
-        try std.testing.expectEqual(@as(usize, 1), result.start);
-        try std.testing.expectEqual(@as(usize, 4), result.end);
+        const result = try extractUtf16Range(allocator, "🌠 test 🌠 TEST", 1, 8);
+        defer allocator.free(result);
+        try std.testing.expectEqual(@as(usize, 11), result.len);
+        try std.testing.expectEqual(@as(u16, 0xDF20), readUtf16Seq(result, 0).units[0]);
+        try std.testing.expectEqualStrings(" test ", result[3..9]);
+        try std.testing.expectEqual(@as(u16, 0xD83C), std.unicode.utf8Decode(result[9..12]));
     }
 
-    // ASCII: range to end
-    {
-        const result = try utf16RangeToUtf8("hello", 2, 5);
-        try std.testing.expectEqual(@as(usize, 2), result.start);
-        try std.testing.expectEqual(@as(usize, 5), result.end);
-    }
+    try std.testing.expectEqualStrings("st 🌠 TE", try extractUtf16Range(allocator, "🌠 test 🌠 TEST", 5, 8));
+    try std.testing.expectError(error.IndexSizeError, extractUtf16Range(allocator, "hello", 6, 0));
+}
 
-    // ASCII: range past end (should clamp)
-    {
-        const result = try utf16RangeToUtf8("hello", 2, 100);
-        try std.testing.expectEqual(@as(usize, 2), result.start);
-        try std.testing.expectEqual(@as(usize, 5), result.end); // clamped
-    }
+test "spliceUtf16 deleteData surrogate sequence" {
+    const allocator = std.testing.allocator;
+    const original = "🌠 test 🌠 TEST";
+    const after1 = try spliceUtf16(allocator, original, 1, 4, "");
+    defer allocator.free(after1);
+    try std.testing.expectEqual(@as(usize, 11), utf16Len(after1));
 
-    // ASCII: full range
-    {
-        const result = try utf16RangeToUtf8("hello", 0, 5);
-        try std.testing.expectEqual(@as(usize, 0), result.start);
-        try std.testing.expectEqual(@as(usize, 5), result.end);
-    }
+    const after2 = try spliceUtf16(allocator, after1, 1, 4, "");
+    defer allocator.free(after2);
+    try std.testing.expectEqual(@as(usize, 7), utf16Len(after2));
 
-    // ASCII: start past end
-    try std.testing.expectError(error.IndexSizeError, utf16RangeToUtf8("hello", 6, 10));
+    const cu = try wtf8ToUtf16(allocator, after2);
+    defer allocator.free(cu);
+    try std.testing.expectEqual(@as(u16, 0xD83C), cu[0]);
+    try std.testing.expectEqual(@as(u16, 0xDF20), cu[1]);
+}
 
-    // CJK "資料" (6 bytes, 2 UTF-16 code units)
-    {
-        const result = try utf16RangeToUtf8("資料", 0, 1);
-        try std.testing.expectEqual(@as(usize, 0), result.start);
-        try std.testing.expectEqual(@as(usize, 3), result.end); // after 資
-    }
-
-    {
-        const result = try utf16RangeToUtf8("資料", 1, 2);
-        try std.testing.expectEqual(@as(usize, 3), result.start); // before 料
-        try std.testing.expectEqual(@as(usize, 6), result.end); // end
-    }
-
-    {
-        const result = try utf16RangeToUtf8("資料", 0, 2);
-        try std.testing.expectEqual(@as(usize, 0), result.start);
-        try std.testing.expectEqual(@as(usize, 6), result.end);
-    }
-
-    // Emoji "🌠AB" (4+1+1 = 6 bytes; 2+1+1 = 4 UTF-16 code units)
-    {
-        const result = try utf16RangeToUtf8("🌠AB", 0, 2);
-        try std.testing.expectEqual(@as(usize, 0), result.start);
-        try std.testing.expectEqual(@as(usize, 4), result.end); // after 🌠
-    }
-
-    {
-        const result = try utf16RangeToUtf8("🌠AB", 2, 3);
-        try std.testing.expectEqual(@as(usize, 4), result.start); // before A
-        try std.testing.expectEqual(@as(usize, 5), result.end); // before B
-    }
-
-    {
-        const result = try utf16RangeToUtf8("🌠AB", 0, 4);
-        try std.testing.expectEqual(@as(usize, 0), result.start);
-        try std.testing.expectEqual(@as(usize, 6), result.end);
-    }
-
-    // Empty string
-    {
-        const result = try utf16RangeToUtf8("", 0, 0);
-        try std.testing.expectEqual(@as(usize, 0), result.start);
-        try std.testing.expectEqual(@as(usize, 0), result.end);
-    }
-
-    {
-        const result = try utf16RangeToUtf8("", 0, 100);
-        try std.testing.expectEqual(@as(usize, 0), result.start);
-        try std.testing.expectEqual(@as(usize, 0), result.end); // clamped
-    }
-
-    // Mixed "🌠 test 🌠" (4+1+4+1+4 = 14 bytes; 2+1+4+1+2 = 10 UTF-16 code units)
-    {
-        const result = try utf16RangeToUtf8("🌠 test 🌠", 3, 7);
-        try std.testing.expectEqual(@as(usize, 5), result.start); // before 'test'
-        try std.testing.expectEqual(@as(usize, 9), result.end); // after 'test', before second space
-    }
+test "utf16ToWtf8 roundtrip" {
+    const allocator = std.testing.allocator;
+    const cu = [_]u16{ 0xD83C, 0xDF20, 0x20, 0x74, 0x65, 0x73, 0x74 };
+    const wtf = try utf16ToWtf8(allocator, &cu);
+    defer allocator.free(wtf);
+    const back = try wtf8ToUtf16(allocator, wtf);
+    defer allocator.free(back);
+    try std.testing.expectEqualSlices(u16, &cu, back);
 }

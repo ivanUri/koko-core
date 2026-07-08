@@ -100,10 +100,15 @@ pub fn runMicrotasks(self: *Browser) void {
 pub fn runMacrotasks(self: *Browser) !void {
     const env = &self.env;
 
+    // HTML event loop: drain microtasks before the next macrotask turn. FP loader
+    // yb() resumes on a microtask after its iframe Promise resolves; if a 2s race
+    // timer runs first, load() rejects with crs:1/asib:0 despite a resolved iframe.
+    env.runMicrotasks(.macrotask_loop);
+
     try self.env.runMacrotasks();
     env.pumpMessageLoop();
 
-    // either of the above could have queued more microtasks
+    // Timers / macrotask callbacks may queue more microtasks (promises, await).
     env.runMicrotasks(.macrotask_loop);
 }
 

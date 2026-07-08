@@ -395,6 +395,28 @@ pub fn isText(mime: *const Mime) bool {
     };
 }
 
+pub fn isApplicationXWwwFormUrlencoded(self: *const Mime) bool {
+    return switch (self.content_type) {
+        .other => |o| std.mem.eql(u8, o.type, "application") and
+            std.mem.eql(u8, o.sub_type, "x-www-form-urlencoded"),
+        else => false,
+    };
+}
+
+/// MIME types allowed for `importScripts()` on data:/blob: URLs (HTML issue #8869).
+pub fn isImportScriptsJavaScriptMime(mime_type: []const u8) bool {
+    if (mime_type.len == 0) return false;
+    const mime = Mime.parse(mime_type) catch return false;
+    if (mime.content_type == .text_javascript) return true;
+    return switch (mime.content_type) {
+        .other => |o| (std.ascii.eqlIgnoreCase(o.type, "text") and
+            std.ascii.eqlIgnoreCase(o.sub_type, "ecmascript")) or
+            (std.ascii.eqlIgnoreCase(o.type, "application") and
+                std.ascii.eqlIgnoreCase(o.sub_type, "ecmascript")),
+        else => false,
+    };
+}
+
 // we expect value to be lowercase
 fn parseContentType(value: []const u8, type_buf: []u8, sub_type_buf: []u8) !struct { ContentType, usize } {
     const end = std.mem.indexOfScalarPos(u8, value, 0, ';') orelse value.len;
@@ -417,9 +439,12 @@ fn parseContentType(value: []const u8, type_buf: []u8, sub_type_buf: []u8) !stru
         @"image/webp",
 
         @"application/json",
+
+        @"application/xml",
+        @"application/xhtml+xml",
     }, type_name)) |known_type| {
         const ct: ContentType = switch (known_type) {
-            .@"text/xml" => .{ .text_xml = {} },
+            .@"text/xml", .@"application/xml", .@"application/xhtml+xml" => .{ .text_xml = {} },
             .@"text/html" => .{ .text_html = {} },
             .@"text/javascript", .@"application/javascript", .@"application/x-javascript" => .{ .text_javascript = {} },
             .@"text/plain" => .{ .text_plain = {} },

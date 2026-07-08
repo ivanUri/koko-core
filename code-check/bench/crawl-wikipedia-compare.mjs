@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 // Real-world crawl benchmark: N random en.wikipedia.org articles.
-// Compare Velora (N processes) vs Chromium (N tabs, 1 process).
+// Lanes:
+//   density (default) — N velora serve processes vs Chromium N tabs (agent density)
+//   fair            — 1 velora serve + shared HTTP cache + warmup vs Chromium
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import {
+    applyLaneDefaults,
     buildQueue,
     collectMeta,
     crawlChromium,
@@ -22,6 +25,7 @@ const defaultTitles = resolve(outDir, "wikipedia-titles.json");
 const defaultReport = resolve(outDir, "crawl-wikipedia.json");
 
 const defaults = {
+    lane: "density",
     limit: 100,
     concurrency: 8,
     lang: "en",
@@ -36,6 +40,9 @@ const defaults = {
     sampleIntervalMs: 100,
     automation: null,
     veloraMultiProcess: true,
+    warmup: null,
+    warmupExplicit: false,
+    enableHttpCache: false,
     pageWaitFor: "domcontentloaded",
 };
 
@@ -44,22 +51,31 @@ function usage() {
 
 Crawl random Wikipedia articles over the real internet (not a demo site).
 
+Lanes:
+  density (default)  N velora serve processes · no HTTP cache · no warmup
+                     → sessions/GB, RSS/page (agent density)
+  fair               1 velora serve · profile HTTP cache · Main_Page warmup
+                     → throughput, TTFX (fair vs Chromium multi-tab)
+
 Options:
+  --lane density|fair   benchmark lane (default: ${defaults.lane})
   --limit N             pages to crawl (default: ${defaults.limit})
   --concurrency N       parallel workers/tabs (default: ${defaults.concurrency})
   --lang CODE           wikipedia language (default: ${defaults.lang})
   --mode extract|html   extract title+links or full HTML size (default: ${defaults.mode})
   --browser velora|chromium|both
   --titles-file PATH    shared title list for fair compare (default: ${defaultTitles})
-  --report PATH         JSON output (default: ${defaultReport})
+  --report PATH         JSON output
   --timeout MS          per-page timeout (default: ${defaults.timeoutMs})
   --profile NAME        velora browser profile
+  --warmup              force warmup (density lane only; fair enables by default)
+  --no-warmup           disable warmup (fair lane)
   --help
 `;
 }
 
 function parseArgs(argv) {
-    const opts = { ...defaults };
+    const opts = { ...defaults, reportExplicit: false };
     for (let i = 0; i < argv.length; i += 1) {
         const a = argv[i];
         const next = () => {
@@ -68,16 +84,28 @@ function parseArgs(argv) {
             return argv[i];
         };
         switch (a) {
+            case "--lane": opts.lane = next(); break;
             case "--limit": opts.limit = Number(next()); break;
             case "--concurrency": opts.concurrency = Number(next()); break;
             case "--lang": opts.lang = next(); break;
             case "--mode": opts.mode = next(); break;
             case "--browser": opts.browser = next(); break;
             case "--titles-file": opts.titlesFile = resolve(next()); break;
-            case "--report": opts.report = resolve(next()); break;
+            case "--report":
+                opts.report = resolve(next());
+                opts.reportExplicit = true;
+                break;
             case "--timeout": opts.timeoutMs = Number(next()); break;
             case "--profile": opts.browserProfile = next(); break;
             case "--chrome-path": opts.chromePath = next(); break;
+            case "--warmup":
+                opts.warmup = true;
+                opts.warmupExplicit = true;
+                break;
+            case "--no-warmup":
+                opts.warmup = false;
+                opts.warmupExplicit = true;
+                break;
             case "--help":
             case "-h":
                 console.log(usage());
@@ -87,9 +115,10 @@ function parseArgs(argv) {
                 if (a.startsWith("-")) throw new Error(`Unknown option: ${a}`);
         }
     }
+    if (!["density", "fair"].includes(opts.lane)) throw new Error("--lane must be density or fair");
     if (!["extract", "html"].includes(opts.mode)) throw new Error("--mode must be extract or html");
     if (!["velora", "chromium", "both"].includes(opts.browser)) throw new Error("--browser invalid");
-    return opts;
+    return applyLaneDefaults(opts);
 }
 
 function fmt(n, digits = 1) {
@@ -157,6 +186,20 @@ function buildComparison(v, c) {
     };
 }
 
+function veloraLaneLabel(opts) {
+    if (opts.lane === "fair") {
+        return "Velora (single-process · HTTP cache · warmup)…";
+    }
+    return "Velora (multi-process density workers)…";
+}
+
+function comparisonNote(opts) {
+    if (opts.lane === "fair") {
+        return `fair throughput lane · Velora=1 process + ${opts.concurrency} CDP sessions · Chromium=${opts.concurrency} tabs · warmup=${opts.warmup} · http-cache=${opts.enableHttpCache}`;
+    }
+    return `density lane · Velora=${opts.concurrency} processes · Chromium=${opts.concurrency} tabs · no shared HTTP cache`;
+}
+
 async function main() {
     const opts = parseArgs(process.argv.slice(2));
     if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
@@ -172,7 +215,10 @@ async function main() {
     }
 
     const queue = buildQueue(opts.lang, titles.slice(0, opts.limit));
-    console.log(`[crawl] site=https://${opts.lang}.wikipedia.org pages=${queue.length} concurrency=${opts.concurrency} mode=${opts.mode}`);
+    console.log(`[crawl] lane=${opts.lane} site=https://${opts.lang}.wikipedia.org pages=${queue.length} concurrency=${opts.concurrency} mode=${opts.mode}`);
+    if (opts.lane === "fair") {
+        console.log(`[crawl] fair: warmup=${opts.warmup} http-cache=${opts.enableHttpCache} profile=${opts.browserProfile}`);
+    }
 
     const report = {
         meta: collectMeta(opts),
@@ -184,7 +230,7 @@ async function main() {
     };
 
     if (opts.browser === "velora" || opts.browser === "both") {
-        console.log("\n[crawl] Velora (multi-process workers)…");
+        console.log(`\n[crawl] ${veloraLaneLabel(opts)}`);
         report.velora = await crawlVelora(queue, opts);
         printSummary("Velora", report.velora);
     }
@@ -210,7 +256,7 @@ async function main() {
         console.log(`CPU-sec/page:      ${fmt(cmp.cpuSecondsPerPageRatio, 2)}x`);
         console.log(`sessions/GB:       ${fmt(cmp.sessionsPerGbRatio, 2)}x ${cmp.veloraHigherDensity ? "(Velora denser)" : "(Chromium denser)"}`);
         console.log(`TTFX mean:          ${fmt(cmp.meanTtfexRatio, 2)}x`);
-        console.log(`note: crawler-runtime benchmark · Velora=${opts.concurrency} processes · Chromium=${opts.concurrency} tabs`);
+        console.log(`note: ${comparisonNote(opts)}`);
     }
 
     writeFileSync(opts.report, `${JSON.stringify(report, null, 2)}\n`);

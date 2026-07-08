@@ -369,6 +369,49 @@ pub fn textTrackCue(self: *Factory, child: anytype) !*@TypeOf(child) {
     ).create(allocator, child);
 }
 
+pub fn credentialLeaf(self: *Factory, child: anytype) !*@TypeOf(child) {
+    const Credential = @import("../webapi/credentials_api.zig").Credential;
+    const cred = try self.create(Credential{});
+    const leaf = try self.create(child);
+    leaf._proto = cred;
+    if (@hasField(@TypeOf(child), "_id")) {
+        cred._id = leaf._id;
+    }
+    if (@hasField(@TypeOf(child), "_type")) {
+        cred._type = leaf._type;
+    }
+    return leaf;
+}
+
+pub fn authenticatorResponseLeaf(self: *Factory, child: anytype) !*@TypeOf(child) {
+    const AuthenticatorResponse = @import("../webapi/credentials_api.zig").AuthenticatorResponse;
+    const base = try self.create(AuthenticatorResponse{});
+    const leaf = try self.create(child);
+    leaf._proto = base;
+    return leaf;
+}
+
+pub fn taskSignal(self: *Factory, child: anytype) !*@TypeOf(child) {
+    const allocator = self._slab.allocator();
+    const AbortSignal = @import("../webapi/AbortSignal.zig");
+    const chain = try PrototypeChain(
+        &.{ EventTarget, AbortSignal, @TypeOf(child) },
+    ).allocate(allocator);
+
+    const abort_ptr = chain.get(1);
+    const event_ptr = chain.get(0);
+    event_ptr.* = .{ ._type = .{ .abort_signal = abort_ptr } };
+    abort_ptr.* = .{
+        ._proto = event_ptr,
+        ._aborted = false,
+        ._reason = .undefined,
+        ._on_abort = null,
+    };
+
+    chain.setLeaf(2, child);
+    return chain.get(2);
+}
+
 pub fn destroy(self: *Factory, value: anytype) void {
     const S = reflect.Struct(@TypeOf(value));
 

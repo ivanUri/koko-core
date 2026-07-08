@@ -27,10 +27,9 @@ const FontFace = @This();
 _rc: RC(u8) = .{},
 _arena: Allocator,
 _family: []const u8,
+_source: []const u8 = "",
 
 pub fn init(family: []const u8, source: []const u8, frame: *Frame) !*FontFace {
-    _ = source;
-
     const arena = try frame.getArena(.tiny, "FontFace");
     errdefer frame.releaseArena(arena);
 
@@ -38,6 +37,7 @@ pub fn init(family: []const u8, source: []const u8, frame: *Frame) !*FontFace {
     self.* = .{
         ._arena = arena,
         ._family = try arena.dupe(u8, family),
+        ._source = try arena.dupe(u8, source),
     };
     return self;
 }
@@ -63,11 +63,66 @@ pub fn getFamily(self: *const FontFace, frame: *Frame) []const u8 {
     return self._family;
 }
 
-// load() rejects with NetworkError when the family is not in the profile whitelist.
-// CreepJS and document.fonts.check() both use this signal to detect installed fonts.
+fn trimToken(token: []const u8) []const u8 {
+    var start: usize = 0;
+    var end: usize = token.len;
+    while (start < end and token[start] <= 0x20) : (start += 1) {}
+    while (end > start and token[end - 1] <= 0x20) : (end -= 1) {}
+    var family = token[start..end];
+    if (family.len >= 2 and ((family[0] == '\'' and family[family.len - 1] == '\'') or
+        (family[0] == '"' and family[family.len - 1] == '"')))
+    {
+        family = family[1 .. family.len - 1];
+    }
+    return family;
+}
+
+fn isLocalFontSource(source: []const u8) bool {
+    var start: usize = 0;
+    var end: usize = source.len;
+    while (start < end and source[start] <= 0x20) : (start += 1) {}
+    while (end > start and source[end - 1] <= 0x20) : (end -= 1) {}
+    const trimmed = source[start..end];
+    return trimmed.len >= 6 and std.ascii.eqlIgnoreCase(trimmed[0..6], "local(");
+}
+
+fn extractLocalFontName(source: []const u8) ?[]const u8 {
+    if (!isLocalFontSource(source)) return null;
+
+    var start: usize = 0;
+    var end: usize = source.len;
+    while (start < end and source[start] <= 0x20) : (start += 1) {}
+    while (end > start and source[end - 1] <= 0x20) : (end -= 1) {}
+    const trimmed = source[start..end];
+
+    const open = std.mem.indexOfScalar(u8, trimmed, '(') orelse return null;
+    var i = open + 1;
+    while (i < trimmed.len and trimmed[i] <= 0x20) : (i += 1) {}
+    if (i >= trimmed.len) return null;
+
+    const quote = trimmed[i];
+    if (quote == '\'' or quote == '"') {
+        i += 1;
+        const name_start = i;
+        while (i < trimmed.len and trimmed[i] != quote) : (i += 1) {}
+        if (i >= trimmed.len) return null;
+        return trimToken(trimmed[name_start..i]);
+    }
+
+    const name_start = i;
+    while (i < trimmed.len and trimmed[i] != ')') : (i += 1) {}
+    return trimToken(trimmed[name_start..i]);
+}
+
+// load() rejects with NetworkError for local() sources when the referenced font is not in
+// the profile whitelist (CreepJS system-font probe). FP uses local('Arial') under a dummy
+// family name; gate on the local() target, not FontFace.family. Web fonts resolve like Chrome.
 pub fn load(self: *FontFace, frame: *Frame) !js.Promise {
-    if (!FingerprintProfile.isFontFamilyAvailable(frame.identityProfile(), self._family)) {
-        return frame.js.local.?.rejectPromise(.{ .dom_exception = .{ .err = error.NetworkError } });
+    if (isLocalFontSource(self._source)) {
+        const probe_family = extractLocalFontName(self._source) orelse self._family;
+        if (!FingerprintProfile.isFontFamilyAvailable(frame.identityProfile(), probe_family)) {
+            return frame.js.local.?.rejectPromise(.{ .dom_exception = .{ .err = error.NetworkError } });
+        }
     }
     return frame.js.local.?.resolvePromise(self);
 }

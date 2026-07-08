@@ -82,13 +82,6 @@ pub fn enqueue(self: *ReadableStreamDefaultController, chunk: Chunk) !void {
         .value = .fromChunk(chunk),
     };
 
-    if (comptime IS_DEBUG) {
-        if (exec.context.local == null) {
-            log.fatal(.bug, "null context scope", .{ .src = "ReadableStreamDefaultController.enqueue", .url = exec.url.* });
-            std.debug.assert(exec.context.local != null);
-        }
-    }
-
     var ls: js.Local.Scope = undefined;
     exec.context.localScope(&ls);
     defer ls.deinit();
@@ -117,13 +110,6 @@ pub fn enqueueValue(self: *ReadableStreamDefaultController, value: js.Value) !vo
         .value = .{ .js_value = persisted },
     };
 
-    if (comptime IS_DEBUG) {
-        if (exec.context.local == null) {
-            log.fatal(.bug, "null context scope", .{ .src = "ReadableStreamDefaultController.enqueueValue", .url = exec.url.* });
-            std.debug.assert(exec.context.local != null);
-        }
-    }
-
     var ls: js.Local.Scope = undefined;
     exec.context.localScope(&ls);
     defer ls.deinit();
@@ -145,21 +131,16 @@ pub fn close(self: *ReadableStreamDefaultController) !void {
     };
 
     const exec = self._execution;
-    if (comptime IS_DEBUG) {
-        if (exec.context.local == null) {
-            log.fatal(.bug, "null context scope", .{ .src = "ReadableStreamDefaultController.close", .url = exec.url.* });
-            std.debug.assert(exec.context.local != null);
-        }
-    }
+    var ls: js.Local.Scope = undefined;
+    exec.context.localScope(&ls);
+    defer ls.deinit();
 
     for (self._pending_reads.items) |resolver| {
-        var ls: js.Local.Scope = undefined;
-        exec.context.localScope(&ls);
-        defer ls.deinit();
         ls.toLocal(resolver).resolve("stream close", result);
     }
 
     self._pending_reads.clearRetainingCapacity();
+    self._stream.notifyClosed(exec);
 }
 
 pub fn doError(self: *ReadableStreamDefaultController, err: []const u8) !void {
@@ -170,11 +151,16 @@ pub fn doError(self: *ReadableStreamDefaultController, err: []const u8) !void {
     self._stream._state = .errored;
     self._stream._stored_error = try self._arena.dupe(u8, err);
 
-    // Reject all pending reads
+    const exec = self._execution;
+    var ls: js.Local.Scope = undefined;
+    exec.context.localScope(&ls);
+    defer ls.deinit();
+
     for (self._pending_reads.items) |resolver| {
-        self._execution.context.toLocal(resolver).reject("stream error", err);
+        ls.toLocal(resolver).rejectError("stream error", .{ .type_error = err });
     }
     self._pending_reads.clearRetainingCapacity();
+    self._stream.notifyErrored(exec);
 }
 
 pub fn dequeue(self: *ReadableStreamDefaultController) ?Chunk {

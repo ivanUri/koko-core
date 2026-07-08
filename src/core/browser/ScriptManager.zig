@@ -89,10 +89,10 @@ pub fn tailHook(base: *ScriptManagerBase) void {
 }
 
 fn getHeaders(self: *ScriptManager, url: [:0]const u8, resource_type: HttpClient.RequestParams.ResourceType) !HttpClient.Headers {
-    return self.base.getHeaders(url, resource_type);
+    return self.base.getHeaders(url, resource_type, .none);
 }
 
-pub fn addFromElement(self: *ScriptManager, comptime from_parser: bool, script_element: *Element.Html.Script, comptime ctx: []const u8) !void {
+pub fn addFromElement(self: *ScriptManager, comptime _: bool, script_element: *Element.Html.Script, comptime ctx: []const u8) !void {
     if (script_element._executed) {
         // If a script tag gets dynamically created and added to the dom:
         //    document.getElementsByTagName('head')[0].appendChild(script)
@@ -177,21 +177,13 @@ pub fn addFromElement(self: *ScriptManager, comptime from_parser: bool, script_e
             break :blk if (kind == .module) .@"defer" else .normal;
         }
 
-        if (element.getAttributeSafe(comptime .wrap("async")) != null) {
-            break :blk .async;
-        }
-
-        // Check for defer or module (before checking dynamic script default)
-        if (kind == .module or element.getAttributeSafe(comptime .wrap("defer")) != null) {
+        // Defer / module before async (IDL + attribute; parser scripts clear
+        // _force_async in Frame.scriptAddedCallback).
+        if (kind == .module or script_element.getDefer()) {
             break :blk .@"defer";
         }
 
-        // For dynamically-inserted scripts (not from parser), default to async
-        // unless async was explicitly set to false (which removes the attribute)
-        // and defer was set to true (checked above)
-        if (comptime !from_parser) {
-            // Script has src and no explicit async/defer attributes
-            // Per HTML spec, dynamically created scripts default to async
+        if (script_element.getAsync()) {
             break :blk .async;
         }
 
@@ -249,6 +241,7 @@ pub fn addFromElement(self: *ScriptManager, comptime from_parser: bool, script_e
                 .headers = headers,
                 .cookie_jar = &frame._session.cookie_jar,
                 .cookie_origin = frame.url,
+                .top_level_cookie_url = frame.topLevelUrl(),
                 .resource_type = .script,
                 .notification = frame._session.notification,
             });
@@ -272,6 +265,7 @@ pub fn addFromElement(self: *ScriptManager, comptime from_parser: bool, script_e
                     .headers = headers,
                     .cookie_jar = &frame._session.cookie_jar,
                     .cookie_origin = frame.url,
+                    .top_level_cookie_url = frame.topLevelUrl(),
                     .resource_type = .script,
                     .notification = frame._session.notification,
                 },
@@ -296,7 +290,6 @@ pub fn addFromElement(self: *ScriptManager, comptime from_parser: bool, script_e
         return;
     }
 
-    // could have already been evaluating if this is dynamically added
     const was_evaluating = self.base.is_evaluating;
     self.base.is_evaluating = true;
     defer {

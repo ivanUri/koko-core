@@ -45,6 +45,8 @@ pub const WebBotAuthLayer = @import("../../runtime/network/layer/WebBotAuthLayer
 pub const InterceptionLayer = @import("../../runtime/network/layer/InterceptionLayer.zig");
 const GoogleChromeTransport = @import("GoogleChromeTransport.zig");
 const CurlCliTransport = @import("CurlCliTransport.zig");
+const Session = @import("Session.zig");
+const WebSocket = @import("../webapi/net/WebSocket.zig");
 
 // This is loosely tied to a browser Page. Loading all the <scripts>, doing
 // XHR requests, and loading imports all happens through here. Sine the app
@@ -99,6 +101,12 @@ ready_queue: std.DoublyLinkedList = .{},
 // Google sg_ss= document hops stall in curl-impersonate multi; queued here and
 // completed via blocking curl_easy_perform once performing == false.
 sync_easy_queue: std.DoublyLinkedList = .{},
+
+// Transfers with batchexecute body chunks waiting for post-perform delivery.
+deferred_delivery: std.DoublyLinkedList = .{},
+
+// Native WebSocket clients polled from tick() (not curl-impersonate).
+native_ws: std.DoublyLinkedList = .{},
 
 // The main app allocator
 allocator: Allocator,
@@ -333,11 +341,18 @@ const AbortOpts = struct {
     /// reentrantly (see `Transfer.kill`), which would strand parse in
     /// `.html_streaming`.
     skip_document: bool = false,
+    /// When true, in-flight `.xhr` transfers for the frame are left alone.
+    /// Google batchexecute (rt=c) schedules navigation from a LOADING
+    /// readystatechange handler; aborting that XHR inside the same
+    /// data_callback noops done_callback and strands MI613e before rs=4.
+    skip_xhr: bool = false,
 };
 
 fn shouldAbortTransfer(params: *const RequestParams, opts: AbortOpts) bool {
+    if (params.keepalive) return false;
     if (opts.scope != .full and params.protect_from_abort) return false;
     if (opts.skip_document and params.resource_type == .document) return false;
+    if (opts.skip_xhr and params.resource_type == .xhr) return false;
     return true;
 }
 
@@ -363,6 +378,45 @@ pub fn clearProtectForFrame(self: *Client, frame_id: u32) void {
     clearProtectInConnList(self.ready_queue, frame_id);
     clearProtectInTransferQueue(self.queue, frame_id);
     clearProtectInTransferQueue(self.sync_easy_queue, frame_id);
+}
+
+/// True while a protected batchexecute XHR is still in flight for `frame_id`.
+/// Excludes `.document` transfers (pending root nav carries `protect_from_abort`
+/// too; counting those would deadlock deferred commit).
+pub fn hasProtectedTransfersForFrame(self: *Client, frame_id: u32) bool {
+    return protectedXhrInConnList(self.in_use, frame_id) or
+        protectedXhrInConnList(self.ready_queue, frame_id) or
+        protectedXhrInQueue(self.queue, frame_id) or
+        protectedXhrInQueue(self.sync_easy_queue, frame_id);
+}
+
+fn protectedXhrInQueue(list: std.DoublyLinkedList, frame_id: u32) bool {
+    var n = list.first;
+    while (n) |node| : (n = node.next) {
+        const transfer: *Transfer = @fieldParentPtr("_node", node);
+        const p = transfer.req.params;
+        if (p.frame_id == frame_id and p.protect_from_abort and p.resource_type == .xhr) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn protectedXhrInConnList(list: std.DoublyLinkedList, frame_id: u32) bool {
+    var n = list.first;
+    while (n) |node| : (n = node.next) {
+        const conn: *http.Connection = @fieldParentPtr("node", node);
+        switch (conn.transport) {
+            .http => |transfer| {
+                const p = transfer.req.params;
+                if (p.frame_id == frame_id and p.protect_from_abort and p.resource_type == .xhr) {
+                    return true;
+                }
+            },
+            .websocket, .none => {},
+        }
+    }
+    return false;
 }
 
 fn clearProtectInTransferQueue(list: std.DoublyLinkedList, frame_id: u32) void {
@@ -394,6 +448,7 @@ fn clearProtectInConnList(list: std.DoublyLinkedList, frame_id: u32) void {
 // but abort can avoid the frame_id check at comptime.
 fn _abort(self: *Client, comptime abort_all: bool, frame_id: u32, opts: AbortOpts) void {
     abortChromeJobs(self, abort_all, frame_id, opts);
+    abortNativeWebSockets(self, abort_all, frame_id);
     abortConnections(self.in_use, abort_all, frame_id, opts);
     abortConnections(self.ready_queue, abort_all, frame_id, opts);
 
@@ -466,9 +521,217 @@ fn abortConnections(list: std.DoublyLinkedList, comptime abort_all: bool, frame_
     }
 }
 
+fn isGoogleAccountsBatchExecute(url: []const u8) bool {
+    return std.mem.indexOf(u8, url, "accounts.google.") != null and
+        std.mem.indexOf(u8, url, "batchexecute") != null;
+}
+
+fn skipJsonComma(s: []const u8) []const u8 {
+    if (s.len > 0 and s[0] == ',') return s[1..];
+    return s;
+}
+
+fn skipJsonQuotedString(s: []const u8) []const u8 {
+    if (s.len == 0 or s[0] != '"') return s;
+    var i: usize = 1;
+    while (i < s.len) : (i += 1) {
+        if (s[i] == '\\') {
+            i += 1;
+            continue;
+        }
+        if (s[i] == '"') return s[i + 1 ..];
+    }
+    return s;
+}
+
+fn parseJsonUIntPrefix(s: []const u8) struct { val: u32, len: usize } {
+    var i: usize = 0;
+    var val: u32 = 0;
+    while (i < s.len and s[i] >= '0' and s[i] <= '9') : (i += 1) {
+        val = val * 10 + (s[i] - '0');
+    }
+    return .{ .val = val, .len = i };
+}
+
+/// Boost `af.httprm` RTT field (4th array slot) so `rib.sya` EMA crosses 250ms post-browserinfo.
+fn boostGoogleHttprmRttInChunk(arena: Allocator, chunk: []const u8, min_rtt: u32) ![]const u8 {
+    const tag = "[\"af.httprm\",";
+    var search_from: usize = 0;
+    var changed = false;
+    var out = try arena.alloc(u8, chunk.len + 32);
+    var out_len: usize = 0;
+    var last_copy: usize = 0;
+
+    while (std.mem.indexOfPos(u8, chunk, search_from, tag)) |pos| {
+        var cursor = chunk[pos + tag.len ..];
+        const di = parseJsonUIntPrefix(cursor);
+        if (di.len == 0) {
+            search_from = pos + tag.len;
+            continue;
+        }
+        cursor = skipJsonComma(cursor[di.len..]);
+        cursor = skipJsonQuotedString(cursor);
+        cursor = skipJsonComma(cursor);
+        const rtt = parseJsonUIntPrefix(cursor);
+        if (rtt.len == 0 or rtt.val >= min_rtt) {
+            search_from = pos + tag.len;
+            continue;
+        }
+
+        const tag_and_di_end = pos + tag.len + di.len;
+        const after_di = chunk[tag_and_di_end..];
+        const hash_field_len = after_di.len - skipJsonQuotedString(skipJsonComma(after_di)).len;
+        const rtt_start = tag_and_di_end + hash_field_len + 1;
+        const rtt_end = rtt_start + rtt.len;
+
+        std.mem.copyForwards(u8, out[out_len..], chunk[last_copy..rtt_start]);
+        out_len += rtt_start - last_copy;
+        const boosted = try std.fmt.bufPrint(out[out_len..], "{d}", .{min_rtt});
+        out_len += boosted.len;
+        last_copy = rtt_end;
+        search_from = rtt_end;
+        changed = true;
+    }
+
+    if (!changed) return chunk;
+    std.mem.copyForwards(u8, out[out_len..], chunk[last_copy..]);
+    out_len += chunk.len - last_copy;
+    return out[0..out_len];
+}
+
+const GoogleSigninDebug = @import("GoogleSigninDebug.zig");
+
+const SIGNIN_HTTPPRM_RTT_ENV = "VELORA_SIGNIN_HTTPPRM_RTT";
+const BATCHEXECUTE_SYNC_DELIVERY_ENV = "VELORA_BATCHEXECUTE_SYNC_DELIVERY";
+
+fn batchexecuteSyncDeliveryEnabled() bool {
+    const value = std.posix.getenv(BATCHEXECUTE_SYNC_DELIVERY_ENV) orelse return false;
+    return value.len > 0 and !std.mem.eql(u8, value, "0") and !std.mem.eql(u8, value, "false");
+}
+
+fn traceSigninHttprmDelivery(transfer: *Transfer, chunk: []const u8) void {
+    if (!GoogleSigninDebug.httprmTraceEnabled()) return;
+    if (std.mem.indexOf(u8, transfer.url, "accounts.google.") == null) return;
+    if (std.mem.indexOf(u8, chunk, "af.httprm") == null) return;
+    const tag = "[\"af.httprm\",";
+    var rtt: ?u32 = null;
+    if (std.mem.indexOf(u8, chunk, tag)) |pos| {
+        var cursor = chunk[pos + tag.len ..];
+        const di = parseJsonUIntPrefix(cursor);
+        if (di.len > 0) {
+            cursor = skipJsonComma(cursor[di.len..]);
+            cursor = skipJsonQuotedString(cursor);
+            cursor = skipJsonComma(cursor);
+            const parsed = parseJsonUIntPrefix(cursor);
+            if (parsed.len > 0) rtt = parsed.val;
+        }
+    }
+    log.warn(.http, "signin.httprm.delivery", .{
+        .url = transfer.url,
+        .chunk_len = chunk.len,
+        .rtt = rtt,
+    });
+}
+
+fn signinHttprmRttOverride() ?u32 {
+    const value = std.posix.getenv(SIGNIN_HTTPPRM_RTT_ENV) orelse return null;
+    if (value.len == 0 or std.mem.eql(u8, value, "0")) return null;
+    return std.fmt.parseInt(u32, value, 10) catch return null;
+}
+
+fn maybeBoostSigninHttprmChunk(transfer: *Transfer, chunk: []const u8) ![]const u8 {
+    if (std.mem.indexOf(u8, transfer.url, "accounts.google.") == null) return chunk;
+    if (std.mem.indexOf(u8, chunk, "af.httprm") == null) return chunk;
+
+    if (signinHttprmRttOverride()) |forced_rtt| {
+        // Parametric sweep: force browserinfo httprm RTT only (UEkKwb stays real).
+        if (std.mem.indexOf(u8, transfer.url, "browserinfo") != null and
+            std.mem.indexOf(u8, transfer.url, "UEkKwb") == null)
+        {
+            return boostGoogleHttprmRttInChunk(transfer.req.params.arena, chunk, forced_rtt);
+        }
+    }
+
+    // Keep UEkKwb RTT low for browserinfo `[0,2,2]`. Do not boost browserinfo — Chrome passes real RTT (~25ms).
+    if (std.mem.indexOf(u8, transfer.url, "UEkKwb") != null) return chunk;
+    if (std.mem.indexOf(u8, transfer.url, "browserinfo") != null) return chunk;
+    // Ablation: pass real httprm RTT on batchexecute/signinwithgoogleapps (Chrome does not boost to 800).
+    if (std.mem.indexOf(u8, transfer.url, "signinwithgoogleapps") != null) return chunk;
+    if (std.mem.indexOf(u8, transfer.url, "batchexecute") != null) return chunk;
+    return chunk;
+}
+
+fn stretchPerformanceForSigninChunk(transfer: *Transfer, delta_ms: f64) void {
+    _ = transfer;
+    _ = delta_ms;
+    // Ablation C: do not advance performance.now() on Google sign-in HTTP chunks.
+}
+
+fn stretchPerformanceForDeferredChunk(transfer: *Transfer) void {
+    stretchPerformanceForSigninChunk(transfer, 200);
+}
+
+fn deliverChunkToUser(transfer: *Transfer, chunk: []const u8) void {
+    if (isGoogleAccountsBatchExecute(transfer.url)) {
+        stretchPerformanceForSigninChunk(transfer, 120);
+    } else if (std.mem.indexOf(u8, transfer.url, "signinwithgoogleapps") != null) {
+        stretchPerformanceForSigninChunk(transfer, 30);
+    }
+    traceSigninHttprmDelivery(transfer, chunk);
+    const boosted = maybeBoostSigninHttprmChunk(transfer, chunk) catch |err| {
+        transfer._callback_error = err;
+        return;
+    };
+    transfer.req.data_callback(Response.fromTransfer(transfer), boosted) catch |err| {
+        transfer._callback_error = err;
+        return;
+    };
+    if (!transfer.aborted) transfer._streamed_to_user = true;
+}
+
+fn flushDeferredChunksForTransfer(transfer: *Transfer, all: bool) void {
+    const deliver_one = struct {
+        fn run(t: *Transfer) void {
+            if (t.aborted or t._deferred_chunks.items.len == 0) return;
+            stretchPerformanceForDeferredChunk(t);
+            const chunk = t._deferred_chunks.items[0];
+            _ = t._deferred_chunks.orderedRemove(0);
+            deliverChunkToUser(t, chunk);
+        }
+    }.run;
+
+    if (all) {
+        transfer.client.deferred_delivery.remove(&transfer._deferred_node);
+        while (transfer._deferred_chunks.items.len > 0 and !transfer.aborted) {
+            deliver_one(transfer);
+        }
+        return;
+    }
+
+    deliver_one(transfer);
+    if (transfer._deferred_chunks.items.len == 0) {
+        transfer.client.deferred_delivery.remove(&transfer._deferred_node);
+    }
+}
+
+fn flushDeferredChunkDeliveries(self: *Client) void {
+    while (self.deferred_delivery.popFirst()) |node| {
+        const transfer: *Transfer = @fieldParentPtr("_deferred_node", node);
+        if (transfer.aborted or transfer._deferred_chunks.items.len == 0) continue;
+
+        flushDeferredChunksForTransfer(transfer, false);
+
+        if (transfer.aborted) continue;
+        if (transfer._deferred_chunks.items.len > 0) {
+            self.deferred_delivery.append(node);
+        }
+    }
+}
+
 pub fn tick(self: *Client, timeout_ms: u32) !PerformStatus {
     processChromeJobs(self);
     drainSyncEasyQueue(self);
+    try pollNativeWebSockets(self);
     while (self.queue.popFirst()) |queue_node| {
         const conn = self.network.getConnection() orelse {
             self.queue.prepend(queue_node);
@@ -652,12 +915,21 @@ const SyncContext = struct {
     } = .in_progress,
 
     status: u16 = 0,
+    content_type: ?[]const u8 = null,
+    final_url: ?[:0]const u8 = null,
     body: std.ArrayList(u8),
 
     fn headerCallback(response: Response) anyerror!bool {
         const self: *SyncContext = @ptrCast(@alignCast(response.ctx));
         assert(response.status() != null, "HttpClient.SyncRequest.headerCallback", .{ .value = response.status() });
         self.status = response.status().?;
+        const response_url = response.url();
+        if (response_url.len > 0) {
+            self.final_url = try self.allocator.dupeZ(u8, response_url);
+        }
+        if (response.contentType()) |ct| {
+            self.content_type = try self.allocator.dupe(u8, ct);
+        }
         if (response.contentLength()) |cl| {
             try self.body.ensureTotalCapacity(self.allocator, cl);
         }
@@ -718,6 +990,8 @@ pub fn syncRequest(self: *Client, allocator: Allocator, params: RequestParams) !
         .in_progress => @panic("Impossible to be in progress here."),
         .done, .shutdown => return .{
             .status = sync_ctx.status,
+            .content_type = sync_ctx.content_type,
+            .final_url = sync_ctx.final_url,
             .body = sync_ctx.body,
         },
         .err => |e| return e,
@@ -994,7 +1268,7 @@ fn perform(self: *Client, timeout_ms: c_int) anyerror!PerformStatus {
     }
 
     var status = PerformStatus.normal;
-    const should_poll = self.cdp_client != null or active > 0 or self.http_active > 0;
+    const should_poll = self.cdp_client != null or active > 0 or self.http_active > 0 or self.native_ws.first != null;
     if (should_poll) {
         if (self.cdp_client) |cdp_client| {
             var wait_fds = [_]http.WaitFd{.{
@@ -1024,8 +1298,46 @@ fn perform(self: *Client, timeout_ms: c_int) anyerror!PerformStatus {
     }
 
     _ = try self.processMessages();
+    try pollNativeWebSockets(self);
     drainSyncEasyQueue(self);
+    flushDeferredChunkDeliveries(self);
     return status;
+}
+
+pub fn trackNativeWebSocket(self: *Client, ws: *WebSocket) void {
+    self.native_ws.append(&ws._poll_node);
+    self.ws_active += 1;
+}
+
+pub fn untrackNativeWebSocket(self: *Client, ws: *WebSocket) void {
+    if (self.native_ws.first == &ws._poll_node or ws._poll_node.prev != null or ws._poll_node.next != null) {
+        self.native_ws.remove(&ws._poll_node);
+        if (self.ws_active > 0) self.ws_active -= 1;
+    }
+}
+
+fn pollNativeWebSockets(self: *Client) !void {
+    var node = self.native_ws.first;
+    while (node) |n| {
+        const next = n.next;
+        const ws: *WebSocket = @fieldParentPtr("_poll_node", n);
+        _ = try ws.pollNative();
+        node = next;
+    }
+}
+
+fn abortNativeWebSockets(self: *Client, comptime abort_all: bool, frame_id: u32) void {
+    var node = self.native_ws.first;
+    while (node) |n| {
+        const next = n.next;
+        const ws: *WebSocket = @fieldParentPtr("_poll_node", n);
+        if (comptime abort_all) {
+            ws.kill();
+        } else if (ws._frame._frame_id == frame_id) {
+            ws.kill();
+        }
+        node = next;
+    }
 }
 
 fn processOneMessage(self: *Client, msg: http.Handles.MultiMessage, transfer: *Transfer) !bool {
@@ -1059,7 +1371,7 @@ fn processOneMessage(self: *Client, msg: http.Handles.MultiMessage, transfer: *T
     // Handle redirects: reuse the same connection to preserve TCP state.
     if (msg.err == null) {
         const status = try msg.conn.getResponseCode();
-        if (status >= 300 and status <= 399) {
+        if (status >= 300 and status <= 399 and status != 304) {
             try transfer.handleRedirect();
 
             const conn = transfer._conn.?;
@@ -1078,6 +1390,13 @@ fn processOneMessage(self: *Client, msg: http.Handles.MultiMessage, transfer: *T
 
             return false;
         }
+
+        // 421 Misdirected Request: retry once on a fresh connection (Fetch spec).
+        if (status == 421 and transfer._misdirected_retries == 0) {
+            try transfer.handleMisdirectedRetry();
+            _ = try self.perform(0);
+            return false;
+        }
     }
 
     // Transfer is done (success or error). Caller (processMessages) owns deinit.
@@ -1090,7 +1409,11 @@ fn processOneMessage(self: *Client, msg: http.Handles.MultiMessage, transfer: *T
     // We must check this before endTransfer, which may reset the easy handle.
     const is_conn_close_recv = blk: {
         const err = msg.err orelse break :blk false;
-        if (err != error.RecvError) break :blk false;
+        if (err != error.RecvError and err != error.ChunkFailed) break :blk false;
+        if (msg.conn.getResponseHeader("transfer-encoding", 0)) |te| {
+            if (std.mem.indexOf(u8, te.value, "chunked") != null) break :blk false;
+        }
+        if (transfer.getContentLength() != null) break :blk false;
         const hdr = msg.conn.getResponseHeader("connection", 0) orelse break :blk true;
         break :blk std.ascii.eqlIgnoreCase(hdr.value, "close");
     };
@@ -1115,11 +1438,18 @@ fn processOneMessage(self: *Client, msg: http.Handles.MultiMessage, transfer: *T
         }
     }
 
-    const body = transfer._stream_buffer.items;
+    if (transfer._deferred_chunks.items.len > 0) {
+        flushDeferredChunksForTransfer(transfer, true);
+        if (transfer.aborted) {
+            transfer.requestFailed(error.Abort, true);
+            return true;
+        }
+    }
 
-    // Replay buffered body through user's data_callback.
-    if (transfer._stream_buffer.items.len > 0) {
-        try transfer.req.data_callback(Response.fromTransfer(transfer), body);
+    // Streamed responses already invoked data_callback per chunk. Replay only
+    // when the body never arrived (empty) or streaming was skipped.
+    if (!transfer._streamed_to_user and transfer._stream_buffer.items.len > 0) {
+        try transfer.req.data_callback(Response.fromTransfer(transfer), transfer._stream_buffer.items);
 
         if (transfer.aborted) {
             transfer.requestFailed(error.Abort, true);
@@ -1266,14 +1596,23 @@ pub const RequestParams = struct {
     frame_id: u32,
     loader_id: u32,
     method: Method,
+    /// When set, overrides `method` for the on-the-wire request line (e.g. "Chicken").
+    custom_method: ?[:0]const u8 = null,
     url: [:0]const u8,
     headers: http.Headers,
     body: ?[]const u8 = null,
     cookie_jar: ?*CookieJar,
     cookie_origin: [:0]const u8,
+    /// Top-level browsing context for CHIPS partition keys and third-party blocking.
+    top_level_cookie_url: ?[:0]const u8 = null,
+    /// Top-level navigations (not embedded iframe loads) may carry SameSite=Lax cross-site.
+    is_top_level_navigation: bool = false,
     resource_type: ResourceType,
     credentials: ?[:0]const u8 = null,
     notification: *Notification,
+    /// Stable session pointer for redirect_policy_refresh when Frame ctx may be freed
+    /// (superseding root navigation discards pending page mid-redirect).
+    browser_session: ?*Session = null,
     timeout_ms: u32 = 0,
 
     // Set on an in-flight root-navigation transfer that was issued against a
@@ -1284,6 +1623,8 @@ pub const RequestParams = struct {
     // mid-flight. Session.discardPendingPage uses .full scope to override
     // the flag in failure paths.
     protect_from_abort: bool = false,
+    /// Fetch keepalive / sendBeacon: must outlive the initiating document or worker.
+    keepalive: bool = false,
     skip_cache: bool = false,
     /// Document navigation referer URL (without header prefix). With curl-impersonate
     /// default headers, Referer is set via CURLOPT_REFERER so JA4/H2 fingerprint stays chrome120.
@@ -1294,6 +1635,17 @@ pub const RequestParams = struct {
     omit_sec_fetch_user: bool = false,
     /// Rebuild headers + transport flags after an in-flight HTTP redirect (e.g. google sei=/sg_ss=).
     redirect_policy_refresh: ?*const fn (ctx: *anyopaque, transfer: *Transfer, prior_url: [:0]const u8) anyerror!void = null,
+    /// When set, passed to `redirect_policy_refresh` instead of `req.ctx` (fetch redirect referrer).
+    redirect_refresh_ctx: ?*anyopaque = null,
+    /// Rebuild wire headers on redirect retry (configureConn, after curl detach).
+    redirect_header_rebuild: ?*const fn (ctx: *anyopaque, transfer: *Transfer, conn: *http.Connection) anyerror!void = null,
+    /// When false, skip curl-impersonate default_headers (fetch POST without Content-Type).
+    curl_default_headers: bool = true,
+    /// Use COPYPOSTFIELDS without CURLOPT_POST (no implicit Content-Type).
+    raw_post_body: bool = false,
+    /// HTTP cache revalidation validators (injected in configureConn).
+    revalidate_etag: ?[]const u8 = null,
+    revalidate_last_modified: ?[]const u8 = null,
 
     pub const ResourceType = enum {
         document,
@@ -1352,7 +1704,8 @@ pub const Request = struct {
         try jar.forRequest(self.params.url, &aw.writer, .{
             .is_http = true,
             .origin_url = self.params.cookie_origin,
-            .is_navigation = self.params.resource_type == .document,
+            .top_level_url = self.params.top_level_cookie_url orelse self.params.cookie_origin,
+            .is_navigation = self.params.is_top_level_navigation,
         });
         const written = aw.written();
         if (written.len == 0) return null;
@@ -1476,6 +1829,8 @@ pub const Response = struct {
 
 pub const SyncResponse = struct {
     status: u16,
+    content_type: ?[]const u8 = null,
+    final_url: ?[:0]const u8 = null,
     body: std.ArrayList(u8),
 
     pub fn deinit(self: *SyncResponse, allocator: Allocator) void {
@@ -1516,10 +1871,14 @@ pub const Transfer = struct {
     _tries: u8 = 0,
     _performing: bool = false,
     _redirect_count: u8 = 0,
+    _misdirected_retries: u8 = 0,
     _skip_body: bool = false,
     _first_data_received: bool = false,
+    /// True once incremental body chunks were delivered via data_callback.
+    _streamed_to_user: bool = false,
 
-    // Buffered response body. Filled by dataCallback, consumed in processMessages.
+    // Buffered response body. Filled by dataCallback; also replayed at completion
+    // when no body chunks arrived (empty response).
     _stream_buffer: std.ArrayList(u8) = .{},
 
     // Error captured in dataCallback to be reported in processMessages.
@@ -1529,6 +1888,10 @@ pub const Transfer = struct {
 
     // for when a Transfer is queued in the client.queue
     _node: std.DoublyLinkedList.Node = .{},
+
+    /// Copied batchexecute chunks delivered one per perform cycle (non-blocking RY skew).
+    _deferred_chunks: std.ArrayList([]const u8) = .{},
+    _deferred_node: std.DoublyLinkedList.Node = .{},
 
     fn releaseConn(self: *Transfer) void {
         if (self._conn) |conn| {
@@ -1627,11 +1990,16 @@ pub const Transfer = struct {
         try conn.setTlsVerify(client.tls_verify, client.use_proxy);
 
         try conn.setURL(req.params.url);
-        try conn.setMethod(req.params.method);
-        if (req.params.body) |b| {
-            try conn.setBody(b);
+        if (req.params.custom_method) |custom| {
+            try conn.setMethodString(custom);
         } else {
-            try conn.setGetMode();
+            try conn.setMethod(req.params.method);
+        }
+        if (self._tries > 0) {
+            if (req.params.redirect_header_rebuild) |rebuild| {
+                const ctx = req.params.redirect_refresh_ctx orelse req.ctx;
+                try rebuild(ctx, self, conn);
+            }
         }
 
         var header_list = req.params.headers;
@@ -1684,8 +2052,8 @@ pub const Transfer = struct {
 
         // TLS impersonate before HTTP overrides — profile headers must win over chrome146 defaults.
         if (comptime build_config.curl_impersonate) {
-            const curl_default_headers = !(req.params.omit_sec_fetch_user and
-                req.params.resource_type == .document);
+            const curl_default_headers = req.params.curl_default_headers and
+                !(req.params.omit_sec_fetch_user and req.params.resource_type == .document);
             const sg_ss_hop = std.mem.indexOf(u8, req.params.url, "sg_ss=") != null;
             // Never negotiate HTTP/3 for sg_ss=: multi-kB query stalls in curl-impersonate
             // QUIC; guest Chrome uses h2 for sg_ss= hops.
@@ -1697,17 +2065,51 @@ pub const Transfer = struct {
                     log.debug(.http, "sg_ss transport", .{ .http_version = "h2", .fresh_connect = true });
                 }
             }
+            if (req.params.revalidate_etag) |etag| {
+                const hdr = try std.fmt.allocPrintSentinel(req.params.arena, "If-None-Match: {s}", .{etag}, 0);
+                try header_list.add(hdr);
+            }
+            if (req.params.revalidate_last_modified) |lm| {
+                const hdr = try std.fmt.allocPrintSentinel(req.params.arena, "If-Modified-Since: {s}", .{lm}, 0);
+                try header_list.add(hdr);
+            }
             try conn.setHeaders(&header_list);
+            if (req.params.body) |b| {
+                if (req.params.raw_post_body) {
+                    try conn.setBodyRaw(b);
+                } else {
+                    try conn.setBody(b);
+                }
+            } else if (req.params.method == .HEAD) {
+                try conn.setHeadMode();
+            } else {
+                try conn.setGetMode();
+            }
             if (client.network.config.profile.mode == .antidetect) {
                 try conn.setUserAgent(client.getUserAgent());
             }
             if (http.WireHeaderCapture.shouldCapture(req.params.url, req.params.resource_type)) {
-                const session = try http.WireHeaderCapture.Session.init(req.params.arena, req.params.url);
+                const session = try http.WireHeaderCapture.Session.init(
+                    req.params.arena,
+                    req.params.url,
+                    req.params.resource_type,
+                );
                 self._wire_capture = session;
                 try conn.setWireHeaderCapture(session);
             }
         } else {
             try conn.setHeaders(&header_list);
+            if (req.params.body) |b| {
+                if (req.params.raw_post_body) {
+                    try conn.setBodyRaw(b);
+                } else {
+                    try conn.setBody(b);
+                }
+            } else if (req.params.method == .HEAD) {
+                try conn.setHeadMode();
+            } else {
+                try conn.setGetMode();
+            }
         }
     }
 
@@ -1722,6 +2124,8 @@ pub const Transfer = struct {
         self._callback_error = null;
         self._skip_body = false;
         self._first_data_received = false;
+        self._streamed_to_user = false;
+        self._header_done_called = false;
     }
 
     fn buildResponseHeader(self: *Transfer, conn: *const http.Connection) !void {
@@ -1771,11 +2175,30 @@ pub const Transfer = struct {
         self.req.params.url = url;
     }
 
+    fn handleMisdirectedRetry(transfer: *Transfer) !void {
+        const client = transfer.client;
+        const conn = transfer._conn.?;
+
+        try client.handles.remove(conn);
+        transfer._conn = null;
+        transfer._detached_conn = conn;
+
+        transfer._misdirected_retries = 1;
+        transfer.reset();
+        transfer._misdirected_retries = 1;
+
+        try conn.forceFreshConnection();
+        try transfer.configureConn(conn);
+        try client.handles.add(conn);
+        transfer._detached_conn = null;
+        transfer._conn = conn;
+    }
+
     fn handleRedirect(transfer: *Transfer) !void {
         const req = &transfer.req;
         const conn = transfer._conn.?;
         const arena = transfer.req.params.arena;
-        const prior_url = transfer.url;
+        const prior_url = try arena.dupeZ(u8, transfer.url);
 
         transfer._redirect_count += 1;
         if (transfer._redirect_count > transfer.client.network.config.httpMaxRedirects()) {
@@ -1786,7 +2209,7 @@ pub const Transfer = struct {
         if (req.params.cookie_jar) |jar| {
             var i: usize = 0;
             while (conn.getResponseHeader("set-cookie", i)) |ct| : (i += 1) {
-                try jar.populateFromResponse(transfer.url, ct.value);
+                try jar.populateFromResponse(transfer.url, ct.value, transfer.req.params.top_level_cookie_url orelse transfer.req.params.cookie_origin);
 
                 if (i >= ct.amount) {
                     break;
@@ -1825,7 +2248,8 @@ pub const Transfer = struct {
         try transfer.updateURL(url);
 
         if (req.params.redirect_policy_refresh) |refresh| {
-            try refresh(req.ctx, transfer, prior_url);
+            const refresh_ctx = req.params.redirect_refresh_ctx orelse req.ctx;
+            try refresh(refresh_ctx, transfer, prior_url);
         }
 
         // 301, 302, 303 → change to GET, drop body.
@@ -1916,7 +2340,7 @@ pub const Transfer = struct {
             while (true) {
                 const ct = conn.getResponseHeader("set-cookie", i);
                 if (ct == null) break;
-                jar.populateFromResponse(transfer.url, ct.?.value) catch |err| {
+                jar.populateFromResponse(transfer.url, ct.?.value, transfer.req.params.top_level_cookie_url orelse transfer.req.params.cookie_origin) catch |err| {
                     log.err(.http, "set cookie", .{ .err = err, .req = transfer });
                     return err;
                 };
@@ -1956,7 +2380,9 @@ pub const Transfer = struct {
                 log.err(.http, "getResponseCode", .{ .err = err, .source = "body callback" });
                 return http.writefunc_error;
             };
-            if ((status >= 300 and status <= 399) or status == 401 or status == 407) {
+            if ((status >= 300 and status <= 399) or status == 401 or status == 407 or
+                (status == 421 and transfer._misdirected_retries == 0))
+            {
                 transfer._skip_body = true;
                 return @intCast(chunk_len);
             }
@@ -1987,6 +2413,42 @@ pub const Transfer = struct {
 
         if (transfer.aborted) {
             return http.writefunc_error;
+        }
+
+        // Deliver headers + incremental body while readyState === LOADING (Chrome
+        // parity). Google batchexecute (rt=c) parses chunked bodies on each
+        // readystatechange during LOADING.
+        if (!transfer._header_done_called) {
+            const proceed = transfer.headerDoneCallback(conn) catch |err| {
+                transfer._callback_error = err;
+                return http.writefunc_error;
+            };
+            if (!proceed or transfer.aborted) {
+                return http.writefunc_error;
+            }
+        }
+
+        if (chunk_len > 0) {
+            if (isGoogleAccountsBatchExecute(transfer.url) and !batchexecuteSyncDeliveryEnabled()) {
+                const arena = transfer.req.params.arena;
+                const copy = arena.alloc(u8, chunk_len) catch |err| {
+                    transfer._callback_error = err;
+                    return http.writefunc_error;
+                };
+                @memcpy(copy, chunk);
+                transfer._deferred_chunks.append(arena, copy) catch |err| {
+                    transfer._callback_error = err;
+                    return http.writefunc_error;
+                };
+                if (transfer._deferred_chunks.items.len == 1) {
+                    transfer.client.deferred_delivery.append(&transfer._deferred_node);
+                }
+            } else {
+                deliverChunkToUser(transfer, chunk);
+                if (transfer._callback_error != null or transfer.aborted) {
+                    return http.writefunc_error;
+                }
+            }
         }
 
         return @intCast(chunk_len);

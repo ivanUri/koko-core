@@ -234,14 +234,18 @@ pub fn tryCache(
         return null;
     };
     const cc = blk: {
-        if (cache_control == null) {
-            log.debug(.cache, "no store", .{ .url = url, .reason = "no cache control" });
+        if (cache_control) |cc_value| {
+            if (CacheControl.parse(cc_value)) |parsed| {
+                break :blk parsed;
+            }
+            log.debug(.cache, "no store", .{ .url = url, .cache_control = cc_value, .reason = "cache control" });
             return null;
         }
-        if (CacheControl.parse(cache_control.?)) |cc| {
-            break :blk cc;
+        // RFC 9111 heuristic: validators without Cache-Control still allow revalidation.
+        if (etag != null or last_modified != null) {
+            break :blk CacheControl{ .no_cache = true };
         }
-        log.debug(.cache, "no store", .{ .url = url, .cache_control = cache_control.?, .reason = "cache control" });
+        log.debug(.cache, "no store", .{ .url = url, .reason = "no cache control" });
         return null;
     };
 
@@ -286,4 +290,25 @@ test "Cache: CacheControl.parse" {
 
     try testing.expectEqual(null, CacheControl.parse("max-age=abc"));
     try testing.expectEqual(null, CacheControl.parse("max-age="));
+}
+
+test "Cache: tryCache stores ETag without Cache-Control" {
+    const allocator = testing.allocator;
+    const meta = try tryCache(
+        allocator,
+        0,
+        "http://example.com/",
+        200,
+        "text/plain",
+        null,
+        null,
+        null,
+        "\"abc\"",
+        null,
+        false,
+        false,
+    );
+    try testing.expect(meta != null);
+    try testing.expect(meta.?.cache_control.no_cache);
+    try testing.expectEqualStrings("\"abc\"", meta.?.etag.?);
 }

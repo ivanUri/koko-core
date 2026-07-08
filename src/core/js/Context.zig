@@ -21,6 +21,7 @@ const Scheduler = @import("Scheduler.zig");
 const Execution = @import("Execution.zig");
 
 const Frame = @import("../browser/Frame.zig");
+const URL = @import("../browser/URL.zig");
 const Page = @import("../browser/Page.zig");
 const Session = @import("../browser/Session.zig");
 const ScriptManagerBase = @import("../browser/ScriptManagerBase.zig");
@@ -103,6 +104,10 @@ call_arena: Allocator,
 // to reset it within a callback, it would invalidate the data of
 // the call which is calling the callback.
 call_depth: usize = 0,
+
+/// Set when a native callback throws; Caller.deinit must not run a microtask
+/// checkpoint or the pending exception is lost before script try/catch runs.
+pending_callback_exception: bool = false,
 
 // When a Caller is active (V8->Zig callback), this points to its Local.
 // When null, Zig->V8 calls must create a js.Local.Scope and initialize via
@@ -353,6 +358,17 @@ pub fn getIncumbent(self: *Context) *Frame {
     };
 }
 
+/// HTML entry settings object — last context entered via the embedder, or the
+/// microtask's entry realm while running promise reactions.
+pub fn getEntryFrame(self: *Context) ?*Frame {
+    const v8_entry = v8.v8__Isolate__GetEnteredOrMicrotaskContext(self.env.isolate.handle) orelse return null;
+    const ctx = fromC(v8_entry) orelse return null;
+    return switch (ctx.global) {
+        .frame => |frame| frame,
+        .worker => null,
+    };
+}
+
 pub fn stringToPersistedFunction(
     self: *Context,
     function_body: []const u8,
@@ -448,6 +464,31 @@ pub fn module(self: *Context, comptime want_result: bool, local: *const js.Local
     return self.evaluateModule(want_result, mod, owned_url, cacheable);
 }
 
+fn drainAfterModuleEvaluate(self: *Context) void {
+    const is_fp = switch (self.global) {
+        .frame => |f| std.mem.indexOf(u8, f.url, "fingerprint.com") != null,
+        .worker => false,
+    };
+    if (is_fp) {
+        self.env.drainFingerprintYbMicrotasks(self);
+    } else {
+        var pass: u8 = 0;
+        while (pass < 32) : (pass += 1) {
+            self.env.performMicrotaskCheckpoint(self);
+            if (self.env.checkpoint_active) break;
+            self.env.runMicrotasks(.after_evaluate);
+            if (!self.env.checkpoint_pending) break;
+        }
+    }
+    switch (self.global) {
+        .frame => |frame| {
+            frame.drainMicrotasksAfterDomInsertion();
+            if (is_fp) frame.pumpDueTimersNow(15);
+        },
+        .worker => {},
+    }
+}
+
 fn evaluateModule(self: *Context, comptime want_result: bool, mod: js.Module, url: []const u8, cacheable: bool) !(if (want_result) ModuleEntry else void) {
     if (cacheable) {
         const entry = self.module_cache.getPtr(url).?;
@@ -488,6 +529,10 @@ fn evaluateModule(self: *Context, comptime want_result: bool, mod: js.Module, ur
     // https://v8.github.io/api/head/classv8_1_1Module.html#a1f1758265a4082595757c3251bb40e0f
     // Must be a promise that gets returned here.
     assert(evaluated.isPromise(), "Context.module non-promise", .{});
+
+    // Fingerprint loader yb() starts during module eval; iframe Promise reactions
+    // and await continuations must settle before callers race Y.ip.
+    self.drainAfterModuleEvaluate();
 
     if (!cacheable) {
         switch (comptime want_result) {
@@ -650,6 +695,32 @@ fn resolveModuleCallback(
     };
 }
 
+/// Base URL for dynamic `import()` when V8 omits referrer (eval/import in module workers).
+fn dynamicImportReferrerBase(self: *Context, resource_name: ?[:0]const u8) [:0]const u8 {
+    if (resource_name) |name| {
+        if (name.len > 0 and URL.canParse(name, null)) return name;
+    }
+
+    const global_base = self.global.base();
+    if (std.mem.startsWith(u8, global_base, "blob:") or std.mem.startsWith(u8, global_base, "data:")) {
+        if (self.preferredModuleReferrerBase()) |http_base| return http_base;
+    }
+    return global_base;
+}
+
+/// HTTP module URL for blob:/data: entry workers (exclude leaf modules like export-on-load).
+fn preferredModuleReferrerBase(self: *Context) ?[:0]const u8 {
+    var it = self.module_identifier.valueIterator();
+    var candidate: ?[:0]const u8 = null;
+    while (it.next()) |url| {
+        const u = url.*;
+        if (!std.mem.startsWith(u8, u, "http://") and !std.mem.startsWith(u8, u, "https://")) continue;
+        if (std.mem.endsWith(u8, u, "export-on-load-script.js")) continue;
+        candidate = u;
+    }
+    return candidate;
+}
+
 pub fn dynamicModuleCallback(
     c_context: ?*const v8.Context,
     host_defined_options: ?*const v8.Data,
@@ -668,18 +739,16 @@ pub fn dynamicModuleCallback(
         .isolate = self.isolate,
     };
 
-    const resource = blk: {
+    const resource_name_str = blk: {
         const resource_value = js.Value{ .handle = resource_name.?, .local = &local };
-        if (resource_value.isNullOrUndefined()) {
-            // will only be null / undefined in extreme cases (e.g. WPT tests)
-            // where you're
-            break :blk self.global.base();
-        }
+        if (resource_value.isNullOrUndefined()) break :blk null;
 
-        break :blk js.String.toSliceZ(.{ .local = &local, .handle = resource_name.? }) catch |err| {
+        const resource_str = js.String.toSliceZ(.{ .local = &local, .handle = resource_name.? }) catch |err| {
             log.err(.app, "OOM", .{ .err = err, .src = "dynamicModuleCallback1" });
             return @constCast(local.rejectPromise(.{ .generic_error = "Out of memory" }).handle);
         };
+        if (resource_str.len == 0) break :blk null;
+        break :blk resource_str;
     };
 
     const specifier = js.String.toSliceZ(.{ .local = &local, .handle = v8_specifier.? }) catch |err| {
@@ -687,16 +756,24 @@ pub fn dynamicModuleCallback(
         return @constCast(local.rejectPromise(.{ .generic_error = "Out of memory" }).handle);
     };
 
+    const import_base = self.dynamicImportReferrerBase(resource_name_str);
+
     const normalized_specifier = self.script_manager.resolveSpecifier(
         self.arena, // might need to survive until the module is loaded
-        resource,
+        import_base,
         specifier,
     ) catch |err| {
-        log.err(.app, "OOM", .{ .err = err, .src = "dynamicModuleCallback3" });
+        log.err(.app, "dynamic import resolve failed", .{
+            .err = err,
+            .resource = resource_name_str,
+            .import_base = import_base,
+            .specifier = specifier,
+            .global_base = self.global.base(),
+        });
         return @constCast(local.rejectPromise(.{ .generic_error = "Out of memory" }).handle);
     };
 
-    const promise = self._dynamicModuleCallback(normalized_specifier, resource, &local) catch |err| blk: {
+    const promise = self._dynamicModuleCallback(normalized_specifier, import_base, &local) catch |err| blk: {
         log.err(.js, "dynamic module callback", .{
             .err = err,
         });
@@ -1009,7 +1086,8 @@ fn dynamicModuleSourceCallback(ctx: *anyopaque, module_source_: anyerror!ScriptM
     const local = &ls.local;
 
     var ms = module_source_ catch |err| {
-        _ = local.toLocal(state.resolver).reject("dynamic module source", local.newString(@errorName(err)));
+        log.debug(.js, "dynamic module fetch failed", .{ .err = err, .specifier = state.specifier });
+        local.toLocal(state.resolver).rejectError("dynamic module source", .{ .type_error = "Failed to fetch dynamically imported module" });
         return;
     };
 

@@ -188,6 +188,13 @@ pub fn isChildFrame(self: *const Execution) bool {
     };
 }
 
+pub fn topLevelCookieUrl(self: *const Execution) [:0]const u8 {
+    return switch (self.context.global) {
+        .frame => |f| f.topLevelUrl(),
+        .worker => |w| w.url,
+    };
+}
+
 pub fn canEnterJs(self: *const Execution, mode: JsEntryMode) bool {
     // scheduler_suppressed only gates microtask checkpoints (see Env.runMicrotasks).
     // Macrotasks (setTimeout, rAF, etc.) must keep firing so CreepJS queueEvent
@@ -197,10 +204,18 @@ pub fn canEnterJs(self: *const Execution, mode: JsEntryMode) bool {
         .strict_active => st == .active,
         .allow_draining => blk: {
             if (st == .active or st == .draining) break :blk true;
-            // Subframe navigations bump to `.initializing` until headers land.
-            // Allow microtask enqueue/checkpoint so promise reactions and
-            // widget bootstrap are not dropped (Turnstile / reCAPTCHA iframes).
-            if (st == .initializing and self.isChildFrame()) break :blk true;
+            if (st == .initializing) {
+                // Subframe navigations bump to `.initializing` until headers land.
+                // Allow microtask enqueue/checkpoint so promise reactions and
+                // widget bootstrap are not dropped (Turnstile / reCAPTCHA iframes).
+                if (self.isChildFrame()) break :blk true;
+                // Root: after document parse completes, promise reactions and
+                // queueMicrotask from load handlers must drain before commit.
+                if (switch (self.context.global) {
+                    .frame => |f| f.realmParseComplete(),
+                    .worker => true,
+                }) break :blk true;
+            }
             break :blk false;
         },
     };

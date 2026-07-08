@@ -98,7 +98,25 @@ pub fn hasReadyTasks(self: *Scheduler) bool {
 }
 
 pub fn msToNextHigh(self: *Scheduler) ?u64 {
-    const task = self.high_priority.peek() orelse return null;
+    return msToNextInQueue(&self.high_priority);
+}
+
+pub fn msToNextLow(self: *Scheduler) ?u64 {
+    return msToNextInQueue(&self.low_priority);
+}
+
+pub fn msToNext(self: *Scheduler) ?u64 {
+    const high = msToNextInQueue(&self.high_priority);
+    const low = msToNextInQueue(&self.low_priority);
+    if (high) |h| {
+        if (low) |l| return @min(h, l);
+        return h;
+    }
+    return low;
+}
+
+fn msToNextInQueue(queue: *Queue) ?u64 {
+    const task = queue.peek() orelse return null;
     const now = milliTimestamp(.monotonic);
     if (task.run_at <= now) {
         return 0;

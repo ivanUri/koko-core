@@ -168,6 +168,25 @@ pub fn flushPendingIdentityRemovals(self: *Page) void {
     self.pending_identity_removals.clearRetainingCapacity();
 }
 
+/// Tear down a secondary identity map (e.g. a dedicated worker realm). Globals
+/// may still be live in V8 when the worker context is destroyed; mark finalizer
+/// nodes done and drop the map. Weak callbacks reset handles on the next GC.
+pub fn shutdownIdentity(self: *Page, identity: *js.Identity) void {
+    {
+        var fc_it = self.finalizer_callbacks.valueIterator();
+        while (fc_it.next()) |fc_ptr| {
+            var id: ?*Session.FinalizerCallback.Identity = fc_ptr.*.identities;
+            while (id) |node| {
+                if (node.identity == identity) {
+                    node.done = true;
+                }
+                id = node.next;
+            }
+        }
+    }
+    identity.identity_map = .{};
+}
+
 // Tear down the Page and its root Frame. Equivalent to the old
 // Session.removePage + Session.resetFrameResources.
 pub fn deinit(self: *Page) void {

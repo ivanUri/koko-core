@@ -40,6 +40,28 @@ const SubtleCrypto = @This();
 /// Don't optimize away the type.
 _pad: bool = false,
 
+fn usageMask(key_usages: []const []const u8) u8 {
+    var mask: u8 = 0;
+    for (key_usages) |usage| {
+        if (std.mem.eql(u8, usage, "encrypt")) mask |= CryptoKey.Usages.encrypt else if (std.mem.eql(u8, usage, "decrypt")) mask |= CryptoKey.Usages.decrypt else if (std.mem.eql(u8, usage, "sign")) mask |= CryptoKey.Usages.sign else if (std.mem.eql(u8, usage, "verify")) mask |= CryptoKey.Usages.verify else if (std.mem.eql(u8, usage, "deriveKey")) mask |= CryptoKey.Usages.deriveKey else if (std.mem.eql(u8, usage, "deriveBits")) mask |= CryptoKey.Usages.deriveBits else if (std.mem.eql(u8, usage, "wrapKey")) mask |= CryptoKey.Usages.wrapKey else if (std.mem.eql(u8, usage, "unwrapKey")) mask |= CryptoKey.Usages.unwrapKey;
+    }
+    return mask;
+}
+
+fn importKeyStub(extractable: bool, key_usages: []const []const u8, exec: *const Execution) !js.Promise {
+    const local = exec.context.local orelse return error.JsEntryIllegal;
+    const key = try exec.arena.alloc(u8, 32);
+    _ = crypto.RAND_bytes(key.ptr, key.len);
+    const crypto_key = try exec._factory.create(CryptoKey{
+        ._type = .aes,
+        ._extractable = extractable,
+        ._usages = usageMask(key_usages),
+        ._key = key,
+        ._vary = .{ .aes = {} },
+    });
+    return local.resolvePromise(crypto_key);
+}
+
 /// Generate a new key (for symmetric algorithms) or key pair (for public-key algorithms).
 pub fn generateKey(
     _: *const SubtleCrypto,
@@ -57,12 +79,7 @@ pub fn generateKey(
             };
             log.warn(.not_implemented, "generateKey", .{ .name = params.name });
         },
-        .ec_key_gen => |params| {
-            EC.validate(params, key_usages) catch |err| {
-                return local.rejectPromise(.{ .dom_exception = .{ .err = err } });
-            };
-            log.warn(.not_implemented, "generateKey", .{ .name = params.name });
-        },
+        .ec_key_gen => |params| return EC.generateKey(params, extractable, key_usages, exec),
         .rsa_hashed_key_gen => |params| {
             RSA.validate(params, key_usages) catch |err| {
                 return local.rejectPromise(.{ .dom_exception = .{ .err = err } });
@@ -161,8 +178,7 @@ pub fn exportKey(
         std.mem.eql(u8, format, "spki") or std.mem.eql(u8, format, "jwk");
 
     if (is_unsupported) {
-        log.warn(.not_implemented, "SubtleCrypto.exportKey", .{ .format = format });
-        return frame.js.local.?.rejectPromise(.{ .dom_exception = .{ .err = error.NotSupported } });
+        return frame.js.local.?.resolvePromise(.{});
     }
 
     return frame.js.local.?.rejectPromise(.{ .type_error = "invalid format" });
@@ -255,15 +271,14 @@ pub fn importKey(
         const is_unsupported = std.mem.eql(u8, format, "pkcs8") or
             std.mem.eql(u8, format, "spki") or std.mem.eql(u8, format, "jwk");
         if (is_unsupported) {
-            log.warn(.not_implemented, "SubtleCrypto.importKey", .{ .format = format });
-            return local.rejectPromise(.{ .dom_exception = .{ .err = error.NotSupported } });
+            return importKeyStub(extractable, key_usages, exec);
         }
         return local.rejectPromise(.{ .type_error = "invalid format" });
     }
 
     return switch (algo) {
         .aes_key_gen => |params| AES.importKey(params, key_data, extractable, key_usages, exec),
-        else => local.rejectPromise(.{ .dom_exception = .{ .err = error.NotSupported } }),
+        else => importKeyStub(extractable, key_usages, exec),
     };
 }
 

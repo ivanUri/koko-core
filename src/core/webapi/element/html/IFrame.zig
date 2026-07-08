@@ -20,10 +20,17 @@ const Node = @import("../../../dom/Node.zig");
 const Element = @import("../../../dom/Element.zig");
 const HtmlElement = @import("../Html.zig");
 
+const IFrameSandbox = @import("../../../browser/IFrameSandbox.zig");
+
 const IFrame = @This();
 _proto: *HtmlElement,
 _src: []const u8 = "",
+_srcdoc: []const u8 = "",
 _executed: bool = false,
+/// Same-turn `load` already dispatched during inline about:blank navigation.
+_sync_onload_dispatched: bool = false,
+/// Queued for flush at appendChild return (Fingerprint yb onload timing).
+_sync_load_queued: bool = false,
 _window: ?*Window = null,
 
 pub fn asElement(self: *IFrame) *Element {
@@ -33,15 +40,35 @@ pub fn asNode(self: *IFrame) *Node {
     return self.asElement().asNode();
 }
 
+fn inlineChildUrl(url: []const u8) bool {
+    return std.mem.eql(u8, url, "about:blank") or
+        std.mem.eql(u8, url, "about:srcdoc") or
+        std.mem.startsWith(u8, url, "blob:");
+}
+
+fn inlineChildReadyForAccess(child: *Frame) bool {
+    if (child.realmReadyForExternalObservers()) return true;
+    // about:blank / srcdoc / blob navigations finish inline during appendChild.
+    // Fingerprint yb() reads contentWindow.document.readyState on the same turn
+    // as appendChild returns — publish as soon as the blank document exists.
+    if (!inlineChildUrl(child.url)) return false;
+    if (child.document._ready_state == .complete) return true;
+    if (child._parse_state == .complete and std.mem.eql(u8, child.document.getReadyState(), "complete")) {
+        return true;
+    }
+    return false;
+}
+
 pub fn getContentWindow(self: *const IFrame, frame: *Frame) ?Window.Access {
     const frame_window = self._window orelse return null;
-    if (!frame_window._frame.realmReadyForExternalObservers()) return null;
+    if (!inlineChildReadyForAccess(frame_window._frame)) return null;
     return Window.Access.init(frame.window, frame_window);
 }
 
 pub fn getContentDocument(self: *const IFrame) ?*Document {
     const window = self._window orelse return null;
-    if (!window._frame.realmReadyForExternalObservers()) return null;
+    if (!inlineChildReadyForAccess(window._frame)) return null;
+    if (IFrameSandbox.usesOpaqueOrigin(IFrameSandbox.parse(@constCast(self)))) return null;
     return window._document;
 }
 
@@ -55,6 +82,8 @@ pub fn setSrc(self: *IFrame, src: []const u8, frame: *Frame) !void {
     const old_src = self._src;
     try element.setAttributeSafe(comptime .wrap("src"), .wrap(src), frame);
     self._src = element.getAttributeSafe(comptime .wrap("src")) orelse unreachable;
+    // HTML: srcdoc overrides src for navigation.
+    if (self._srcdoc.len > 0) return;
     if (element.asNode().isConnected()) {
         if (self._window != null and isAboutBlankSrc(old_src) and isAboutBlankSrc(self._src)) {
             return;
@@ -82,6 +111,18 @@ pub fn getSandboxList(self: *IFrame, frame: *Frame) !*@import("../../collections
     return self.asElement().getSandboxList(frame);
 }
 
+pub fn getSrcdoc(self: *IFrame) []const u8 {
+    return self._srcdoc;
+}
+
+pub fn setSrcdoc(self: *IFrame, value: []const u8, frame: *Frame) !void {
+    try self.asElement().setAttributeSafe(comptime .wrap("srcdoc"), .wrap(value), frame);
+    self._srcdoc = self.asElement().getAttributeSafe(comptime .wrap("srcdoc")) orelse "";
+    if (!self.asNode().isConnected()) return;
+    self._executed = false;
+    try frame.iframeAddedCallback(self);
+}
+
 pub const JsApi = struct {
     pub const bridge = js.Bridge(IFrame);
 
@@ -92,6 +133,7 @@ pub const JsApi = struct {
     };
 
     pub const src = bridge.accessor(IFrame.getSrc, IFrame.setSrc, .{});
+    pub const srcdoc = bridge.accessor(IFrame.getSrcdoc, IFrame.setSrcdoc, .{});
     pub const name = bridge.accessor(IFrame.getName, IFrame.setName, .{});
     pub const contentWindow = bridge.accessor(IFrame.getContentWindow, null, .{});
     pub const contentDocument = bridge.accessor(IFrame.getContentDocument, null, .{});
@@ -103,5 +145,6 @@ pub const Build = struct {
         const self = node.as(IFrame);
         const element = self.asElement();
         self._src = element.getAttributeSafe(comptime .wrap("src")) orelse "";
+        self._srcdoc = element.getAttributeSafe(comptime .wrap("srcdoc")) orelse "";
     }
 };

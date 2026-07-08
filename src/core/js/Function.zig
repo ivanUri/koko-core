@@ -154,6 +154,13 @@ fn _tryCallWithThis(self: *const Function, comptime T: type, this: anytype, args
 
     const handle = v8.v8__Function__Call(self.handle, local.handle, js_this.handle, @as(c_int, @intCast(js_args.len)), c_args) orelse {
         if ((comptime opts.rethrow) and try_catch.hasCaught()) {
+            // Copy the exception onto the isolate before TryCatch is destroyed.
+            // ReThrow alone is lost when the stack TryCatch unwinds, which breaks
+            // filter callbacks in NodeIterator/TreeWalker (WPT expects propagation).
+            if (try_catch.exceptionValue()) |ex| {
+                _ = local.isolate.throwException(ex.handle);
+                return error.JsException;
+            }
             try_catch.rethrow();
             return error.TryCatchRethrow;
         }
@@ -167,7 +174,7 @@ fn _tryCallWithThis(self: *const Function, comptime T: type, this: anytype, args
     return local.jsValueToZig(T, .{ .local = local, .handle = handle });
 }
 
-fn getThis(self: *const Function) js.Object {
+pub fn getThis(self: *const Function) js.Object {
     const handle = if (self.this) |t| t else v8.v8__Context__Global(self.local.handle).?;
     return .{
         .local = self.local,

@@ -51,7 +51,7 @@ function res(s) {
     return s?.resources?.summary ?? null;
 }
 
-function render(report) {
+function render(report, rawJsonPath = defaultInput) {
     const meta = report.meta || {};
     const v = report.velora;
     const c = report.chromium;
@@ -62,20 +62,36 @@ function render(report) {
 
     const title = meta.benchmarkName || "Real-world crawl benchmark";
     const itemLabel = report.storyIds ? "story pages" : "article URLs";
+    const lane = meta.benchmarkLane ?? (meta.veloraMultiProcess === false ? "fair" : "density");
+    const isFair = lane === "fair";
 
     const lines = [];
     lines.push(`# ${title}`);
     lines.push("");
-    lines.push(`> **${meta.timestamp || "unknown"}** · ${meta.limit} pages · concurrency ${meta.concurrency} · ${meta.cpu || "unknown CPU"}`);
+    lines.push(`> **${meta.timestamp || "unknown"}** · lane **${lane}** · ${meta.limit} pages · concurrency ${meta.concurrency} · ${meta.cpu || "unknown CPU"}`);
     lines.push("");
     lines.push("## What this measures");
     lines.push("");
+    lines.push(`- **Benchmark lane:** \`${lane}\` — ${isFair
+        ? "fair throughput (1 Velora process, shared HTTP cache, warmup)"
+        : "agent density (N isolated Velora processes, cold per worker)"}`);
     lines.push(`- **Benchmark class:** \`${benchClass}\` — network → HTML parse → DOM extract (not full browser fidelity)`);
     lines.push(`- **Site:** ${meta.site} (live internet)`);
     lines.push(`- **Workload:** ${meta.limit} ${itemLabel} (shared list: \`${report.titlesFile}\`)`);
     lines.push(`- **Mode:** \`${meta.mode}\` (title + wiki links via \`querySelector\`)`);
-    lines.push(`- **Velora:** ${meta.concurrency}× \`velora serve\` (${v?.parallelismModel || "multi-process"})`);
+    if (isFair) {
+        lines.push(`- **Velora:** 1× \`velora serve\`, ${meta.concurrency} CDP sessions (${v?.parallelismModel || "multi-session-single-process"})`);
+        lines.push(`- **HTTP cache:** ${meta.httpCacheEnabled ? `\`${meta.httpCacheDir}\`` : "disabled"}`);
+        lines.push(`- **Warmup:** ${meta.warmup ? `\`${meta.warmupUrl}\` (excluded from measured wall time)` : "none"}`);
+    } else {
+        lines.push(`- **Velora:** ${meta.concurrency}× \`velora serve\` (${v?.parallelismModel || "multi-process"})`);
+        lines.push("- **HTTP cache:** disabled (intentional — measures cold worker footprint)");
+        lines.push("- **Warmup:** none");
+    }
     lines.push(`- **Chromium:** ${meta.concurrency} tabs, 1 browser (${c?.parallelismModel || "multi-tab"})`);
+    if (meta.warmup) {
+        lines.push(`- **Chromium warmup:** same as Velora (\`${meta.warmupUrl}\`, excluded from wall time)`);
+    }
     lines.push(`- **Resource sampling:** every ${vr?.intervalMs ?? 100}ms via process tree (RSS, CPU%, process count)`);
     lines.push("- **GPU:** utilization not available headless; we log GPU helper process count + RSS if spawned");
     lines.push("");
@@ -84,12 +100,22 @@ function render(report) {
     lines.push("");
     lines.push("| | Velora | Chromium |");
     lines.push("| --- | --- | --- |");
-    lines.push(`| Parallelism unit | ${meta.concurrency} isolated \`velora serve\` processes | ${meta.concurrency} tabs in 1 browser |`);
+    if (isFair) {
+        lines.push(`| Parallelism unit | 1 \`velora serve\`, ${meta.concurrency} CDP sessions | ${meta.concurrency} tabs in 1 browser |`);
+        lines.push("| Shared resources | Network, HttpClient, optional HTTP disk cache | browser network stack + disk cache |");
+    } else {
+        lines.push(`| Parallelism unit | ${meta.concurrency} isolated \`velora serve\` processes | ${meta.concurrency} tabs in 1 browser |`);
+        lines.push("| Shared resources | none across workers (by design) | browser network stack + disk cache |");
+    }
     lines.push("| OS process model | 1 process tree per worker (summed) | browser + N renderers + GPU + network + utility + crashpad |");
     lines.push(`| This run (peak procs) | ${vr?.peakProcessCount ?? "n/a"} | ${cr?.peakProcessCount ?? "n/a"} |`);
     if (v?.architectureNote) lines.push(`| Note | ${v.architectureNote} | ${c?.architectureNote || ""} |`);
     lines.push("");
-    lines.push("Peak process count and peak RSS are **not apples-to-apples** across architectures. Use **RSS/page**, **sessions/GB**, and **CPU-sec/page** for cost comparisons.");
+    if (isFair) {
+        lines.push("This lane compares **throughput and TTFX** under similar sharing assumptions. Prefer **wall time**, **throughput**, and **TTFX** over raw process count.");
+    } else {
+        lines.push("This lane compares **agent density**. Prefer **RSS/page**, **sessions/GB**, and **CPU-sec/page**. Peak process count and peak RSS are **not apples-to-apples** vs Chromium.");
+    }
     lines.push("");
 
     lines.push("## Limitations (crawler vs AI browser runtime)");
@@ -131,17 +157,26 @@ function render(report) {
         lines.push(`| Success rate | ${v.success}/${v.pages} | ${c.success}/${c.pages} | — |`);
         lines.push("");
 
-        lines.push("### Cost & density takeaways");
+        lines.push(isFair ? "### Throughput takeaways" : "### Cost & density takeaways");
         lines.push("");
+        if (cmp.veloraFaster) {
+            lines.push(`- **Wall time:** Velora finished in ${fmt(v.wallMs, 0)} ms vs Chromium ${fmt(c.wallMs, 0)} ms.`);
+        } else {
+            lines.push(`- **Wall time:** Chromium finished in ${fmt(c.wallMs, 0)} ms vs Velora ${fmt(v.wallMs, 0)} ms.`);
+        }
         if (cmp.veloraLowerMemory) {
-            lines.push("- **Memory:** Velora peak RSS is lower — better footprint per crawl worker at this concurrency.");
+            lines.push("- **Memory:** Velora peak RSS is lower at this concurrency.");
         } else {
             lines.push("- **Memory:** Chromium peak RSS is lower for this run.");
         }
-        if (cmp.veloraHigherDensity) {
-            lines.push(`- **Agent density:** Velora fits ~${vr?.sessionsPerGb ?? "?"} concurrent sessions per GB RAM vs Chromium ~${cr?.sessionsPerGb ?? "?"}.`);
-        } else {
-            lines.push(`- **Agent density:** Chromium fits more sessions per GB in this run (${cr?.sessionsPerGb ?? "?"} vs ${vr?.sessionsPerGb ?? "?"}).`);
+        if (!isFair) {
+            if (cmp.veloraHigherDensity) {
+                lines.push(`- **Agent density:** Velora fits ~${vr?.sessionsPerGb ?? "?"} concurrent sessions per GB RAM vs Chromium ~${cr?.sessionsPerGb ?? "?"}.`);
+            } else {
+                lines.push(`- **Agent density:** Chromium fits more sessions per GB in this run (${cr?.sessionsPerGb ?? "?"} vs ${vr?.sessionsPerGb ?? "?"}).`);
+            }
+        } else if (meta.httpCacheEnabled) {
+            lines.push(`- **HTTP cache:** enabled at \`${meta.httpCacheDir}\` — wiki skin/assets may be served from cache after warmup.`);
         }
         const vCpu = vr?.cpuSecondsPerPage;
         const cCpu = cr?.cpuSecondsPerPage;
@@ -214,10 +249,15 @@ function render(report) {
     lines.push("```bash");
     lines.push("zig build -Doptimize=ReleaseFast");
     lines.push("npx playwright install chromium");
-    lines.push("npm run bench:crawl:wikipedia:publish");
+    lines.push("# Agent density lane (default, unchanged)");
+    lines.push("npm run bench:crawl:wikipedia:density:publish");
+    lines.push("# Fair throughput lane (1 process + HTTP cache + warmup)");
+    lines.push("npm run bench:crawl:wikipedia:fair:publish");
+    lines.push("# Both lanes");
+    lines.push("npm run bench:crawl:wikipedia:publish:all");
     lines.push("```");
     lines.push("");
-    lines.push("Raw JSON: `code-check/tmp/benchmarks/crawl-wikipedia.json`");
+    lines.push(`Raw JSON: \`${rawJsonPath}\``);
     lines.push("");
 
     return `${lines.join("\n")}\n`;
@@ -348,7 +388,7 @@ async function main() {
         return;
     }
 
-    const md = render(report);
+    const md = render(report, opts.input);
     const latest = resolve(docsDir, `${prefix}-latest.md`);
     const dated = resolve(docsDir, `${prefix}-${report.meta?.timestamp?.slice(0, 10) || "run"}.md`);
     writeFileSync(latest, md);

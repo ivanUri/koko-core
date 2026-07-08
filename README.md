@@ -159,14 +159,11 @@ await page.search("https://www.bing.com/", "velora browser", { waitUntil: "domco
 
 | Probe | Command |
 |-------|---------|
-| CreepJS vs Chrome | `npm run test:creepjs:compare` |
-| CreepJS local sections | `npm run test:creepjs:local` |
-| BrowserLeaks | `npm run test:browserleaks` |
 | Profile CDP smoke | `npm run test:profile -- --profile chrome-local-huys-macbook-pro` |
+| Microbench | `npm run bench:compare:publish` |
+| Wikipedia crawl | `npm run bench:crawl:wikipedia:fair:publish` |
 
-Google SERP (`google-search` policy) uses real Chrome network via `scripts/chrome-google-transport.mjs` — see `docs/tls-impersonate.md`.
-
-Google Search debug (trace / compare Velora vs Chrome): [`google-search-debug/README.md`](google-search-debug/README.md) — `npm run google:compare`, `npm run google:trace`.
+Google SERP (`google-search` policy) uses real Chrome network via `scripts/chrome-google-transport.mjs` — see `docs/tls-impersonate.md`. Cookie warmup: [`knowledge/captcha/detection/google-search-investigation-journey.md`](knowledge/captcha/detection/google-search-investigation-journey.md).
 
 ## Use Cases
 

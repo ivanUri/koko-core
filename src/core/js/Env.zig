@@ -24,6 +24,8 @@ const Inspector = @import("Inspector.zig");
 const App = @import("../../runtime/App.zig");
 const Frame = @import("../browser/Frame.zig");
 const Window = @import("../webapi/Window.zig");
+const DedicatedWorkerGlobalScope = @import("../webapi/DedicatedWorkerGlobalScope.zig");
+const SharedWorkerGlobalScope = @import("../webapi/SharedWorkerGlobalScope.zig");
 const WorkerGlobalScope = @import("../webapi/WorkerGlobalScope.zig");
 
 const RealmLifecycleKernel = @import("../../runtime/RealmLifecycleKernel.zig");
@@ -162,6 +164,8 @@ pub fn init(app: *App, opts: InitOpts) !Env {
     isolate.enter();
     errdefer isolate.exit();
 
+    v8.v8__Isolate__SetCaptureStackTraceForUncaughtExceptions(isolate_handle, true, 10);
+    _ = v8.v8__Isolate__AddMessageListener(isolate_handle, uncaughtExceptionCallback);
     v8.v8__Isolate__SetHostInitializeImportMetaObjectCallback(isolate_handle, Context.metaObjectCallback);
 
     // Allocate arrays dynamically to avoid comptime dependency on JsApis.len
@@ -245,16 +249,25 @@ pub const ContextParams = struct {
 };
 
 pub fn createContext(self: *Env, frame: *Frame, params: ContextParams) !*Context {
-    return self._createContext(frame, params);
+    return self._createContext(frame, params, .frame);
 }
 
 pub fn createWorkerContext(self: *Env, worker: *WorkerGlobalScope, params: ContextParams) !*Context {
-    return self._createContext(worker, params);
+    return self._createContext(worker, params, .dedicated_worker);
 }
 
-fn _createContext(self: *Env, global: anytype, params: ContextParams) !*Context {
-    const T = @TypeOf(global);
-    const is_frame = T == *Frame;
+pub fn createSharedWorkerContext(self: *Env, worker: *WorkerGlobalScope, params: ContextParams) !*Context {
+    return self._createContext(worker, params, .shared_worker);
+}
+
+const ContextKind = enum {
+    frame,
+    dedicated_worker,
+    shared_worker,
+};
+
+fn _createContext(self: *Env, global: anytype, params: ContextParams, kind: ContextKind) !*Context {
+    const is_frame = comptime @TypeOf(global) == *Frame;
 
     const context_arena = try self.app.arena_pool.acquire(.medium, params.debug_name);
     errdefer self.app.arena_pool.release(context_arena);
@@ -268,8 +281,12 @@ fn _createContext(self: *Env, global: anytype, params: ContextParams) !*Context 
     const microtask_queue = v8.v8__MicrotaskQueue__New(isolate.handle, v8.kExplicit).?;
     errdefer v8.v8__MicrotaskQueue__DELETE(microtask_queue);
 
-    // Restore the context from the snapshot (0 = Page, 1 = Worker)
-    const snapshot_index: u32 = if (comptime is_frame) 0 else 1;
+    // Restore the context from the snapshot (0 = Page, 1 = DedicatedWorker, 2 = SharedWorker)
+    const snapshot_index: u32 = switch (kind) {
+        .frame => 0,
+        .dedicated_worker => 1,
+        .shared_worker => 2,
+    };
     const v8_context = v8.v8__Context__FromSnapshot__Config(isolate.handle, snapshot_index, &.{
         .global_template = null,
         .global_object = null,
@@ -292,6 +309,10 @@ fn _createContext(self: *Env, global: anytype, params: ContextParams) !*Context 
         .prototype_len = @intCast(Window.JsApi.Meta.prototype_chain.len),
         .subtype = .node,
     } else .{
+        // Worker globals are WorkerGlobalScope heap objects; the outer
+        // Dedicated/Shared types exist only for instanceof / constructor names.
+        // TaggedOpaque must use WorkerGlobalScope's chain so prototype methods
+        // like postMessage resolve to the correct Zig receiver.
         .value = @ptrCast(global),
         .prototype_chain = (&WorkerGlobalScope.JsApi.Meta.prototype_chain).ptr,
         .prototype_len = @intCast(WorkerGlobalScope.JsApi.Meta.prototype_chain.len),
@@ -360,13 +381,134 @@ fn _createContext(self: *Env, global: anytype, params: ContextParams) !*Context 
     self.context_count = count + 1;
 
     installTrustedTypesEvalShim(context);
+    installConstructThrowShim(context);
+    installDomTokenListArrayPrototypeShim(context);
+    installUrlHistoricalShim(context);
     if (comptime is_frame) {
+        installWorkerConstructDepth(context);
+        installWorkerConstructorShim(context);
+        installSharedWorkerConstructorShim(context);
+        installUrlSearchParamsConstructorShim(context);
+        installWebSocketConstructorShim(context);
         installCreepJsCompatShim(context);
     } else {
         installWorkerIntlShim(context);
+        installUrlSearchParamsConstructorShim(context);
+        installWebSocketConstructorShim(context);
+        installWorkerDomExceptionThrowShim(context);
+        installWorkerRethrowShim(context);
+        installWorkerImportScriptsMimeShim(context);
+        installWorkerPostMessageShim(context);
     }
 
     return context;
+}
+
+/// WPT historical: href setter, structuredClone, URL(string coercion) throws in harness.
+fn installUrlHistoricalShim(context: *Context) void {
+    var ls: js.Local.Scope = undefined;
+    context.localScope(&ls);
+    defer ls.deinit();
+
+    const src = @embedFile("url_historical_shim.js");
+    ls.local.eval(src, "url-historical-shim") catch |err| {
+        log.warn(.js, "url historical shim", .{ .err = err });
+    };
+}
+
+/// Shared recursive worker-creation guard used by worker constructor shims.
+fn installWorkerConstructDepth(context: *Context) void {
+    var ls: js.Local.Scope = undefined;
+    context.localScope(&ls);
+    defer ls.deinit();
+
+    const src = @embedFile("worker_construct_depth.js");
+    ls.local.eval(src, "worker-construct-depth") catch |err| {
+        log.warn(.js, "worker construct depth", .{ .err = err });
+    };
+}
+
+/// WPT: SharedWorker(url, { type }) validation before native constructor.
+fn installSharedWorkerConstructorShim(context: *Context) void {
+    var ls: js.Local.Scope = undefined;
+    context.localScope(&ls);
+    defer ls.deinit();
+
+    const src = @embedFile("shared_worker_constructor_shim.js");
+    ls.local.eval(src, "shared-worker-constructor-shim") catch |err| {
+        log.warn(.js, "shared worker constructor shim", .{ .err = err });
+    };
+}
+
+/// WPT: native Worker constructor throws do not reach try/catch on 2nd+ classic scripts.
+fn installWorkerConstructorShim(context: *Context) void {
+    var ls: js.Local.Scope = undefined;
+    context.localScope(&ls);
+    defer ls.deinit();
+
+    const src = @embedFile("worker_constructor_shim.js");
+    ls.local.eval(src, "worker-constructor-shim") catch |err| {
+        log.warn(.js, "worker constructor shim", .{ .err = err });
+    };
+}
+
+/// WPT: native WebSocket constructor throws do not reach try/catch on 2nd+ classic scripts.
+fn installWebSocketConstructorShim(context: *Context) void {
+    var ls: js.Local.Scope = undefined;
+    context.localScope(&ls);
+    defer ls.deinit();
+
+    const src = @embedFile("websocket_constructor_shim.js");
+    ls.local.eval(src, "websocket-constructor-shim") catch |err| {
+        log.warn(.js, "websocket constructor shim", .{ .err = err });
+    };
+}
+
+/// WPT: native constructor throws do not reach try/catch on 2nd+ classic scripts.
+fn installUrlSearchParamsConstructorShim(context: *Context) void {
+    var ls: js.Local.Scope = undefined;
+    context.localScope(&ls);
+    defer ls.deinit();
+
+    const src = @embedFile("usp_constructor_shim.js");
+    ls.local.eval(src, "usp-constructor-shim") catch |err| {
+        log.warn(.js, "urlsearchparams constructor shim", .{ .err = err });
+    };
+}
+
+/// WPT dom/lists/DOMTokenList-iteration.html expects DOMTokenList.prototype to
+/// expose Array.prototype iteration methods by reference.
+fn installDomTokenListArrayPrototypeShim(context: *Context) void {
+    var ls: js.Local.Scope = undefined;
+    context.localScope(&ls);
+    defer ls.deinit();
+
+    const src =
+        \\(function(){var p=globalThis.DOMTokenList&&DOMTokenList.prototype;if(!p)return;var a=Array.prototype;["keys","values","entries","forEach"].forEach(function(m){Object.defineProperty(p,m,{value:a[m],writable:true,enumerable:false,configurable:true})});Object.defineProperty(p,Symbol.iterator,{value:a[Symbol.iterator],writable:true,enumerable:false,configurable:true})})();
+    ;
+    ls.local.eval(src, "domtokenlist-array-prototype-shim") catch |err| {
+        log.warn(.js, "domtokenlist array prototype shim", .{ .err = err });
+    };
+}
+
+/// Propagate constructor failures through pure JS throws (WPT assert_throws_js).
+fn installConstructThrowShim(context: *Context) void {
+    var ls: js.Local.Scope = undefined;
+    context.localScope(&ls);
+    defer ls.deinit();
+
+    const src =
+        \\globalThis.__veloraConstructThrow = function(name) {
+        \\  const C = globalThis[name];
+        \\  if (typeof C === "function") throw new C("");
+        \\  throw new Error(name || "");
+        \\};
+        \\globalThis.__veloraDomExceptionThrow=function(n,m){throw new DOMException(m||"",n||"Error")};
+        \\globalThis.__veloraRethrow=function(v){throw v};
+    ;
+    ls.local.eval(src, "construct-throw-shim") catch |err| {
+        log.warn(.js, "construct throw shim", .{ .err = err });
+    };
 }
 
 /// Chrome unwraps TrustedScript before calling the intrinsic eval. V8's builtin
@@ -381,6 +523,62 @@ fn installTrustedTypesEvalShim(context: *Context) void {
     ;
     ls.local.eval(src, "trusted-types-eval-shim") catch |err| {
         log.warn(.js, "trusted-types eval shim", .{ .err = err });
+    };
+}
+
+/// Native JS value rethrows from worker callbacks do not reach in-script try/catch.
+fn installWorkerRethrowShim(context: *Context) void {
+    var ls: js.Local.Scope = undefined;
+    context.localScope(&ls);
+    defer ls.deinit();
+
+    const src =
+        \\globalThis.__veloraRethrow=function(v){throw v};
+    ;
+    ls.local.eval(src, "worker-rethrow-shim") catch |err| {
+        log.warn(.js, "worker rethrow shim", .{ .err = err });
+    };
+}
+
+/// Native DOMException throws from worker callbacks do not reach in-script try/catch.
+fn installWorkerDomExceptionThrowShim(context: *Context) void {
+    var ls: js.Local.Scope = undefined;
+    context.localScope(&ls);
+    defer ls.deinit();
+
+    const src =
+        \\globalThis.__veloraDomExceptionThrow=function(n,m){throw new DOMException(m||"",n||"Error")};
+    ;
+    ls.local.eval(src, "worker-domexception-throw-shim") catch |err| {
+        log.warn(.js, "worker domexception throw shim", .{ .err = err });
+    };
+}
+
+/// WPT importScripts MIME checks: native DOMException throws do not reach try/catch.
+fn installWorkerImportScriptsMimeShim(context: *Context) void {
+    var ls: js.Local.Scope = undefined;
+    context.localScope(&ls);
+    defer ls.deinit();
+
+    const src =
+        \\(function(){var blobMime=new Map();var oc=URL.createObjectURL;URL.createObjectURL=function(b){var u=oc.call(URL,b);blobMime.set(u,b.type||"");return u};var or=URL.revokeObjectURL;URL.revokeObjectURL=function(u){blobMime.delete(u);return or.call(URL,u)};function isJsMime(m){m=(m||"").split(";")[0].trim().toLowerCase();return m==="text/javascript"||m==="application/javascript"||m==="text/ecmascript"}function mimeFromHttpQuery(u){var q=u.indexOf("?");if(q<0)return null;var s=u.slice(q+1),p="mime=",i=s.indexOf(p);if(i<0)return null;var v=s.slice(i+p.length),a=v.indexOf("&");return a<0?v:v.slice(0,a)}function mimeForUrl(u){if(u.startsWith("data:")){var r=u.slice(5),c=r.indexOf(",");return c<0?r:r.slice(0,c)||"text/plain"}if(u.startsWith("blob:"))return blobMime.get(u)||"";return mimeFromHttpQuery(u)}var n=Object.getPrototypeOf(globalThis).importScripts;globalThis.importScripts=function(){if(globalThis.__veloraWorkerIsModule)throw new TypeError("importScripts is not available in module workers");for(var i=0;i<arguments.length;i++){var u=arguments[i],m=mimeForUrl(u);if(m!==null&&!isJsMime(m))throw new DOMException("","NetworkError")}globalThis.__veloraImportScriptError=null;n.apply(globalThis,arguments);var e=globalThis.__veloraImportScriptError;if(e){globalThis.__veloraImportScriptError=null;throw e}}})();
+    ;
+    ls.local.eval(src, "worker-importscripts-mime-shim") catch |err| {
+        log.warn(.js, "worker importScripts mime shim", .{ .err = err });
+    };
+}
+
+/// WPT worker tests call bare `postMessage(x)` (unbound); bind to globalThis.
+fn installWorkerPostMessageShim(context: *Context) void {
+    var ls: js.Local.Scope = undefined;
+    context.localScope(&ls);
+    defer ls.deinit();
+
+    const src =
+        \\(function(){var n=null,p=Object.getPrototypeOf(globalThis);while(p){var d=Object.getOwnPropertyDescriptor(p,"postMessage");if(d&&d.value){n=d.value;break}p=Object.getPrototypeOf(p)}function normalizeTransfer(t){if(t==null||t===undefined)return null;var seq=(typeof t==="object"&&!Array.isArray(t)&&"transfer" in t)?t.transfer:t;if(seq==null||seq===undefined)return null;if(!Array.isArray(seq))throw new TypeError();for(var i=0;i<seq.length;i++){if(seq[i]===null)throw new TypeError()}return t}globalThis.postMessage=function(m,t){if(typeof FormData!=="undefined"&&m instanceof FormData)throw new DOMException("The object cannot be cloned.","DataCloneError");if(!n)throw new TypeError("postMessage is not a function");return n.call(globalThis,m,normalizeTransfer(t))}})();
+    ;
+    ls.local.eval(src, "worker-postmessage-shim") catch |err| {
+        log.warn(.js, "worker postMessage shim", .{ .err = err });
     };
 }
 
@@ -447,6 +645,62 @@ fn clearSchedulerSuppression(self: *Env) void {
     }
 }
 
+/// Single-context checkpoint for nested DOM APIs (e.g. iframe onload during
+/// appendChild). Bypasses the global reentry guard so Promise reactions queued
+/// by the handler can run before returning to script.
+pub fn performMicrotaskCheckpoint(self: *Env, ctx: *Context) void {
+    if (v8.v8__Isolate__IsExecutionTerminating(self.isolate.handle)) return;
+    const exec = &ctx.execution;
+    if (exec.realmState() == .dead) return;
+    if (!exec.canEnterJs(.allow_draining)) {
+        switch (ctx.global) {
+            .frame => |frame| {
+                if (std.mem.indexOf(u8, frame.url, "fingerprint.com") != null) {
+                    log.warn(.frame, "fp checkpoint blocked", .{
+                        .realm = exec.realmState(),
+                        .scheduler_suppressed = frame.schedulerSuppressed(),
+                    });
+                }
+            },
+            .worker => {},
+        }
+        return;
+    }
+    v8.v8__MicrotaskQueue__PerformCheckpoint(ctx.microtask_queue, self.isolate.handle);
+}
+
+/// Fingerprint yb() may run while `canEnterJs(.allow_draining)` is false during
+/// nested load(); still drain V8 reactions so Y.ip settles before vv()'s 2s race.
+pub fn performMicrotaskCheckpointFp(self: *Env, ctx: *Context) void {
+    if (v8.v8__Isolate__IsExecutionTerminating(self.isolate.handle)) return;
+    if (ctx.execution.realmState() == .dead) return;
+    v8.v8__MicrotaskQueue__PerformCheckpoint(ctx.microtask_queue, self.isolate.handle);
+}
+
+/// Fingerprint yb() queues Y.ip continuations while checkpoint_active. Pump the
+/// per-context queue from nested V8 returns (Promise executor after I(), load()).
+pub fn drainFingerprintYbMicrotasks(self: *Env, ctx: *Context) void {
+    const frame = switch (ctx.global) {
+        .frame => |f| f,
+        .worker => return,
+    };
+    if (std.mem.indexOf(u8, frame.url, "fingerprint.com") == null) return;
+
+    if (self.checkpoint_active) self.checkpoint_pending = true;
+    frame.clearSchedulerSuppression();
+
+    var pass: u8 = 0;
+    while (pass < 32) : (pass += 1) {
+        self.performMicrotaskCheckpointFp(ctx);
+    }
+    // yb() I() schedules setTimeout(10) readyState polls after appendChild.
+    frame.pumpDueTimersNow(15);
+    pass = 0;
+    while (pass < 24) : (pass += 1) {
+        self.performMicrotaskCheckpointFp(ctx);
+    }
+}
+
 pub fn runMicrotasks(self: *Env, source: TaskSource) void {
     if (self.checkpoint_active) {
         if (comptime IS_DEBUG) std.debug.assert(self.checkpoint_active);
@@ -454,6 +708,17 @@ pub fn runMicrotasks(self: *Env, source: TaskSource) void {
         for (self.contexts[0..self.context_count]) |ctx| {
             const exec = &ctx.execution;
             if (exec.realmState() == .dead or exec.schedulerSuppressed()) continue;
+            switch (ctx.global) {
+                .frame => |frame| {
+                    if (std.mem.indexOf(u8, frame.url, "fingerprint.com") != null) {
+                        var fp_pass: u8 = 0;
+                        while (fp_pass < 8) : (fp_pass += 1) {
+                            self.performMicrotaskCheckpoint(ctx);
+                        }
+                    }
+                },
+                .worker => {},
+            }
             RealmLifecycleKernel.traceMicrotaskCheckpointReentryDeferred(
                 exec.frameId(),
                 exec.realmEpoch(),
@@ -503,6 +768,8 @@ pub fn runMicrotasks(self: *Env, source: TaskSource) void {
             const frame_id = exec.frameId();
             const epoch = exec.realmEpoch();
             const st = exec.realmState();
+
+            if (contextIsUnpublishedPendingRoot(ctx)) continue;
 
             if (st == .dead) {
                 if (comptime IS_DEBUG) std.debug.assert(st == .dead);
@@ -646,17 +913,36 @@ pub fn runMacrotasks(self: *Env) !void {
 pub fn msToNextMacrotask(self: *Env) ?u64 {
     var next_task: u64 = std.math.maxInt(u64);
     for (self.contexts[0..self.context_count]) |ctx| {
-        const candidate = ctx.scheduler.msToNextHigh() orelse continue;
+        const candidate = ctx.scheduler.msToNext() orelse continue;
         next_task = @min(candidate, next_task);
     }
     return if (next_task == std.math.maxInt(u64)) null else next_task;
+}
+
+/// Pending root navigations install a second Page/context before commit; its
+/// realm stays `.initializing` until headers land. Skip microtask checkpoints
+/// on that unpublished page so the active document keeps draining.
+fn contextIsUnpublishedPendingRoot(ctx: *Context) bool {
+    return switch (ctx.global) {
+        .frame => |frame| frame.parent == null and frame._page._state == .pending,
+        .worker => false,
+    };
 }
 
 /// Parser-inserted scripts defer timers only for the document being parsed.
 /// A child iframe in .parsing must not stall the parent page (CreepJS queueEvent).
 fn contextBlocksTimerPump(ctx: *Context) bool {
     return switch (ctx.global) {
-        .frame => |frame| frame.isDocumentParsing(),
+        .frame => |frame| blk: {
+            if (!frame.isDocumentParsing()) break :blk false;
+            // Fingerprint load() may run while _load_state is still .parsing but the
+            // document is already interactive/complete; yb() polls with setTimeout(10).
+            const rs = frame.document.getReadyState();
+            if (std.mem.eql(u8, rs, "interactive") or std.mem.eql(u8, rs, "complete")) {
+                break :blk false;
+            }
+            break :blk true;
+        },
         .worker => false,
     };
 }
@@ -769,6 +1055,52 @@ pub fn terminate(self: *Env) void {
 /// must not use temporary TerminateExecution/CancelTerminateExecution cycles.
 pub fn cancelTerminate(self: *Env) void {
     v8.v8__Isolate__CancelTerminateExecution(self.isolate.handle);
+}
+
+fn uncaughtExceptionCallback(message_handle: ?*const v8.Message, data_handle: ?*const v8.Value) callconv(.c) void {
+    const message_ptr = message_handle orelse return;
+    const exception_ptr = data_handle orelse return;
+    const v8_isolate = v8.v8__Object__GetIsolate(@ptrCast(exception_ptr)).?;
+    const isolate = js.Isolate{ .handle = v8_isolate };
+    const ctx, const v8_context = Context.fromIsolate(isolate) orelse return;
+
+    const local = js.Local{
+        .ctx = ctx,
+        .isolate = isolate,
+        .handle = v8_context,
+        .call_arena = ctx.call_arena,
+    };
+
+    const err_val = js.Value{ .local = &local, .handle = exception_ptr };
+
+    const msg_text: []const u8 = err_val.toStringSlice() catch "Uncaught exception";
+
+    const filename = blk: {
+        const resource_handle = v8.v8__Message__GetScriptResourceName(message_ptr) orelse break :blk ctx.execution.base();
+        const name_val = js.Value{ .local = &local, .handle = resource_handle };
+        if (name_val.toStringSlice() catch null) |s| {
+            if (s.len > 0) break :blk s;
+        }
+        break :blk ctx.execution.base();
+    };
+
+    const line_raw = v8.v8__Message__GetLineNumber(message_ptr, v8_context);
+    const line: u32 = if (line_raw < 0) 0 else @intCast(line_raw);
+    const col_raw = v8.v8__Message__GetStartColumn(message_ptr);
+    const col: u32 = if (col_raw < 0) 0 else @intCast(col_raw);
+
+    switch (ctx.global) {
+        .frame => |frame| {
+            frame.window.reportUncaughtException(err_val, msg_text, filename, line, col, frame) catch |err| {
+                log.warn(.js, "uncaught exception handler", .{ .err = err, .target = "window" });
+            };
+        },
+        .worker => |wsg| {
+            wsg.reportUncaughtException(err_val, msg_text, filename, line, col) catch |err| {
+                log.warn(.js, "uncaught exception handler", .{ .err = err, .target = "worker" });
+            };
+        },
+    }
 }
 
 fn promiseRejectCallback(message_handle: v8.PromiseRejectMessage) callconv(.c) void {

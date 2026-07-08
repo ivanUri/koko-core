@@ -23,8 +23,11 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 
 const Cookie = @This();
 
-const max_cookie_size = 4 * 1024;
-const max_cookie_header_size = 8 * 1024;
+/// RFC6265bis §5.4 / WPT: name+value octets are limited to 4096 bytes total;
+/// the "=" separator is not counted. A name-only or value-only pair may use
+/// the full 4096 bytes on that side.
+const max_cookie_octets = 4 * 1024;
+const max_attribute_value_size = 1024;
 const max_jar_size = 1024;
 
 arena: ArenaAllocator,
@@ -39,6 +42,12 @@ same_site: SameSite = .none,
 /// Minimum `Jar.document_nav_generation` before this cookie is attached to HTTP
 /// requests. Normal cookies commit immediately; SG_SS is withheld longer.
 available_from_nav: u64 = 0,
+/// Origin that set this cookie (scheme + port binding).
+source_secure: bool = false,
+source_port: u16 = 0,
+/// CHIPS: cookie is scoped to a top-level schemeful site partition.
+partitioned: bool = false,
+partition_site: ?[]const u8 = null,
 
 pub const SameSite = enum {
     strict,
@@ -51,32 +60,42 @@ pub fn deinit(self: *const Cookie) void {
 }
 
 // There's https://datatracker.ietf.org/doc/html/rfc6265 but browsers are
-// far less strict. I only found 2 cases where browsers will reject a cookie:
-//   - a byte 0...31 and 127...255 anywhere in the cookie (the HTTP header
-//     parser might take care of this already)
-//   - any shenanigans with the domain attribute - it has to be the current
-//     domain or one of higher order, excluding TLD.
+// far less strict. Cookie names and values reject CTL bytes (%x00-1F and
+// %x7F) except tab (%x09); UTF-8 is allowed. Domain attribute shenanigans
+// are rejected separately - the domain has to be the current domain or one
+// of higher order, excluding TLD.
 // Anything else, will turn into a cookie.
 // Single value? That's a cookie with an empty name and a value
-// Key or Values with characters the RFC says aren't allowed? Allowed! (
-//   (as long as the characters are 32...126)
+// Key or Values with characters the RFC says aren't allowed? Allowed!
 // Invalid attributes? Ignored.
 // Invalid attribute values? Ignore.
 // Duplicate attributes - use the last valid
 // Value-less attributes with a value? Ignore the value
 pub fn parse(allocator: Allocator, url: [:0]const u8, str: []const u8) !Cookie {
-    if (str.len > max_cookie_header_size) {
-        return error.CookieHeaderSizeExceeded;
+    if (str.len == 0) {
+        return error.Empty;
     }
 
-    try validateCookieString(str);
-
-    const cookie_name, const cookie_value, const rest = parseNameValue(str) catch {
-        return error.InvalidNameValue;
+    const cookie_name, const cookie_value, const rest = parseNameValue(str) catch |err| {
+        return if (err == error.Empty) error.InvalidNameValue else err;
     };
 
-    if (cookie_name.len == 0 and (std.ascii.startsWithIgnoreCase(cookie_value, "__Host-") or std.ascii.startsWithIgnoreCase(cookie_value, "__Secure-"))) {
-        // A nameless cookie whose value begins with __Host- or __Secure-
+    try validateNameValue(cookie_name, cookie_value);
+    try validateAttributeSection(rest);
+
+    if (!isCookieNameValuePairValid(cookie_name, cookie_value)) {
+        return error.CookieSizeExceeded;
+    }
+
+    if (cookie_name.len == 0 and cookie_value.len == 0) {
+        return error.InvalidNameValue;
+    }
+
+    if (cookie_name.len == 0 and (std.ascii.startsWithIgnoreCase(cookie_value, "__Host-") or
+        std.ascii.startsWithIgnoreCase(cookie_value, "__Secure-") or
+        std.ascii.startsWithIgnoreCase(cookie_value, "__Http-")))
+    {
+        // A nameless cookie whose value begins with __Host-, __Secure-, or __Http-
         // (case-insensitive) would otherwise impersonate a cookie with that
         // prefix. Reject per the cookie-name-prefix rules.
         return error.InvalidNameValue;
@@ -91,6 +110,7 @@ pub fn parse(allocator: Allocator, url: [:0]const u8, str: []const u8) !Cookie {
     var http_only: ?bool = null;
     var expires: ?[]const u8 = null;
     var same_site: ?Cookie.SameSite = null;
+    var partitioned: ?bool = null;
 
     var it = std.mem.splitScalar(u8, rest, ';');
     while (it.next()) |attribute| {
@@ -110,14 +130,18 @@ pub fn parse(allocator: Allocator, url: [:0]const u8, str: []const u8) !Cookie {
             expires,
             httponly,
             samesite,
+            partitioned,
         }, std.ascii.lowerString(&scrap, key_string)) orelse continue;
 
         const value = if (sep == attribute.len) "" else trim(attribute[sep + 1 ..]);
+        if (value.len > max_attribute_value_size) {
+            continue;
+        }
         switch (key) {
             .path => path = value,
             .domain => domain = value,
             .secure => secure = true,
-            .@"max-age" => max_age = std.fmt.parseInt(i64, value, 10) catch continue,
+            .@"max-age" => max_age = parseMaxAge(value) catch continue,
             .expires => expires = value,
             .httponly => http_only = true,
             .samesite => {
@@ -126,6 +150,7 @@ pub fn parse(allocator: Allocator, url: [:0]const u8, str: []const u8) !Cookie {
                 }
                 same_site = std.meta.stringToEnum(Cookie.SameSite, std.ascii.lowerString(&scrap, value)) orelse continue;
             },
+            .partitioned => partitioned = true,
         }
     }
 
@@ -133,15 +158,20 @@ pub fn parse(allocator: Allocator, url: [:0]const u8, str: []const u8) !Cookie {
         return error.InsecureSameSite;
     }
 
+    if (partitioned != null and secure == null) {
+        return error.InsecurePartitionedCookie;
+    }
+
     // Enforce cookie-name-prefix rules. Match is case-insensitive to
     // cover impersonation attempts (e.g. "__HoSt-").
     // https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis#name-cookie-name-prefixes
-    if (std.ascii.startsWithIgnoreCase(cookie_name, "__Host-")) {
-        if (secure == null) {
+    if (std.ascii.startsWithIgnoreCase(cookie_name, "__Host-Http-")) {
+        // __Host-Http-: Secure, host-only, Path=/, HttpOnly; HTTP Set-Cookie only.
+        if (secure == null or http_only == null) {
             return error.InvalidPrefixedCookie;
         }
 
-        if (!std.mem.startsWith(u8, url, "https://")) {
+        if (!URL.isSecureOrigin(url)) {
             return error.InvalidPrefixedCookie;
         }
 
@@ -152,17 +182,43 @@ pub fn parse(allocator: Allocator, url: [:0]const u8, str: []const u8) !Cookie {
         if (path == null or !std.mem.eql(u8, path.?, "/")) {
             return error.InvalidPrefixedCookie;
         }
+    } else if (std.ascii.startsWithIgnoreCase(cookie_name, "__Host-")) {
+        if (secure == null) {
+            return error.InvalidPrefixedCookie;
+        }
+
+        if (!URL.isSecureOrigin(url)) {
+            return error.InvalidPrefixedCookie;
+        }
+
+        if (domain != null and domain.?.len > 0) {
+            return error.InvalidPrefixedCookie;
+        }
+
+        if (path == null or !std.mem.eql(u8, path.?, "/")) {
+            return error.InvalidPrefixedCookie;
+        }
+    } else if (std.ascii.startsWithIgnoreCase(cookie_name, "__Http-")) {
+        // __Http-: Secure + HttpOnly; HTTP Set-Cookie only (Path unrestricted).
+        if (secure == null or http_only == null) {
+            return error.InvalidPrefixedCookie;
+        }
+
+        if (!URL.isSecureOrigin(url)) {
+            return error.InvalidPrefixedCookie;
+        }
     } else if (std.ascii.startsWithIgnoreCase(cookie_name, "__Secure-")) {
         if (secure == null) {
             return error.InvalidPrefixedCookie;
         }
-        if (!std.mem.startsWith(u8, url, "https://")) {
+        if (!URL.isSecureOrigin(url)) {
             return error.InvalidPrefixedCookie;
         }
     }
 
-    if (cookie_value.len > max_cookie_size) {
-        return error.CookieSizeExceeded;
+    // Secure cookies may only be set from secure origins (https, wss).
+    if (secure != null and !URL.isSecureOrigin(url)) {
+        return error.InsecureSecureCookie;
     }
 
     var arena = ArenaAllocator.init(allocator);
@@ -210,55 +266,34 @@ pub fn parse(allocator: Allocator, url: [:0]const u8, str: []const u8) !Cookie {
         .http_only = http_only orelse false,
         .domain = owned_domain,
         .expires = normalized_expires,
+        .partitioned = partitioned != null,
+        .source_secure = URL.isSecureOrigin(url),
+        .source_port = canonicalPort(url),
     };
 }
 
 const ValidateCookieError = error{ Empty, InvalidByteSequence };
 
-/// Returns an error if cookie str length is 0
-/// or contains characters outside of the ascii range 32...126.
-/// Tab (0x09) is also allowed, matching browser behavior and WPT.
-fn validateCookieString(str: []const u8) ValidateCookieError!void {
-    if (str.len == 0) {
-        return error.Empty;
+/// RFC 5234 CTL: %x00-1F / %x7F. Tab (%x09) is allowed in cookie names and
+/// values per browser behavior and WPT. UTF-8 bytes above 0x7F are allowed.
+fn isCookieCtl(c: u8) bool {
+    return (c < 0x20 and c != 0x09) or c == 0x7F;
+}
+
+fn validateNameValue(name: []const u8, value: []const u8) ValidateCookieError!void {
+    for (name) |c| {
+        if (isCookieCtl(c)) return error.InvalidByteSequence;
     }
-
-    const vec_size_suggestion = std.simd.suggestVectorLength(u8);
-    var offset: usize = 0;
-
-    // Fast path if possible.
-    if (comptime vec_size_suggestion) |size| {
-        while (str.len - offset >= size) : (offset += size) {
-            const Vec = @Vector(size, u8);
-            const tab: Vec = @splat(9);
-            const space: Vec = @splat(32);
-            const tilde: Vec = @splat(126);
-            const chunk: Vec = str[offset..][0..size].*;
-
-            // Invalid if (c < 32 AND c != 9) OR c > 126. Tab is the one
-            // sub-space byte we allow through (per browser/WPT behavior).
-            const below = @intFromBool(chunk < space) & @intFromBool(chunk != tab);
-            const above = @intFromBool(chunk > tilde);
-            const reduced: std.meta.Int(.unsigned, size) = @bitCast(below | above);
-
-            // Got match.
-            if (reduced != 0) {
-                return error.InvalidByteSequence;
-            }
-        }
-
-        // Means str.len % size == 0; we also know str.len != 0.
-        // Cookie is valid.
-        if (offset == str.len) {
-            return;
-        }
+    for (value) |c| {
+        if (isCookieCtl(c)) return error.InvalidByteSequence;
     }
+}
 
-    // Either remaining slice or the original if fast path not taken.
-    for (str[offset..]) |c| {
-        if ((c < 32 and c != 9) or c > 126) {
-            return error.InvalidByteSequence;
-        }
+/// WPT attributes-ctl: CTL bytes in the attribute section reject the entire
+/// cookie line. Tab (%x09) is allowed in attribute values (e.g. `path\t=/`).
+fn validateAttributeSection(rest: []const u8) ValidateCookieError!void {
+    for (rest) |c| {
+        if (isCookieCtl(c)) return error.InvalidByteSequence;
     }
 }
 
@@ -271,18 +306,80 @@ pub fn parsePath(arena: Allocator, url_: ?[:0]const u8, explicit_path: ?[]const 
         }
     }
 
-    // default-path
-    const url = url_ orelse return "/";
-    const url_path = URL.getPathname(url);
-    if (url_path.len == 0 or (url_path.len == 1 and url_path[0] == '/')) {
-        return "/";
+    // default-path (RFC 6265bis section 5.7.2)
+    const url = url_ orelse return try arena.dupe(u8, "/");
+    const uri_path = URL.getPathname(url);
+    if (uri_path.len == 0 or uri_path[0] != '/') {
+        return try arena.dupe(u8, "/");
+    }
+    if (uri_path.len == 1) {
+        return try arena.dupe(u8, "/");
+    }
+    const index = std.mem.lastIndexOfScalar(u8, uri_path, '/') orelse return try arena.dupe(u8, "/");
+    return try arena.dupe(u8, uri_path[0 .. index + 1]);
+}
+
+fn isCookieNameValuePairValid(name: []const u8, value: []const u8) bool {
+    if (name.len == 0) {
+        return value.len <= max_cookie_octets;
+    }
+    if (value.len == 0) {
+        return name.len <= max_cookie_octets;
+    }
+    return name.len + value.len <= max_cookie_octets;
+}
+
+const SanitizedHttpCookie = struct {
+    slice: []const u8,
+    owned: bool,
+};
+
+/// RFC 9110 / WPT: NUL/LF/CR in the cookie *name* are replaced with SP; in the
+/// *value* (and trailing attribute text) they truncate the cookie string.
+fn sanitizeHttpSetCookie(allocator: Allocator, set_cookie: []const u8) !SanitizedHttpCookie {
+    const pair_end = std.mem.indexOfScalar(u8, set_cookie, ';') orelse set_cookie.len;
+    const eq = std.mem.indexOfScalarPos(u8, set_cookie, 0, '=');
+    const value_start: ?usize = if (eq) |e| if (e < pair_end) e + 1 else null else null;
+
+    var end = set_cookie.len;
+    if (value_start) |vs| {
+        const value_and_attrs = set_cookie[vs..];
+        if (std.mem.indexOfAny(u8, value_and_attrs, &.{ 0, '\n', '\r' })) |off| {
+            end = vs + off;
+        }
     }
 
-    var owned_path: []const u8 = try percentEncode(arena, url_path, isPathChar);
-    const last = std.mem.lastIndexOfScalar(u8, owned_path[1..], '/') orelse {
-        return "/";
-    };
-    return try arena.dupe(u8, owned_path[0 .. last + 1]);
+    const truncated = set_cookie[0..end];
+    const name_end = value_start orelse truncated.len;
+
+    var needs_copy = false;
+    for (truncated[0..name_end]) |c| {
+        if (c == 0 or c == '\n' or c == '\r') {
+            needs_copy = true;
+            break;
+        }
+    }
+    if (!needs_copy) return .{ .slice = truncated, .owned = false };
+
+    const buf = try allocator.alloc(u8, truncated.len);
+    for (truncated, 0..) |c, i| {
+        buf[i] = if (i < name_end and (c == 0 or c == '\n' or c == '\r')) ' ' else c;
+    }
+    return .{ .slice = buf, .owned = true };
+}
+
+/// RFC 6265 section 5.1.4 path-match algorithm.
+pub fn pathMatches(cookie_path: []const u8, request_path: []const u8) bool {
+    if (std.mem.eql(u8, cookie_path, request_path)) {
+        return true;
+    }
+    if (!std.mem.startsWith(u8, request_path, cookie_path)) {
+        return false;
+    }
+    if (cookie_path[cookie_path.len - 1] == '/') {
+        return true;
+    }
+    return request_path.len > cookie_path.len and request_path[cookie_path.len] == '/';
 }
 
 pub fn parseDomain(arena: Allocator, url_: ?[:0]const u8, explicit_domain: ?[]const u8) ![]const u8 {
@@ -375,6 +472,9 @@ fn parseNameValue(str: []const u8) !struct { []const u8, []const u8, []const u8 
 
     const name = trim(str[0..sep]);
     const value = trim(str[sep + 1 .. key_value_end]);
+    if (name.len == 0 and value.len == 0) {
+        return error.Empty;
+    }
     return .{ name, value, rest };
 }
 
@@ -417,30 +517,15 @@ pub fn appliesTo(self: *const Cookie, url: *const PreparedUri, same_site: bool, 
             }
         } else if (std.mem.eql(u8, url.host, self.domain) == false) {
             // When the Domain attribute isn't specific, then the cookie
-            // is only sent on an exact match.
-            return false;
+            // is only sent on an exact match (with WPT loopback aliasing).
+            if (!loopbackHostsShareCookies(self.domain, url.host)) {
+                return false;
+            }
         }
     }
 
-    {
-        if (self.path[self.path.len - 1] == '/') {
-            // If our cookie has a trailing slash, we can only match is
-            // the target path is a prefix. I.e., if our path is
-            // /doc/  we can only match /doc/*
-            if (std.mem.startsWith(u8, url.path, self.path) == false) {
-                return false;
-            }
-        } else {
-            // Our cookie path is something like /hello
-            if (std.mem.startsWith(u8, url.path, self.path) == false) {
-                // The target path has to either be /hello (it isn't)
-                return false;
-            } else if (url.path.len < self.path.len or (url.path.len > self.path.len and url.path[self.path.len] != '/')) {
-                // Or it has to be something like /hello/* (it isn't)
-                // it isn't!
-                return false;
-            }
-        }
+    if (!pathMatches(self.path, url.path)) {
+        return false;
     }
     return true;
 }
@@ -484,7 +569,26 @@ pub const Jar = struct {
         /// Checks if addition comes from HTTP request or JS context.
         comptime is_http: bool,
     ) !void {
+        try self.addWithTopLevel(cookie, request_time, is_http, null);
+    }
+
+    pub fn addWithTopLevel(
+        self: *Jar,
+        cookie: Cookie,
+        request_time: i64,
+        /// Checks if addition comes from HTTP request or JS context.
+        comptime is_http: bool,
+        top_level_url: ?[]const u8,
+    ) !void {
         var c = cookie;
+
+        if (c.partitioned) {
+            const tl = top_level_url orelse {
+                c.deinit();
+                return;
+            };
+            c.partition_site = try schemefulSiteKey(c.arena.allocator(), tl);
+        }
         // HTTP Set-Cookie is available immediately so same-page flows (e.g. Cloudflare
         // Turnstile → cf_clearance fetch) can attach cookies before reload. SG_SS is
         // withheld longer so it is not attached during sei=/sg_ss= redirect hops.
@@ -501,7 +605,7 @@ pub const Jar = struct {
         if (self.cookies.items.len >= max_jar_size) {
             return error.CookieJarQuotaExceeded;
         }
-        if (c.value.len > max_cookie_size) {
+        if (!isCookieNameValuePairValid(c.name, c.value)) {
             return error.CookieSizeExceeded;
         }
 
@@ -551,6 +655,8 @@ pub const Jar = struct {
         is_navigation: bool = true,
         prefix: ?[]const u8 = null,
         origin_url: ?[:0]const u8 = null,
+        /// Top-level browsing context for CHIPS partition keys and third-party blocking.
+        top_level_url: ?[]const u8 = null,
         /// Active document navigation generation; defaults to `Jar.document_nav_generation`.
         nav_generation: ?u64 = null,
     };
@@ -559,14 +665,32 @@ pub const Jar = struct {
         const target = PreparedUri{
             .host = URL.getHostname(target_url),
             .path = URL.getPathname(target_url),
-            .secure = URL.isHTTPS(target_url),
+            .secure = URL.isSecureOrigin(target_url),
         };
-        const same_site = try areSameSite(opts.origin_url, target.host);
+        const same_site = areSameSite(opts.origin_url, target_url);
+        const top_level = opts.top_level_url orelse opts.origin_url;
+        const third_party = if (opts.origin_url) |origin|
+            isThirdPartyContext(top_level orelse origin, origin)
+        else
+            false;
 
         removeExpired(self, opts.request_time);
 
-        var first = true;
-        for (self.cookies.items) |*cookie| {
+        var matching: std.ArrayList(usize) = .empty;
+        defer matching.deinit(self.allocator);
+
+        for (self.cookies.items, 0..) |*cookie, i| {
+            if (!originBindingMatches(cookie, target_url)) {
+                continue;
+            }
+            // Third-party cookie blocking applies to document.cookie only; HTTP
+            // requests still attach SameSite=None on cross-site subresources.
+            if (!opts.is_http and third_party and !cookie.partitioned) {
+                continue;
+            }
+            if (!partitionSiteMatches(cookie, top_level)) {
+                continue;
+            }
             if (!cookie.appliesTo(&target, same_site, opts.is_navigation, opts.is_http)) {
                 continue;
             }
@@ -578,7 +702,23 @@ pub const Jar = struct {
                 continue;
             }
 
-            // we have a match!
+            try matching.append(self.allocator, i);
+        }
+
+        // WPT path.html: longer matching paths appear first in document.cookie.
+        const items = self.cookies.items;
+        std.mem.sort(usize, matching.items, items, struct {
+            fn lessThan(ctx: []Cookie, a: usize, b: usize) bool {
+                if (ctx[a].path.len != ctx[b].path.len) {
+                    return ctx[a].path.len > ctx[b].path.len;
+                }
+                return a < b;
+            }
+        }.lessThan);
+
+        var first = true;
+        for (matching.items) |i| {
+            const cookie = &items[i];
             if (first) {
                 if (opts.prefix) |prefix| {
                     try writer.writeAll(prefix);
@@ -591,14 +731,30 @@ pub const Jar = struct {
         }
     }
 
-    pub fn populateFromResponse(self: *Jar, url: [:0]const u8, set_cookie: []const u8) !void {
-        const c = Cookie.parse(self.allocator, url, set_cookie) catch |err| {
+    pub fn populateFromResponse(self: *Jar, url: [:0]const u8, set_cookie: []const u8, top_level_url: ?[:0]const u8) !void {
+        const tl = top_level_url orelse url;
+        if (isThirdPartyContext(tl, url)) {
+            // Peek for Partitioned before full parse to avoid work on blocked cookies.
+            if (std.ascii.indexOfIgnoreCase(set_cookie, "partitioned") == null) {
+                return;
+            }
+        }
+
+        const sanitized = sanitizeHttpSetCookie(self.allocator, set_cookie) catch return;
+        defer if (sanitized.owned) self.allocator.free(sanitized.slice);
+
+        const c = Cookie.parse(self.allocator, url, sanitized.slice) catch |err| {
             log.warn(.frame, "cookie parse failed", .{ .raw = set_cookie, .err = err });
             return;
         };
 
+        if (isThirdPartyContext(tl, url) and !c.partitioned) {
+            c.deinit();
+            return;
+        }
+
         const now = std.time.timestamp();
-        try self.add(c, now, true);
+        try self.addWithTopLevel(c, now, true, tl);
     }
 
     fn writeCookie(cookie: *const Cookie, writer: anytype) !void {
@@ -627,19 +783,158 @@ fn areCookiesEqual(a: *const Cookie, b: *const Cookie) bool {
     if (std.mem.eql(u8, a.path, b.path) == false) {
         return false;
     }
+    if (a.source_secure != b.source_secure or a.source_port != b.source_port) {
+        return false;
+    }
+    if (a.partitioned != b.partitioned) {
+        return false;
+    }
+    const a_part = a.partition_site != null;
+    const b_part = b.partition_site != null;
+    if (a_part != b_part) return false;
+    if (a_part and !std.mem.eql(u8, a.partition_site.?, b.partition_site.?)) return false;
     return true;
 }
 
-fn areSameSite(origin_url_: ?[:0]const u8, target_host: []const u8) !bool {
-    const origin_url = origin_url_ orelse return true;
-    const origin_host = URL.getHostname(origin_url);
-
-    // common case
-    if (std.mem.eql(u8, target_host, origin_host)) {
-        return true;
+pub fn canonicalPort(url: [:0]const u8) u16 {
+    const port_str = URL.getPort(url);
+    if (port_str.len > 0) {
+        return std.fmt.parseInt(u16, port_str, 10) catch defaultPortForUrl(url);
     }
+    return defaultPortForUrl(url);
+}
 
-    return std.mem.eql(u8, findSecondLevelDomain(target_host), findSecondLevelDomain(origin_host));
+fn defaultPortForUrl(url: [:0]const u8) u16 {
+    if (std.mem.startsWith(u8, url, "wss:") or std.mem.startsWith(u8, url, "https:")) return 443;
+    if (std.mem.startsWith(u8, url, "ws:") or std.mem.startsWith(u8, url, "http:")) return 80;
+    return if (URL.isSecureOrigin(url)) 443 else 80;
+}
+
+fn originBindingMatches(cookie: *const Cookie, target_url: [:0]const u8) bool {
+    const target_secure = URL.isSecureOrigin(target_url);
+    if (cookie.source_secure != target_secure) return false;
+    // Insecure cookies remain port-bound (WPT origin-bound-cookies/port-bound).
+    if (!cookie.source_secure) {
+        return cookie.source_port == canonicalPort(target_url);
+    }
+    // Secure cookies (https/wss) share a jar across ports on the same host so
+    // Set-Cookie on a WSS handshake is visible to the embedding HTTPS document.
+    return true;
+}
+
+fn hostFromUrl(url: []const u8) []const u8 {
+    const protocol_end = std.mem.indexOf(u8, url, "://") orelse return "";
+    const authority = url[protocol_end + 3 ..];
+    const end = std.mem.indexOfAny(u8, authority, "/?#") orelse authority.len;
+    var host = authority[0..end];
+    if (std.mem.lastIndexOfScalar(u8, host, '@')) |at| {
+        host = host[at + 1 ..];
+    }
+    if (host.len > 0 and host[0] == '[') {
+        const bracket_end = std.mem.indexOfScalar(u8, host, ']') orelse return host;
+        if (bracket_end + 1 < host.len and host[bracket_end + 1] == ':') {
+            return host[0 .. bracket_end + 1];
+        }
+        return host[0 .. bracket_end + 1];
+    }
+    if (std.mem.lastIndexOfScalar(u8, host, ':')) |colon| {
+        var all_digits = true;
+        for (host[colon + 1 ..]) |c| {
+            if (c < '0' or c > '9') {
+                all_digits = false;
+                break;
+            }
+        }
+        if (all_digits and colon + 1 < host.len) {
+            return host[0..colon];
+        }
+    }
+    return host;
+}
+
+fn parseMaxAge(value: []const u8) !i64 {
+    return std.fmt.parseInt(i64, value, 10) catch |err| switch (err) {
+        error.Overflow => if (value.len > 0 and value[0] == '-') std.math.minInt(i64) else std.math.maxInt(i64),
+        else => return err,
+    };
+}
+
+/// Serialized schemeful site key: `{scheme}:{registrable-domain}`.
+/// Map WebSocket schemes to HTTP cookie-site equivalents for schemeful checks.
+fn cookieSiteScheme(url: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, url, "wss:")) return "https";
+    if (std.mem.startsWith(u8, url, "ws:")) return "http";
+    const scheme_end = std.mem.indexOf(u8, url, "://") orelse return "";
+    return url[0..scheme_end];
+}
+
+fn schemefulSiteKey(allocator: Allocator, url: []const u8) ![]const u8 {
+    const scheme = cookieSiteScheme(url);
+    const host = hostFromUrl(url);
+    const registrable = if (isLoopbackRelatedHost(host)) host else findSecondLevelDomain(host);
+    return try std.fmt.allocPrint(allocator, "{s}:{s}", .{ scheme, registrable });
+}
+
+fn partitionSiteMatches(cookie: *const Cookie, top_level_url: ?[]const u8) bool {
+    if (!cookie.partitioned) return true;
+    const tl = top_level_url orelse return false;
+    const site = cookie.partition_site orelse return false;
+    var buf: [128]u8 = undefined;
+    const tl_site = schemefulSiteKeyInto(tl, &buf) catch return false;
+    return std.mem.eql(u8, site, tl_site);
+}
+
+fn schemefulSiteKeyInto(url: []const u8, buf: []u8) ![]const u8 {
+    const scheme = cookieSiteScheme(url);
+    const host = hostFromUrl(url);
+    const registrable = if (isLoopbackRelatedHost(host)) host else findSecondLevelDomain(host);
+    return try std.fmt.bufPrint(buf, "{s}:{s}", .{ scheme, registrable });
+}
+
+/// Schemeful same-site: scheme and registrable domain must match.
+pub fn isSchemefulSameSite(url_a: []const u8, url_b: []const u8) bool {
+    const host_a = hostFromUrl(url_a);
+    const host_b = hostFromUrl(url_b);
+    // WPT loopback aliases (localhost, 127.0.0.1, *.localhost) share a schemeful site.
+    if (isLoopbackRelatedHost(host_a) and isLoopbackRelatedHost(host_b)) {
+        return std.mem.eql(u8, cookieSiteScheme(url_a), cookieSiteScheme(url_b));
+    }
+    var buf_a: [128]u8 = undefined;
+    var buf_b: [128]u8 = undefined;
+    const site_a = schemefulSiteKeyInto(url_a, &buf_a) catch return false;
+    const site_b = schemefulSiteKeyInto(url_b, &buf_b) catch return false;
+    return std.mem.eql(u8, site_a, site_b);
+}
+
+/// True when `context_url` is a third-party context relative to `top_level_url`.
+pub fn isThirdPartyContext(top_level_url: []const u8, context_url: []const u8) bool {
+    return !isSchemefulSameSite(top_level_url, context_url);
+}
+
+fn isLoopbackHost(host: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(host, "localhost") or
+        std.mem.eql(u8, host, "127.0.0.1") or
+        std.mem.eql(u8, host, "[::1]");
+}
+
+/// WPT local hosts: www1.localhost, 127.0.0.1, localhost share a cookie jar.
+fn isLoopbackRelatedHost(host: []const u8) bool {
+    return isLoopbackHost(host) or std.mem.endsWith(u8, host, ".localhost");
+}
+
+fn loopbackHostsShareCookies(cookie_domain: []const u8, request_host: []const u8) bool {
+    // WPT treats numeric loopback (127.0.0.1 / [::1]) host-only cookies as
+    // visible on *.localhost, but the hostname "localhost" itself stays
+    // host-only exact-match (domain-attribute-missing must not leak to www1).
+    if (std.mem.eql(u8, cookie_domain, "127.0.0.1") or std.mem.eql(u8, cookie_domain, "[::1]")) {
+        return isLoopbackRelatedHost(request_host);
+    }
+    return false;
+}
+
+fn areSameSite(origin_url_: ?[:0]const u8, target_url: [:0]const u8) bool {
+    const origin_url = origin_url_ orelse return true;
+    return isSchemefulSameSite(origin_url, target_url);
 }
 
 fn findSecondLevelDomain(host: []const u8) []const u8 {
@@ -887,8 +1182,8 @@ test "Jar: forRequest" {
     try jar.add(try Cookie.parse(testing.allocator, test_url, "global2=2;Max-Age=30;domain=velora.io"), now, true);
     try jar.add(try Cookie.parse(testing.allocator, test_url, "path1=3;Path=/about"), now, true);
     try jar.add(try Cookie.parse(testing.allocator, test_url, "path2=4;Path=/docs/"), now, true);
-    try jar.add(try Cookie.parse(testing.allocator, test_url, "secure=5;Secure"), now, true);
-    try jar.add(try Cookie.parse(testing.allocator, test_url, "sitenone=6;SameSite=None;Path=/x/;Secure"), now, true);
+    try jar.add(try Cookie.parse(testing.allocator, "https://velora.io/", "secure=5;Secure"), now, true);
+    try jar.add(try Cookie.parse(testing.allocator, "https://velora.io/", "sitenone=6;SameSite=None;Path=/x/;Secure"), now, true);
     try jar.add(try Cookie.parse(testing.allocator, test_url, "sitelax=7;SameSite=Lax;Path=/x/"), now, true);
     try jar.add(try Cookie.parse(testing.allocator, test_url, "sitestrict=8;SameSite=Strict;Path=/x/"), now, true);
     try jar.add(try Cookie.parse(testing.allocator, url2, "domain1=9;domain=test.velora.io"), now, true);
@@ -972,8 +1267,8 @@ test "Jar: forRequest" {
         .is_navigation = false,
     });
 
-    // non-navigational same origin
-    try expectCookies("global1=1; global2=2; sitelax=7; sitestrict=8", &jar, "http://velora.io/x/", .{
+    // non-navigational cross-scheme (schemeful: http vs https are cross-site)
+    try expectCookies("", &jar, "http://velora.io/x/", .{
         .origin_url = "https://velora.io/",
         .is_http = true,
         .is_navigation = false,
@@ -1009,20 +1304,86 @@ test "Jar: forRequest" {
     // the 'global2' cookie
 }
 
+test "Jar: document.cookie orders by path length then creation time" {
+    const now = std.time.timestamp();
+    var jar = Jar.init(testing.allocator);
+    defer jar.deinit();
+
+    const target = "http://localhost:8000/cookies/attributes/resources/path/one.html";
+    try jar.add(try Cookie.parse(testing.allocator, target, "testZ=4; path=/cookies"), now, true);
+    try jar.add(try Cookie.parse(testing.allocator, target, "testB=4; path=/cookies/attributes/resources/path"), now, true);
+    try jar.add(try Cookie.parse(testing.allocator, target, "testA=4; path=/cookies"), now, true);
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    try jar.forRequest(target, buf.writer(testing.allocator), .{
+        .is_http = false,
+        .is_navigation = true,
+        .origin_url = target,
+    });
+    try testing.expectEqualStrings("testB=4; testZ=4; testA=4", buf.items);
+}
+
+test "Jar: loopback aliases share same-site for cookie attachment" {
+    const now = std.time.timestamp();
+    var jar = Jar.init(testing.allocator);
+    defer jar.deinit();
+
+    try jar.add(try Cookie.parse(testing.allocator, "http://127.0.0.1:8000/", "COOKIE_NAME=1;Path=/workers/modules/"), now, true);
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    try jar.forRequest("http://www1.localhost:8000/workers/modules/resources/export-credentials.py", buf.writer(testing.allocator), .{
+        .origin_url = "http://localhost:8000/",
+        .is_http = true,
+        .is_navigation = false,
+    });
+    try testing.expectEqualStrings("COOKIE_NAME=1", buf.items);
+}
+
+test "Jar: host-only localhost cookie does not leak to subdomains" {
+    const now = std.time.timestamp();
+    var jar = Jar.init(testing.allocator);
+    defer jar.deinit();
+
+    try jar.add(try Cookie.parse(testing.allocator, "https://localhost:8443/", "domain-attribute-missing=b;Path=/"), now, true);
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    try jar.forRequest("https://www1.localhost:8443/cookies/resources/list.py", buf.writer(testing.allocator), .{
+        .origin_url = "https://localhost:8443/",
+        .is_http = true,
+        .is_navigation = false,
+    });
+    try testing.expectEqualStrings("", buf.items);
+}
+
 test "Cookie: parse key=value" {
     try expectError(error.Empty, null, "");
     try expectError(error.InvalidByteSequence, null, &.{ 'a', 30, '=', 'b' });
     try expectError(error.InvalidByteSequence, null, &.{ 'a', 127, '=', 'b' });
     try expectError(error.InvalidByteSequence, null, &.{ 'a', '=', 'b', 20 });
-    try expectError(error.InvalidByteSequence, null, &.{ 'a', '=', 'b', 128 });
+    // UTF-8 bytes above 0x7F are allowed in names and values (WPT encoding/charset).
+    try expectAttribute(.{ .name = "a", .value = "b" }, null, &.{ 'a', '=', 'b', 128 });
+    try expectAttribute(.{ .name = "тест", .value = "2" }, null, "тест=2");
+    try expectAttribute(.{ .name = "test", .value = "1春节回家路·春运完全手册" }, null, "test=1春节回家路·春运完全手册");
+    try expectAttribute(.{ .name = "春节回", .value = "4家路·春运完全手册" }, null, "春节回=4家路·春运完全手册");
 
     // Tab (0x09) is allowed in name and value, matching browser/WPT behavior.
     try expectAttribute(.{ .name = "a\tb", .value = "c" }, null, "a\tb=c");
     try expectAttribute(.{ .name = "a", .value = "b\tc" }, null, "a=b\tc");
-    // Other control characters remain rejected.
+    // Other control characters remain rejected in name/value.
     try expectError(error.InvalidByteSequence, null, "a\nb=c");
     try expectError(error.InvalidByteSequence, null, "a\rb=c");
     try expectError(error.InvalidByteSequence, null, &.{ 'a', '=', 'b', 0 });
+
+    // Nameless cookies whose value contains '='.
+    try expectAttribute(.{ .name = "", .value = "test=2" }, null, "=test=2");
+    try expectAttribute(.{ .name = "", .value = "==test=2b" }, null, "===test=2b");
+    try expectAttribute(.{ .name = "", .value = "test2c" }, null, "=test2c");
+
+    // Empty name and empty value is ignored.
+    try expectError(error.InvalidNameValue, null, "=");
 
     // Nameless cookies whose value begins with __Host- or __Secure-
     // (case-insensitive) are rejected so they can't impersonate prefixed cookies.
@@ -1056,6 +1417,18 @@ test "Cookie: parse key=value" {
     // __Host- with additional unrelated attributes remains valid.
     try expectAttribute(.{ .name = "__Host-abc", .value = "1" }, "https://velora.io/", "__Host-abc=1; Secure; Path=/; Max-Age=60; HttpOnly");
 
+    // __Host-Http-: Secure, Path=/, host-only, HttpOnly.
+    try expectAttribute(.{ .name = "__Host-Http-abc", .value = "1", .http_only = true }, "https://velora.io/", "__Host-Http-abc=1; Secure; Path=/; HttpOnly");
+    try expectError(error.InvalidPrefixedCookie, "https://velora.io/", "__Host-Http-abc=1; Secure; Path=/");
+    try expectError(error.InvalidPrefixedCookie, "https://velora.io/", "__Host-Http-abc=1; Secure; Path=/cookies/; HttpOnly");
+    try expectError(error.InvalidPrefixedCookie, "https://velora.io/", "__Host-Http-abc=1; Secure; Path=/; HttpOnly; Domain=velora.io");
+
+    // __Http-: Secure + HttpOnly (Path unrestricted).
+    try expectAttribute(.{ .name = "__Http-abc", .value = "1", .http_only = true }, "https://velora.io/", "__Http-abc=1; Secure; Path=/; HttpOnly");
+    try expectAttribute(.{ .name = "__Http-abc", .value = "1", .http_only = true, .path = "/cookies/" }, "https://velora.io/", "__Http-abc=1; Secure; Path=/cookies/; HttpOnly");
+    try expectError(error.InvalidPrefixedCookie, "https://velora.io/", "__Http-abc=1; Secure; Path=/");
+    try expectError(error.InvalidPrefixedCookie, "https://velora.io/", "__Http-abc=1; Path=/; HttpOnly");
+
     // Near-misses are not subject to the prefix rules.
     try expectAttribute(.{ .name = "__Host", .value = "1" }, null, "__Host=1");
     try expectAttribute(.{ .name = "_Host-abc", .value = "1" }, null, "_Host-abc=1");
@@ -1071,6 +1444,12 @@ test "Cookie: parse key=value" {
 
     try expectAttribute(.{ .name = "abc", .value = "" }, null, "abc=");
     try expectAttribute(.{ .name = "abc", .value = "" }, null, "abc=;");
+
+    // Values may contain commas, semicolons (before first ';'), and '='.
+    try expectAttribute(.{ .name = "test", .value = "1, baz=qux" }, null, "test=1, baz=qux");
+    try expectAttribute(.{ .name = "test24", .value = "==" }, null, "test24==");
+    try expectAttribute(.{ .name = "test", .value = "25=25" }, null, "test=25=25");
+    try expectAttribute(.{ .name = "test", .value = "26=26=26" }, null, "test=26=26=26");
 
     try expectAttribute(.{ .name = "a", .value = "b" }, null, "a=b");
     try expectAttribute(.{ .name = "a", .value = "b" }, null, "a=b;");
@@ -1112,12 +1491,13 @@ test "Cookie: parse secure" {
     try expectAttribute(.{ .secure = false }, null, "b;secured");
     try expectAttribute(.{ .secure = false }, null, "b;security");
     try expectAttribute(.{ .secure = false }, null, "b;SecureX");
-    try expectAttribute(.{ .secure = true }, null, "b; Secure");
-    try expectAttribute(.{ .secure = true }, null, "b; Secure  ");
-    try expectAttribute(.{ .secure = true }, null, "b; Secure=on  ");
-    try expectAttribute(.{ .secure = true }, null, "b; Secure=Off  ");
-    try expectAttribute(.{ .secure = true }, null, "b; secure=Off  ");
-    try expectAttribute(.{ .secure = true }, null, "b; seCUre=Off  ");
+    try expectError(error.InsecureSecureCookie, null, "b; Secure");
+    try expectAttribute(.{ .secure = true }, "https://velora.io/", "b; Secure");
+    try expectAttribute(.{ .secure = true }, "https://velora.io/", "b; Secure  ");
+    try expectAttribute(.{ .secure = true }, "https://velora.io/", "b; Secure=on  ");
+    try expectAttribute(.{ .secure = true }, "https://velora.io/", "b; Secure=Off  ");
+    try expectAttribute(.{ .secure = true }, "https://velora.io/", "b; secure=Off  ");
+    try expectAttribute(.{ .secure = true }, "https://velora.io/", "b; seCUre=Off  ");
 }
 
 test "Cookie: parse HttpOnly" {
@@ -1143,10 +1523,10 @@ test "Cookie: parse SameSite" {
     // rejected otherwise
     try expectError(error.InsecureSameSite, null, "b;samesite=none");
     try expectError(error.InsecureSameSite, null, "b;SameSite=None");
-    try expectAttribute(.{ .same_site = .none }, null, "b;  samesite=none; secure  ");
-    try expectAttribute(.{ .same_site = .none }, null, "b;  SameSite=None  ; SECURE");
-    try expectAttribute(.{ .same_site = .none }, null, "b;Secure;  SameSite=None");
-    try expectAttribute(.{ .same_site = .none }, null, "b; SameSite=None; Secure");
+    try expectAttribute(.{ .same_site = .none }, "https://velora.io/", "b;  samesite=none; secure  ");
+    try expectAttribute(.{ .same_site = .none }, "https://velora.io/", "b;  SameSite=None  ; SECURE");
+    try expectAttribute(.{ .same_site = .none }, "https://velora.io/", "b;Secure;  SameSite=None");
+    try expectAttribute(.{ .same_site = .none }, "https://velora.io/", "b; SameSite=None; Secure");
 
     try expectAttribute(.{ .same_site = .strict }, null, "b;  samesite=Strict  ");
     try expectAttribute(.{ .same_site = .strict }, null, "b;  SameSite=  STRICT  ");
@@ -1154,6 +1534,19 @@ test "Cookie: parse SameSite" {
     try expectAttribute(.{ .same_site = .strict }, null, "b; SameSite=Strict");
 
     try expectAttribute(.{ .same_site = .strict }, null, "b; SameSite=None; SameSite=lax; SameSite=Strict");
+}
+
+test "Cookie: attribute section CTL rejects cookie" {
+    const host = "velora.io";
+    const path = "/cookies/attributes";
+    // Non-tab CTL in attribute section rejects the line (WPT attributes-ctl).
+    try expectError(error.InvalidByteSequence, null, "test=t; Domain=bad\x01.co; Domain=" ++ host);
+    try expectError(error.InvalidByteSequence, null, "test=t; Path=/bad\x7f; Path=" ++ path);
+    try expectError(error.InvalidByteSequence, null, "test=t; Max-Age=10\x0100; Max-Age=1000");
+    try expectError(error.InvalidByteSequence, null, "test=t; Sec\x01ure");
+    try expectError(error.InvalidByteSequence, null, "test=t; Secure\x7f");
+    // Tab in attribute values is allowed.
+    try expectAttribute(.{ .name = "test", .value = "t", .path = path }, null, "test=t;\tpath\t=\t" ++ path);
 }
 
 test "Cookie: parse max-age" {
@@ -1246,8 +1639,74 @@ test "Cookie: parse domain" {
 }
 
 test "Cookie: parse limit" {
-    try expectError(error.CookieHeaderSizeExceeded, "http://velora.io/", "v" ** 8192 ++ ";domain=velora.io");
-    try expectError(error.CookieSizeExceeded, "http://velora.io/", "v" ** 4096 ++ "v;domain=velora.io");
+    try expectError(error.CookieSizeExceeded, "http://velora.io/", "v" ** 4097 ++ ";domain=velora.io");
+    try expectError(error.CookieSizeExceeded, "http://velora.io/", "n" ** 4097 ++ "=1;domain=velora.io");
+    try expectError(error.CookieSizeExceeded, "http://velora.io/", "n=1" ++ "v" ** 4096 ++ ";domain=velora.io");
+    try expectError(error.CookieSizeExceeded, "http://velora.io/", "v" ** 4097 ++ ";domain=velora.io");
+    // WPT /cookies/size/name-and-value.html
+    try expectCookie(.{ .name = "t" ** 2048, .value = "1" ** 2048, .path = "/", .domain = "velora.io" }, "http://velora.io/", "t" ** 2048 ++ "=" ++ "1" ** 2048);
+    try expectError(error.CookieSizeExceeded, "http://velora.io/", "t" ** 4097 ++ "=1");
+    try expectCookie(.{ .name = "t" ** 4096, .value = "", .path = "/", .domain = "velora.io" }, "http://velora.io/", "t" ** 4096 ++ "=");
+    try expectError(error.CookieSizeExceeded, "http://velora.io/", "t" ** 4097 ++ "=");
+    try expectCookie(.{ .name = "t", .value = "1" ** 4095, .path = "/", .domain = "velora.io" }, "http://velora.io/", "t=" ++ "1" ** 4095);
+    try expectError(error.CookieSizeExceeded, "http://velora.io/", "t=" ++ "1" ** 4096);
+    try expectError(error.CookieSizeExceeded, "http://velora.io/", "t" ** 4096 ++ "=1");
+    try expectCookie(.{ .name = "", .value = "1" ** 4096, .path = "/", .domain = "velora.io" }, "http://velora.io/", "=" ++ "1" ** 4096);
+    try expectError(error.CookieSizeExceeded, "http://velora.io/", "=" ++ "1" ** 4097);
+
+    const large_name_value = "t" ** 2048 ++ "=" ++ "1" ** 2048;
+    const large_attrs = large_name_value ++ "; domain=" ++ "a" ** 1020 ++ ".com; domain=" ++ "a" ** 1020 ++ ".com; domain=" ++ "a" ** 1020 ++ ".com; domain=" ++ "a" ** 1020 ++ ".com; domain=velora.io";
+    try expectCookie(.{
+        .name = "t" ** 2048,
+        .value = "1" ** 2048,
+        .path = "/",
+        .domain = ".velora.io",
+    }, "http://velora.io/", large_attrs);
+
+    // WPT /cookies/value/value.html combined name+value budget.
+    try expectAttribute(.{ .name = "test", .value = "11" ++ "a" ** 4090 }, null, "test=11" ++ "a" ** 4090);
+    try expectError(error.CookieSizeExceeded, null, "test=12" ++ "a" ** 4091);
+}
+
+test "Cookie: sanitizeHttpSetCookie" {
+    const alloc = testing.allocator;
+
+    const lf = try sanitizeHttpSetCookie(alloc, "test=13\nZYX");
+    defer if (lf.owned) alloc.free(lf.slice);
+    try testing.expectEqualStrings("test=13", lf.slice);
+    try testing.expect(!lf.owned);
+
+    const nul_name = try sanitizeHttpSetCookie(alloc, "test0\x00name=0");
+    defer if (nul_name.owned) alloc.free(nul_name.slice);
+    try testing.expectEqualStrings("test0 name=0", nul_name.slice);
+    try testing.expect(nul_name.owned);
+
+    const lf_name = try sanitizeHttpSetCookie(alloc, "test10\nname=10");
+    defer if (lf_name.owned) alloc.free(lf_name.slice);
+    try testing.expectEqualStrings("test10 name=10", lf_name.slice);
+    try testing.expect(lf_name.owned);
+
+    const cr_value = try sanitizeHttpSetCookie(alloc, "test=1\r2");
+    defer if (cr_value.owned) alloc.free(cr_value.slice);
+    try testing.expectEqualStrings("test=1", cr_value.slice);
+    try testing.expect(!cr_value.owned);
+}
+
+test "Cookie: default path" {
+    try testing.expectEqual("/cookies/resources/", try parsePath(testing.allocator, "http://example.com/cookies/resources/echo-cookie.html", null));
+    try testing.expectEqual("/cookies/resources/", try parsePath(testing.allocator, "http://example.com/cookies/resources/set.py", null));
+    try testing.expectEqual("/", try parsePath(testing.allocator, "http://example.com/", null));
+    try testing.expectEqual("/", try parsePath(testing.allocator, "http://example.com/foo", null));
+}
+
+test "Cookie: pathMatches" {
+    try testing.expect(!pathMatches("/doc/", "/doc"));
+    try testing.expect(pathMatches("/doc", "/doc/"));
+    try testing.expect(pathMatches("/hello", "/hello/extra"));
+    try testing.expect(!pathMatches("/hello", "/helloextra"));
+    try testing.expect(pathMatches("/cookies/", "/cookies/resources/echo-cookie.html"));
+    try testing.expect(pathMatches("/cookies", "/cookies/resources/echo-cookie.html"));
+    try testing.expect(!pathMatches("/cook", "/cookies/resources/echo-cookie.html"));
 }
 
 const ExpectedCookie = struct {
@@ -1319,4 +1778,53 @@ test "Cookie: appliesTo with empty domain" {
 test "Cookie: parse rejects URL with empty host" {
     try testing.expectError(error.InvalidDomain, Cookie.parse(testing.allocator, "http:///path", "name=value"));
     try testing.expectError(error.InvalidDomain, Cookie.parse(testing.allocator, "http://", "name=value"));
+}
+
+test "Cookie: schemeful same-site treats http/https as cross-site" {
+    try testing.expect(!isSchemefulSameSite("http://velora.io/", "https://velora.io/"));
+    try testing.expect(isSchemefulSameSite("http://velora.io/", "http://test.velora.io/"));
+    try testing.expect(isThirdPartyContext("https://velora.io/", "http://velora.io/"));
+}
+
+test "Cookie: origin port binding" {
+    const now = std.time.timestamp();
+    var jar = Jar.init(testing.allocator);
+    defer jar.deinit();
+
+    try jar.add(try Cookie.parse(testing.allocator, "http://velora.io:8000/", "port=1;Path=/"), now, true);
+    try jar.add(try Cookie.parse(testing.allocator, "http://velora.io:9000/", "port=2;Path=/"), now, true);
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    try jar.forRequest("http://velora.io:8000/", buf.writer(testing.allocator), .{
+        .origin_url = "http://velora.io:8000/",
+        .is_http = true,
+    });
+    try testing.expectEqualStrings("port=1", buf.items);
+
+    buf.clearRetainingCapacity();
+    try jar.forRequest("http://velora.io:9000/", buf.writer(testing.allocator), .{
+        .origin_url = "http://velora.io:9000/",
+        .is_http = true,
+    });
+    try testing.expectEqualStrings("port=2", buf.items);
+}
+
+test "Cookie: third-party context blocks non-partitioned cookies" {
+    const now = std.time.timestamp();
+    var jar = Jar.init(testing.allocator);
+    defer jar.deinit();
+
+    try jar.addWithTopLevel(try Cookie.parse(testing.allocator, "https://velora.io/", "blocked=1;Path=/;Secure;SameSite=None"), now, true, "https://velora.io/");
+    try jar.addWithTopLevel(try Cookie.parse(testing.allocator, "https://velora.io/", "allowed=1;Path=/;Secure;SameSite=None;Partitioned"), now, true, "https://velora.io/");
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    try jar.forRequest("https://velora.io/", buf.writer(testing.allocator), .{
+        .origin_url = "https://other.com/",
+        .top_level_url = "https://other.com/",
+        .is_http = true,
+        .is_navigation = false,
+    });
+    try testing.expectEqualStrings("allowed=1", buf.items);
 }

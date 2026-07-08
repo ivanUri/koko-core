@@ -17,6 +17,8 @@ const Performance = @This();
 _monotonic_origin_us: u64,
 /// When set, now() returns this value (Google knitsail sg_ss encode window).
 _frozen_now_ms: ?f64 = null,
+/// Google Accounts identity telemetry encodes performance.now() as int32 ms.
+_integer_now_ms: bool = false,
 _entries: std.ArrayList(*Entry) = .{},
 _timing: PerformanceTiming = .{},
 _navigation: PerformanceNavigation = .{},
@@ -48,7 +50,16 @@ pub fn recordNavigationStart(self: *Performance) void {
     self._timing.recordNavigationStart();
     self._monotonic_origin_us = highResTimestamp();
     self._frozen_now_ms = null;
+    self._integer_now_ms = false;
     self.clearEntriesByType("navigation");
+}
+
+pub fn setIntegerNowMs(self: *Performance, enabled: bool) void {
+    self._integer_now_ms = enabled;
+}
+
+pub fn usesIntegerNowMs(self: *const Performance) bool {
+    return self._integer_now_ms;
 }
 
 pub fn clearEntriesByType(self: *Performance, entry_type: []const u8) void {
@@ -82,7 +93,9 @@ pub fn recordDocumentComplete(self: *Performance) void {
 }
 
 pub fn now(self: *const Performance) f64 {
-    if (self._frozen_now_ms) |frozen| return frozen;
+    if (self._frozen_now_ms) |frozen| {
+        return if (self._integer_now_ms) @round(frozen) else frozen;
+    }
     const current = highResTimestamp();
     const origin = self._monotonic_origin_us;
     // Guard corrupted origins (UAF/slab reuse) — CreepJS logs use performance.now().
@@ -90,12 +103,24 @@ pub fn now(self: *const Performance) f64 {
         return 0.0;
     }
     const elapsed = current - origin;
-    // Return as milliseconds with microsecond precision
-    return @as(f64, @floatFromInt(elapsed)) / 1000.0;
+    const ms = @as(f64, @floatFromInt(elapsed)) / 1000.0;
+    return if (self._integer_now_ms) @round(ms) else ms;
 }
 
 pub fn freezeNow(self: *Performance, target_ms: f64) void {
     if (target_ms >= 0) self._frozen_now_ms = target_ms;
+}
+
+/// Advance `now()` by `delta_ms` without blocking (stretches j-event bandwidth deltas).
+pub fn advanceNowByMs(self: *Performance, delta_ms: f64) void {
+    if (delta_ms <= 0) return;
+    if (self._frozen_now_ms) |frozen| {
+        self._frozen_now_ms = frozen + delta_ms;
+        return;
+    }
+    const delta_us = @as(u64, @intFromFloat(delta_ms * 1000.0));
+    if (delta_us >= self._monotonic_origin_us) return;
+    self._monotonic_origin_us -= delta_us;
 }
 
 /// Knitsail freeze window — also applied to `chrome.csi().pageT` when set.

@@ -64,7 +64,7 @@ export function buildGoogleSearchUrl(query: string, hl = "en"): string {
 export async function searchGoogle(page: Page, options: GoogleSearchOptions): Promise<GoogleExtractResult> {
   const limit = options.limit ?? 5;
   const timeout = options.timeout ?? 30_000;
-  const waitUntil = options.waitUntil ?? "done";
+  const waitUntil = options.waitUntil ?? "load";
   const url = buildGoogleSearchUrl(options.query, options.hl);
 
   await page.goto(url, { waitUntil, timeout });

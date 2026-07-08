@@ -11,6 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+const std = @import("std");
 const js = @import("../../../js/js.zig");
 const Frame = @import("../../../browser/Frame.zig");
 const Node = @import("../../../dom/Node.zig");
@@ -84,4 +85,16 @@ pub const JsApi = struct {
     pub const getEndPositionOfChar = bridge.function(Generic.getEndPositionOfChar, .{});
     pub const getRotationOfChar = bridge.function(Generic.getRotationOfChar, .{});
     pub const getCharNumAtPosition = bridge.function(Generic.getCharNumAtPosition, .{});
+    pub const relList = bridge.accessor(_getRelList, null, .{ .null_as_undefined = true });
+
+    fn _getRelList(self: *Generic, frame: *Frame) !?*@import("../../collections.zig").DOMTokenList {
+        const element = self.asElement();
+        if (element._namespace != .svg) {
+            return null;
+        }
+        if (!std.mem.eql(u8, element.getLocalName(), "a")) {
+            return null;
+        }
+        return element.getRelList(frame);
+    }
 };

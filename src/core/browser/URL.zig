@@ -25,14 +25,80 @@ pub const ResolveOpts = struct {
 };
 
 // path is anytype, so that it can be used with both []const u8 and [:0]const u8
+fn trimLeadingUrlInput(path: []const u8) []const u8 {
+    var i: usize = 0;
+    while (i < path.len) : (i += 1) {
+        switch (path[i]) {
+            '\t', '\n', '\r', ' ' => {},
+            else => return path[i..],
+        }
+    }
+    return path[i..];
+}
+
+fn trimTrailingUrlInput(path: []const u8) []const u8 {
+    var end: usize = path.len;
+    while (end > 0 and isC0ControlOrSpace(path[end - 1])) : (end -= 1) {}
+    return path[0..end];
+}
+
+fn removeTabsAndNewlines(allocator: Allocator, input: []const u8) ![:0]const u8 {
+    if (std.mem.indexOfAny(u8, input, "\t\n\r") == null) {
+        return try allocator.dupeZ(u8, input);
+    }
+    var buf = try std.ArrayList(u8).initCapacity(allocator, input.len);
+    for (input) |c| {
+        if (c != '\t' and c != '\n' and c != '\r') try buf.append(allocator, c);
+    }
+    try buf.append(allocator, 0);
+    return buf.items[0 .. buf.items.len - 1 :0];
+}
+
+/// Trim and backslash→slash. Does not expand scheme-relative shorthands (http:foo).
+pub fn preprocessInput(allocator: Allocator, input: []const u8) ![:0]const u8 {
+    const no_crlf = try removeTabsAndNewlines(allocator, input);
+    const trimmed = trimTrailingUrlInput(trimLeadingUrlInput(no_crlf));
+    var path: [:0]const u8 = try allocator.dupeZ(u8, trimmed);
+
+    // Fragment/query-only references keep backslashes (WPT: #\\ against a base).
+    // Opaque schemes (sc:\../) also keep backslashes.
+    const apply_backslash = path.len > 0 and path[0] != '#' and path[0] != '?';
+    if (apply_backslash and std.mem.indexOfScalar(u8, path, '\\') != null) {
+        const convert_bs = blk: {
+            const colon = std.mem.indexOfScalar(u8, path, ':') orelse break :blk false;
+            if (colon == 0) break :blk false;
+            break :blk isSpecialSchemeName(path[0..colon]);
+        };
+        if (convert_bs) {
+            var bs_buf = try std.ArrayList(u8).initCapacity(allocator, path.len);
+            for (path) |c| try bs_buf.append(allocator, if (c == '\\') '/' else c);
+            try bs_buf.append(allocator, 0);
+            path = bs_buf.items[0 .. bs_buf.items.len - 1 :0];
+        }
+    }
+
+    return path;
+}
+
+/// Trim, backslash→slash, and expand http:/ / http: shorthands for absolute parsing.
+pub fn preprocessAbsoluteInput(allocator: Allocator, input: []const u8) ![:0]const u8 {
+    const path = try preprocessInput(allocator, input);
+    const stripped = stripLeadingGarbageBeforeScheme(path);
+    const trimmed = trimTrailingUrlInput(stripped);
+    const normalized_input = try allocator.dupeZ(u8, trimmed);
+    return normalizeSpecialSchemeForm(allocator, normalized_input);
+}
+
 pub fn resolve(allocator: Allocator, base: [:0]const u8, source_path: anytype, opts: ResolveOpts) ![:0]const u8 {
     const PT = @TypeOf(source_path);
 
     const needs_dupe = comptime !isNullTerminated(PT);
     var path: [:0]const u8 = if (needs_dupe or opts.always_dupe) try allocator.dupeZ(u8, source_path) else source_path;
+    path = try preprocessInput(allocator, path);
 
     if (base.len == 0) {
-        return processResolved(allocator, path, opts);
+        const absolute = try normalizeSpecialSchemeForm(allocator, path);
+        return processResolved(allocator, absolute, opts);
     }
 
     // Minimum is "x:" and skip relative path (very common case)
@@ -72,16 +138,18 @@ pub fn resolve(allocator: Allocator, base: [:0]const u8, source_path: anytype, o
                         }
                     }
                 }
-                if (scheme_path.len > 0) {
+                if (scheme_path.len > 0 and std.ascii.isAlphabetic(scheme_path[0])) {
                     for (scheme_path[1..]) |c| {
                         if (!std.ascii.isAlphanumeric(c) and c != '+' and c != '-' and c != '.') {
                             //Exit as relative state
                             break :scheme_check;
                         }
                     }
+                    // Opaque absolute URL (e.g. mailto:x, javascript:alert(1))
+                    return processResolved(allocator, path, opts);
                 }
-                //path is complete http url
-                return processResolved(allocator, path, opts);
+                // Leading ':' (e.g. :foo.com/) — relative to base
+                break :scheme_check;
             }
         }
     }
@@ -92,6 +160,17 @@ pub fn resolve(allocator: Allocator, base: [:0]const u8, source_path: anytype, o
             return processResolved(allocator, dupe, opts);
         }
         return processResolved(allocator, base, opts);
+    }
+
+    if (isCannotBeABase(base) and path[0] != '#') {
+        if (opts.always_dupe) return error.TypeError;
+    }
+
+    // Relative inputs against a special-scheme base: \ → / (WPT: \x, \\x\hello, :foo.com\).
+    if (base.len > 0 and path[0] != '#' and path[0] != '?' and std.mem.indexOfScalar(u8, path, '\\') != null) {
+        if (baseHasSpecialScheme(base)) {
+            path = try convertBackslashesInPath(allocator, path);
+        }
     }
 
     if (path[0] == '?') {
@@ -126,8 +205,13 @@ pub fn resolve(allocator: Allocator, base: [:0]const u8, source_path: anytype, o
 
     var normalized_base: []const u8 = base[0..path_start];
     if (path_start < base.len) {
-        if (std.mem.lastIndexOfScalar(u8, base[path_start + 1 ..], '/')) |pos| {
-            normalized_base = base[0 .. path_start + 1 + pos];
+        const path_and_rest = base[path_start..];
+        const path_only_len = std.mem.indexOfAny(u8, path_and_rest, "?#") orelse path_and_rest.len;
+        const path_only = path_and_rest[0..path_only_len];
+        if (path_only.len > 1) {
+            if (std.mem.lastIndexOfScalar(u8, path_only, '/')) |pos| {
+                normalized_base = base[0 .. path_start + pos];
+            }
         }
     }
 
@@ -187,20 +271,924 @@ pub fn resolve(allocator: Allocator, base: [:0]const u8, source_path: anytype, o
     return processResolved(allocator, out[0..out_i :0], opts);
 }
 
+fn isC0ControlOrSpace(c: u8) bool {
+    return c <= 0x20 or c == 0x7F;
+}
+
+fn hostnameIsIpv4Literal(hostname: []const u8) bool {
+    if (hostname.len == 0) return false;
+    for (hostname) |c| {
+        const ipv4_char = (c >= '0' and c <= '9') or c == '.' or c == 'x' or c == 'X' or
+            (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F');
+        if (!ipv4_char) return false;
+    }
+    if (std.mem.indexOfScalar(u8, hostname, '.')) |_| {
+        for (hostname) |c| {
+            if (c >= '0' and c <= '9') return true;
+        }
+    }
+    var all_decimal = hostname.len > 0;
+    for (hostname) |c| {
+        if (c < '0' or c > '9') {
+            all_decimal = false;
+            break;
+        }
+    }
+    if (all_decimal) return true;
+    if (hostname.len >= 2 and hostname[0] == '0' and
+        (hostname[1] == 'x' or hostname[1] == 'X' or (hostname[1] >= '0' and hostname[1] <= '7')))
+        return true;
+    return parseIpv4Number(hostname) != null;
+}
+
+fn hostPercentEncodingIsValid(hostname: []const u8, is_special: bool) bool {
+    if (!is_special) return true;
+    var i: usize = 0;
+    while (i < hostname.len) : (i += 1) {
+        const c = hostname[i];
+        if (c == '%') {
+            if (i + 2 >= hostname.len) return false;
+            const h1 = hostname[i + 1];
+            const h2 = hostname[i + 2];
+            if (!std.ascii.isHex(h1) or !std.ascii.isHex(h2)) return false;
+            const byte = std.fmt.parseInt(u8, hostname[i + 1 .. i + 3], 16) catch return false;
+            if (isForbiddenHostCodePoint(byte)) return false;
+            i += 2;
+        }
+    }
+    return true;
+}
+
+fn percentDecodeHost(allocator: Allocator, hostname: []const u8) ![]u8 {
+    var needs_decode = false;
+    for (hostname) |c| {
+        if (c == '%') {
+            needs_decode = true;
+            break;
+        }
+    }
+    if (!needs_decode) return try allocator.dupe(u8, hostname);
+
+    var buf = try std.ArrayList(u8).initCapacity(allocator, hostname.len);
+    var i: usize = 0;
+    while (i < hostname.len) : (i += 1) {
+        const c = hostname[i];
+        if (c == '%' and i + 2 < hostname.len) {
+            const h1 = hostname[i + 1];
+            const h2 = hostname[i + 2];
+            if (std.ascii.isHex(h1) and std.ascii.isHex(h2)) {
+                const byte = std.fmt.parseInt(u8, hostname[i + 1 .. i + 3], 16) catch unreachable;
+                try buf.append(allocator, byte);
+                i += 2;
+                continue;
+            }
+        }
+        try buf.append(allocator, c);
+    }
+    return buf.items;
+}
+
+fn stripLeadingGarbageBeforeScheme(input: []const u8) []const u8 {
+    const scheme_sep = std.mem.indexOf(u8, input, "://") orelse return input;
+    var scheme_start = scheme_sep;
+    while (scheme_start > 0) {
+        const c = input[scheme_start - 1];
+        if (std.ascii.isAlphanumeric(c) or c == '+' or c == '-' or c == '.') {
+            scheme_start -= 1;
+        } else break;
+    }
+    if (scheme_start == 0 or scheme_start >= scheme_sep) return input;
+    for (input[0..scheme_start]) |c| {
+        if (!isC0ControlOrSpace(c) and c != ' ') return input;
+    }
+    return input[scheme_start..];
+}
+
+fn isForbiddenHostCodePoint(c: u8) bool {
+    return c == 0x00 or c == 0x09 or c == 0x0A or c == 0x0D or c == 0x20 or
+        c == '#' or c == '/' or c == ':' or c == '<' or c == '>' or c == '?' or
+        c == '@' or c == '[' or c == '\\' or c == ']' or c == '^' or c == '|';
+}
+
+fn hostnameForValidation(host: []const u8) []const u8 {
+    const raw = if (findPortSeparator(host)) |sep| host[0..sep] else host;
+    if (raw.len > 0 and raw[raw.len - 1] == ':' and findPortSeparator(host) == null)
+        return raw[0 .. raw.len - 1];
+    return raw;
+}
+
+fn percentDecodeHostInto(hostname: []const u8, out: []u8) ?[]const u8 {
+    var out_i: usize = 0;
+    var i: usize = 0;
+    while (i < hostname.len) : (i += 1) {
+        const c = hostname[i];
+        if (c == '%' and i + 2 < hostname.len) {
+            const h1 = hostname[i + 1];
+            const h2 = hostname[i + 2];
+            if (std.ascii.isHex(h1) and std.ascii.isHex(h2)) {
+                if (out_i >= out.len) return null;
+                const byte = std.fmt.parseInt(u8, hostname[i + 1 .. i + 3], 16) catch return null;
+                out[out_i] = byte;
+                out_i += 1;
+                i += 2;
+                continue;
+            }
+        }
+        if (out_i >= out.len) return null;
+        out[out_i] = c;
+        out_i += 1;
+    }
+    return out[0..out_i];
+}
+
+fn hostnameUnicodeLabelForbidden(cp: u21) bool {
+    return cp == 0xFF05 or cp == 0x00A0 or cp == 0x3000;
+}
+
+fn hostnameForHostValidation(hostname: []const u8, is_special: bool) bool {
+    if (!is_special) return hostPercentEncodingIsValid(hostname, false);
+
+    var decoded_buf: [512]u8 = undefined;
+    const decoded = percentDecodeHostInto(hostname, &decoded_buf) orelse return false;
+    for (decoded) |c| {
+        if (is_special and c == '%') return false;
+        if (is_special and isC0ControlOrSpace(c)) return false;
+        if (isForbiddenHostCodePoint(c)) return false;
+    }
+    if (!std.unicode.utf8ValidateSlice(decoded)) return false;
+    var iter: std.unicode.Utf8Iterator = .{ .bytes = decoded, .i = 0 };
+    while (iter.nextCodepointSlice()) |slice| {
+        const cp = std.unicode.utf8Decode(slice) catch return false;
+        if (is_special and hostnameUnicodeLabelForbidden(cp)) return false;
+    }
+    return true;
+}
+
+fn isTabOrNewline(c: u8) bool {
+    return c == 0x09 or c == 0x0A or c == 0x0D;
+}
+
+fn sanitizeAuthorityC0(allocator: Allocator, url: [:0]const u8) ![:0]const u8 {
+    const scheme_end = std.mem.indexOf(u8, url, "://") orelse return url;
+    const authority_start = scheme_end + 3;
+    const rel_end = std.mem.indexOfAny(u8, url[authority_start..], "/?#") orelse url.len - authority_start;
+    const authority_end = authority_start + rel_end;
+
+    var needs_sanitize = false;
+    for (url[authority_start..authority_end]) |c| {
+        if (isTabOrNewline(c)) {
+            needs_sanitize = true;
+            break;
+        }
+    }
+    if (!needs_sanitize) return url;
+
+    var buf = try std.ArrayList(u8).initCapacity(allocator, url.len);
+    try buf.appendSlice(allocator, url[0..authority_start]);
+    for (url[authority_start..authority_end]) |c| {
+        if (!isTabOrNewline(c)) try buf.append(allocator, c);
+    }
+    try buf.appendSlice(allocator, url[authority_end..]);
+    try buf.append(allocator, 0);
+    return buf.items[0 .. buf.items.len - 1 :0];
+}
+
+fn parsePortNumber(port: []const u8) ?u16 {
+    if (port.len == 0) return null;
+    var val: u32 = 0;
+    for (port) |c| {
+        if (c < '0' or c > '9') return null;
+        val = val * 10 + (c - '0');
+        if (val > 65535) return null;
+    }
+    return @intCast(val);
+}
+
+fn isDefaultPort(protocol: []const u8, port: u16) bool {
+    return (std.ascii.eqlIgnoreCase(protocol, "http:") and port == 80) or
+        (std.ascii.eqlIgnoreCase(protocol, "https:") and port == 443) or
+        (std.ascii.eqlIgnoreCase(protocol, "ftp:") and port == 21) or
+        (std.ascii.eqlIgnoreCase(protocol, "ws:") and port == 80) or
+        (std.ascii.eqlIgnoreCase(protocol, "wss:") and port == 443);
+}
+
+fn normalizeAuthorityPort(allocator: Allocator, url: [:0]const u8) ![:0]const u8 {
+    const scheme_end = std.mem.indexOf(u8, url, "://") orelse return url;
+    const protocol = url[0 .. scheme_end + 1];
+    const authority_start = scheme_end + 3;
+    const rel_end = std.mem.indexOfAny(u8, url[authority_start..], "/?#") orelse url.len - authority_start;
+    const authority_end = authority_start + rel_end;
+
+    const auth = url[authority_start..authority_end];
+    const host_start_in_auth = std.mem.lastIndexOfScalar(u8, auth, '@');
+    const host_start = if (host_start_in_auth) |at| authority_start + at + 1 else authority_start;
+    const host_part = url[host_start..authority_end];
+
+    if (host_part.len > 0 and host_part[host_part.len - 1] == ':') {
+        const is_ipv6_close = host_part[0] == '[' and std.mem.indexOfScalar(u8, host_part, ']') != null;
+        if (!is_ipv6_close) {
+            var buf = try std.ArrayList(u8).initCapacity(allocator, url.len);
+            try buf.appendSlice(allocator, url[0..host_start]);
+            try buf.appendSlice(allocator, host_part[0 .. host_part.len - 1]);
+            try buf.appendSlice(allocator, url[authority_end..]);
+            try buf.append(allocator, 0);
+            return buf.items[0 .. buf.items.len - 1 :0];
+        }
+    }
+
+    const port_sep = findPortSeparator(host_part) orelse return url;
+    const hostname = host_part[0..port_sep];
+    const port_str = host_part[port_sep + 1 ..];
+
+    if (port_str.len == 0) {
+        var buf = try std.ArrayList(u8).initCapacity(allocator, url.len);
+        try buf.appendSlice(allocator, url[0..host_start]);
+        try buf.appendSlice(allocator, hostname);
+        try buf.appendSlice(allocator, url[authority_end..]);
+        try buf.append(allocator, 0);
+        return buf.items[0 .. buf.items.len - 1 :0];
+    }
+
+    const port_num = parsePortNumber(port_str) orelse return url;
+    const normalized = try std.fmt.allocPrint(allocator, "{d}", .{port_num});
+    const drop_default = isDefaultPort(protocol, port_num);
+
+    if (!drop_default and std.mem.eql(u8, port_str, normalized)) return url;
+
+    var buf = try std.ArrayList(u8).initCapacity(allocator, url.len);
+    try buf.appendSlice(allocator, url[0..host_start]);
+    try buf.appendSlice(allocator, hostname);
+    if (!drop_default) {
+        try buf.append(allocator, ':');
+        try buf.appendSlice(allocator, normalized);
+    }
+    try buf.appendSlice(allocator, url[authority_end..]);
+    try buf.append(allocator, 0);
+    return buf.items[0 .. buf.items.len - 1 :0];
+}
+
 fn processResolved(allocator: Allocator, url: [:0]const u8, opts: ResolveOpts) ![:0]const u8 {
-    const encoding = opts.encoding orelse return ensureHostAscii(allocator, url);
-    return ensureEncoded(allocator, url, encoding);
+    if (opts.always_dupe and !isValidForCanParse(url)) return error.TypeError;
+    const sanitized = try sanitizeAuthorityC0(allocator, url);
+    const port_norm = try normalizeAuthorityPort(allocator, sanitized);
+    if (opts.always_dupe and !isValidForCanParse(port_norm)) return error.TypeError;
+    const encoding = opts.encoding orelse {
+        return canonicalizeHref(allocator, port_norm) catch |err| {
+            if (opts.always_dupe) return error.TypeError;
+            return err;
+        };
+    };
+    return ensureEncoded(allocator, port_norm, encoding) catch |err| {
+        if (opts.always_dupe) return error.TypeError;
+        return err;
+    };
+}
+
+fn serializeOpaqueFragment(allocator: Allocator, fragment: []const u8) ![]const u8 {
+    if (fragment.len == 0) return fragment;
+    if (fragment[fragment.len - 1] != ' ') return fragment;
+    const prefix = fragment[0 .. fragment.len - 1];
+    var buf = try std.ArrayList(u8).initCapacity(allocator, prefix.len + 3);
+    try buf.appendSlice(allocator, prefix);
+    try buf.appendSlice(allocator, "%20");
+    return buf.items;
+}
+
+/// Opaque path: percent-encode C0/non-ASCII only; a single trailing U+0020 is special-cased.
+fn serializeOpaquePath(allocator: Allocator, path: []const u8) ![]const u8 {
+    if (path.len == 0) return path;
+    if (path[path.len - 1] != ' ') {
+        return percentEncodeSegment(allocator, path, .opaque_path);
+    }
+    const prefix = path[0 .. path.len - 1];
+    const encoded_prefix = try percentEncodeSegment(allocator, prefix, .opaque_path);
+    var buf = try std.ArrayList(u8).initCapacity(allocator, encoded_prefix.len + 3);
+    try buf.appendSlice(allocator, encoded_prefix);
+    try buf.appendSlice(allocator, "%20");
+    return buf.items;
+}
+
+fn canonicalizeOpaqueHref(allocator: Allocator, url: [:0]const u8) ![:0]const u8 {
+    const protocol = getProtocol(url);
+    const pathname_raw = getPathname(url);
+    const pathname = if (pathname_raw.len > 0)
+        try shortenPathname(allocator, pathname_raw)
+    else
+        pathname_raw;
+    const search = getSearchSerialized(url);
+    const hash = getHashSerialized(url);
+
+    const encoded_path = try serializeOpaquePath(allocator, pathname);
+    const encoded_fragment = if (hash.len > 1)
+        try percentEncodeSegment(allocator, hash[1..], .fragment)
+    else
+        @as([]const u8, "");
+
+    var buf = try std.ArrayList(u8).initCapacity(allocator, protocol.len + encoded_path.len + search.len + encoded_fragment.len + 2);
+    try buf.appendSlice(allocator, protocol);
+    try buf.appendSlice(allocator, encoded_path);
+    try buf.appendSlice(allocator, search);
+    if (hash.len > 0) {
+        try buf.append(allocator, '#');
+        try buf.appendSlice(allocator, encoded_fragment);
+    }
+    try buf.append(allocator, 0);
+    return buf.items[0 .. buf.items.len - 1 :0];
+}
+
+fn segmentIsDot(seg: []const u8) bool {
+    if (seg.len == 1 and seg[0] == '.') return true;
+    return seg.len == 3 and std.ascii.eqlIgnoreCase(seg, "%2e");
+}
+
+fn segmentIsDotDot(seg: []const u8) bool {
+    if (seg.len == 2 and seg[0] == '.' and seg[1] == '.') return true;
+    if (seg.len == 6 and std.ascii.eqlIgnoreCase(seg, "%2e%2e")) return true;
+    if (seg.len == 4 and std.ascii.eqlIgnoreCase(seg, ".%2e")) return true;
+    return seg.len == 4 and std.ascii.eqlIgnoreCase(seg, "%2e.");
+}
+
+fn hasExplicitHierarchicalPath(url: []const u8) bool {
+    const scheme_end = std.mem.indexOf(u8, url, "://") orelse return false;
+    return std.mem.indexOfScalarPos(u8, url, scheme_end + 3, '/') != null;
+}
+
+fn shortenPathname(allocator: Allocator, pathname: []const u8) ![]const u8 {
+    if (pathname.len == 0) return try allocator.dupeZ(u8, "/");
+    if (pathname.len == 1 and pathname[0] == '/') return try allocator.dupeZ(u8, "/");
+
+    var segments: std.ArrayList([]const u8) = .empty;
+    defer segments.deinit(allocator);
+
+    var ends_with_slash = pathname[pathname.len - 1] == '/';
+    var start: usize = 0;
+    var idx: usize = 0;
+    while (idx <= pathname.len) : (idx += 1) {
+        if (idx == pathname.len or pathname[idx] == '/') {
+            const seg = pathname[start..idx];
+            if (segmentIsDot(seg)) {
+                if (idx >= pathname.len) ends_with_slash = true;
+            } else if (segmentIsDotDot(seg)) {
+                if (segments.items.len > 1) {
+                    const popped = segments.pop().?;
+                    if (idx >= pathname.len) {
+                        if (popped.len > 0) {
+                            ends_with_slash = true;
+                        } else if (segments.items.len > 0 and segments.items[segments.items.len - 1].len > 0) {
+                            ends_with_slash = true;
+                        }
+                    }
+                } else if (segments.items.len == 1 and segments.items[0].len > 0) {
+                    _ = segments.pop();
+                    if (idx >= pathname.len) ends_with_slash = true;
+                }
+            } else {
+                try segments.append(allocator, seg);
+            }
+            start = idx + 1;
+        }
+    }
+
+    var buf: std.ArrayList(u8) = .empty;
+    var all_empty = segments.items.len > 0;
+    for (segments.items) |seg| {
+        if (seg.len > 0) {
+            all_empty = false;
+            break;
+        }
+    }
+    if (all_empty and segments.items.len >= 2) {
+        try buf.append(allocator, '/');
+        try buf.append(allocator, '/');
+    } else if (all_empty and segments.items.len == 1) {
+        try buf.append(allocator, '/');
+    } else {
+        for (segments.items, 0..) |seg, seg_idx| {
+            if (seg_idx > 0) try buf.append(allocator, '/');
+            try buf.appendSlice(allocator, seg);
+        }
+        if (buf.items.len == 0) try buf.append(allocator, '/');
+    }
+    if (ends_with_slash and buf.items.len > 0 and buf.items[buf.items.len - 1] != '/') {
+        try buf.append(allocator, '/');
+    }
+    try buf.append(allocator, 0);
+    return buf.items[0 .. buf.items.len - 1 :0];
+}
+
+const Ipv4Number = struct { value: u32, non_decimal: bool };
+
+fn parseIpv4Number(part: []const u8) ?Ipv4Number {
+    if (part.len == 0) return null;
+    var non_decimal = false;
+    var radix: u32 = 10;
+    var input = part;
+
+    if (input.len >= 2 and input[0] == '0' and (input[1] == 'x' or input[1] == 'X')) {
+        non_decimal = true;
+        input = input[2..];
+        radix = 16;
+    } else if (input.len >= 2 and input[0] == '0') {
+        non_decimal = true;
+        input = input[1..];
+        radix = 8;
+    }
+
+    if (input.len == 0) return .{ .value = 0, .non_decimal = true };
+
+    var output: u32 = 0;
+    for (input) |c| {
+        const digit: u32 = switch (radix) {
+            10 => blk: {
+                if (c < '0' or c > '9') return null;
+                break :blk c - '0';
+            },
+            8 => blk: {
+                if (c < '0' or c > '7') return null;
+                break :blk c - '0';
+            },
+            16 => blk: {
+                if (c >= '0' and c <= '9') break :blk c - '0';
+                if (c >= 'a' and c <= 'f') break :blk c - 'a' + 10;
+                if (c >= 'A' and c <= 'F') break :blk c - 'A' + 10;
+                return null;
+            },
+            else => unreachable,
+        };
+        const mul = @mulWithOverflow(output, radix);
+        if (mul[1] != 0) return null;
+        output = mul[0];
+        const add = @addWithOverflow(output, digit);
+        if (add[1] != 0) return null;
+        output = add[0];
+    }
+    return .{ .value = output, .non_decimal = non_decimal };
+}
+
+fn ipv4Pow256(exp: u32) u64 {
+    var result: u64 = 1;
+    var i: u32 = 0;
+    while (i < exp) : (i += 1) result *= 256;
+    return result;
+}
+
+fn parseIpv4Address(host: []const u8) ?u32 {
+    var parts: [5][]const u8 = undefined;
+    var part_count: usize = 0;
+    var start: usize = 0;
+
+    for (0..host.len + 1) |i| {
+        if (i < host.len and host[i] != '.') continue;
+        if (part_count == parts.len) return null;
+        parts[part_count] = host[start..i];
+        part_count += 1;
+        start = i + 1;
+    }
+    if (part_count == 0) return null;
+
+    if (parts[part_count - 1].len == 0) {
+        if (part_count > 1) part_count -= 1;
+    }
+    if (part_count > 4) return null;
+
+    var numbers: [4]u32 = undefined;
+    var count: usize = 0;
+    for (parts[0..part_count]) |part| {
+        const parsed = parseIpv4Number(part) orelse return null;
+        _ = parsed.non_decimal;
+        if (count == 4) return null;
+        numbers[count] = parsed.value;
+        count += 1;
+    }
+    if (count == 0) return null;
+
+    for (numbers[0..count]) |n| {
+        if (n > 255) {
+            // validation error; only non-last parts cause hard failure below
+        }
+    }
+    for (numbers[0 .. count - 1]) |n| {
+        if (n > 255) return null;
+    }
+
+    const limit = ipv4Pow256(5 - @as(u32, @intCast(count)));
+    if (numbers[count - 1] >= limit) return null;
+
+    var ipv4: u64 = numbers[count - 1];
+    for (numbers[0 .. count - 1], 0..) |n, counter| {
+        const exp: u32 = 3 - @as(u32, @intCast(counter));
+        ipv4 += n * ipv4Pow256(exp);
+    }
+    if (ipv4 > 0xFFFFFFFF) return null;
+    return @intCast(ipv4);
+}
+
+fn formatIpv4Address(allocator: Allocator, addr: u32) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{d}.{d}.{d}.{d}", .{
+        (addr >> 24) & 0xFF,
+        (addr >> 16) & 0xFF,
+        (addr >> 8) & 0xFF,
+        addr & 0xFF,
+    });
+}
+
+fn normalizeHostCodepoints(allocator: Allocator, host: []const u8) ![]const u8 {
+    if (!std.unicode.utf8ValidateSlice(host)) return try allocator.dupe(u8, host);
+
+    var needs_norm = false;
+    var iter: std.unicode.Utf8Iterator = .{ .bytes = host, .i = 0 };
+    while (iter.nextCodepointSlice()) |slice| {
+        const cp = std.unicode.utf8Decode(slice) catch return try allocator.dupe(u8, host);
+        if (cp >= 0xFF01 and cp <= 0xFF5E) {
+            needs_norm = true;
+            break;
+        }
+    }
+    if (!needs_norm) return try allocator.dupe(u8, host);
+
+    var buf: std.ArrayList(u8) = .empty;
+    iter = .{ .bytes = host, .i = 0 };
+    while (iter.nextCodepointSlice()) |slice| {
+        const cp = std.unicode.utf8Decode(slice) catch {
+            try buf.appendSlice(allocator, slice);
+            continue;
+        };
+        const mapped: u21 = if (cp >= 0xFF01 and cp <= 0xFF5E) cp - 0xFEE0 else cp;
+        var enc: [4]u8 = undefined;
+        const len = try std.unicode.utf8Encode(mapped, &enc);
+        try buf.appendSlice(allocator, enc[0..len]);
+    }
+    return try buf.toOwnedSlice(allocator);
+}
+
+fn percentDecodeHostSlice(allocator: Allocator, host: []const u8) ![]const u8 {
+    if (std.mem.indexOfScalar(u8, host, '%') == null) return try allocator.dupe(u8, host);
+    const decoded = try unescape(allocator, host);
+    return try allocator.dupe(u8, decoded);
+}
+
+fn readIpv6Hextets(addr: [16]u8) [8]u16 {
+    var parts: [8]u16 = undefined;
+    for (0..8) |i| {
+        parts[i] = std.mem.readInt(u16, addr[i * 2 ..][0..2], .big);
+    }
+    return parts;
+}
+
+fn parseIpv6Hextet(part: []const u8) ?u16 {
+    if (part.len == 0 or part.len > 4) return null;
+    var value: u16 = 0;
+    for (part) |c| {
+        const digit: u16 = if (c >= '0' and c <= '9')
+            c - '0'
+        else if (c >= 'a' and c <= 'f')
+            c - 'a' + 10
+        else if (c >= 'A' and c <= 'F')
+            c - 'A' + 10
+        else
+            return null;
+        value = (value << 4) | digit;
+    }
+    return value;
+}
+
+fn segmentLooksLikeIpv4(input: []const u8, pointer: usize) bool {
+    const end = std.mem.indexOfScalarPos(u8, input, pointer, ':') orelse input.len;
+    return std.mem.indexOfScalar(u8, input[pointer..end], '.') != null;
+}
+
+/// WHATWG URL IPv6 parser (incl. IPv4 suffix like `::127.0.0.1`).
+fn parseIpv6AddressBytes(input: []const u8) ?[16]u8 {
+    if (input.len == 0) return null;
+    if (input.len == 1 and input[0] == ':') return null;
+    if (input.len > 0 and input[input.len - 1] == ':' and
+        (input.len < 2 or input[input.len - 2] != ':'))
+        return null;
+    if (std.net.Ip6Address.parse(input, 0)) |ip6| return ip6.sa.addr else |_| {}
+
+    var pieces: [8]u16 = .{0} ** 8;
+    var piece_index: usize = 0;
+    var compress: ?usize = null;
+    var pointer: usize = 0;
+
+    if (input.len >= 2 and input[0] == ':' and input[1] == ':') {
+        pointer = 2;
+        piece_index = 1;
+        compress = 1;
+    }
+
+    while (pointer < input.len) {
+        if (piece_index > 7) return null;
+
+        if (segmentLooksLikeIpv4(input, pointer)) {
+            const ipv4_part = input[pointer..];
+            if (ipv4_part.len > 0 and ipv4_part[ipv4_part.len - 1] == '.') return null;
+            const ipv4 = parseIpv4Address(ipv4_part) orelse return null;
+            if (piece_index > 6) return null;
+            pieces[piece_index] = @intCast((ipv4 >> 16) & 0xFFFF);
+            pieces[piece_index + 1] = @intCast(ipv4 & 0xFFFF);
+            piece_index += 2;
+            break;
+        }
+
+        if (input[pointer] == ':') {
+            if (compress != null and pointer > 0 and input[pointer - 1] == ':') return null;
+            if (compress == null) compress = piece_index;
+            pointer += 1;
+            continue;
+        }
+
+        const colon = std.mem.indexOfScalarPos(u8, input, pointer, ':') orelse input.len;
+        const hextet = parseIpv6Hextet(input[pointer..colon]) orelse return null;
+        pieces[piece_index] = hextet;
+        piece_index += 1;
+        pointer = if (colon < input.len) colon + 1 else colon;
+    }
+
+    if (compress) |at| {
+        const swaps = piece_index - at;
+        var i: usize = 0;
+        while (i < swaps) : (i += 1) {
+            pieces[7 - i] = pieces[at + swaps - 1 - i];
+        }
+        var j: usize = at;
+        while (j < 8 - swaps) : (j += 1) {
+            pieces[j] = 0;
+        }
+    }
+
+    var addr: [16]u8 = undefined;
+    for (pieces, 0..) |p, i| {
+        std.mem.writeInt(u16, addr[i * 2 ..][0..2], p, .big);
+    }
+    return addr;
+}
+
+fn formatIpv6Canonical(allocator: Allocator, inner: []const u8) ![]const u8 {
+    const addr = parseIpv6AddressBytes(inner) orelse return error.InvalidIpv6;
+    const parts = readIpv6Hextets(addr);
+
+    var longest_start: usize = 8;
+    var longest_len: usize = 0;
+    var current_start: usize = 0;
+    var current_len: usize = 0;
+    for (parts, 0..) |part, i| {
+        if (part == 0) {
+            if (current_len == 0) current_start = i;
+            current_len += 1;
+            if (current_len > longest_len) {
+                longest_start = current_start;
+                longest_len = current_len;
+            }
+        } else {
+            current_len = 0;
+        }
+    }
+    if (longest_len < 2) {
+        longest_start = 8;
+        longest_len = 0;
+    }
+
+    var buf: std.ArrayList(u8) = .empty;
+    var i: usize = 0;
+    var abbrv = false;
+    while (i < parts.len) : (i += 1) {
+        if (i == longest_start) {
+            if (!abbrv) {
+                try buf.appendSlice(allocator, if (i == 0) "::" else ":");
+                abbrv = true;
+            }
+            i += longest_len - 1;
+            continue;
+        }
+        if (abbrv) abbrv = false;
+        try buf.writer(allocator).print("{x}", .{parts[i]});
+        if (i != parts.len - 1) try buf.append(allocator, ':');
+    }
+    return buf.items;
+}
+
+fn normalizeIpv6HostForHref(allocator: Allocator, host: []const u8) ![]const u8 {
+    const bracket_end = std.mem.indexOfScalar(u8, host, ']') orelse return allocator.dupe(u8, host);
+    const inner = host[1..bracket_end];
+    const port_suffix = host[bracket_end + 1 ..];
+    const canonical = try formatIpv6Canonical(allocator, inner);
+    defer allocator.free(canonical);
+    return std.fmt.allocPrint(allocator, "[{s}]{s}", .{ canonical, port_suffix });
+}
+
+fn normalizeHostForHref(allocator: Allocator, host: []const u8) ![]const u8 {
+    const port_sep = findPortSeparator(host);
+    const hostname = if (port_sep) |sep| host[0..sep] else host;
+    const port_suffix = if (port_sep) |sep| host[sep..] else "";
+
+    if (hostname.len > 0 and hostname[0] == '[') {
+        return normalizeIpv6HostForHref(allocator, host);
+    }
+
+    const decoded = try percentDecodeHostSlice(allocator, hostname);
+    defer allocator.free(decoded);
+    const ascii_host = try normalizeHostCodepoints(allocator, decoded);
+    defer if (!std.mem.eql(u8, ascii_host, decoded)) allocator.free(ascii_host);
+
+    if (parseIpv4Address(ascii_host)) |ipv4| {
+        const formatted = try formatIpv4Address(allocator, ipv4);
+        if (port_suffix.len == 0) return formatted;
+        return std.fmt.allocPrint(allocator, "{s}{s}", .{ formatted, port_suffix });
+    }
+
+    var needs_lower = false;
+    for (ascii_host) |c| {
+        if (c >= 'A' and c <= 'Z') {
+            needs_lower = true;
+            break;
+        }
+    }
+    if (!needs_lower) return allocator.dupe(u8, host);
+
+    var buf = try std.ArrayList(u8).initCapacity(allocator, host.len);
+    for (ascii_host) |c| {
+        try buf.append(allocator, if (c >= 'A' and c <= 'Z') c + 32 else c);
+    }
+    try buf.appendSlice(allocator, port_suffix);
+    return buf.items;
+}
+
+fn serializeQueryForHref(allocator: Allocator, url: [:0]const u8) ![]const u8 {
+    const search = getSearchSerialized(url);
+    if (search.len == 0) return "";
+    const protocol = getProtocol(url);
+    const body = if (isSpecialScheme(protocol))
+        try percentEncodeSegment(allocator, search[1..], .special_query)
+    else
+        try percentEncodeSegment(allocator, search[1..], .query);
+    return std.fmt.allocPrint(allocator, "?{s}", .{body});
+}
+
+fn serializeFragmentForHref(allocator: Allocator, url: [:0]const u8) ![]const u8 {
+    const hash = getHashSerialized(url);
+    if (hash.len == 0) return "";
+    const body = try percentEncodeSegment(allocator, hash[1..], .fragment);
+    return std.fmt.allocPrint(allocator, "#{s}", .{body});
+}
+
+fn percentEncodeHost(allocator: Allocator, host: []const u8) ![]const u8 {
+    const port_sep = findPortSeparator(host);
+    const hostname = if (port_sep) |sep| host[0..sep] else host;
+    const port_suffix = if (port_sep) |sep| host[sep..] else "";
+    if (hostname.len > 0 and hostname[0] == '[') {
+        return normalizeIpv6HostForHref(allocator, host);
+    }
+    const enc = try percentEncodeSegment(allocator, hostname, .host);
+    if (port_suffix.len == 0) return allocator.dupe(u8, enc);
+    return std.fmt.allocPrint(allocator, "{s}{s}", .{ enc, port_suffix });
+}
+
+fn normalizeFilePathname(allocator: Allocator, pathname: []const u8) ![]const u8 {
+    if (pathname.len == 0) return "/";
+    var buf: std.ArrayList(u8) = .empty;
+    try buf.append(allocator, '/');
+    var i: usize = if (pathname[0] == '/') 1 else 0;
+    while (i < pathname.len) : (i += 1) {
+        const c = pathname[i];
+        if (c == '|' and i + 1 < pathname.len and pathname[i + 1] == '/') {
+            try buf.append(allocator, ':');
+            i += 1;
+        } else if (c == '|' and i + 1 < pathname.len and pathname[i + 1] == '|') {
+            try buf.append(allocator, '|');
+            i += 1;
+        } else {
+            try buf.append(allocator, c);
+        }
+    }
+    try buf.append(allocator, 0);
+    return buf.items[0 .. buf.items.len - 1 :0];
+}
+
+fn canonicalizeFileHref(allocator: Allocator, url: [:0]const u8) ![:0]const u8 {
+    const protocol = getProtocol(url);
+    var host = getHost(url);
+    var pathname = getPathname(url);
+    const search = getSearchSerialized(url);
+    const hash = getHashSerialized(url);
+
+    if (std.ascii.eqlIgnoreCase(host, "localhost")) {
+        host = "";
+    }
+
+    if (host.len > 0) {
+        const path_is_trivial = pathname.len == 0 or std.mem.eql(u8, pathname, "/");
+        if (!path_is_trivial) {
+            if (pathname[0] == '/') {
+                pathname = try std.fmt.allocPrintSentinel(allocator, "/{s}{s}", .{ host, pathname }, 0);
+            } else {
+                pathname = try std.fmt.allocPrintSentinel(allocator, "/{s}/{s}", .{ host, pathname }, 0);
+            }
+            host = "";
+        } else if (pathname.len == 0) {
+            pathname = "/";
+        }
+    }
+
+    if (host.len == 0) {
+        pathname = try normalizeFilePathname(allocator, pathname);
+        return std.fmt.allocPrintSentinel(allocator, "{s}//{s}{s}{s}", .{ protocol, pathname, search, hash }, 0);
+    }
+    return std.fmt.allocPrintSentinel(allocator, "{s}//{s}{s}{s}{s}", .{ protocol, host, pathname, search, hash }, 0);
+}
+
+/// Canonicalize `scheme:/path` URLs without an authority (e.g. `about:/../` → `about:/`).
+fn canonicalizeSchemeSlashHref(allocator: Allocator, url: [:0]const u8) ![:0]const u8 {
+    const colon = std.mem.indexOfScalar(u8, url, ':') orelse return url;
+    if (colon == 0 or colon + 1 >= url.len or url[colon + 1] != '/') return url;
+    if (!isSpecialScheme(url[0 .. colon + 1])) return url;
+
+    const path_start = colon + 1;
+    const fragment_start = std.mem.indexOfScalarPos(u8, url, path_start, '#');
+    const query_start = findQueryStartFrom(url, path_start);
+    const path_end = query_start orelse fragment_start orelse url.len;
+
+    const raw_path = url[path_start..path_end];
+    const shortened = try shortenPathname(allocator, raw_path);
+    const pathname_short = if (shortened.len == 2 and std.mem.eql(u8, shortened, "//") and
+        !std.mem.startsWith(u8, raw_path, "//"))
+        try allocator.dupeZ(u8, "/")
+    else
+        shortened;
+    const search = if (query_start) |qs| url[qs .. fragment_start orelse url.len] else @as([]const u8, "");
+    const hash = if (fragment_start) |fs| url[fs..] else @as([]const u8, "");
+
+    var buf = try std.ArrayList(u8).initCapacity(allocator, url.len);
+    try buf.appendSlice(allocator, url[0..path_start]);
+    try buf.appendSlice(allocator, pathname_short);
+    try buf.appendSlice(allocator, search);
+    try buf.appendSlice(allocator, hash);
+    try buf.append(allocator, 0);
+    return buf.items[0 .. buf.items.len - 1 :0];
+}
+
+/// Re-serialize a parsed hierarchical URL (userinfo, path, query, fragment encoding).
+fn canonicalizeHref(allocator: Allocator, url: [:0]const u8) ![:0]const u8 {
+    if (isCannotBeABase(url)) {
+        return canonicalizeOpaqueHref(allocator, url);
+    }
+
+    if (std.mem.indexOf(u8, url, "://") == null) {
+        return canonicalizeSchemeSlashHref(allocator, url);
+    }
+
+    const protocol = getProtocol(url);
+    if (std.ascii.eqlIgnoreCase(protocol, "file:")) {
+        return canonicalizeFileHref(allocator, url);
+    }
+
+    const is_special = isSpecialScheme(protocol);
+    const idn_url = if (is_special) try ensureHostAscii(allocator, url) else url;
+    const host = if (is_special)
+        try normalizeHostForHref(allocator, getHost(idn_url))
+    else
+        try percentEncodeHost(allocator, getHost(idn_url));
+    const pathname_raw = getPathname(idn_url);
+    const pathname_short = if (!hasExplicitHierarchicalPath(idn_url)) blk: {
+        if (is_special) break :blk try allocator.dupeZ(u8, "/");
+        break :blk "";
+    } else if (!is_special) blk: {
+        break :blk try allocator.dupeZ(u8, pathname_raw);
+    } else if (pathname_raw.len == 1 and pathname_raw[0] == '/')
+        try allocator.dupeZ(u8, "/")
+    else
+        try shortenPathname(allocator, pathname_raw);
+    const encoded_path = if (pathname_short.len == 0)
+        ""
+    else
+        try percentEncodeSegment(allocator, pathname_short, .path);
+    const search = try serializeQueryForHref(allocator, idn_url);
+    const hash = try serializeFragmentForHref(allocator, idn_url);
+    const username = getUsername(idn_url);
+    const password = getPassword(idn_url);
+
+    const enc_user = try percentEncodeSegment(allocator, username, .userinfo);
+    const enc_pass = try percentEncodeSegment(allocator, password, .userinfo);
+    return buildUrlWithUserInfo(allocator, protocol, enc_user, enc_pass, host, encoded_path, search, hash);
 }
 
 /// IDNA-only pass: converts a non-ASCII host (`räksmörgås.se`) to its
 /// punycode form (`xn--rksmrgs-5wao1o.se`) and leaves everything else alone.
 fn ensureHostAscii(allocator: Allocator, url: [:0]const u8) ![:0]const u8 {
     const hostname = getHostname(url);
-    if (hostname.len == 0 or !idna.needsAscii(hostname)) {
+    if (hostname.len == 0) return url;
+    if (hostname[0] == '[') return url;
+
+    const decoded = try percentDecodeHost(allocator, hostname);
+    defer allocator.free(decoded);
+
+    if (!idna.needsAscii(decoded)) return url;
+
+    const ascii = try idna.toAscii(allocator, decoded);
+    if (std.mem.eql(u8, ascii, decoded)) {
+        allocator.free(ascii);
         return url;
     }
-
-    const ascii = try idna.toAscii(allocator, hostname);
 
     // hostname is a slice of url, so its start offset is just pointer arithmetic.
     const start = @intFromPtr(hostname.ptr) - @intFromPtr(url.ptr);
@@ -214,18 +1202,20 @@ fn ensureHostAscii(allocator: Allocator, url: [:0]const u8) ![:0]const u8 {
 }
 
 pub fn ensureEncoded(allocator: Allocator, url_in: [:0]const u8, encoding: []const u8) ![:0]const u8 {
-    // Resolve any IDN host first; everything below operates on the ASCII form.
-    const url = try ensureHostAscii(allocator, url_in);
+    const url = if (std.mem.indexOf(u8, url_in, "://")) |scheme_end| blk: {
+        const protocol = url_in[0 .. scheme_end + 1];
+        if (isSpecialScheme(protocol)) break :blk try ensureHostAscii(allocator, url_in);
+        break :blk url_in;
+    } else url_in;
 
     const scheme_end = std.mem.indexOf(u8, url, "://");
     const authority_start = if (scheme_end) |end| end + 3 else 0;
     const path_start = std.mem.indexOfScalarPos(u8, url, authority_start, '/') orelse return url;
 
-    const query_start = std.mem.indexOfScalarPos(u8, url, path_start, '?');
-    const fragment_start = std.mem.indexOfScalarPos(u8, url, query_start orelse path_start, '#');
-
+    const fragment_start = std.mem.indexOfScalarPos(u8, url, path_start, '#');
+    const query_start = findQueryStartFrom(url, path_start);
     const path_end = query_start orelse fragment_start orelse url.len;
-    const query_end = if (query_start) |_| (fragment_start orelse url.len) else path_end;
+    const query_end = if (query_start != null) (fragment_start orelse url.len) else path_end;
 
     const path_to_encode = url[path_start..path_end];
     // Path is always UTF-8 percent encoded per URL spec
@@ -238,8 +1228,8 @@ pub fn ensureEncoded(allocator: Allocator, url_in: [:0]const u8, encoding: []con
     } else null;
 
     const encoded_fragment = if (fragment_start) |fs| blk: {
-        const fragment_to_encode = url[fs + 1 ..];
-        break :blk try percentEncodeSegment(allocator, fragment_to_encode, .query);
+        const fragment_to_encode = trimTrailingUrlInput(url[fs + 1 ..]);
+        break :blk try percentEncodeSegment(allocator, fragment_to_encode, .fragment);
     } else null;
 
     if (encoded_path.ptr == path_to_encode.ptr and
@@ -265,7 +1255,7 @@ pub fn ensureEncoded(allocator: Allocator, url_in: [:0]const u8, encoding: []con
     return buf.items[0 .. buf.items.len - 1 :0];
 }
 
-const EncodeSet = enum { path, query, query_legacy, userinfo, fragment };
+const EncodeSet = enum { path, query, query_legacy, special_query, userinfo, fragment, host, opaque_path };
 
 fn percentEncodeSegment(allocator: Allocator, segment: []const u8, comptime encode_set: EncodeSet) ![]const u8 {
     // Check if encoding is needed
@@ -296,6 +1286,12 @@ fn percentEncodeSegment(allocator: Allocator, segment: []const u8, comptime enco
                 i = end;
                 continue;
             }
+        }
+
+        if (c == '%') {
+            // Preserve incomplete percent-sequences (WPT: %2e%2 must not become %2e%252).
+            try buf.append(allocator, '%');
+            continue;
         }
 
         if (shouldPercentEncode(c, encode_set)) {
@@ -354,28 +1350,242 @@ fn encodeQueryString(allocator: Allocator, query: []const u8, encoding: []const 
     return percentEncodeSegment(allocator, encoded_bytes, .query_legacy);
 }
 
+fn isC0OrNonAscii(c: u8) bool {
+    return c <= 0x1F or c == 0x7F or c > 0x7F;
+}
+
 fn shouldPercentEncode(c: u8, comptime encode_set: EncodeSet) bool {
-    return switch (c) {
-        // Unreserved characters (RFC 3986)
-        'A'...'Z', 'a'...'z', '0'...'9', '-', '.', '_', '~' => false,
-        // sub-delims allowed in path/query but some must be encoded in userinfo/query_legacy
-        '!', '$', '\'', '(', ')', '*', '+', ',' => false,
-        // '&' and ';' must be encoded for legacy encoding (to preserve NCRs like &#nnnnn;)
-        '&', ';' => encode_set == .userinfo or encode_set == .query_legacy,
-        '=' => encode_set == .userinfo,
-        // Separators: userinfo must encode these
-        '/', ':', '@' => encode_set == .userinfo,
-        // '?' is allowed in queries only
-        '?' => encode_set != .query and encode_set != .query_legacy,
-        // '#' is allowed in fragments only
-        '#' => encode_set != .fragment,
-        // Everything else needs encoding (including space)
-        else => true,
+    if (encode_set == .query_legacy) {
+        return switch (c) {
+            'A'...'Z', 'a'...'z', '0'...'9', '-', '.', '_', '~' => false,
+            '!', '$', '\'', '(', ')', '*', '+', ',', '/', ':', '@' => false,
+            '&', ';' => true,
+            else => isC0OrNonAscii(c),
+        };
+    }
+
+    if (isC0OrNonAscii(c)) return true;
+
+    return switch (encode_set) {
+        .userinfo => switch (c) {
+            'A'...'Z', 'a'...'z', '0'...'9', '-', '.', '_', '~' => false,
+            '!', '$', '&', '\'', '(', ')', '*', '+', ',', ';', '=' => false,
+            else => true,
+        },
+        .path => switch (c) {
+            'A'...'Z', 'a'...'z', '0'...'9', '-', '.', '_', '~' => false,
+            '!', '$', '&', '\'', '(', ')', '*', '+', ',', ';', '=', '/', '?', '#', '[', ']', '@' => false,
+            '"', '<', '>', '`', '{', '}', ' ' => true,
+            else => false,
+        },
+        .query => switch (c) {
+            'A'...'Z', 'a'...'z', '0'...'9', '-', '.', '_', '~' => false,
+            '!', '$', '&', '\'', '(', ')', '*', '+', ',', ';', '=', '/', '?', '#', '[', ']', '@' => false,
+            '"', '<', '>', '`', ' ' => true,
+            else => false,
+        },
+        .fragment => switch (c) {
+            'A'...'Z', 'a'...'z', '0'...'9', '-', '.', '_', '~' => false,
+            '!', '$', '&', '\'', '(', ')', '*', '+', ',', ';', '=', '/', '?', '#', '[', ']', '@' => false,
+            '"', '<', '>', '`', ' ' => true,
+            else => false,
+        },
+        .host => isC0OrNonAscii(c),
+        .opaque_path => isC0OrNonAscii(c),
+        .special_query => switch (c) {
+            'A'...'Z', 'a'...'z', '0'...'9', '-', '.', '_', '~' => false,
+            '!', '$', '&', '(', ')', '*', '+', ',', ';', '=', '/', '?', '#', '[', ']', '@', '`', '{', '}' => false,
+            '"', '<', '>', ' ' => true,
+            '\'' => true,
+            else => false,
+        },
+        .query_legacy => unreachable,
     };
 }
 
 fn isNullTerminated(comptime value: type) bool {
     return @typeInfo(value).pointer.sentinel_ptr != null;
+}
+
+pub fn canParse(url_: ?[]const u8, base_: ?[]const u8) bool {
+    const url = url_ orelse "";
+    const base = base_ orelse "";
+
+    if (url.len == 0 and base.len == 0) return false;
+
+    var buf: [8192]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buf);
+    const allocator = fba.allocator();
+
+    if (url.len == 0) {
+        const base_z = allocator.dupeZ(u8, base) catch return false;
+        return isValidBaseURL(base_z);
+    }
+
+    const base_z: [:0]const u8 = if (base.len > 0)
+        allocator.dupeZ(u8, base) catch return false
+    else
+        "";
+
+    const resolved = resolve(allocator, base_z, url, .{}) catch return false;
+    return isValidForCanParse(resolved);
+}
+
+/// Strict base URL check for `URL.canParse("", base)` — opaque bases need `/` after `:`.
+pub fn isValidBaseURL(base: [:0]const u8) bool {
+    if (base.len == 0) return false;
+
+    if (std.mem.indexOf(u8, base, "://")) |_| {
+        return isValidForCanParse(base);
+    }
+
+    const colon = std.mem.indexOfScalar(u8, base, ':') orelse return false;
+    if (colon == 0) return false;
+
+    const after_colon = base[colon + 1 ..];
+    if (after_colon.len == 0) return false;
+    return after_colon[0] == '/';
+}
+
+/// Permissive base check for `new URL(input, base)` — any valid opaque or hierarchical URL.
+pub fn isValidParserBase(base: [:0]const u8) bool {
+    if (base.len == 0) return false;
+
+    if (std.mem.indexOf(u8, base, "://")) |_| {
+        return isValidForCanParse(base);
+    }
+
+    const colon = std.mem.indexOfScalar(u8, base, ':') orelse return false;
+    if (colon == 0) return false;
+
+    const scheme = base[0..colon];
+    if (!std.ascii.isAlphabetic(scheme[0])) return false;
+    for (scheme[1..]) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '+' and c != '-' and c != '.') {
+            return false;
+        }
+    }
+    return colon + 1 < base.len;
+}
+
+pub fn isValidParsedUrl(url: [:0]const u8) bool {
+    return isValidForCanParse(url);
+}
+
+fn isValidForCanParse(url: [:0]const u8) bool {
+    if (std.mem.indexOf(u8, url, "://")) |_| {
+        const protocol = getProtocol(url);
+        const is_file = std.ascii.eqlIgnoreCase(protocol, "file:");
+        const auth = parseAuthority(url) orelse return false;
+        const host = auth.getHost(url);
+        const is_special = isSpecialScheme(protocol);
+
+        if (is_file) {
+            if (host.len == 0) return true;
+            if (host[0] == '[') return false;
+            if (std.mem.indexOfScalar(u8, host, '%')) |_| return false;
+            if (findPortSeparator(host)) |_| return false;
+            return true;
+        }
+
+        if (host.len == 0) {
+            if (auth.has_user_info) return false;
+            return !is_special;
+        }
+
+        if (host[0] == '[') {
+            const bracket_end = std.mem.indexOfScalar(u8, host, ']') orelse return false;
+            const inner = host[1..bracket_end];
+            if (parseIpv6AddressBytes(inner) == null) return false;
+            if (bracket_end + 1 < host.len and host[bracket_end + 1] == ':') {
+                const port = host[bracket_end + 2 ..];
+                if (port.len == 0) return false;
+                for (port) |c| {
+                    if (c < '0' or c > '9') return false;
+                }
+            }
+            return true;
+        }
+
+        var colon_count: usize = 0;
+        for (host) |c| {
+            if (c == ':') colon_count += 1;
+        }
+        if (colon_count > 1) return false;
+
+        const hostname = hostnameForValidation(host);
+        if (hostname.len == 0) return false;
+
+        if (is_special and hostnameIsIpv4Literal(hostname)) {
+            if (parseIpv4Address(hostname) == null) return false;
+        }
+        if (!hostPercentEncodingIsValid(hostname, is_special)) return false;
+        if (!hostnameForHostValidation(hostname, is_special)) return false;
+        for (hostname) |c| {
+            if (is_special) {
+                if (isC0ControlOrSpace(c) or isForbiddenHostCodePoint(c)) return false;
+            } else if (isForbiddenHostCodePoint(c)) {
+                return false;
+            }
+        }
+
+        if (std.mem.indexOfScalar(u8, host, ':')) |_| {
+            if (findPortSeparator(host)) |sep| {
+                const port = host[sep + 1 ..];
+                if (port.len == 0) {
+                    // `http://f:/c` — trailing colon on host is normalized away.
+                    return sep + 1 == host.len;
+                }
+                if (parsePortNumber(port) == null) return false;
+            } else if (host.len > 0 and host[host.len - 1] == ':') {
+                // `http://f:/c` — trailing colon on host is normalized away.
+            } else {
+                return false;
+            }
+        }
+        return true;
+    }
+    const colon = std.mem.indexOfScalar(u8, url, ':') orelse return false;
+    return colon > 0;
+}
+
+/// True when `input` is a same-scheme special URL like `http:/path` that must resolve against `base`.
+pub fn shouldResolveAgainstBase(input: []const u8, base: []const u8) bool {
+    if (!isAbsoluteUrl(input)) return true;
+    if (isCompleteHTTPUrl(input)) return false;
+
+    const in_colon = std.mem.indexOfScalar(u8, input, ':') orelse return false;
+    const base_colon = std.mem.indexOfScalar(u8, base, ':') orelse return false;
+    if (!std.ascii.eqlIgnoreCase(input[0..in_colon], base[0..base_colon])) return false;
+
+    const after = input[in_colon + 1 ..];
+    if (after.len >= 2 and after[0] == '/' and after[1] == '/') return false;
+    return isSpecialSchemeName(input[0..in_colon]);
+}
+
+pub fn isAbsoluteUrl(url: []const u8) bool {
+    if (isCompleteHTTPUrl(url)) return true;
+    if (url.len == 0 or url[0] == '/') return false;
+
+    const colon = std.mem.indexOfScalar(u8, url, ':') orelse return false;
+    if (colon == 0) return false;
+
+    const scheme = url[0..colon];
+    if (!std.ascii.isAlphabetic(scheme[0])) return false;
+    for (scheme[1..]) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '+' and c != '-' and c != '.') {
+            return false;
+        }
+    }
+    if (colon + 1 >= url.len) return false;
+
+    const after_colon = url[colon + 1 ..];
+    if (isSpecialSchemeName(scheme)) {
+        if (after_colon.len >= 2 and after_colon[0] == '/' and after_colon[1] == '/') return true;
+        if (after_colon.len >= 1 and after_colon[0] == '/') return true;
+        return false;
+    }
+    return true;
 }
 
 pub fn isCompleteHTTPUrl(url: []const u8) bool {
@@ -433,7 +1643,129 @@ pub fn getPassword(raw: [:0]const u8) []const u8 {
     return user_info[pos + 1 ..];
 }
 
+pub fn isCannotBeABase(raw: []const u8) bool {
+    // blob:/data: embed an origin-bearing URL (blob:http://host/uuid) but remain opaque.
+    if (std.mem.startsWith(u8, raw, "blob:") or std.mem.startsWith(u8, raw, "data:")) {
+        return true;
+    }
+    if (std.mem.indexOf(u8, raw, "://") != null) return false;
+    const colon = std.mem.indexOfScalar(u8, raw, ':') orelse return false;
+    if (colon == 0) return false;
+    const after = raw[colon + 1 ..];
+    if (after.len > 0 and after[0] == '/') return false;
+    return true;
+}
+
+fn isSpecialScheme(protocol: []const u8) bool {
+    const schemes = [_][]const u8{ "http:", "https:", "ftp:", "file:", "ws:", "wss:" };
+    for (schemes) |s| {
+        if (std.ascii.eqlIgnoreCase(protocol, s)) return true;
+    }
+    return false;
+}
+
+fn isSpecialSchemeName(scheme: []const u8) bool {
+    if (scheme.len == 0) return false;
+    var buf: [12]u8 = undefined;
+    const with_colon = if (scheme[scheme.len - 1] == ':')
+        scheme
+    else
+        std.fmt.bufPrint(&buf, "{s}:", .{scheme}) catch return false;
+    return isSpecialScheme(with_colon);
+}
+
+fn baseHasSpecialScheme(base: []const u8) bool {
+    const colon = std.mem.indexOfScalar(u8, base, ':') orelse return false;
+    if (colon == 0) return false;
+    return isSpecialSchemeName(base[0..colon]);
+}
+
+fn convertBackslashesInPath(allocator: Allocator, path: [:0]const u8) ![:0]const u8 {
+    var buf = try std.ArrayList(u8).initCapacity(allocator, path.len);
+    for (path) |c| try buf.append(allocator, if (c == '\\') '/' else c);
+    try buf.append(allocator, 0);
+    return buf.items[0 .. buf.items.len - 1 :0];
+}
+
+fn normalizeSpecialSchemeForm(allocator: Allocator, url: [:0]const u8) ![:0]const u8 {
+    const colon = std.mem.indexOfScalar(u8, url, ':') orelse return url;
+    if (colon == 0) return url;
+
+    const scheme = url[0..colon];
+    if (!isSpecialSchemeName(scheme)) return url;
+
+    const after = url[colon + 1 ..];
+    if (after.len >= 2 and after[0] == '/' and after[1] == '/') return url;
+
+    if (after.len >= 1 and after[0] == '/') {
+        return try std.fmt.allocPrintSentinel(allocator, "{s}//{s}", .{ url[0 .. colon + 1], after[1..] }, 0);
+    }
+    if (after.len > 0) {
+        return try std.fmt.allocPrintSentinel(allocator, "{s}//{s}", .{ url[0 .. colon + 1], after }, 0);
+    }
+    return url;
+}
+
+fn originBearingScheme(protocol: []const u8) bool {
+    const schemes = [_][]const u8{ "http:", "https:", "ftp:", "ws:", "wss:" };
+    for (schemes) |s| {
+        if (std.ascii.eqlIgnoreCase(protocol, s)) return true;
+    }
+    return false;
+}
+
+fn appendLowercaseOriginHost(buf: *std.ArrayList(u8), allocator: Allocator, host: []const u8) !void {
+    const port_sep = findPortSeparator(host);
+    const hostname = if (port_sep) |sep| host[0..sep] else host;
+    const port_suffix = if (port_sep) |sep| host[sep..] else "";
+
+    if (hostname.len > 0 and hostname[0] == '[') {
+        try buf.appendSlice(allocator, host);
+        return;
+    }
+    for (hostname) |c| {
+        try buf.append(allocator, if (c >= 'A' and c <= 'Z') c + 32 else c);
+    }
+    try buf.appendSlice(allocator, port_suffix);
+}
+
+fn buildOpaqueUrl(
+    allocator: Allocator,
+    protocol: []const u8,
+    pathname: []const u8,
+    search: []const u8,
+    hash: []const u8,
+) ![:0]const u8 {
+    return std.fmt.allocPrintSentinel(allocator, "{s}{s}{s}{s}", .{
+        protocol,
+        pathname,
+        search,
+        hash,
+    }, 0);
+}
+
+/// Serialize an opaque (cannot-be-a-base) path for URLSearchParams-driven href updates.
+pub fn serializeCannotBeABasePath(allocator: Allocator, path: []const u8) ![]const u8 {
+    if (path.len == 0) return path;
+    if (path[path.len - 1] != ' ') {
+        return percentEncodeSegment(allocator, path, .path);
+    }
+    // WPT: only the final trailing U+0020 is percent-encoded; earlier bytes stay literal.
+    const prefix = path[0 .. path.len - 1];
+    var buf = try std.ArrayList(u8).initCapacity(allocator, prefix.len + 3);
+    try buf.appendSlice(allocator, prefix);
+    try buf.appendSlice(allocator, "%20");
+    return buf.items;
+}
+
 pub fn getPathname(raw: [:0]const u8) []const u8 {
+    // blob: URLs embed an origin-bearing URL; the inner "://" must not be parsed as hierarchical.
+    if (std.mem.startsWith(u8, raw, "blob:")) {
+        const path = raw["blob:".len..];
+        const query_or_hash = std.mem.indexOfAny(u8, path, "?#") orelse path.len;
+        return path[0..query_or_hash];
+    }
+
     const protocol_end = std.mem.indexOf(u8, raw, "://");
 
     // Handle scheme:path URLs like about:blank (no "://")
@@ -449,7 +1781,9 @@ pub fn getPathname(raw: [:0]const u8) []const u8 {
     const query_or_hash_start = std.mem.indexOfAnyPos(u8, raw, path_start, "?#") orelse raw.len;
 
     if (path_start >= query_or_hash_start) {
-        return "/";
+        const protocol = getProtocol(raw);
+        if (isSpecialScheme(protocol)) return "/";
+        return "";
     }
 
     return raw[path_start..query_or_hash_start];
@@ -462,6 +1796,11 @@ pub fn getProtocol(raw: [:0]const u8) []const u8 {
 
 pub fn isHTTPS(raw: [:0]const u8) bool {
     return std.mem.startsWith(u8, raw, "https:");
+}
+
+/// True for origins that may set or send Secure cookies (https and wss).
+pub fn isSecureOrigin(raw: [:0]const u8) bool {
+    return std.mem.startsWith(u8, raw, "https:") or std.mem.startsWith(u8, raw, "wss:");
 }
 
 pub fn getHostname(raw: [:0]const u8) []const u8 {
@@ -500,74 +1839,99 @@ fn findPortSeparator(host: []const u8) ?usize {
     return pos;
 }
 
+fn findQueryStartFrom(raw: []const u8, from: usize) ?usize {
+    const hash_pos = std.mem.indexOfScalarPos(u8, raw, from, '#') orelse raw.len;
+    const pos = std.mem.indexOfScalarPos(u8, raw, from, '?') orelse return null;
+    if (pos >= hash_pos) return null;
+    return pos;
+}
+
 pub fn getSearch(raw: [:0]const u8) []const u8 {
-    const pos = std.mem.indexOfScalarPos(u8, raw, 0, '?') orelse return "";
-    const query_part = raw[pos..];
+    const pos = findQueryStartFrom(raw, 0) orelse return "";
+    const query_end = std.mem.indexOfScalarPos(u8, raw, pos, '#') orelse raw.len;
+    if (pos + 1 >= query_end) return "";
+    return raw[pos..query_end];
+}
 
-    if (std.mem.indexOfScalarPos(u8, query_part, 0, '#')) |fragment_start| {
-        return query_part[0..fragment_start];
-    }
-
-    return query_part;
+fn getSearchSerialized(raw: []const u8) []const u8 {
+    const pos = findQueryStartFrom(raw, 0) orelse return "";
+    const query_end = std.mem.indexOfScalarPos(u8, raw, pos, '#') orelse raw.len;
+    return raw[pos..query_end];
 }
 
 pub fn getHash(raw: [:0]const u8) []const u8 {
     const start = std.mem.indexOfScalarPos(u8, raw, 0, '#') orelse return "";
+    if (start + 1 >= raw.len) return "";
     return raw[start..];
 }
 
-pub fn getOrigin(allocator: Allocator, raw: [:0]const u8) !?[]const u8 {
-    const scheme_end = std.mem.indexOf(u8, raw, "://") orelse return null;
+fn getHashSerialized(raw: []const u8) []const u8 {
+    const start = std.mem.indexOfScalarPos(u8, raw, 0, '#') orelse return "";
+    return raw[start..];
+}
 
-    // Only HTTP and HTTPS schemes have origins
-    const protocol = raw[0 .. scheme_end + 1];
-    if (!std.mem.eql(u8, protocol, "http:") and !std.mem.eql(u8, protocol, "https:")) {
-        return null;
+/// Returns `url` without its fragment (Fetch response URL serialization).
+pub fn withoutFragment(allocator: Allocator, url: []const u8) ![:0]const u8 {
+    const end = std.mem.indexOfScalar(u8, url, '#') orelse url.len;
+    return try allocator.dupeZ(u8, url[0..end]);
+}
+
+pub fn getOrigin(allocator: Allocator, raw: [:0]const u8) !?[]const u8 {
+    if (std.mem.startsWith(u8, raw, "blob:")) {
+        const inner = raw["blob:".len..];
+        if (inner.len == 0) return null;
+        if (!std.mem.startsWith(u8, inner, "http://") and !std.mem.startsWith(u8, inner, "https://")) {
+            return null;
+        }
+        const inner_z = try allocator.dupeZ(u8, inner);
+        return getOrigin(allocator, inner_z);
     }
+
+    const scheme_end = std.mem.indexOf(u8, raw, "://") orelse return null;
+    const protocol = raw[0 .. scheme_end + 1];
+    if (!originBearingScheme(protocol)) return null;
 
     const auth = parseAuthority(raw) orelse return null;
     const has_user_info = auth.has_user_info;
-    const authority_end = auth.host_end;
+    var host_part = auth.getHost(raw);
 
-    // Check for port in the host:port section
-    const host_part = auth.getHost(raw);
-    if (std.mem.lastIndexOfScalar(u8, host_part, ':')) |colon_pos_in_host| {
-        const port = host_part[colon_pos_in_host + 1 ..];
-
-        // Validate it's actually a port (all digits)
-        for (port) |c| {
-            if (c < '0' or c > '9') {
-                // Not a port (probably IPv6)
-                if (has_user_info) {
-                    // Need to allocate to exclude user info
-                    return try std.fmt.allocPrint(allocator, "{s}//{s}", .{ raw[0 .. scheme_end + 1], host_part });
-                }
-                // Can return a slice
-                return raw[0..authority_end];
-            }
+    if (host_part.len > 0 and host_part[host_part.len - 1] == ':' and host_part[0] != '[') {
+        host_part = host_part[0 .. host_part.len - 1];
+    } else if (findPortSeparator(host_part)) |sep| {
+        if (host_part[sep + 1 ..].len == 0) {
+            host_part = host_part[0..sep];
         }
-
-        // Check if it's a default port that should be excluded from origin
-        const is_default =
-            (std.mem.eql(u8, protocol, "http:") and std.mem.eql(u8, port, "80")) or
-            (std.mem.eql(u8, protocol, "https:") and std.mem.eql(u8, port, "443"));
-
-        if (is_default or has_user_info) {
-            // Need to allocate to build origin without default port and/or user info
-            const hostname = host_part[0..colon_pos_in_host];
-            if (is_default) {
-                return try std.fmt.allocPrint(allocator, "{s}//{s}", .{ protocol, hostname });
-            } else {
-                return try std.fmt.allocPrint(allocator, "{s}//{s}", .{ protocol, host_part });
-            }
-        }
-    } else if (has_user_info) {
-        // No port, but has user info - need to allocate
-        return try std.fmt.allocPrint(allocator, "{s}//{s}", .{ raw[0 .. scheme_end + 1], host_part });
     }
 
-    // Common case: no user info, no default port - return slice (zero allocation!)
-    return raw[0..authority_end];
+    const port_sep = findPortSeparator(host_part);
+    const hostname = if (port_sep) |sep| host_part[0..sep] else host_part;
+    const port = if (port_sep) |sep| host_part[sep + 1 ..] else "";
+
+    const drop_port = if (port.len > 0) blk: {
+        const port_num = parsePortNumber(port) orelse break :blk false;
+        break :blk isDefaultPort(protocol, port_num);
+    } else false;
+    const origin_host = if (drop_port) hostname else host_part;
+
+    var needs_lower = false;
+    if (hostname.len > 0 and hostname[0] != '[') {
+        for (hostname) |c| {
+            if (c >= 'A' and c <= 'Z') {
+                needs_lower = true;
+                break;
+            }
+        }
+    }
+
+    if (!has_user_info and !drop_port and !needs_lower) {
+        return raw[0 .. auth.host_start + origin_host.len];
+    }
+
+    var buf = try std.ArrayList(u8).initCapacity(allocator, 64);
+    try buf.appendSlice(allocator, protocol);
+    try buf.appendSlice(allocator, "//");
+    try appendLowercaseOriginHost(&buf, allocator, origin_host);
+    return try buf.toOwnedSlice(allocator);
 }
 
 fn getUserInfo(raw: [:0]const u8) ?[]const u8 {
@@ -612,21 +1976,28 @@ pub fn buildUrl(
 }
 
 pub fn setProtocol(current: [:0]const u8, value: []const u8, allocator: Allocator) ![:0]const u8 {
-    const host = getHost(current);
     const pathname = getPathname(current);
     const search = getSearch(current);
     const hash = getHash(current);
 
-    // Add : suffix if not present
-    const protocol = if (value.len > 0 and value[value.len - 1] != ':')
+    if (value.len == 0) return allocator.dupeZ(u8, current);
+
+    const protocol = if (value[value.len - 1] != ':')
         try std.fmt.allocPrint(allocator, "{s}:", .{value})
     else
         value;
 
+    if (isCannotBeABase(current)) {
+        if (isSpecialScheme(protocol)) return allocator.dupeZ(u8, current);
+        return buildOpaqueUrl(allocator, protocol, pathname, search, hash);
+    }
+
+    const host = getHost(current);
     return buildUrl(allocator, protocol, host, pathname, search, hash);
 }
 
 pub fn setHost(current: [:0]const u8, value: []const u8, allocator: Allocator) ![:0]const u8 {
+    if (isCannotBeABase(current)) return allocator.dupeZ(u8, current);
     const protocol = getProtocol(current);
     const pathname = getPathname(current);
     const search = getSearch(current);
@@ -657,6 +2028,7 @@ pub fn setHost(current: [:0]const u8, value: []const u8, allocator: Allocator) !
 }
 
 pub fn setHostname(current: [:0]const u8, value: []const u8, allocator: Allocator) ![:0]const u8 {
+    if (isCannotBeABase(current)) return allocator.dupeZ(u8, current);
     const current_port = getPort(current);
     const new_host = if (current_port.len > 0)
         try std.fmt.allocPrint(allocator, "{s}:{s}", .{ value, current_port })
@@ -667,6 +2039,7 @@ pub fn setHostname(current: [:0]const u8, value: []const u8, allocator: Allocato
 }
 
 pub fn setPort(current: [:0]const u8, value: ?[]const u8, allocator: Allocator) ![:0]const u8 {
+    if (isCannotBeABase(current)) return allocator.dupeZ(u8, current);
     const hostname = getHostname(current);
     const protocol = getProtocol(current);
     const pathname = getPathname(current);
@@ -692,6 +2065,7 @@ pub fn setPort(current: [:0]const u8, value: ?[]const u8, allocator: Allocator) 
 }
 
 pub fn setPathname(current: [:0]const u8, value: []const u8, allocator: Allocator) ![:0]const u8 {
+    if (isCannotBeABase(current)) return allocator.dupeZ(u8, current);
     const protocol = getProtocol(current);
     const host = getHost(current);
     const search = getSearch(current);
@@ -710,7 +2084,6 @@ pub fn setPathname(current: [:0]const u8, value: []const u8, allocator: Allocato
 
 pub fn setSearch(current: [:0]const u8, value: []const u8, allocator: Allocator) ![:0]const u8 {
     const protocol = getProtocol(current);
-    const host = getHost(current);
     const pathname = getPathname(current);
     const hash = getHash(current);
 
@@ -722,12 +2095,16 @@ pub fn setSearch(current: [:0]const u8, value: []const u8, allocator: Allocator)
     else
         encoded;
 
+    if (isCannotBeABase(current)) {
+        return buildOpaqueUrl(allocator, protocol, pathname, search, hash);
+    }
+
+    const host = getHost(current);
     return buildUrl(allocator, protocol, host, pathname, search, hash);
 }
 
 pub fn setHash(current: [:0]const u8, value: []const u8, allocator: Allocator) ![:0]const u8 {
     const protocol = getProtocol(current);
-    const host = getHost(current);
     const pathname = getPathname(current);
     const search = getSearch(current);
 
@@ -739,10 +2116,16 @@ pub fn setHash(current: [:0]const u8, value: []const u8, allocator: Allocator) !
     else
         encoded;
 
+    if (isCannotBeABase(current)) {
+        return buildOpaqueUrl(allocator, protocol, pathname, search, hash);
+    }
+
+    const host = getHost(current);
     return buildUrl(allocator, protocol, host, pathname, search, hash);
 }
 
 pub fn setUsername(current: [:0]const u8, value: []const u8, allocator: Allocator) ![:0]const u8 {
+    if (isCannotBeABase(current)) return allocator.dupeZ(u8, current);
     const protocol = getProtocol(current);
     const host = getHost(current);
     const pathname = getPathname(current);
@@ -755,6 +2138,7 @@ pub fn setUsername(current: [:0]const u8, value: []const u8, allocator: Allocato
 }
 
 pub fn setPassword(current: [:0]const u8, value: []const u8, allocator: Allocator) ![:0]const u8 {
+    if (isCannotBeABase(current)) return allocator.dupeZ(u8, current);
     const protocol = getProtocol(current);
     const host = getHost(current);
     const pathname = getPathname(current);
@@ -887,7 +2271,7 @@ fn parseAuthority(raw: []const u8) ?AuthorityInfo {
 
     // Only look for @ within the authority portion, not in path/query/fragment
     const authority_portion = raw[authority_start..authority_end];
-    if (std.mem.indexOf(u8, authority_portion, "@")) |pos| {
+    if (std.mem.lastIndexOf(u8, authority_portion, "@")) |pos| {
         return .{
             .host_start = authority_start + pos + 1,
             .host_end = authority_end,
@@ -1627,6 +3011,27 @@ test "URL: setPathname percent-encodes" {
     try testing.expectEqualSlices(u8, "https://example.com/new%20path?a=b#hash", result3);
 }
 
+test "URL: canonicalize href userinfo and opaque" {
+    defer testing.reset();
+    const allocator = testing.arena_allocator;
+
+    const result1 = try resolve(allocator, "", "https://test:@test", .{});
+    try testing.expectEqualSlices(u8, "https://test@test/", result1);
+    try testing.expectEqualSlices(u8, "test", getUsername(result1));
+
+    const result2 = try resolve(allocator, "", "https://:@test", .{});
+    try testing.expectEqualSlices(u8, "https://test/", result2);
+
+    const result3 = try resolve(allocator, "http://doesnotmatter/", "https://@@@example", .{});
+    try testing.expectEqualSlices(u8, "https://%40%40@example/", result3);
+    try testing.expectEqualSlices(u8, "%40%40", getUsername(result3));
+
+    const result4 = try resolve(allocator, "", "lolscheme:x x#x x", .{});
+    try testing.expectEqualSlices(u8, "lolscheme:x x#x%20x", result4);
+
+    try testing.expectError(error.TypeError, resolve(allocator, "http://example.org/", "http://f:b/c", .{ .always_dupe = true }));
+}
+
 test "URL: getOrigin" {
     defer testing.reset();
 
@@ -1649,8 +3054,8 @@ test "URL: getOrigin" {
         .{ .url = "http://user:pass@example.com/path", .expected = "http://example.com" },
         .{ .url = "https://user@example.com:8080/path", .expected = "https://example.com:8080" },
 
-        // Non-HTTP schemes return null
-        .{ .url = "ftp://example.com/path", .expected = null },
+        // Non-HTTP(S) tuple origins
+        .{ .url = "ftp://example.com/path", .expected = "ftp://example.com" },
         .{ .url = "file:///path/to/file", .expected = null },
         .{ .url = "about:blank", .expected = null },
 

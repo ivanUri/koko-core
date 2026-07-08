@@ -16,6 +16,7 @@ const std = @import("std");
 const string = @import("../../support/string.zig");
 
 const Page = @import("../browser/Page.zig");
+const EventManagerBase = @import("../browser/EventManagerBase.zig");
 const FinalizerCallback = @import("../browser/Session.zig").FinalizerCallback;
 
 const js = @import("js.zig");
@@ -164,6 +165,32 @@ pub fn compileFunction(
     return .{ .local = self, .handle = result };
 }
 
+/// Returns true when `src` is syntactically valid JavaScript (compile-only probe).
+pub fn canCompileScript(self: *const Local, src: []const u8, name: ?[]const u8) bool {
+    const script_name = self.isolate.initStringHandle(name orelse "anonymous");
+    const script_source = self.isolate.initStringHandle(src);
+
+    var origin: v8.ScriptOrigin = undefined;
+    v8.v8__ScriptOrigin__CONSTRUCT(&origin, @ptrCast(script_name));
+
+    var script_comp_source: v8.ScriptCompilerSource = undefined;
+    v8.v8__ScriptCompiler__Source__CONSTRUCT2(script_source, &origin, null, &script_comp_source);
+    defer v8.v8__ScriptCompiler__Source__DESTRUCT(&script_comp_source);
+
+    var compile_try_catch: js.TryCatch = undefined;
+    compile_try_catch.init(self);
+    defer compile_try_catch.deinit();
+
+    const v8_script = v8.v8__ScriptCompiler__Compile(
+        self.handle,
+        &script_comp_source,
+        v8.kNoCompileOptions,
+        v8.kNoCacheNoReason,
+    ) orelse return false;
+    _ = v8_script;
+    return true;
+}
+
 pub fn compileAndRun(self: *const Local, src: []const u8, name: ?[]const u8) !js.Value {
     const script_name = self.isolate.initStringHandle(name orelse "anonymous");
     const script_source = self.isolate.initStringHandle(src);
@@ -200,25 +227,9 @@ pub fn compileAndRun(self: *const Local, src: []const u8, name: ?[]const u8) !js
         return error.CompilationError;
     };
 
-    // Run the script
-    var try_catch: js.TryCatch = undefined;
-    try_catch.init(self);
-    defer try_catch.deinit();
-
+    // Run without TryCatch so native constructor throws reach in-script try/catch
+    // (e.g. WPT assert_throws_js). Uncaught exceptions still abort via null result.
     const result = v8.v8__Script__Run(v8_script, self.handle) orelse {
-        if (try_catch.hasCaught()) {
-            if (try_catch.caught(self.ctx.call_arena)) |caught| {
-                log.warn(.frame, "Script execution error isolated", .{
-                    .name = name orelse "anonymous",
-                    .exception = caught.exception,
-                    .line = caught.line,
-                });
-            } else {
-                log.warn(.frame, "Script execution error isolated", .{
-                    .name = name orelse "anonymous",
-                });
-            }
-        }
         return error.JsException;
     };
     return .{ .local = self, .handle = result };
@@ -348,8 +359,29 @@ pub fn mapZigInstanceToJs(self: *const Local, js_obj_handle: ?*const v8.Object, 
     }
 }
 
+fn isUtf16Slice(comptime T: type) bool {
+    const info = @typeInfo(T);
+    if (info != .pointer or info.pointer.size != .slice) return false;
+    return switch (@typeInfo(info.pointer.child)) {
+        .int => |int| int.bits == 16,
+        else => false,
+    };
+}
+
 pub fn zigValueToJs(self: *const Local, value: anytype, comptime opts: CallOpts) !js.Value {
     const isolate = self.isolate;
+
+    if (comptime isUtf16Slice(@TypeOf(value))) {
+        const handle = isolate.initUtf16StringHandle(value);
+        return .{ .local = self, .handle = @ptrCast(handle) };
+    }
+
+    if (@TypeOf(value) == js.DomString) {
+        const CData = @import("../webapi/CData.zig");
+        const utf16 = try CData.wtf8ToUtf16(self.call_arena, value.bytes);
+        const handle = isolate.initUtf16StringHandle(utf16);
+        return .{ .local = self, .handle = @ptrCast(handle) };
+    }
 
     // Check if it's a "simple" type. This is extracted so that it can be
     // reused by other parts of the code. "simple" types only require an
@@ -570,6 +602,10 @@ fn zigJsonToJs(self: *const Local, value: std.json.Value) !js.Value {
 // == JS -> Zig ==
 
 pub fn jsValueToZig(self: *const Local, comptime T: type, js_val: js.Value) !T {
+    if (T == EventManagerBase.SignalOption) {
+        return EventManagerBase.SignalOption.fromJs(self, js_val);
+    }
+
     switch (@typeInfo(T)) {
         .optional => |o| {
             // If type type is a ?js.Value or a ?js.Object, then we want to pass
@@ -800,6 +836,10 @@ fn jsValueToStruct(self: *const Local, comptime T: type, js_val: js.Value) !?T {
             if (!js_str.containsOnlyOneByte()) return error.InvalidCharacterError;
             return .{ .bytes = try js_str.toOneByteSlice(self.call_arena) };
         },
+        js.Wtf8String => {
+            const js_str = if (js_val.isString()) |s| s else try js_val.toString();
+            return .{ .value = try js_str.toWtf8Slice(self.call_arena) };
+        },
         string.String => {
             const js_str = js_val.isString() orelse return null;
             return try js_str.toSSO(false);
@@ -820,13 +860,16 @@ fn jsValueToStruct(self: *const Local, comptime T: type, js_val: js.Value) !?T {
             inline for (@typeInfo(T).@"struct".fields) |field| {
                 const name = field.name;
                 const key = isolate.initStringHandle(name);
-                if (js_obj.has(key)) {
-                    @field(value, name) = try self.jsValueToZig(field.type, try js_obj.get(key));
-                } else if (@typeInfo(field.type) == .optional) {
-                    @field(value, name) = null;
+                const prop = try js_obj.get(key);
+                if (prop.isUndefined()) {
+                    if (@typeInfo(field.type) == .optional) {
+                        @field(value, name) = null;
+                    } else {
+                        const dflt = field.defaultValue() orelse return null;
+                        @field(value, name) = dflt;
+                    }
                 } else {
-                    const dflt = field.defaultValue() orelse return null;
-                    @field(value, name) = dflt;
+                    @field(value, name) = try self.jsValueToZig(field.type, prop);
                 }
             }
 
@@ -1145,6 +1188,12 @@ fn probeJsValueToZig(self: *const Local, comptime T: type, js_val: js.Value) !Pr
                 // Anything can be coerced to a string
                 return .{ .coerce = {} };
             }
+            if (T == js.Wtf8String) {
+                if (v8.v8__Value__IsString(js_val.handle)) {
+                    return .{ .ok = {} };
+                }
+                return .{ .coerce = {} };
+            }
 
             // We don't want to duplicate the code for this, so we call
             // the actual conversion function.
@@ -1290,9 +1339,13 @@ fn resolveT(comptime T: type, value: *T) Resolved {
                     const resolved_ptr_id = identity_finalizer.resolved_ptr_id;
                     defer session.fc_identity_pool.destroy(identity_finalizer);
 
-                    // If done, Page teardown already cleared finalizers and may have
-                    // released the identity-map arena — do not touch identity_map.
-                    if (identity_finalizer.done) return;
+                    // V8 requires resetting the Global in the first weak-callback pass,
+                    // even when teardown already marked this node done.
+                    if (identity_finalizer.done) {
+                        var global = identity_finalizer.js_global;
+                        v8.v8__Global__Reset(&global);
+                        return;
+                    }
 
                     // V8 requires resetting the Global in the first weak-callback pass.
                     // Only defer identity_map removal — mutating the hash table here

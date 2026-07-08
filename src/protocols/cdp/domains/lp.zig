@@ -216,11 +216,10 @@ fn clickNode(cmd: anytype) !void {
     const node = bc.node_registry.lookup_by_id.get(node_id) orelse return error.InvalidNodeId;
 
     const el = node.dom.is(@import("../../../core/dom/Element.zig")) orelse return error.InvalidParam;
-    @import("../../../core/browser/InputController.zig").dispatchActivationOnElementFast(el, frame) catch {
-        return error.InternalError;
-    };
 
-    return cmd.sendResult(.{}, .{});
+    // Reply first; schedule activation on next tick (same pattern as Input.dispatchMouseEvent).
+    try cmd.sendResult(.{}, .{});
+    try frame.scheduleActivationOnElement(el);
 }
 
 fn fillNode(cmd: anytype) !void {

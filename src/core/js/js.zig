@@ -178,6 +178,17 @@ pub const NullableString = struct {
     value: []const u8,
 };
 
+/// DOM string parameter that preserves lone UTF-16 surrogates (WTF-8), per
+/// CharacterData semantics. Non-string values are coerced via ToString.
+pub const Wtf8String = struct {
+    value: []const u8,
+};
+
+/// DOM string return value that may contain lone UTF-16 surrogates (WTF-8 storage).
+pub const DomString = struct {
+    bytes: []const u8,
+};
+
 pub const Exception = struct {
     local: *const Local,
     handle: *const v8.Value,

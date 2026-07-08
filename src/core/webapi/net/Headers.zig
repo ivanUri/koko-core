@@ -5,6 +5,7 @@ const js = @import("../../js/js.zig");
 const KeyValueList = @import("../KeyValueList.zig");
 
 const log = @import("../../../support/log.zig");
+const ForbiddenHeaders = @import("ForbiddenHeaders.zig");
 const Execution = js.Execution;
 const Allocator = std.mem.Allocator;
 
@@ -31,6 +32,13 @@ pub fn init(opts_: ?InitOpts, exec: *const Execution) !*Headers {
 }
 
 pub fn append(self: *Headers, name: []const u8, value: []const u8, exec: *const Execution) !void {
+    if (ForbiddenHeaders.shouldOmitRequestHeader(name, value, exec.buf, exec.call_arena)) return;
+    const normalized_name = normalizeHeaderName(name, exec.buf);
+    try self._list.append(exec.arena, normalized_name, value);
+}
+
+/// Append a response header (Fetch forbidden-header rules apply to requests only).
+pub fn appendResponse(self: *Headers, name: []const u8, value: []const u8, exec: *const Execution) !void {
     const normalized_name = normalizeHeaderName(name, exec.buf);
     try self._list.append(exec.arena, normalized_name, value);
 }
@@ -59,6 +67,7 @@ pub fn has(self: *const Headers, name: []const u8, exec: *const Execution) bool 
 }
 
 pub fn set(self: *Headers, name: []const u8, value: []const u8, exec: *const Execution) !void {
+    if (ForbiddenHeaders.shouldOmitRequestHeader(name, value, exec.buf, exec.call_arena)) return;
     const normalized_name = normalizeHeaderName(name, exec.buf);
     try self._list.set(exec.arena, normalized_name, value);
 }
@@ -75,6 +84,11 @@ pub fn entries(self: *Headers, exec: *const js.Execution) !*KeyValueList.EntryIt
     return KeyValueList.EntryIterator.init(.{ .list = self, .kv = &self._list }, exec);
 }
 
+pub fn getSetCookie(self: *Headers, exec: *const Execution) js.Array {
+    _ = self;
+    return exec.context.local.?.newArray(0);
+}
+
 pub fn forEach(self: *Headers, cb_: js.Function, js_this_: ?js.Object) !void {
     const cb = if (js_this_) |js_this| try cb_.withThis(js_this) else cb_;
 
@@ -88,9 +102,12 @@ pub fn forEach(self: *Headers, cb_: js.Function, js_this_: ?js.Object) !void {
 
 // TODO: do we really need 2 different header structs??
 const http = @import("../../../runtime/network/http.zig");
-pub fn populateHttpHeader(self: *Headers, allocator: Allocator, http_headers: *http.Headers) !void {
+pub fn populateHttpHeader(self: *Headers, allocator: Allocator, http_headers: *http.Headers, buf: []u8) !void {
     for (self._list._entries.items) |entry| {
-        const merged = try std.mem.concatWithSentinel(allocator, u8, &.{ entry.name.str(), ": ", entry.value.str() }, 0);
+        const name = entry.name.str();
+        const value = entry.value.str();
+        if (ForbiddenHeaders.shouldOmitRequestHeader(name, value, buf, allocator)) continue;
+        const merged = try std.mem.concatWithSentinel(allocator, u8, &.{ name, ": ", value }, 0);
         try http_headers.add(merged);
     }
 }
@@ -115,6 +132,7 @@ pub const JsApi = struct {
     pub const append = bridge.function(Headers.append, .{});
     pub const delete = bridge.function(Headers.delete, .{});
     pub const get = bridge.function(Headers.get, .{});
+    pub const getSetCookie = bridge.function(Headers.getSetCookie, .{});
     pub const has = bridge.function(Headers.has, .{});
     pub const set = bridge.function(Headers.set, .{});
     pub const keys = bridge.function(Headers.keys, .{});

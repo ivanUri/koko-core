@@ -13,8 +13,11 @@ curl-impersonate/
 node_modules
 sdk/node_modules
 code-check/tmp
+code-check/wpt-fetch/results/
 google-search-debug/tmp/
 Kameleo-decode/
+wpt-lightpanda-fork-backup/
+*.log
 diff.txt
 .clinerules
 /.grok

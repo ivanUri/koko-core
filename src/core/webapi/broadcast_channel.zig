@@ -137,7 +137,7 @@ pub const BroadcastChannel = struct {
         self.getJsContext().localScope(&ls);
         defer ls.deinit();
 
-        const cloned = try message.local(&ls.local).structuredCloneTo(&ls.local);
+        const cloned = try message.local(&ls.local).structuredCloneTo(&ls.local, null);
         return try cloned.temp();
     }
 

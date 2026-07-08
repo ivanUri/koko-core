@@ -164,6 +164,7 @@ fn fetchPreloadImage(self: *Link, frame: *Frame, href: []const u8) !void {
             .headers = headers,
             .cookie_jar = &session.cookie_jar,
             .cookie_origin = frame.url,
+            .top_level_cookie_url = frame.topLevelUrl(),
             .resource_type = .image,
             .notification = session.notification,
         },
@@ -236,6 +237,7 @@ pub const JsApi = struct {
     pub const href = bridge.accessor(Link.getHref, Link.setHref, .{});
     pub const crossOrigin = bridge.accessor(Link.getCrossOrigin, Link.setCrossOrigin, .{});
     pub const relList = bridge.accessor(_getRelList, null, .{ .null_as_undefined = true });
+    pub const sizes = bridge.accessor(_getSizesList, null, .{ .null_as_undefined = true });
 
     fn _getRelList(self: *Link, frame: *Frame) !?*@import("../../collections.zig").DOMTokenList {
         const element = self.asElement();
@@ -244,6 +246,14 @@ pub const JsApi = struct {
             return null;
         }
         return element.getRelList(frame);
+    }
+
+    fn _getSizesList(self: *Link, frame: *Frame) !?*@import("../../collections.zig").DOMTokenList {
+        const element = self.asElement();
+        if (element._namespace != .html) {
+            return null;
+        }
+        return element.getSizesList(frame);
     }
 };
 

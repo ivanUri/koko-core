@@ -133,7 +133,7 @@ pub fn detach(_: *const DOMNodeIterator) void {
     // no-op legacy
 }
 
-fn filterNode(self: *const DOMNodeIterator, node: *Node, frame: *Frame) !i32 {
+fn filterNode(self: *DOMNodeIterator, node: *Node, frame: *Frame) !i32 {
     // First check whatToShow
     if (!NodeFilter.shouldShow(node, self._what_to_show)) {
         return NodeFilter.FILTER_SKIP;

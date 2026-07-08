@@ -13,10 +13,10 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
-const assert = @import("../../../support/assert.zig").assert;
 const RC = @import("../../../support/rc.zig").RC;
 
 const http = @import("../../../runtime/network/http.zig");
+const WebSocketClient = @import("../../../runtime/network/WebSocketClient.zig");
 
 const js = @import("../../js/js.zig");
 const Blob = @import("../Blob.zig");
@@ -47,20 +47,13 @@ _ready_state: ReadyState = .connecting,
 _url: [:0]const u8 = "",
 _binary_type: BinaryType = .blob,
 
-// Handshake tracking
-_got_101: bool = false,
-_got_upgrade: bool = false,
-
-_conn: ?*http.Connection,
+_client: ?WebSocketClient,
 _http_client: *HttpClient,
-_req_headers: http.Headers,
+_poll_node: std.DoublyLinkedList.Node = .{},
 
 // buffered outgoing messages
 _send_queue: std.ArrayList(Message) = .empty,
 _send_offset: usize = 0,
-
-// buffered incoming frame
-_recv_buffer: std.ArrayList(u8) = .empty,
 
 // close info for event dispatch
 _close_code: u16 = 1000,
@@ -87,75 +80,70 @@ pub const BinaryType = enum {
     arraybuffer,
 };
 
+/// Resolve + normalize per WebSockets Standard §4.1 (http→ws, https→wss, reject fragment/non-ws).
+/// WebSocket URLs always use UTF-8 percent-encoding (not the document encoding).
+fn normalizeWebSocketUrl(allocator: Allocator, base: [:0]const u8, url: []const u8) ![:0]const u8 {
+    if (std.mem.indexOfScalar(u8, url, '#') != null) {
+        return error.SyntaxError;
+    }
+    const resolved = URL.resolve(allocator, base, url, .{ .always_dupe = true, .encoding = "UTF-8" }) catch |err| {
+        if (err == error.TypeError) return error.SyntaxError;
+        return err;
+    };
+    const protocol = URL.getProtocol(resolved);
+    if (std.ascii.eqlIgnoreCase(protocol, "http:") or std.ascii.eqlIgnoreCase(protocol, "https:")) {
+        const ws_scheme: []const u8 = if (std.ascii.eqlIgnoreCase(protocol, "http:")) "ws" else "wss";
+        return URL.setProtocol(resolved, ws_scheme, allocator);
+    }
+    if (std.ascii.eqlIgnoreCase(protocol, "ws:") or std.ascii.eqlIgnoreCase(protocol, "wss:")) {
+        return resolved;
+    }
+    return error.SyntaxError;
+}
+
 pub fn init(url: []const u8, protocols: [][]const u8, frame: *Frame) !*WebSocket {
-    {
-        if (url.len < 6) {
+    for (protocols) |protocol| {
+        if (!isValidProtocol(protocol)) {
             return error.SyntaxError;
         }
-        const normalized_start = std.ascii.lowerString(&frame.buf, url[0..6]);
-        if (!std.mem.startsWith(u8, normalized_start, "ws://") and !std.mem.startsWith(u8, normalized_start, "wss://")) {
-            return error.SyntaxError;
-        }
-        // Fragments are not allowed in WebSocket URLs
-        if (std.mem.indexOfScalar(u8, url, '#') != null) {
-            return error.SyntaxError;
-        }
-        for (protocols) |protocol| {
-            if (!isValidProtocol(protocol)) {
-                return error.SyntaxError;
-            }
+    }
+    for (protocols, 0..) |a, i| {
+        for (protocols[i + 1 ..]) |b| {
+            if (std.ascii.eqlIgnoreCase(a, b)) return error.SyntaxError;
         }
     }
 
     const arena = try frame.getArena(.medium, "WebSocket");
     errdefer frame.releaseArena(arena);
 
-    const resolved_url = try URL.resolve(arena, frame.base(), url, .{ .always_dupe = true, .encoding = frame.charset });
+    const resolved_url = try normalizeWebSocketUrl(arena, frame.base(), url);
 
     const http_client = &frame._session.browser.http_client;
-    const conn = http_client.network.newConnection() orelse {
-        return error.NoFreeConnection;
-    };
+    const origin = try frame.requestOrigin();
 
-    errdefer http_client.network.releaseConnection(conn);
-
-    try conn.setURL(resolved_url);
-    try conn.setConnectOnly(false);
-
-    try conn.setReadCallback(sendDataCallback, true);
-    try conn.setWriteCallback(receivedDataCallback);
-    try conn.setHeaderCallback(receivedHeaderCallback);
-
-    var headers = try http_client.newHeaders();
-    errdefer headers.deinit();
-    try frame.appendOriginHeader(&headers);
-    if (protocols.len > 0) {
-        const header = try std.fmt.allocPrintSentinel(arena, "Sec-WebSocket-Protocol: {s}", .{try std.mem.join(arena, ", ", protocols)}, 0);
-        try headers.add(header);
+    const protocols_copy = try arena.alloc([]const u8, protocols.len);
+    for (protocols, 0..) |protocol, i| {
+        protocols_copy[i] = try arena.dupe(u8, protocol);
     }
-    try conn.setHeaders(&headers);
+
+    const client = try WebSocketClient.create(arena, resolved_url, origin, protocols_copy);
 
     const self = try frame._factory.eventTargetWithAllocator(arena, WebSocket{
         ._frame = frame,
-        ._conn = conn,
+        ._client = client,
         ._arena = arena,
         ._proto = undefined,
         ._url = resolved_url,
-        ._req_headers = headers,
         ._http_client = http_client,
     });
-    conn.transport = .{ .websocket = self };
-    try http_client.trackConn(conn);
+
+    http_client.trackNativeWebSocket(self);
 
     if (comptime IS_DEBUG) {
         log.info(.websocket, "connecting", .{ .url = url });
     }
 
-    // Unlike an XHR object where we only selectively reference the instance
-    // while the request is actually inflight, WS connection is "inflight" from
-    // the moment it's created.
     self.acquireRef();
-
     return self;
 }
 
@@ -194,13 +182,14 @@ fn asEventTarget(self: *WebSocket) *EventTarget {
     return self._proto;
 }
 
-// we're being aborted internally (e.g. frame shutting down)
 pub fn kill(self: *WebSocket) void {
     self.cleanup();
 }
 
 pub fn disconnected(self: *WebSocket, err_: ?anyerror) void {
-    const was_clean = self._ready_state == .closing and err_ == null;
+    // H2/wss may surface EOF as ConnectionClosed after a completed close handshake.
+    const was_clean = self._ready_state == .closing and
+        (err_ == null or err_.? == error.ConnectionClosed);
     self._ready_state = .closed;
 
     if (err_) |err| {
@@ -211,13 +200,9 @@ pub fn disconnected(self: *WebSocket, err_: ?anyerror) void {
 
     defer self.cleanup();
 
-    // Use 1006 (abnormal closure) if connection wasn't cleanly closed
     const code = if (was_clean) self._close_code else 1006;
     const reason = if (was_clean) self._close_reason else "";
 
-    // Spec requires error event before close on abnormal closure.
-    // Dispatch events before cleanup since cleanup releases the ref count
-    // which may free our event handler references.
     if (!was_clean) {
         self.dispatchErrorEvent() catch |err| {
             log.err(.websocket, "error event dispatch failed", .{ .err = err });
@@ -230,33 +215,197 @@ pub fn disconnected(self: *WebSocket, err_: ?anyerror) void {
 }
 
 fn cleanup(self: *WebSocket) void {
-    if (self._conn) |conn| {
-        self._http_client.removeConn(conn);
-        self._req_headers.deinit();
-        self._conn = null;
+    if (self._client) |*client| {
+        self._http_client.untrackNativeWebSocket(self);
+        client.deinit();
+        self._client = null;
         self.releaseRef(self._frame._page);
         self._send_queue.clearRetainingCapacity();
     }
 }
 
-fn queueMessage(self: *WebSocket, msg: Message) !void {
-    const was_empty = self._send_queue.items.len == 0;
-    try self._send_queue.append(self._arena, msg);
+fn applyHandshakeSetCookies(self: *WebSocket, set_cookies: []const []const u8) void {
+    const jar = &self._frame._session.cookie_jar;
+    for (set_cookies) |set_cookie| {
+        jar.populateFromResponse(self._url, set_cookie, self._frame.topLevelUrl()) catch |err| {
+            log.warn(.websocket, "handshake Set-Cookie ignored", .{ .raw = set_cookie, .err = err });
+        };
+    }
+}
 
-    if (was_empty) {
-        // Unpause the send callback so libcurl will request data
-        if (self._conn) |conn| {
-            try conn.pause(.{ .cont = true });
+fn getHandshakeCookieHeader(self: *WebSocket) !?[]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(self._arena);
+    try self._frame._session.cookie_jar.forRequest(self._url, buf.writer(self._arena), .{
+        .is_http = true,
+        .origin_url = self._frame.url,
+        .top_level_url = self._frame.topLevelUrl(),
+        .is_navigation = false,
+    });
+    if (buf.items.len == 0) return null;
+    return try self._arena.dupe(u8, buf.items);
+}
+
+/// Promote to OPEN and fire the open event when the native client is ready but
+/// WebSocket._ready_state is still CONNECTING (sync h2/wss connect or race).
+fn dispatchOpenIfReady(
+    self: *WebSocket,
+    client: *const WebSocketClient,
+    protocol: ?[]const u8,
+    set_cookies: []const []const u8,
+) !bool {
+    if (self._ready_state != .connecting or client.state != .open) return false;
+
+    self.applyHandshakeSetCookies(set_cookies);
+
+    self._ready_state = .open;
+    self._protocol = protocol orelse client.negotiated_protocol;
+    log.info(.websocket, "connected", .{ .url = self._url });
+    self.dispatchOpenEvent() catch |err| {
+        log.err(.websocket, "open event fail", .{ .err = err });
+    };
+    try self.flushSendQueue();
+    return true;
+}
+
+/// Called from HttpClient.tick to drive the native socket.
+pub fn pollNative(self: *WebSocket) !bool {
+    const client = &(self._client orelse return false);
+
+    if (client.state == .connecting) {
+        const cookie_header = try self.getHandshakeCookieHeader();
+        client.start(self._url, .{
+            .ip_filter = self._http_client.network.ip_filter,
+            .tls_verify = self._http_client.tls_verify,
+            .cookie_header = cookie_header,
+        });
+        if (client.state == .closed) {
+            self.disconnected(error.ConnectionRefused);
+            return true;
+        }
+        if (client.state == .open and self._ready_state == .connecting) {
+            if (try self.dispatchOpenIfReady(client, null, client.takeSetCookies())) return true;
+        }
+        return false;
+    }
+
+    // start() may have completed synchronously (h2/wss) before this poll tick.
+    if (client.state == .open and self._ready_state == .connecting) {
+        if (try self.dispatchOpenIfReady(client, null, client.takeSetCookies())) return true;
+    }
+
+    const result = client.poll() catch |err| {
+        self.disconnected(err);
+        return true;
+    };
+
+    switch (result) {
+        .idle => {
+            try self.flushSendQueue();
+            return false;
+        },
+        .open => |info| {
+            if (self._ready_state == .connecting) {
+                if (try self.dispatchOpenIfReady(client, info.protocol, client.takeSetCookies())) return true;
+            }
+            try self.flushSendQueue();
+            return true;
+        },
+        .message => |msg| {
+            defer if (msg.owned) self._arena.free(msg.data);
+            try self.handleIncomingFrame(msg.frame_type, msg.data);
+            try self.flushSendQueue();
+            return true;
+        },
+        .closed => {
+            self.disconnected(null);
+            return true;
+        },
+    }
+}
+
+fn handleIncomingFrame(self: *WebSocket, frame_type: WebSocketClient.FrameType, data: []const u8) !void {
+    switch (frame_type) {
+        .text, .binary => {
+            const ws_type: http.WsFrameType = if (frame_type == .text) .text else .binary;
+            try self.dispatchMessageEvent(data, ws_type);
+        },
+        .close => {
+            const received_code = if (data.len >= 2)
+                @as(u16, data[0]) << 8 | data[1]
+            else
+                1005;
+
+            if (self._ready_state == .closing) {
+                self.disconnected(null);
+            } else {
+                self._close_code = received_code;
+                if (data.len > 2) {
+                    self._close_reason = try self._arena.dupe(u8, data[2..]);
+                } else {
+                    self._close_reason = "";
+                }
+                self._ready_state = .closing;
+                try self.queueMessage(.close);
+            }
+        },
+        .ping => {
+            if (self._client) |*client| {
+                try client.queueFrame(.pong, data);
+            }
+        },
+        .pong, .cont => {},
+    }
+}
+
+fn flushSendQueue(self: *WebSocket) !void {
+    const client = &(self._client orelse return);
+    if (self._ready_state != .open and self._ready_state != .closing) return;
+
+    while (self._send_queue.items.len > 0) {
+        const msg = self._send_queue.items[0];
+        switch (msg) {
+            .close => {
+                const code = self._close_code;
+                const reason = self._close_reason;
+                if (code == 1005) {
+                    try client.queueFrame(.close, reason);
+                } else {
+                    const reason_len: usize = @min(reason.len, 123);
+                    var payload: [125]u8 = undefined;
+                    payload[0] = @intCast((code >> 8) & 0xFF);
+                    payload[1] = @intCast(code & 0xFF);
+                    if (reason_len > 0) {
+                        @memcpy(payload[2..][0..reason_len], reason[0..reason_len]);
+                    }
+                    try client.queueFrame(.close, payload[0 .. 2 + reason_len]);
+                }
+                _ = self._send_queue.orderedRemove(0);
+            },
+            .text => |content| {
+                try client.queueFrame(.text, content.data);
+                const removed = self._send_queue.orderedRemove(0);
+                removed.deinit(self._frame._page);
+                self._send_offset = 0;
+            },
+            .binary => |content| {
+                try client.queueFrame(.binary, content.data);
+                const removed = self._send_queue.orderedRemove(0);
+                removed.deinit(self._frame._page);
+                self._send_offset = 0;
+            },
         }
     }
+}
+
+fn queueMessage(self: *WebSocket, msg: Message) !void {
+    try self._send_queue.append(self._arena, msg);
 }
 
 fn isValidProtocol(protocol: []const u8) bool {
     if (protocol.len == 0) return false;
     for (protocol) |c| {
-        // Control characters and non-ASCII
         if (c <= 31 or c >= 127) return false;
-        // Separators per RFC 2616
         switch (c) {
             '(', ')', '<', '>', '@', ',', ';', ':', '\\', '"', '/', '[', ']', '?', '=', '{', '}', ' ', '\t' => return false,
             else => {},
@@ -265,13 +414,11 @@ fn isValidProtocol(protocol: []const u8) bool {
     return true;
 }
 
-/// WebSocket send() accepts string, Blob, ArrayBuffer, or TypedArray
 const SendData = union(enum) {
     blob: *Blob,
     js_val: js.Value,
 };
 
-/// Union for extracting bytes from ArrayBuffer/TypedArray
 const BinaryData = union(enum) {
     int8: []i8,
     uint8: []u8,
@@ -310,12 +457,27 @@ pub fn send(self: *WebSocket, data: SendData) !void {
             } });
         },
         .js_val => |js_val| {
-            if (js_val.isString()) |str| {
+            if (js_val.isNullOrUndefined()) {
+                const arena = try self._frame.getArena(4, "WebSocket.message");
+                errdefer self._frame.releaseArena(arena);
+                try self.queueMessage(.{ .text = .{
+                    .arena = arena,
+                    .data = try arena.dupe(u8, "null"),
+                } });
+            } else if (js_val.isString()) |str| {
                 const arena = try self._frame.getArena(str.len(), "WebSocket.message");
                 errdefer self._frame.releaseArena(arena);
                 try self.queueMessage(.{ .text = .{
                     .arena = arena,
                     .data = try str.toSliceWithAlloc(arena),
+                } });
+            } else if (js_val.isArrayBuffer() or js_val.isArrayBufferView() or js_val.isTypedArray()) {
+                const view_bytes = try js_val.toStringSmart();
+                const arena = try self._frame.getArena(view_bytes.len, "WebSocket.message");
+                errdefer self._frame.releaseArena(arena);
+                try self.queueMessage(.{ .binary = .{
+                    .arena = arena,
+                    .data = try arena.dupe(u8, view_bytes),
                 } });
             } else {
                 const binary = try js_val.toZig(BinaryData);
@@ -337,18 +499,21 @@ pub fn close(self: *WebSocket, code_: ?u16, reason_: ?[]const u8) !void {
         return;
     }
 
-    // Validate close code per spec: must be 1000 or in range 3000-4999
     if (code_) |code| {
         if (code != 1000 and (code < 3000 or code > 4999)) {
             return error.InvalidAccessError;
         }
     }
 
-    const code = code_ orelse 1000;
+    if (reason_) |reason| {
+        if (reason.len > 123) return error.SyntaxError;
+    }
+
+    // 1005 = no status code in the close frame (close() without a code argument).
+    const code = code_ orelse 1005;
     const reason = reason_ orelse "";
 
     if (self._ready_state == .connecting) {
-        // Connection not yet established - fail it
         self._ready_state = .closed;
         self.cleanup();
         try self.dispatchCloseEvent(code, reason, false);
@@ -503,209 +668,6 @@ fn dispatchCloseEvent(self: *WebSocket, code: u16, reason: []const u8, was_clean
         }, frame);
         try frame._event_manager.dispatchDirect(target, event.asEvent(), self._on_close, .{ .context = "WebSocket close" });
     }
-}
-
-fn sendDataCallback(buffer: [*]u8, buf_count: usize, buf_len: usize, data: *anyopaque) usize {
-    if (comptime IS_DEBUG) {
-        std.debug.assert(buf_count == 1);
-    }
-    const conn: *http.Connection = @ptrCast(@alignCast(data));
-    return _sendDataCallback(conn, buffer[0..buf_len]) catch |err| {
-        log.warn(.websocket, "send callback", .{ .err = err });
-        return http.readfunc_pause;
-    };
-}
-
-fn _sendDataCallback(conn: *http.Connection, buf: []u8) !usize {
-    assert(buf.len >= 2, "WS short buffer", .{ .len = buf.len });
-
-    const self = conn.transport.websocket;
-
-    if (self._send_queue.items.len == 0) {
-        // No data to send - pause until queueMessage is called
-        return http.readfunc_pause;
-    }
-
-    const msg = &self._send_queue.items[0];
-
-    switch (msg.*) {
-        .close => {
-            const code = self._close_code;
-            const reason = self._close_reason;
-
-            // Close frame: 2 bytes for code (big-endian) + optional reason
-            // Truncate reason to fit in buf (max 123 bytes per spec)
-            const reason_len: usize = @min(reason.len, 123, buf.len -| 2);
-            const frame_len = 2 + reason_len;
-            const to_copy = @min(buf.len, frame_len);
-
-            var close_payload: [125]u8 = undefined;
-            close_payload[0] = @intCast((code >> 8) & 0xFF);
-            close_payload[1] = @intCast(code & 0xFF);
-            if (reason_len > 0) {
-                @memcpy(close_payload[2..][0..reason_len], reason[0..reason_len]);
-            }
-
-            try conn.wsStartFrame(.close, to_copy);
-            @memcpy(buf[0..to_copy], close_payload[0..to_copy]);
-
-            _ = self._send_queue.orderedRemove(0);
-            return to_copy;
-        },
-        .text => |content| return self.writeContent(conn, buf, content, .text),
-        .binary => |content| return self.writeContent(conn, buf, content, .binary),
-    }
-}
-
-fn writeContent(self: *WebSocket, conn: *http.Connection, buf: []u8, byte_msg: Message.Content, frame_type: http.WsFrameType) !usize {
-    if (self._send_offset == 0) {
-        // start of the message
-        if (comptime IS_DEBUG) {
-            log.debug(.websocket, "send start", .{ .url = self._url, .len = byte_msg.data.len });
-        }
-        try conn.wsStartFrame(frame_type, byte_msg.data.len);
-    }
-
-    const remaining = byte_msg.data[self._send_offset..];
-    const to_copy = @min(remaining.len, buf.len);
-    @memcpy(buf[0..to_copy], remaining[0..to_copy]);
-
-    self._send_offset += to_copy;
-
-    if (self._send_offset >= byte_msg.data.len) {
-        const removed = self._send_queue.orderedRemove(0);
-        removed.deinit(self._frame._page);
-        if (comptime IS_DEBUG) {
-            log.debug(.websocket, "send complete", .{ .url = self._url, .len = byte_msg.data.len, .queue = self._send_queue.items.len });
-        }
-        self._send_offset = 0;
-    }
-
-    return to_copy;
-}
-
-fn receivedDataCallback(buffer: [*]const u8, buf_count: usize, buf_len: usize, data: *anyopaque) usize {
-    if (comptime IS_DEBUG) {
-        std.debug.assert(buf_count == 1);
-    }
-    const conn: *http.Connection = @ptrCast(@alignCast(data));
-    _receivedDataCallback(conn, buffer[0..buf_len]) catch |err| {
-        log.warn(.websocket, "receive callback", .{ .err = err });
-        // TODO: are there errors, like an invalid frame, that we shouldn't treat
-        // as an error?
-        return http.writefunc_error;
-    };
-
-    return buf_len;
-}
-
-fn _receivedDataCallback(conn: *http.Connection, data: []const u8) !void {
-    const self = conn.transport.websocket;
-    const meta = conn.wsMeta() orelse {
-        log.err(.websocket, "missing meta", .{ .url = self._url });
-        return error.NoFrameMeta;
-    };
-
-    if (meta.offset == 0) {
-        if (comptime IS_DEBUG) {
-            log.debug(.websocket, "incoming message", .{ .url = self._url, .len = meta.len, .bytes_left = meta.bytes_left, .type = meta.frame_type });
-        }
-        // Start of new frame. Pre-allocate buffer
-        self._recv_buffer.clearRetainingCapacity();
-        if (meta.len > self._http_client.max_response_size) {
-            return error.MessageTooLarge;
-        }
-        try self._recv_buffer.ensureTotalCapacity(self._arena, meta.len);
-    }
-
-    try self._recv_buffer.appendSlice(self._arena, data);
-
-    if (meta.bytes_left > 0) {
-        // still more data waiting for this frame
-        return;
-    }
-
-    const message = self._recv_buffer.items;
-    switch (meta.frame_type) {
-        .text, .binary => try self.dispatchMessageEvent(message, meta.frame_type),
-        .close => {
-            // Parse close frame: 2-byte code (big-endian) + optional reason
-            const received_code = if (message.len >= 2)
-                @as(u16, message[0]) << 8 | message[1]
-            else
-                1005; // No status code received
-
-            if (self._ready_state == .closing) {
-                // Client-initiated close: this is the server's response.
-                // Close handshake complete - disconnect.
-                self.disconnected(null);
-            } else {
-                // Server-initiated close: send reciprocal close frame per RFC 6455 §5.5.1
-                self._close_code = received_code;
-                if (message.len > 2) {
-                    self._close_reason = try self._arena.dupe(u8, message[2..]);
-                }
-                self._ready_state = .closing;
-                try self.queueMessage(.close);
-            }
-        },
-        .ping, .pong, .cont => {},
-    }
-}
-
-// libcurl has no mechanism to signal that the connection is established. The
-// best option I could come up with was looking for an upgrade header response.
-fn receivedHeaderCallback(buffer: [*]const u8, header_count: usize, buf_len: usize, data: *anyopaque) usize {
-    if (comptime IS_DEBUG) {
-        std.debug.assert(header_count == 1);
-    }
-    const conn: *http.Connection = @ptrCast(@alignCast(data));
-    const self = conn.transport.websocket;
-    const header = buffer[0..buf_len];
-
-    if (self._got_101 == false and std.mem.startsWith(u8, header, "HTTP/")) {
-        if (std.mem.indexOf(u8, header, " 101 ")) |_| {
-            self._got_101 = true;
-        }
-        return buf_len;
-    }
-
-    // Empty line = end of headers
-    if (buf_len <= 2) {
-        if (!self._got_101 or !self._got_upgrade) {
-            return 0;
-        }
-
-        self._ready_state = .open;
-        log.info(.websocket, "connected", .{ .url = self._url });
-
-        self.dispatchOpenEvent() catch |err| {
-            log.err(.websocket, "open event fail", .{ .err = err });
-        };
-        return buf_len;
-    }
-
-    const colon = std.mem.indexOfScalarPos(u8, header, 0, ':') orelse {
-        // weird, continue...
-        return buf_len;
-    };
-
-    const header_name = header[0..colon];
-    const value = std.mem.trim(u8, header[colon + 1 ..], " \t\r\n");
-
-    if (std.ascii.eqlIgnoreCase(header_name, "upgrade")) {
-        if (std.ascii.eqlIgnoreCase(value, "websocket")) {
-            self._got_upgrade = true;
-        }
-    } else if (std.ascii.eqlIgnoreCase(header_name, "sec-websocket-protocol")) {
-        // TODO, we should validate this against our sent list.
-        self._protocol = self._arena.dupe(u8, value) catch |err| {
-            log.err(.websocket, "dupe protocol", .{ .err = err });
-            return 0;
-        };
-    }
-
-    return buf_len;
 }
 
 const Message = union(enum) {

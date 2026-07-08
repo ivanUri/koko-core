@@ -25,6 +25,7 @@ _root: *Node,
 _what_to_show: u32,
 _filter: NodeFilter,
 _current: *Node,
+_active: bool = false,
 
 pub fn init(root: *Node, what_to_show: u32, filter: ?FilterOpts, frame: *Frame) !*DOMTreeWalker {
     const node_filter = try NodeFilter.init(filter);
@@ -56,23 +57,35 @@ pub fn setCurrentNode(self: *DOMTreeWalker, node: *Node) void {
     self._current = node;
 }
 
+fn beginTraversal(self: *DOMTreeWalker) !void {
+    if (self._active) return error.InvalidStateError;
+    self._active = true;
+}
+
+fn endTraversal(self: *DOMTreeWalker) void {
+    self._active = false;
+}
+
 // Navigation methods
 pub fn parentNode(self: *DOMTreeWalker, frame: *Frame) !?*Node {
-    var node = self._current._parent;
-    while (node) |n| {
-        if (n == self._root._parent) {
-            return null;
+    try self.beginTraversal();
+    defer self.endTraversal();
+
+    var node = self._current;
+    while (node != self._root) {
+        node = node._parent orelse return null;
+        if (try self.acceptNode(node, frame) == NodeFilter.FILTER_ACCEPT) {
+            self._current = node;
+            return node;
         }
-        if (try self.acceptNode(n, frame) == NodeFilter.FILTER_ACCEPT) {
-            self._current = n;
-            return n;
-        }
-        node = n._parent;
     }
     return null;
 }
 
 pub fn firstChild(self: *DOMTreeWalker, frame: *Frame) !?*Node {
+    try self.beginTraversal();
+    defer self.endTraversal();
+
     var node = self._current.firstChild();
 
     while (node) |n| {
@@ -101,7 +114,7 @@ pub fn firstChild(self: *DOMTreeWalker, frame: *Frame) !?*Node {
 
             // No sibling, go up to parent
             const parent = current_node._parent orelse return null;
-            if (parent == self._current) {
+            if (parent == self._current or parent == self._root) {
                 // We've exhausted all children of self._current
                 return null;
             }
@@ -113,6 +126,9 @@ pub fn firstChild(self: *DOMTreeWalker, frame: *Frame) !?*Node {
 }
 
 pub fn lastChild(self: *DOMTreeWalker, frame: *Frame) !?*Node {
+    try self.beginTraversal();
+    defer self.endTraversal();
+
     var node = self._current.lastChild();
 
     while (node) |n| {
@@ -141,7 +157,7 @@ pub fn lastChild(self: *DOMTreeWalker, frame: *Frame) !?*Node {
 
             // No sibling, go up to parent
             const parent = current_node._parent orelse return null;
-            if (parent == self._current) {
+            if (parent == self._current or parent == self._root) {
                 // We've exhausted all children of self._current
                 return null;
             }
@@ -153,6 +169,9 @@ pub fn lastChild(self: *DOMTreeWalker, frame: *Frame) !?*Node {
 }
 
 pub fn previousSibling(self: *DOMTreeWalker, frame: *Frame) !?*Node {
+    try self.beginTraversal();
+    defer self.endTraversal();
+
     var node = self.previousSiblingOrNull(self._current);
     while (node) |n| {
         if (try self.acceptNode(n, frame) == NodeFilter.FILTER_ACCEPT) {
@@ -165,6 +184,9 @@ pub fn previousSibling(self: *DOMTreeWalker, frame: *Frame) !?*Node {
 }
 
 pub fn nextSibling(self: *DOMTreeWalker, frame: *Frame) !?*Node {
+    try self.beginTraversal();
+    defer self.endTraversal();
+
     var node = self.nextSiblingOrNull(self._current);
     while (node) |n| {
         if (try self.acceptNode(n, frame) == NodeFilter.FILTER_ACCEPT) {
@@ -177,6 +199,9 @@ pub fn nextSibling(self: *DOMTreeWalker, frame: *Frame) !?*Node {
 }
 
 pub fn previousNode(self: *DOMTreeWalker, frame: *Frame) !?*Node {
+    try self.beginTraversal();
+    defer self.endTraversal();
+
     var node = self._current;
     while (node != self._root) {
         var sibling = self.previousSiblingOrNull(node);
@@ -237,6 +262,9 @@ pub fn previousNode(self: *DOMTreeWalker, frame: *Frame) !?*Node {
 }
 
 pub fn nextNode(self: *DOMTreeWalker, frame: *Frame) !?*Node {
+    try self.beginTraversal();
+    defer self.endTraversal();
+
     var node = self._current;
 
     while (true) {
@@ -288,7 +316,7 @@ pub fn nextNode(self: *DOMTreeWalker, frame: *Frame) !?*Node {
 }
 
 // Helper methods
-fn acceptNode(self: *const DOMTreeWalker, node: *Node, frame: *Frame) !i32 {
+fn acceptNode(self: *DOMTreeWalker, node: *Node, frame: *Frame) !i32 {
     // First check whatToShow
     if (!NodeFilter.shouldShow(node, self._what_to_show)) {
         return NodeFilter.FILTER_SKIP;
@@ -347,11 +375,11 @@ pub const JsApi = struct {
     pub const filter = bridge.accessor(DOMTreeWalker.getFilter, null, .{});
     pub const currentNode = bridge.accessor(DOMTreeWalker.getCurrentNode, DOMTreeWalker.setCurrentNode, .{});
 
-    pub const parentNode = bridge.function(DOMTreeWalker.parentNode, .{});
-    pub const firstChild = bridge.function(DOMTreeWalker.firstChild, .{});
-    pub const lastChild = bridge.function(DOMTreeWalker.lastChild, .{});
-    pub const previousSibling = bridge.function(DOMTreeWalker.previousSibling, .{});
-    pub const nextSibling = bridge.function(DOMTreeWalker.nextSibling, .{});
-    pub const previousNode = bridge.function(DOMTreeWalker.previousNode, .{});
-    pub const nextNode = bridge.function(DOMTreeWalker.nextNode, .{});
+    pub const parentNode = bridge.function(DOMTreeWalker.parentNode, .{ .dom_exception = true });
+    pub const firstChild = bridge.function(DOMTreeWalker.firstChild, .{ .dom_exception = true });
+    pub const lastChild = bridge.function(DOMTreeWalker.lastChild, .{ .dom_exception = true });
+    pub const previousSibling = bridge.function(DOMTreeWalker.previousSibling, .{ .dom_exception = true });
+    pub const nextSibling = bridge.function(DOMTreeWalker.nextSibling, .{ .dom_exception = true });
+    pub const previousNode = bridge.function(DOMTreeWalker.previousNode, .{ .dom_exception = true });
+    pub const nextNode = bridge.function(DOMTreeWalker.nextNode, .{ .dom_exception = true });
 };

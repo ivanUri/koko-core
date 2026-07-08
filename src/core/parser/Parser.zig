@@ -306,6 +306,8 @@ fn _createCommentCallback(self: *Parser, str: []const u8) !*anyopaque {
 
 fn createProcessingInstruction(ctx: *anyopaque, target: h5e.StringSlice, data: h5e.StringSlice) callconv(.c) ?*anyopaque {
     const self: *Parser = @ptrCast(@alignCast(ctx));
+    // XML declarations are not represented in the DOM.
+    if (std.mem.eql(u8, target.slice(), "xml")) return null;
     return self._createProcessingInstruction(target.slice(), data.slice()) catch |err| {
         self.err = .{ .err = err, .source = .create_processing_instruction };
         return null;
@@ -355,11 +357,22 @@ fn _addAttrsIfMissingCallback(self: *Parser, node: *Node, attributes: h5e.Attrib
     const frame = self.frame;
 
     const attr_list = try element.getOrCreateAttributeList(frame);
+    var had_attrs = false;
     while (attributes.next()) |attr| {
+        had_attrs = true;
         const name = attr.name.local.slice();
         const value = attr.value.slice();
         // putNew only adds if the attribute doesn't already exist
         try attr_list.putNew(name, value, frame);
+    }
+
+    if (had_attrs) {
+        if (node.is(Element.Html.IFrame)) |iframe| {
+            try Element.Html.IFrame.Build.complete(node, frame);
+            frame.iframeAddedCallback(iframe) catch |err| {
+                log.err(.frame, "iframe addAttrs", .{ .err = err, .url = frame.url });
+            };
+        }
     }
 }
 
@@ -403,6 +416,7 @@ fn _appendCallback(self: *Parser, parent: *Node, node_or_text: h5e.NodeOrText) !
     // child node is guaranteed not to belong to another parent
     switch (node_or_text.toUnion()) {
         .node => |cpn| {
+            if (@intFromPtr(cpn) == 0) return;
             const child = getNode(cpn);
             if (child._parent) |previous_parent| {
                 // html5ever says this can't happen, but we might be screwing up
@@ -452,6 +466,7 @@ fn _appendBeforeSiblingCallback(self: *Parser, sibling: *Node, node_or_text: h5e
     const parent = sibling.parentNode() orelse return error.NoParent;
     const node: *Node = switch (node_or_text.toUnion()) {
         .node => |cpn| blk: {
+            if (@intFromPtr(cpn) == 0) return error.NoParent;
             const child = getNode(cpn);
             if (child._parent) |previous_parent| {
                 // A custom element constructor may have inserted the node into the

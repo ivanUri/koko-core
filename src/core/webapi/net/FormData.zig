@@ -18,13 +18,17 @@ const js = @import("../../js/js.zig");
 const Frame = @import("../../browser/Frame.zig");
 const Form = @import("../element/html/Form.zig");
 const Element = @import("../../dom/Element.zig");
+const Blob = @import("../Blob.zig");
 const File = @import("../File.zig");
 const KeyValueList = @import("../KeyValueList.zig");
+const TaggedOpaque = @import("../../js/TaggedOpaque.zig");
 
 const log = @import("../../../support/log.zig");
 const String = @import("../../../support/string.zig").String;
 const Execution = js.Execution;
 const Allocator = std.mem.Allocator;
+
+const Mime = @import("../../browser/Mime.zig");
 
 const FormData = @This();
 
@@ -37,16 +41,35 @@ pub const Entry = struct {
 
     const Value = union(enum) {
         file: *File,
+        blob: *Blob,
         string: String,
 
         fn asString(self: *const Value) []const u8 {
             return switch (self.*) {
                 .string => |*s| s.str(),
-                .file => unreachable, // nothing currently creates this type of value
+                .file, .blob => unreachable,
             };
         }
     };
 };
+
+pub fn fromUrlEncodedBody(body: []const u8, exec: *const Execution) !*FormData {
+    const list = try KeyValueList.fromUrlEncodedString(exec.arena, body, exec.buf, .{});
+    const form_data = try exec._factory.create(FormData{
+        ._arena = exec.arena,
+        ._entries = .empty,
+    });
+    try form_data._entries.ensureTotalCapacity(exec.arena, list.len());
+    for (list.items()) |entry| {
+        try form_data.appendText(entry.name.str(), entry.value.str());
+    }
+    return form_data;
+}
+
+pub fn isUrlEncodedContentType(content_type: []const u8) bool {
+    const mime = Mime.parse(content_type) catch return false;
+    return mime.isApplicationXWwwFormUrlencoded();
+}
 
 pub fn init(form_: ?*Form, submitter: ?*Element, exec: *const Execution) !*FormData {
     const form = form_ orelse {
@@ -109,10 +132,37 @@ pub fn has(self: *const FormData, name: String) bool {
 
 pub fn set(self: *FormData, name: String, value: []const u8) !void {
     self.deleteByName(name);
-    return self.append(name.str(), value);
+    return self.appendText(name.str(), value);
 }
 
-pub fn append(self: *FormData, name: []const u8, value: []const u8) !void {
+pub fn append(self: *FormData, name: []const u8, value: js.Value, filename: ?[]const u8, exec: *const Execution) !void {
+    _ = exec;
+    _ = filename;
+    if (value.isString()) |_| {
+        const s = try value.toStringSmart();
+        return self.appendText(name, s);
+    }
+    if (value.isObject()) {
+        const obj = value.toObject();
+        if (TaggedOpaque.fromJS(*File, @ptrCast(obj.handle)) catch null) |file| {
+            try self._entries.append(self._arena, .{
+                .name = try String.init(self._arena, name, .{}),
+                .value = .{ .file = file },
+            });
+            return;
+        }
+        if (TaggedOpaque.fromJS(*Blob, @ptrCast(obj.handle)) catch null) |blob| {
+            try self._entries.append(self._arena, .{
+                .name = try String.init(self._arena, name, .{}),
+                .value = .{ .blob = blob },
+            });
+            return;
+        }
+    }
+    return error.TypeError;
+}
+
+fn appendText(self: *FormData, name: []const u8, value: []const u8) !void {
     try self._entries.append(self._arena, .{
         .name = try String.init(self._arena, name, .{}),
         .value = .{ .string = try String.init(self._arena, value, .{}) },
@@ -213,6 +263,7 @@ fn multipartEncodeEntry(entry: *const Entry, boundary: []const u8, writer: *std.
         },
         // File entries need a real payload (filename + bytes + Content-Type) — not yet wired.
         .file => log.warn(.not_implemented, "FormData.multipart.file", .{}),
+        .blob => log.warn(.not_implemented, "FormData.multipart.blob", .{}),
     }
 }
 
@@ -398,8 +449,8 @@ test "FormData: multipart write" {
         ._arena = allocator,
         ._entries = .empty,
     };
-    try fd.append("name", "John");
-    try fd.append("note", "two\r\nlines");
+    try fd.appendText("name", "John");
+    try fd.appendText("note", "two\r\nlines");
 
     var buf = std.Io.Writer.Allocating.init(allocator);
     try fd.write(.{
@@ -426,7 +477,7 @@ test "FormData: multipart escapes name CR/LF/quote" {
         ._arena = allocator,
         ._entries = .empty,
     };
-    try fd.append("a\"b\r\nc", "v");
+    try fd.appendText("a\"b\r\nc", "v");
 
     var buf = std.Io.Writer.Allocating.init(allocator);
     try fd.write(.{

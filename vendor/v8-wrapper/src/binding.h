@@ -245,6 +245,7 @@ void v8__Isolate__Enter(Isolate* isolate);
 void v8__Isolate__Exit(Isolate* isolate);
 void v8__Isolate__Dispose(Isolate* isolate);
 Context* v8__Isolate__GetCurrentContext(Isolate* isolate);
+Context* v8__Isolate__GetEnteredOrMicrotaskContext(Isolate* isolate);
 Context* v8__Isolate__GetIncumbentContext(Isolate* isolate);
 const Value* v8__Isolate__ThrowException(
     Isolate* isolate,
@@ -539,9 +540,11 @@ int v8__String__Utf8Length(const String* str, Isolate* isolate);
 // (truncating any code unit >= 256, so callers should check ContainsOnlyOneByte
 // first if that distinction matters).
 String* v8__String__NewFromOneByte(Isolate* isolate, const uint8_t* data, NewStringType type, int length);
+String* v8__String__NewFromTwoByte(Isolate* isolate, const uint16_t* data, NewStringType type, int length);
 int v8__String__Length(const String* str);
 bool v8__String__ContainsOnlyOneByte(const String* str);
 void v8__String__WriteOneByte(const String* str, Isolate* isolate, uint32_t offset, uint32_t length, uint8_t* buffer);
+void v8__String__WriteUtf16(const String* str, Isolate* isolate, uint32_t offset, uint32_t length, uint16_t* buffer);
 
 // Value
 String* v8__Value__TypeOf(

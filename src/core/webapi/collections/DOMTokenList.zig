@@ -311,10 +311,7 @@ pub const JsApi = struct {
     pub const replace = bridge.function(DOMTokenList.replace, .{ .dom_exception = true });
     pub const value = bridge.accessor(DOMTokenList.getValue, DOMTokenList.setValue, .{});
     pub const toString = bridge.function(DOMTokenList.getValue, .{});
-    pub const keys = bridge.function(DOMTokenList.keys, .{});
-    pub const values = bridge.function(DOMTokenList.values, .{});
-    pub const entries = bridge.function(DOMTokenList.entries, .{});
-    pub const symbol_iterator = bridge.iterator(DOMTokenList.values, .{});
-    pub const forEach = bridge.function(DOMTokenList.forEach, .{});
+    // keys/values/entries/forEach/Symbol.iterator come from Array.prototype
+    // (installed in Env.installDomTokenListArrayPrototypeShim for WPT).
     pub const @"[]" = bridge.indexed(DOMTokenList.item, null, .{ .null_as_undefined = true });
 };

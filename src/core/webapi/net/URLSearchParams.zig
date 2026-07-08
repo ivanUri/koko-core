@@ -17,6 +17,7 @@ const js = @import("../../js/js.zig");
 
 const FormData = @import("FormData.zig");
 const KeyValueList = @import("../KeyValueList.zig");
+const TaggedOpaque = @import("../../js/TaggedOpaque.zig");
 
 const log = @import("../../../support/log.zig");
 const String = @import("../../../support/string.zig").String;
@@ -27,36 +28,52 @@ const URLSearchParams = @This();
 
 _arena: Allocator,
 _params: KeyValueList,
+/// True after mutating ops while linked to a `URL` via `getSearchParams`.
+_mutated: bool = false,
 
-const InitOpts = union(enum) {
-    form_data: *FormData,
-    value: js.Value,
-    query_string: []const u8,
-};
-
-pub fn init(opts_: ?InitOpts, exec: *const Execution) !*URLSearchParams {
+pub fn initFromQueryString(query_string: []const u8, exec: *const Execution) !*URLSearchParams {
     const arena = exec.arena;
-    const params: KeyValueList = blk: {
-        const opts = opts_ orelse break :blk .empty;
-        switch (opts) {
-            .query_string => |qs| break :blk try paramsFromString(arena, qs, exec.buf),
-            .form_data => |fd| break :blk try fd.toKeyValueList(arena),
-            .value => |js_val| {
-                // Order matters here; Array is also an Object.
-                if (js_val.isArray()) {
-                    break :blk try paramsFromArray(arena, js_val.toArray());
-                }
-                if (js_val.isObject()) {
-                    // normalizer is null, so frame won't be used
-                    break :blk try KeyValueList.fromJsObject(arena, js_val.toObject(), null, exec.buf);
-                }
-                if (js_val.isString()) |js_str| {
-                    break :blk try paramsFromString(arena, try js_str.toSliceWithAlloc(arena), exec.buf);
-                }
-                return error.InvalidArgument;
-            },
+    const params = try paramsFromString(arena, query_string, exec.buf, .from_url);
+    return exec._factory.create(URLSearchParams{
+        ._arena = arena,
+        ._params = params,
+    });
+}
+
+pub fn init(init_val: ?js.Value, exec: *const Execution) !*URLSearchParams {
+    const arena = exec.arena;
+    const params: KeyValueList = if (init_val) |js_val| blk: {
+        // Order matters here; Array is also an Object.
+        if (isJsArray(js_val)) {
+            break :blk try paramsFromArray(arena, js_val.toArray());
         }
-    };
+        if (js_val.isObject()) {
+            const obj = js_val.toObject();
+
+            if (try hasIterator(obj, exec)) {
+                break :blk try paramsFromIterator(arena, obj, exec);
+            }
+
+            // Functions (e.g. DOMException) are objects but use record serialization, not branding.
+            if (!js_val.isFunction()) {
+                // DOMException.prototype carries legacy numeric constants; reject before record init.
+                if (obj.has("INDEX_SIZE_ERR")) return error.TypeError;
+                if (TaggedOpaque.fromJS(*URLSearchParams, @ptrCast(obj.handle)) catch null) |usp| {
+                    break :blk try KeyValueList.copy(arena, usp._params);
+                }
+                if (TaggedOpaque.fromJS(*FormData, @ptrCast(obj.handle)) catch null) |fd| {
+                    break :blk try fd.toKeyValueList(arena);
+                }
+                if (isRejectedObjectInit(obj, exec)) return error.TypeError;
+            }
+            // normalizer is null, so frame won't be used
+            break :blk try KeyValueList.fromJsObject(arena, obj, null, exec.buf);
+        }
+        if (js_val.isString()) |js_str| {
+            break :blk try paramsFromString(arena, try js_str.toSliceWithAlloc(arena), exec.buf, .from_string);
+        }
+        return error.InvalidArgument;
+    } else .empty;
 
     return exec._factory.create(URLSearchParams{
         ._arena = arena,
@@ -65,7 +82,16 @@ pub fn init(opts_: ?InitOpts, exec: *const Execution) !*URLSearchParams {
 }
 
 pub fn updateFromString(self: *URLSearchParams, query_string: []const u8, exec: *const Execution) !void {
-    self._params = try paramsFromString(self._arena, query_string, exec.buf);
+    self._params = try paramsFromString(self._arena, query_string, exec.buf, .from_url);
+    self._mutated = false;
+}
+
+pub fn isMutated(self: *const URLSearchParams) bool {
+    return self._mutated;
+}
+
+fn markMutated(self: *URLSearchParams) void {
+    self._mutated = true;
 }
 
 pub fn getSize(self: *const URLSearchParams) usize {
@@ -80,20 +106,26 @@ pub fn getAll(self: *const URLSearchParams, name: []const u8, exec: *const Execu
     return self._params.getAll(exec.call_arena, name);
 }
 
-pub fn has(self: *const URLSearchParams, name: []const u8) bool {
+pub fn has(self: *const URLSearchParams, name: []const u8, value: ?[]const u8) bool {
+    if (value) |v| {
+        return self._params.hasPair(name, v);
+    }
     return self._params.has(name);
 }
 
 pub fn set(self: *URLSearchParams, name: []const u8, value: []const u8) !void {
-    return self._params.set(self._arena, name, value);
+    try self._params.set(self._arena, name, value);
+    self.markMutated();
 }
 
 pub fn append(self: *URLSearchParams, name: []const u8, value: []const u8) !void {
-    return self._params.append(self._arena, name, value);
+    try self._params.append(self._arena, name, value);
+    self.markMutated();
 }
 
 pub fn delete(self: *URLSearchParams, name: []const u8, value: ?[]const u8) void {
     self._params.delete(name, value);
+    self.markMutated();
 }
 
 pub fn keys(self: *URLSearchParams, exec: *const Execution) !*KeyValueList.KeyIterator {
@@ -131,9 +163,120 @@ pub fn forEach(self: *URLSearchParams, cb_: js.Function, js_this_: ?js.Object) !
 pub fn sort(self: *URLSearchParams) void {
     std.mem.sort(KeyValueList.Entry, self._params._entries.items, {}, struct {
         fn cmp(_: void, a: KeyValueList.Entry, b: KeyValueList.Entry) bool {
-            return std.mem.order(u8, a.name.str(), b.name.str()) == .lt;
+            return KeyValueList.cmpUtf16CodeUnits(a.name.str(), b.name.str()) == .lt;
         }
     }.cmp);
+    self.markMutated();
+}
+
+fn isJsArray(val: js.Value) bool {
+    if (val.isArray()) return true;
+    if (!val.isObject()) return false;
+    return js.v8.v8__Value__IsArray(@ptrCast(val.toObject().handle));
+}
+
+fn isRejectedObjectInit(obj: js.Object, exec: *const Execution) bool {
+    if (isInterfacePrototype(obj)) return true;
+    if (isKnownInterfacePrototype(obj, exec)) return true;
+    if (hasErrorPrototypeParent(obj, exec)) return true;
+    // DOMException.prototype: legacy constants + Error.prototype in chain.
+    if (obj.has("INDEX_SIZE_ERR") and hasErrorPrototypeParent(obj, exec)) return true;
+    return false;
+}
+
+fn hasErrorPrototypeParent(obj: js.Object, exec: *const Execution) bool {
+    const local = exec.context.local orelse return false;
+    const global = js.Object{
+        .local = local,
+        .handle = js.v8.v8__Context__Global(local.handle).?,
+    };
+    const error_val = global.get("Error") catch return false;
+    if (!error_val.isFunction()) return false;
+    const error_proto_val = error_val.toObject().get("prototype") catch return false;
+    if (!error_proto_val.isObject()) return false;
+    const parent = js.v8.v8__Object__GetPrototype(obj.handle) orelse return false;
+    return parent == error_proto_val.toObject().handle;
+}
+
+fn isInterfacePrototype(obj: js.Object) bool {
+    const ctor_val = obj.get("constructor") catch return false;
+    if (!ctor_val.isFunction()) return false;
+
+    const ctor_obj = js.Object{ .local = obj.local, .handle = @ptrCast(ctor_val.handle) };
+    const proto_val = ctor_obj.get("prototype") catch return false;
+    if (!proto_val.isObject()) return false;
+
+    return proto_val.toObject().handle == obj.handle;
+}
+
+fn isKnownInterfacePrototype(obj: js.Object, exec: *const Execution) bool {
+    const local = exec.context.local orelse return false;
+    const global = js.Object{
+        .local = local,
+        .handle = js.v8.v8__Context__Global(local.handle).?,
+    };
+
+    const known = [_][]const u8{
+        "DOMException",
+        "Event",
+        "Node",
+        "Element",
+        "URLSearchParams",
+        "FormData",
+    };
+    for (known) |iface| {
+        const binding = global.get(iface) catch continue;
+        if (!binding.isFunction()) continue;
+        const proto_val = binding.toObject().get("prototype") catch continue;
+        if (!proto_val.isObject()) continue;
+        if (proto_val.toObject().handle == obj.handle) return true;
+    }
+    return false;
+}
+
+fn getBySymbol(obj: js.Object, local: *const js.Local, symbol: *const js.v8.Symbol) !js.Value {
+    const js_val_handle = js.v8.v8__Object__Get(obj.handle, local.handle, @ptrCast(symbol)) orelse return error.JsException;
+    return .{ .local = local, .handle = js_val_handle };
+}
+
+fn hasIterator(obj: js.Object, exec: *const Execution) !bool {
+    const local = exec.context.local orelse return false;
+    const iterator_sym = js.v8.v8__Symbol__GetIterator(local.isolate.handle).?;
+    const val = getBySymbol(obj, local, iterator_sym) catch return false;
+    return val.isFunction();
+}
+
+fn paramsFromIterator(allocator: Allocator, obj: js.Object, exec: *const Execution) !KeyValueList {
+    const local = exec.context.local orelse return error.InvalidArgument;
+    const iterator_sym = js.v8.v8__Symbol__GetIterator(local.isolate.handle).?;
+    const iter_method = try getBySymbol(obj, local, iterator_sym);
+    if (!iter_method.isFunction()) return error.InvalidArgument;
+
+    const iter_fn = js.Function{ .local = local, .handle = @ptrCast(iter_method.handle) };
+    const iter_val = try iter_fn.callWithThis(js.Value, obj, .{});
+    const iter_obj = iter_val.toObject();
+
+    var params = KeyValueList.init();
+    while (true) {
+        const step = try iter_obj.callMethod(js.Value, "next", .{});
+        const step_obj = step.toObject();
+        const done_val = try step_obj.get("done");
+        if (done_val.isTrue()) break;
+
+        const value_val = try step_obj.get("value");
+        if (!value_val.isArray()) return error.TypeError;
+
+        const pair = value_val.toArray();
+        if (pair.len() != 2) return error.TypeError;
+
+        const name_val = try pair.get(0);
+        const val_val = try pair.get(1);
+        if (name_val.isString() == null or val_val.isString() == null) return error.TypeError;
+
+        try params.append(allocator, try (try name_val.toString()).toSliceWithAlloc(allocator), try (try val_val.toString()).toSliceWithAlloc(allocator));
+    }
+
+    return params;
 }
 
 fn paramsFromArray(allocator: Allocator, array: js.Array) !KeyValueList {
@@ -149,14 +292,15 @@ fn paramsFromArray(allocator: Allocator, array: js.Array) !KeyValueList {
     var i: u32 = 0;
     while (i < array_len) : (i += 1) {
         const item = try array.get(i);
-        if (!item.isArray()) return error.InvalidArgument;
+        if (!item.isArray()) return error.TypeError;
 
         const as_array = item.toArray();
-        // Need 2 items for KV.
-        if (as_array.len() != 2) return error.InvalidArgument;
+        // Web IDL sequence<sequence<USVString>> requires exactly two elements.
+        if (as_array.len() != 2) return error.TypeError;
 
         const name_val = try as_array.get(0);
         const value_val = try as_array.get(1);
+        if (name_val.isString() == null or value_val.isString() == null) return error.TypeError;
 
         params._entries.appendAssumeCapacity(.{
             .name = try name_val.toSSOWithAlloc(allocator),
@@ -167,115 +311,12 @@ fn paramsFromArray(allocator: Allocator, array: js.Array) !KeyValueList {
     return params;
 }
 
-fn paramsFromString(allocator: Allocator, input_: []const u8, buf: []u8) !KeyValueList {
-    if (input_.len == 0) {
-        return .empty;
-    }
+const ParamsFromStringMode = enum { from_url, from_string };
 
-    var input = input_;
-    if (input[0] == '?') {
-        input = input[1..];
-    }
-
-    // After stripping '?', check if string is empty
-    if (input.len == 0) {
-        return .empty;
-    }
-
-    var params = KeyValueList.init();
-
-    var it = std.mem.splitScalar(u8, input, '&');
-    while (it.next()) |entry| {
-        // Skip empty entries (from trailing &, or &&)
-        if (entry.len == 0) continue;
-
-        var name: String = undefined;
-        var value: String = undefined;
-
-        if (std.mem.indexOfScalarPos(u8, entry, 0, '=')) |idx| {
-            name = try unescape(allocator, entry[0..idx], buf);
-            value = try unescape(allocator, entry[idx + 1 ..], buf);
-        } else {
-            name = try unescape(allocator, entry, buf);
-            value = comptime .wrap("");
-        }
-
-        // optimized, unescape returns a String directly (Because unescape may
-        // have to dupe itself, so it knows how best to create the String)
-        try params._entries.append(allocator, .{
-            .name = name,
-            .value = value,
-        });
-    }
-
-    return params;
-}
-
-fn unescape(arena: Allocator, value: []const u8, buf: []u8) !String {
-    if (value.len == 0) {
-        return comptime .wrap("");
-    }
-
-    var has_plus = false;
-    var unescaped_len = value.len;
-
-    var in_i: usize = 0;
-    while (in_i < value.len) {
-        const b = value[in_i];
-        if (b == '%') {
-            if (in_i + 2 >= value.len or !std.ascii.isHex(value[in_i + 1]) or !std.ascii.isHex(value[in_i + 2])) {
-                return error.InvalidEscapeSequence;
-            }
-            in_i += 3;
-            unescaped_len -= 2;
-        } else if (b == '+') {
-            has_plus = true;
-            in_i += 1;
-        } else {
-            in_i += 1;
-        }
-    }
-
-    // no encoding, and no plus. nothing to unescape
-    if (unescaped_len == value.len and !has_plus) {
-        return String.init(arena, value, .{});
-    }
-
-    var out = buf;
-    var duped = false;
-    if (buf.len < unescaped_len) {
-        out = try arena.alloc(u8, unescaped_len);
-        duped = true;
-    }
-
-    in_i = 0;
-    for (0..unescaped_len) |i| {
-        const b = value[in_i];
-        if (b == '%') {
-            out[i] = decodeHex(value[in_i + 1]) << 4 | decodeHex(value[in_i + 2]);
-            in_i += 3;
-        } else if (b == '+') {
-            out[i] = ' ';
-            in_i += 1;
-        } else {
-            out[i] = b;
-            in_i += 1;
-        }
-    }
-
-    return String.init(arena, out[0..unescaped_len], .{ .dupe = !duped });
-}
-
-const HEX_DECODE_ARRAY = blk: {
-    var all: ['f' - '0' + 1]u8 = undefined;
-    for ('0'..('9' + 1)) |b| all[b - '0'] = b - '0';
-    for ('A'..('F' + 1)) |b| all[b - '0'] = b - 'A' + 10;
-    for ('a'..('f' + 1)) |b| all[b - '0'] = b - 'a' + 10;
-    break :blk all;
-};
-
-inline fn decodeHex(char: u8) u8 {
-    return @as([*]const u8, @ptrFromInt((@intFromPtr(&HEX_DECODE_ARRAY) - @as(usize, '0'))))[char];
+fn paramsFromString(allocator: Allocator, input: []const u8, buf: []u8, mode: ParamsFromStringMode) !KeyValueList {
+    return KeyValueList.fromUrlEncodedString(allocator, input, buf, .{
+        .strip_leading_question_mark = mode == .from_string,
+    });
 }
 
 pub const Iterator = struct {

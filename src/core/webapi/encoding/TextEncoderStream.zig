@@ -25,7 +25,7 @@ const TextEncoderStream = @This();
 _transform: *TransformStream,
 
 pub fn init(exec: *const Execution) !TextEncoderStream {
-    const transform = try TransformStream.initWithZigTransform(&encodeTransform, exec);
+    const transform = try TransformStream.initWithZigTransform(&encodeTransform, null, exec);
     return .{
         ._transform = transform,
     };

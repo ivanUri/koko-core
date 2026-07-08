@@ -27,6 +27,8 @@ const BatteryManager = @import("BatteryManager.zig");
 const NetworkInformation = @import("NetworkInformation.zig");
 const MediaCapabilities = @import("MediaCapabilities.zig");
 const navigator_extras = @import("navigator_extras.zig");
+const Scheduling = @import("scheduler_api.zig").Scheduling;
+const NavigatorLogin = @import("credentials_api.zig").NavigatorLogin;
 
 const log = @import("../../support/log.zig");
 
@@ -51,6 +53,8 @@ _locks: navigator_extras.LockManager = .{},
 _wake_lock: navigator_extras.WakeLock = .{},
 _contacts: navigator_extras.ContactsManager = .{},
 _service_worker: navigator_extras.ServiceWorkerContainer = .{},
+_scheduling: Scheduling = .{},
+_login: NavigatorLogin = .{},
 
 pub const init: Navigator = .{};
 
@@ -207,6 +211,14 @@ pub fn getServiceWorker(self: *Navigator) *navigator_extras.ServiceWorkerContain
     return &self._service_worker;
 }
 
+pub fn getScheduling(self: *Navigator) *Scheduling {
+    return &self._scheduling;
+}
+
+pub fn getLogin(self: *Navigator) *NavigatorLogin {
+    return &self._login;
+}
+
 pub fn getPdfViewerEnabled(_: *const Navigator, frame: *Frame) bool {
     return frame.navigatorState().pdfViewerEnabled();
 }
@@ -292,6 +304,7 @@ pub fn sendBeacon(_: *const Navigator, url_val: js.Value, data_val: ?js.Value, f
             .loader_id = frame._loader_id,
             .cookie_jar = &session.cookie_jar,
             .cookie_origin = frame.url,
+            .top_level_cookie_url = frame.topLevelUrl(),
             .resource_type = .beacon,
             .notification = session.notification,
         },
@@ -439,6 +452,8 @@ pub const JsApi = struct {
     pub const wakeLock = bridge.accessor(Navigator.getWakeLock, null, .{});
     pub const contacts = bridge.accessor(Navigator.getContacts, null, .{});
     pub const serviceWorker = bridge.accessor(Navigator.getServiceWorker, null, .{});
+    pub const scheduling = bridge.accessor(Navigator.getScheduling, null, .{});
+    pub const login = bridge.accessor(Navigator.getLogin, null, .{});
     pub const pdfViewerEnabled = bridge.accessor(Navigator.getPdfViewerEnabled, null, .{});
     pub const oscpu = bridge.accessor(Navigator.getOscpu, null, .{ .null_as_undefined = true });
     pub const share = bridge.function(Navigator.share, .{ .dom_exception = true });

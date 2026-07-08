@@ -83,7 +83,7 @@ From field compare JSON:
 
 ### Install timing
 
-Hooks must run at **`Frame._documentIsLoaded`** in antidetect mode so CreepJS phantom iframe sees patched prototypes before first read—same timing as `WindowKeysIntelligent` (see `knowledge/bugs/2026-06-29-google-search-knitsail-window-keys-prune.md`).
+Hooks must run at **`Frame._documentIsLoaded`** in antidetect mode so CreepJS phantom iframe sees patched prototypes before first read—same timing as `WindowKeysIntelligent` (see `knowledge/captcha/detection/google-search-investigation-journey.md` Phase 1).
 
 ---
 

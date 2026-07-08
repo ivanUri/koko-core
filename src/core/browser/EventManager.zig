@@ -56,10 +56,7 @@ pub fn init(arena: Allocator, frame: *Frame) EventManager {
 }
 
 pub fn register(self: *EventManager, target: *EventTarget, typ: []const u8, callback: Callback, opts: RegisterOptions) !void {
-    const listener = self.base.register(target, typ, callback, opts) catch |err| switch (err) {
-        error.SignalAborted, error.DuplicateListener => return,
-        else => return err,
-    };
+    const listener = try self.base.registerIgnoringNoops(target, typ, callback, opts) orelse return;
 
     if (listener.typ.eql(comptime .wrap("load"))) {
         if (target._type == .node) {
@@ -120,9 +117,15 @@ pub fn dispatchOpts(self: *EventManager, target: *EventTarget, event: *Event, co
         log.debug(.event, "eventManager.dispatch", .{ .type = event._type_string.str(), .bubbles = event._bubbles });
     }
 
+    self.base.beginDispatch();
+    defer self.base.endDispatch();
+
     switch (target._type) {
         .node => |node| try self.dispatchNode(node, event, opts),
-        else => try self.dispatchDirect(target, event, null, .{ .context = "dispatch" }),
+        else => {
+            const handler = self.getDirectPropertyHandler(target, event);
+            try self.dispatchDirectInner(target, event, handler, .{ .context = "dispatch" });
+        },
     }
 }
 
@@ -137,6 +140,12 @@ pub const DispatchDirectOptions = EventManagerBase.DispatchDirectOptions;
 // property handlers. No propagation - just calls the handler and registered listeners.
 // Handler can be: null, ?js.Function.Global, ?js.Function.Temp, or js.Function
 pub fn dispatchDirect(self: *EventManager, target: *EventTarget, event: *Event, handler: anytype, comptime opts: DispatchDirectOptions) !void {
+    self.base.beginDispatch();
+    defer self.base.endDispatch();
+    try self.dispatchDirectInner(target, event, handler, opts);
+}
+
+fn dispatchDirectInner(self: *EventManager, target: *EventTarget, event: *Event, handler: anytype, comptime opts: DispatchDirectOptions) !void {
     const frame = self.frame;
 
     // Set window.event to the currently dispatching event (WHATWG spec)
@@ -152,6 +161,10 @@ pub fn dispatchDirect(self: *EventManager, target: *EventTarget, event: *Event, 
 /// Use this to avoid creating an event when there are no listeners.
 pub fn hasDirectListeners(self: *EventManager, target: *EventTarget, typ: []const u8, handler: anytype) bool {
     return self.base.hasDirectListeners(target, typ, handler);
+}
+
+pub fn removeSignalListeners(self: *EventManager, signal: *@import("../webapi/AbortSignal.zig")) void {
+    self.base.removeSignalListeners(signal);
 }
 
 fn dispatchNode(self: *EventManager, target: *Node, event: *Event, comptime opts: DispatchOpts) !void {
@@ -279,7 +292,7 @@ fn dispatchNode(self: *EventManager, target: *Node, event: *Event, comptime opts
             was_handled = true;
             event._current_target = target_et;
 
-            try local.toLocal(inline_handler).callWithThis(void, target_et, .{event});
+            EventManagerBase.invokeListener(local, local.ctx, local.toLocal(inline_handler), target_et, event, "inline handler");
 
             if (event._stop_propagation) {
                 return;
@@ -326,22 +339,6 @@ const DispatchPhaseOpts = struct {
 fn dispatchPhase(self: *EventManager, list: *std.DoublyLinkedList, current_target: *EventTarget, event: *Event, was_handled: *bool, local: *const js.Local, comptime opts: DispatchPhaseOpts) !void {
     const frame = self.frame;
     const base = &self.base;
-
-    // Track dispatch depth for deferred removal
-    base.dispatch_depth += 1;
-    defer {
-        const dispatch_depth = base.dispatch_depth;
-        // Only destroy deferred listeners when we exit the outermost dispatch
-        if (dispatch_depth == 1) {
-            for (base.deferred_removals.items) |removal| {
-                removal.list.remove(&removal.listener.node);
-                base.listener_pool.destroy(removal.listener);
-            }
-            base.deferred_removals.clearRetainingCapacity();
-        } else {
-            base.dispatch_depth = dispatch_depth - 1;
-        }
-    }
 
     // Use the last listener in the list as sentinel - listeners added during dispatch will be after it
     const last_node = list.last orelse return;
@@ -401,29 +398,14 @@ fn dispatchPhase(self: *EventManager, list: *std.DoublyLinkedList, current_targe
             event._target = getAdjustedTarget(original_target, current_target);
         }
 
+        event.setPassiveListener(listener.passive);
+        defer event.setPassiveListener(false);
+
         // Listener exceptions are reported, not propagated, so dispatch can continue.
         switch (listener.function) {
-            .value => |value| local.toLocal(value).callWithThis(void, current_target, .{event}) catch |err| {
-                log.warn(.event, "listener", .{ .err = err });
-            },
-            .string => |string| {
-                const str = try frame.call_arena.dupeZ(u8, string.str());
-                local.eval(str, null) catch |err| {
-                    log.warn(.event, "listener string", .{ .err = err });
-                };
-            },
-            .object => |obj_global| {
-                const obj = local.toLocal(obj_global);
-                const handle_event = obj.getFunction("handleEvent") catch |err| blk: {
-                    log.warn(.event, "listener handleEvent", .{ .err = err });
-                    break :blk null;
-                };
-                if (handle_event) |handleEvent| {
-                    handleEvent.callWithThis(void, obj, .{event}) catch |err| {
-                        log.warn(.event, "listener object", .{ .err = err });
-                    };
-                }
-            },
+            .value => |value| EventManagerBase.invokeListener(local, local.ctx, local.toLocal(value), current_target, event, "listener"),
+            .string => |string| EventManagerBase.invokeListenerString(frame.call_arena, local, local.ctx, string.str(), "listener string"),
+            .object => |obj_global| EventManagerBase.invokeListenerObject(local, local.ctx, local.toLocal(obj_global), event, "listener object"),
         }
 
         // Restore original target (only if we changed it)
@@ -434,6 +416,31 @@ fn dispatchPhase(self: *EventManager, list: *std.DoublyLinkedList, current_targe
         if (event._stop_immediate_propagation) {
             return;
         }
+    }
+}
+
+pub fn inlineHandlerForEvent(self: *EventManager, target: *EventTarget, event: *Event) ?js.Function.Global {
+    return getInlineHandler(self, target, event);
+}
+
+fn getDirectPropertyHandler(self: *EventManager, target: *EventTarget, event: *Event) ?js.Function.Global {
+    const global_event_handlers = @import("../webapi/global_event_handlers.zig");
+
+    switch (target._type) {
+        .window => |window| {
+            const typ = event._type_string.str();
+            if (std.mem.eql(u8, typ, "error")) return window.getOnError();
+            if (std.mem.eql(u8, typ, "load")) return window.getOnLoad();
+            if (std.mem.eql(u8, typ, "message")) return window.getOnMessage();
+            if (std.mem.eql(u8, typ, "pageshow")) return window.getOnPageShow();
+            if (std.mem.eql(u8, typ, "popstate")) return window.getOnPopState();
+            const handler_type = global_event_handlers.fromEventType(typ) orelse return null;
+            return self.frame._event_target_attr_listeners.get(.{
+                .target = window.asEventTarget(),
+                .handler = handler_type,
+            });
+        },
+        else => return null,
     }
 }
 

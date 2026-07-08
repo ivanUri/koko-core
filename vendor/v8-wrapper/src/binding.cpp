@@ -290,6 +290,10 @@ const v8::Context* v8__Isolate__GetCurrentContext(v8::Isolate* isolate) {
     return local_to_ptr(isolate->GetCurrentContext());
 }
 
+const v8::Context* v8__Isolate__GetEnteredOrMicrotaskContext(v8::Isolate* isolate) {
+    return local_to_ptr(isolate->GetEnteredOrMicrotaskContext());
+}
+
 const v8::Context* v8__Isolate__GetIncumbentContext(v8::Isolate* isolate) {
     return local_to_ptr(isolate->GetIncumbentContext());
 }
@@ -903,6 +907,16 @@ v8::String* v8__String__NewFromOneByte(
     );
 }
 
+v8::String* v8__String__NewFromTwoByte(
+        v8::Isolate* isolate,
+        const uint16_t* data,
+        v8::NewStringType type,
+        int length) {
+    return maybe_local_to_ptr(
+        v8::String::NewFromTwoByte(isolate, data, type, length)
+    );
+}
+
 int v8__String__Length(const v8::String& self) {
     return self.Length();
 }
@@ -918,6 +932,15 @@ void v8__String__WriteOneByte(
         uint32_t length,
         uint8_t* buffer) {
     self.WriteOneByteV2(isolate, offset, length, buffer);
+}
+
+void v8__String__WriteUtf16(
+        const v8::String& self,
+        v8::Isolate* isolate,
+        uint32_t offset,
+        uint32_t length,
+        uint16_t* buffer) {
+    self.WriteV2(isolate, offset, length, buffer);
 }
 
 // Boolean

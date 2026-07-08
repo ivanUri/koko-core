@@ -80,8 +80,10 @@ pub fn build(b: *Build) !void {
 
         try linkV8(b, mod, enable_asan, enable_tsan, prebuilt_v8_path);
         try linkCurl(b, mod, enable_tsan);
+        linkZlibModule(b, mod, enable_tsan);
         try linkHtml5Ever(b, mod);
         try linkWebRtc(b, mod, enable_tsan);
+        try linkNghttp2ForVelora(b, mod, enable_tsan);
         if (target.result.os.tag == .macos) {
             mod.addSystemFrameworkPath(.{ .cwd_relative = "/System/Library/Frameworks" });
             mod.linkFramework("CoreGraphics", .{});
@@ -420,6 +422,12 @@ fn linkCurl(b: *Build, mod: *Build.Module, is_tsan: bool) !void {
     }
 }
 
+fn linkZlibModule(b: *Build, mod: *Build.Module, is_tsan: bool) void {
+    const zlib = buildZlib(b, mod.resolved_target.?, mod.optimize.?, is_tsan);
+    mod.linkLibrary(zlib);
+    mod.addIncludePath(b.dependency("zlib", .{}).path(""));
+}
+
 fn buildZlib(b: *Build, target: Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, is_tsan: bool) *Build.Step.Compile {
     const dep = b.dependency("zlib", .{});
 
@@ -561,6 +569,15 @@ fn buildNghttp2(b: *Build, target: Build.ResolvedTarget, optimize: std.builtin.O
     });
 
     return lib;
+}
+
+fn linkNghttp2ForVelora(b: *Build, mod: *Build.Module, is_tsan: bool) !void {
+    const target = mod.resolved_target.?;
+    const optimize = mod.optimize.?;
+    const nghttp2 = buildNghttp2(b, target, optimize, is_tsan);
+    mod.linkLibrary(nghttp2);
+    const dep = b.dependency("nghttp2", .{});
+    mod.addIncludePath(dep.path("lib/includes"));
 }
 
 fn buildLibidn2(

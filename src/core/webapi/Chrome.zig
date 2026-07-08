@@ -137,7 +137,8 @@ pub fn csi(self: *const Chrome, frame: *Frame) Csi {
     else
         now_ms;
 
-    const page_t = csiPageT(timing.navigation_start, self._start_e_ms, now_ms, perf.frozenNowMs());
+    var page_t = csiPageT(timing.navigation_start, self._start_e_ms, now_ms, perf.frozenNowMs());
+    if (perf.usesIntegerNowMs()) page_t = @round(page_t);
 
     return .{
         .startE = start_e,

@@ -26,6 +26,58 @@ const Value = @This();
 local: *const js.Local,
 handle: *const v8.Value,
 
+/// True when `handle` is a Velora host object whose prototype chain includes `T`.
+/// True when `self`'s prototype is the `.prototype` of `global[constructor_name]`.
+pub fn hasGlobalConstructorPrototype(self: Value, constructor_name: []const u8) bool {
+    if (!self.isObject()) return false;
+    const global_handle = v8.v8__Context__Global(self.local.handle).?;
+    const global_obj = js.Object{ .local = self.local, .handle = global_handle };
+    const ctor_val = global_obj.get(constructor_name) catch return false;
+    if (!ctor_val.isObject()) return false;
+    const proto_val = ctor_val.toObject().get("prototype") catch return false;
+    if (!proto_val.isObject()) return false;
+    const obj_proto = v8.v8__Object__GetPrototype(self.toObject().handle) orelse return false;
+    return obj_proto == proto_val.toObject().handle;
+}
+
+pub fn isInstanceOf(self: Value, constructor_name: []const u8) bool {
+    if (!self.isObject()) return false;
+    const global_handle = v8.v8__Context__Global(self.local.handle).?;
+    const global_obj = js.Object{ .local = self.local, .handle = global_handle };
+    const ctor_val = global_obj.get(constructor_name) catch return false;
+    if (!ctor_val.isObject()) return false;
+    const ctor_obj = ctor_val.toObject();
+    var out: v8.MaybeBool = undefined;
+    v8.v8__Value__InstanceOf(self.handle, self.local.handle, ctor_obj.handle, &out);
+    return out.has_value and out.value;
+}
+
+pub fn hasConstructorName(self: Value, name: []const u8) bool {
+    if (!self.isObject()) return false;
+    const obj = self.toObject();
+    const ctor_val = obj.get("constructor") catch return false;
+    if (!ctor_val.isObject()) return false;
+    const name_val = ctor_val.toObject().get("name") catch return false;
+    if (name_val.isString() == null) return false;
+    const ctor_name = name_val.toStringSmart() catch return false;
+    return std.mem.eql(u8, ctor_name, name);
+}
+
+pub fn isBranded(self: Value, comptime T: type) bool {
+    if (!self.isObject()) return false;
+    const bridge = @import("bridge.zig");
+    const obj_handle = self.toObject().handle;
+    if (v8.v8__Object__InternalFieldCount(obj_handle) == 0) return false;
+    const tao_ptr = v8.v8__Object__GetAlignedPointerFromInternalField(obj_handle, 0) orelse return false;
+    const tao: *@import("TaggedOpaque.zig") = @ptrCast(@alignCast(tao_ptr));
+    if (tao.prototype_len == 0) return false;
+    const expected = bridge.JsApiLookup.getId(bridge.Struct(T).JsApi);
+    for (tao.prototype_chain[0..tao.prototype_len]) |entry| {
+        if (entry.index == expected) return true;
+    }
+    return false;
+}
+
 pub fn isObject(self: Value) bool {
     return v8.v8__Value__IsObject(self.handle);
 }
@@ -173,9 +225,9 @@ pub fn toStringSmart(self: Value) ![]const u8 {
     }
 
     const Blob = @import("../webapi/Blob.zig");
-    if (self.local.jsValueToZig(*Blob, self)) |blob_obj| {
+    if (self.local.jsValueToZig(*Blob, self) catch null) |blob_obj| {
         return blob_obj._slice;
-    } else |_| {}
+    }
 
     var byte_offset: usize = 0;
     var byte_len: usize = undefined;
@@ -298,20 +350,269 @@ pub fn toJson(self: Value, allocator: Allocator) ![]u8 {
 // Throws a DataCloneError for host objects (Blob, File, etc.) that cannot be serialized.
 // Does not support transferables which require additional delegate callbacks.
 pub fn structuredClone(self: Value) !Value {
-    return self.structuredCloneTo(self.local);
+    return self.structuredCloneTo(self.local, null);
+}
+
+fn frameFromLocal(local: *const js.Local) *@import("../browser/Frame.zig") {
+    return switch (local.ctx.global) {
+        .frame => |f| f,
+        .worker => |wgs| wgs._worker._frame,
+    };
+}
+
+fn cloneImageDataHost(self: Value, target: *const js.Local) !Value {
+    const ImageData = @import("../webapi/ImageData.zig");
+    const TaggedOpaque = @import("TaggedOpaque.zig");
+
+    const image_data = try TaggedOpaque.fromJS(*ImageData, @ptrCast(self.toObject().handle));
+    const frame = frameFromLocal(target);
+
+    var pixel_count, var overflown = @mulWithOverflow(image_data._width, image_data._height);
+    if (overflown == 1) return error.DataClone;
+    pixel_count, overflown = @mulWithOverflow(pixel_count, 4);
+    if (overflown == 1) return error.DataClone;
+
+    const clone = try frame._factory.create(ImageData{
+        ._width = image_data._width,
+        ._height = image_data._height,
+        ._data = try target.createTypedArray(.uint8_clamped, pixel_count).persist(),
+    });
+
+    const src_val = js.Value{ .local = self.local, .handle = image_data._data.local(self.local).handle };
+    const dst_val = js.Value{ .local = target, .handle = clone._data.local(target).handle };
+
+    const src_view: *const v8.ArrayBufferView = @ptrCast(src_val.handle);
+    const src_buffer = v8.v8__ArrayBufferView__Buffer(src_view) orelse return error.DataClone;
+    const src_store_ptr = v8.v8__ArrayBuffer__GetBackingStore(src_buffer);
+    const src_store_handle = v8.std__shared_ptr__v8__BackingStore__get(&src_store_ptr) orelse return error.DataClone;
+    const src_base = v8.v8__BackingStore__Data(src_store_handle) orelse return error.DataClone;
+    const src_offset = v8.v8__ArrayBufferView__ByteOffset(src_view);
+    const src_len = v8.v8__ArrayBufferView__ByteLength(src_view);
+
+    const dst_view: *const v8.ArrayBufferView = @ptrCast(dst_val.handle);
+    const dst_buffer = v8.v8__ArrayBufferView__Buffer(dst_view) orelse return error.DataClone;
+    const dst_store_ptr = v8.v8__ArrayBuffer__GetBackingStore(dst_buffer);
+    const dst_store_handle = v8.std__shared_ptr__v8__BackingStore__get(&dst_store_ptr) orelse return error.DataClone;
+    const dst_base = v8.v8__BackingStore__Data(dst_store_handle) orelse return error.DataClone;
+    const dst_offset = v8.v8__ArrayBufferView__ByteOffset(dst_view);
+    const copy_len = @min(src_len, v8.v8__ArrayBufferView__ByteLength(dst_view));
+    @memcpy(
+        @as([*]u8, @ptrCast(dst_base))[dst_offset..][0..copy_len],
+        @as([*]const u8, @ptrCast(src_base))[src_offset..][0..copy_len],
+    );
+
+    const js_obj = try target.mapZigInstanceToJs(null, clone);
+    return js_obj.toValue();
+}
+
+fn resolveBlobPtr(self: Value) !*@import("../webapi/Blob.zig") {
+    const Blob = @import("../webapi/Blob.zig");
+    const File = @import("../webapi/File.zig");
+    const TaggedOpaque = @import("TaggedOpaque.zig");
+
+    if (self.isBranded(File)) {
+        const file = try TaggedOpaque.fromJS(*File, @ptrCast(self.toObject().handle));
+        return file.asBlob();
+    }
+    if (self.isBranded(Blob)) {
+        return try TaggedOpaque.fromJS(*Blob, @ptrCast(self.toObject().handle));
+    }
+    if (self.local.jsValueToZig(*Blob, self) catch null) |blob| {
+        return blob;
+    }
+    return error.DataClone;
+}
+
+fn cloneBlobHost(self: Value, target: *const js.Local) !Value {
+    const Blob = @import("../webapi/Blob.zig");
+
+    const blob = try resolveBlobPtr(self);
+    const frame = frameFromLocal(target);
+    const clone = try Blob.initFromBytes(blob.getSlice(), blob.getType(), false, frame._page);
+    const js_obj = try target.mapZigInstanceToJs(null, clone);
+    return js_obj.toValue();
+}
+
+fn cloneFileHost(self: Value, target: *const js.Local) !Value {
+    const File = @import("../webapi/File.zig");
+    const TaggedOpaque = @import("TaggedOpaque.zig");
+
+    const file = try TaggedOpaque.fromJS(*File, @ptrCast(self.toObject().handle));
+    const frame = frameFromLocal(target);
+    const arena = try frame._session.getArena(.large, "File.clone");
+    const data = try arena.dupe(u8, file.getDataSlice());
+    const mime = try arena.dupe(u8, file.getDataType());
+    const name = try arena.dupe(u8, file.getName());
+
+    const clone_file = try frame._page.factory.blob(arena, File{
+        ._proto = undefined,
+        ._name = name,
+        ._last_modified = @intFromFloat(file.getLastModified()),
+    });
+    clone_file.adoptBlobBytes(data, mime);
+    const js_obj = try target.mapZigInstanceToJs(null, clone_file);
+    return js_obj.toValue();
+}
+
+fn cloneFileListHost(self: Value, target: *const js.Local) !Value {
+    const FileList = @import("../webapi/FileList.zig");
+    const TaggedOpaque = @import("TaggedOpaque.zig");
+
+    _ = try TaggedOpaque.fromJS(*FileList, @ptrCast(self.toObject().handle));
+    const frame = frameFromLocal(target);
+    const clone = try frame._factory.create(FileList{});
+    const js_obj = try target.mapZigInstanceToJs(null, clone);
+    return js_obj.toValue();
+}
+
+fn valueIsManualCloneHost(self: Value) bool {
+    const Blob = @import("../webapi/Blob.zig");
+    const File = @import("../webapi/File.zig");
+    const FileList = @import("../webapi/FileList.zig");
+    const ImageData = @import("../webapi/ImageData.zig");
+
+    return self.isBranded(Blob) or
+        self.isBranded(File) or
+        self.isBranded(FileList) or
+        self.isBranded(ImageData) or
+        (self.local.jsValueToZig(*Blob, self) catch null) != null;
+}
+
+/// Shallow scan only — nested plain objects/cycles use the V8 structured-clone path.
+fn valueContainsManualCloneHost(self: Value) bool {
+    if (valueIsManualCloneHost(self)) return true;
+
+    if (self.isArray()) {
+        const arr = self.toArray();
+        const len = arr.len();
+        for (0..len) |i| {
+            const elem = arr.get(@intCast(i)) catch continue;
+            if (valueIsManualCloneHost(elem)) return true;
+        }
+        return false;
+    }
+
+    if (!self.isObject()) return false;
+
+    const obj = self.toObject();
+    const names = obj.getOwnPropertyNames() catch return false;
+    const len = names.len();
+    for (0..len) |i| {
+        const key_val = names.get(@intCast(i)) catch continue;
+        const key = key_val.toStringSmart() catch continue;
+        const prop = obj.get(key) catch continue;
+        if (valueIsManualCloneHost(prop)) return true;
+        if (prop.isArray()) {
+            const arr = prop.toArray();
+            const arr_len = arr.len();
+            for (0..arr_len) |j| {
+                const elem = arr.get(@intCast(j)) catch continue;
+                if (valueIsManualCloneHost(elem)) return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn clonePlainObjectHost(self: Value, target: *const js.Local) !Value {
+    const obj = self.toObject();
+    const out = target.newObject();
+    const names = try obj.getOwnPropertyNames();
+    const len = names.len();
+    for (0..len) |i| {
+        const key_val = try names.get(@intCast(i));
+        const key = try key_val.toStringSmart();
+        const prop = try obj.get(key);
+        const cloned_prop = try prop.structuredCloneTo(target, null);
+        _ = try out.set(key, cloned_prop, .{});
+    }
+    return out.toValue();
+}
+
+fn cloneSpecialValue(self: Value, target: *const js.Local) !?Value {
+    const Blob = @import("../webapi/Blob.zig");
+    const File = @import("../webapi/File.zig");
+    const FileList = @import("../webapi/FileList.zig");
+    const ImageData = @import("../webapi/ImageData.zig");
+
+    if (self.isBranded(ImageData)) {
+        return try cloneImageDataHost(self, target);
+    }
+
+    if (self.isBranded(FileList)) {
+        return try cloneFileListHost(self, target);
+    }
+
+    if (self.isBranded(File)) {
+        return try cloneFileHost(self, target);
+    }
+
+    if (self.isBranded(Blob)) {
+        return try cloneBlobHost(self, target);
+    }
+    if (self.local.jsValueToZig(*Blob, self) catch null) |_| {
+        return try cloneBlobHost(self, target);
+    }
+
+    if (self.isArray() and valueContainsManualCloneHost(self)) {
+        const arr = self.toArray();
+        const len = arr.len();
+        const out = target.newArray(@intCast(len));
+        for (0..len) |i| {
+            const elem = try arr.get(@intCast(i));
+            const cloned_elem = try elem.structuredCloneTo(target, null);
+            _ = try out.set(@intCast(i), cloned_elem, .{});
+        }
+        return out.toValue();
+    }
+
+    if (self.isObject() and valueContainsManualCloneHost(self)) {
+        return try clonePlainObjectHost(self, target);
+    }
+
+    return null;
 }
 
 // Clone a value to a different context (within the same isolate).
 // Used for cross-context messaging (e.g., Worker <-> Page).
-pub fn structuredCloneTo(self: Value, target: *const js.Local) !Value {
+pub fn structuredCloneTo(self: Value, target: *const js.Local, transfer_list: ?[]const js.Value) anyerror!Value {
+    const URL = @import("../webapi/URL.zig");
+    const URLSearchParams = @import("../webapi/net/URLSearchParams.zig");
+    const FormData = @import("../webapi/net/FormData.zig");
+    if (try cloneSpecialValue(self, target)) |cloned| {
+        return cloned;
+    }
+    if (self.isBranded(URL)) return error.DataClone;
+    if (self.isBranded(URLSearchParams)) return error.DataClone;
+    if (self.isBranded(FormData) or
+        self.isInstanceOf("FormData") or
+        self.hasGlobalConstructorPrototype("FormData") or
+        self.hasConstructorName("FormData"))
+    {
+        return error.DataClone;
+    }
+
     const source_context = self.local.handle;
     const target_context = target.handle;
     const v8_isolate = target.isolate.handle;
 
+    const TransferInfo = struct { id: u32, byte_len: usize };
+    var transfer_infos: std.ArrayList(TransferInfo) = .{};
+    defer transfer_infos.deinit(self.local.call_arena);
+
+    if (transfer_list) |list| {
+        for (list) |item| {
+            if (!item.isArrayBuffer()) continue;
+            const ab: *const v8.ArrayBuffer = @ptrCast(item.handle);
+            const byte_len = v8.v8__ArrayBuffer__ByteLength(ab);
+            try transfer_infos.append(self.local.call_arena, .{
+                .id = @intCast(transfer_infos.items.len),
+                .byte_len = byte_len,
+            });
+        }
+    }
+
     const SerializerDelegate = struct {
-        // Called when V8 encounters a host object it doesn't know how to serialize.
-        // Returns false to indicate the object cannot be cloned, and throws a DataCloneError.
-        // V8 asserts has_exception() after this returns false, so we must throw here.
         fn writeHostObject(_: ?*anyopaque, isolate: ?*v8.Isolate, _: ?*const v8.Object) callconv(.c) v8.MaybeBool {
             const iso = isolate orelse return .{ .has_value = true, .value = false };
             const message = v8.v8__String__NewFromUtf8(iso, "The object cannot be cloned.", v8.kNormal, -1);
@@ -320,12 +621,8 @@ pub fn structuredCloneTo(self: Value, target: *const js.Local) !Value {
             return .{ .has_value = true, .value = false };
         }
 
-        // Called by V8 to report serialization errors. The exception should already be thrown.
         fn throwDataCloneError(_: ?*anyopaque, _: ?*const v8.String) callconv(.c) void {}
 
-        // Called when V8 encounters a SharedArrayBuffer. We don't support sharing them across
-        // contexts, so throw a DataCloneError and return false. V8's WriteJSArrayBuffer calls
-        // RETURN_VALUE_IF_EXCEPTION after this, so throwing prevents the fatal FromJust call.
         fn getSharedArrayBufferId(_: ?*anyopaque, isolate: ?*v8.Isolate, _: ?*const v8.SharedArrayBuffer, _: ?*u32) callconv(.c) bool {
             const iso = isolate orelse return false;
             const message = v8.v8__String__NewFromUtf8(iso, "SharedArrayBuffer cannot be cloned.", v8.kNormal, -1);
@@ -345,6 +642,16 @@ pub fn structuredCloneTo(self: Value, target: *const js.Local) !Value {
 
         defer v8.v8__ValueSerializer__DELETE(serializer);
 
+        if (transfer_list) |list| {
+            var transfer_id: u32 = 0;
+            for (list) |item| {
+                if (!item.isArrayBuffer()) continue;
+                const ab: *const v8.ArrayBuffer = @ptrCast(item.handle);
+                v8.v8__ValueSerializer__TransferArrayBuffer(serializer, transfer_id, ab);
+                transfer_id += 1;
+            }
+        }
+
         var write_result: v8.MaybeBool = undefined;
         v8.v8__ValueSerializer__WriteHeader(serializer);
         v8.v8__ValueSerializer__WriteValue(serializer, source_context, self.handle, &write_result);
@@ -362,6 +669,11 @@ pub fn structuredCloneTo(self: Value, target: *const js.Local) !Value {
     const cloned_handle = blk: {
         const deserializer = v8.v8__ValueDeserializer__New(v8_isolate, data, size, null) orelse return error.JsException;
         defer v8.v8__ValueDeserializer__DELETE(deserializer);
+
+        for (transfer_infos.items) |info| {
+            const target_ab = v8.v8__ArrayBuffer__New(target.isolate.handle, info.byte_len) orelse return error.JsException;
+            v8.v8__ValueDeserializer__TransferArrayBuffer(deserializer, info.id, target_ab);
+        }
 
         var read_header_result: v8.MaybeBool = undefined;
         v8.v8__ValueDeserializer__ReadHeader(deserializer, target_context, &read_header_result);
@@ -455,6 +767,9 @@ fn G(comptime global_type: GlobalType) type {
         const Self = @This();
 
         pub fn deinit(self: *Self) void {
+            // Temps are released explicitly via `release()` (e.g. MessageEvent.deinit).
+            // Scope-end auto-deinit must not reset the Global while another owner still holds it.
+            if (comptime global_type == .temp) return;
             v8.v8__Global__Reset(&self.handle);
         }
 

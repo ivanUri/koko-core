@@ -31,9 +31,7 @@ pub fn getWholeText(self: *Text) []const u8 {
 pub fn splitText(self: *Text, offset: usize, frame: *Frame) !*Text {
     const data = self._proto._data.str();
 
-    const byte_offset = CData.utf16OffsetToUtf8(data, offset) catch return error.IndexSizeError;
-
-    const new_data = data[byte_offset..];
+    const new_data = try CData.extractUtf16Range(frame.arena, data, offset, CData.utf16Len(data) -| offset);
     const new_node = try frame.createTextNode(new_data);
     const new_text = new_node.as(Text);
 
@@ -55,7 +53,7 @@ pub fn splitText(self: *Text, offset: usize, frame: *Frame) !*Text {
     // Use replaceData instead of setData so live range updates fire
     // (matters for detached text nodes where steps 7b-7e were skipped).
     const length = self._proto.getLength();
-    try self._proto.replaceData(offset, length - offset, "", frame);
+    try self._proto.replaceData(offset, length - offset, .{ .value = "" }, frame);
 
     return new_text;
 }

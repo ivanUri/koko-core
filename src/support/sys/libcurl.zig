@@ -210,8 +210,10 @@ pub const CurlOption = enum(c.CURLoption) {
     post = c.CURLOPT_POST,
     http_post = c.CURLOPT_HTTPPOST,
     post_field_size = c.CURLOPT_POSTFIELDSIZE,
+    infilesize_large = c.CURLOPT_INFILESIZE_LARGE,
     copy_post_fields = c.CURLOPT_COPYPOSTFIELDS,
     http_get = c.CURLOPT_HTTPGET,
+    nobody = c.CURLOPT_NOBODY,
     useragent = c.CURLOPT_USERAGENT,
     http_header = c.CURLOPT_HTTPHEADER,
     cookie = c.CURLOPT_COOKIE,
@@ -669,6 +671,7 @@ pub fn curl_easy_setopt(easy: *Curl, comptime option: CurlOption, value: anytype
         .post,
         .upload,
         .http_get,
+        .nobody,
         .fresh_connect,
         .forbid_reuse,
         .ssl_verify_host,
@@ -702,6 +705,14 @@ pub fn curl_easy_setopt(easy: *Curl, comptime option: CurlOption, value: anytype
         .tls_signed_cert_timestamps,
         => blk: {
             const n: c_long = switch (@typeInfo(@TypeOf(value))) {
+                .comptime_int, .int => @intCast(value),
+                else => @compileError("expected integer for " ++ @tagName(option) ++ ", got " ++ @typeName(@TypeOf(value))),
+            };
+            break :blk c.curl_easy_setopt(easy, opt, n);
+        },
+
+        .infilesize_large => blk: {
+            const n: CurlOffT = switch (@typeInfo(@TypeOf(value))) {
                 .comptime_int, .int => @intCast(value),
                 else => @compileError("expected integer for " ++ @tagName(option) ++ ", got " ++ @typeName(@TypeOf(value))),
             };

@@ -41,6 +41,13 @@ pub fn rethrow(self: *TryCatch) void {
     _ = v8.v8__TryCatch__ReThrow(&self.handle);
 }
 
+/// Live exception object while `TryCatch` is still in scope (for `ErrorEvent.error`).
+pub fn exceptionValue(self: TryCatch) ?js.Value {
+    if (!self.hasCaught()) return null;
+    const handle = v8.v8__TryCatch__Exception(&self.handle) orelse return null;
+    return .{ .local = self.local, .handle = handle };
+}
+
 pub fn caught(self: TryCatch, allocator: Allocator) ?Caught {
     if (self.hasCaught() == false) {
         return null;

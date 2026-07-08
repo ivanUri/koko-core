@@ -60,7 +60,7 @@ pub fn init(label_: ?[]const u8, opts_: ?InitOpts, exec: *const Execution) !Text
         }
     };
 
-    const transform = try TransformStream.initWithZigTransform(decodeFn, exec);
+    const transform = try TransformStream.initWithZigTransform(decodeFn, null, exec);
 
     return .{
         ._transform = transform,

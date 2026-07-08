@@ -83,6 +83,13 @@ pub fn read(self: *ReadableStreamDefaultReader, exec: *const Execution) !js.Prom
     return stream._controller.addPendingRead();
 }
 
+pub fn getClosed(self: *ReadableStreamDefaultReader, exec: *const Execution) !js.Promise {
+    const stream = self._stream orelse {
+        return exec.context.local.?.rejectPromise(.{ .type_error = "Reader has been released" });
+    };
+    return stream.getClosedPromise(exec);
+}
+
 pub fn releaseLock(self: *ReadableStreamDefaultReader) void {
     if (self._stream) |stream| {
         stream.releaseReader();
@@ -112,4 +119,5 @@ pub const JsApi = struct {
     pub const read = bridge.function(ReadableStreamDefaultReader.read, .{});
     pub const cancel = bridge.function(ReadableStreamDefaultReader.cancel, .{});
     pub const releaseLock = bridge.function(ReadableStreamDefaultReader.releaseLock, .{});
+    pub const closed = bridge.accessor(ReadableStreamDefaultReader.getClosed, null, .{});
 };

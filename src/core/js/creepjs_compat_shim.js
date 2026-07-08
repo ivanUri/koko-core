@@ -125,7 +125,6 @@
         def(Document.prototype, "onprerenderingchange", { value: null, writable: true, configurable: true, enumerable: true });
         def(Document.prototype, "onresume", { value: null, writable: true, configurable: true, enumerable: true });
         def(Document.prototype, "onsearch", { value: null, writable: true, configurable: true, enumerable: true });
-        def(Document.prototype, "onvisibilitychange", { value: null, writable: true, configurable: true, enumerable: true });
         def(Document.prototype, "fullscreenEnabled", { get: function () { return null; }, configurable: true, enumerable: true });
         def(Document.prototype, "fullscreen", { get: function () { return null; }, configurable: true, enumerable: true });
         def(Document.prototype, "onfullscreenchange", { value: null, writable: true, configurable: true, enumerable: true });

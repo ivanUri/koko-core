@@ -42,22 +42,41 @@ pub fn toValue(self: String) js.Value {
 }
 
 pub fn toSlice(self: String) ![]u8 {
-    return self._toSlice(false, self.local.call_arena);
+    return self._toSlice(false, self.local.call_arena, true);
 }
 pub fn toSliceZ(self: String) ![:0]u8 {
-    return self._toSlice(true, self.local.call_arena);
+    return self._toSlice(true, self.local.call_arena, true);
 }
 pub fn toSliceWithAlloc(self: String, allocator: Allocator) ![]u8 {
-    return self._toSlice(false, allocator);
+    return self._toSlice(false, allocator, true);
 }
-fn _toSlice(self: String, comptime null_terminate: bool, allocator: Allocator) !(if (null_terminate) [:0]u8 else []u8) {
+/// Read a JS string as WTF-8, preserving lone UTF-16 surrogates.
+pub fn toWtf8Slice(self: String, allocator: Allocator) ![]u8 {
+    const local = self.local;
+    const handle = self.handle;
+    const isolate = local.isolate.handle;
+    const CData = @import("../webapi/CData.zig");
+
+    const cu_len = v8.v8__String__Length(handle);
+    if (cu_len == 0) return try allocator.dupe(u8, "");
+
+    const cu_buf = try allocator.alloc(u16, @intCast(cu_len));
+    defer allocator.free(cu_buf);
+    v8.v8__String__WriteUtf16(handle, isolate, 0, @intCast(cu_len), cu_buf.ptr);
+    return CData.utf16ToWtf8(allocator, cu_buf);
+}
+fn _toSlice(self: String, comptime null_terminate: bool, allocator: Allocator, comptime replace_invalid: bool) !(if (null_terminate) [:0]u8 else []u8) {
     const local = self.local;
     const handle = self.handle;
     const isolate = local.isolate.handle;
 
     const l = v8.v8__String__Utf8Length(handle, isolate);
     const buf = try (if (comptime null_terminate) allocator.allocSentinel(u8, @intCast(l), 0) else allocator.alloc(u8, @intCast(l)));
-    const n = v8.v8__String__WriteUtf8(handle, isolate, buf.ptr, buf.len, v8.NO_NULL_TERMINATION | v8.REPLACE_INVALID_UTF8);
+    const options = if (comptime replace_invalid)
+        v8.NO_NULL_TERMINATION | v8.REPLACE_INVALID_UTF8
+    else
+        v8.NO_NULL_TERMINATION;
+    const n = v8.v8__String__WriteUtf8(handle, isolate, buf.ptr, buf.len, options);
     if (comptime IS_DEBUG) {
         std.debug.assert(n == l);
     }

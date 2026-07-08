@@ -58,21 +58,33 @@ pub fn copy(arena: Allocator, original: KeyValueList) !KeyValueList {
 }
 
 pub fn fromJsObject(arena: Allocator, js_obj: js.Object, comptime normalizer: ?Normalizer, buf: []u8) !KeyValueList {
-    var it = try js_obj.nameIterator();
+    if (js.v8.v8__Value__IsArray(@ptrCast(js_obj.handle))) return error.TypeError;
+    if (isArrayLikeObject(js_obj)) return error.TypeError;
+
+    const names = try js_obj.getOwnPropertyNames();
     var list = KeyValueList.init();
-    try list.ensureTotalCapacity(arena, it.count);
+    try list.ensureTotalCapacity(arena, names.len());
 
-    while (try it.next()) |name| {
-        const js_value = try js_obj.get(name);
-        const normalized = if (comptime normalizer) |n| n(name, buf) else name;
+    var i: u32 = 0;
+    while (i < names.len()) : (i += 1) {
+        const key_val = try names.get(i);
+        const key_str = key_val.isString() orelse return error.InvalidArgument;
 
-        list._entries.appendAssumeCapacity(.{
-            .name = try String.init(arena, normalized, .{}),
-            .value = try js_value.toSSOWithAlloc(arena),
-        });
+        const js_value = try js_obj.get(key_str.handle);
+        const name_slice = try key_str.toSliceWithAlloc(arena);
+        const normalized = if (comptime normalizer) |n| n(name_slice, buf) else name_slice;
+
+        try list.upsert(arena, normalized, try (try js_value.toString()).toSliceWithAlloc(arena));
     }
 
     return list;
+}
+
+fn isArrayLikeObject(obj: js.Object) bool {
+    if (!obj.has("0")) return false;
+    if (!obj.has("length")) return false;
+    const length_val = obj.get("length") catch return false;
+    return length_val.isUint32() or length_val.isInt32();
 }
 
 pub fn fromArray(arena: Allocator, kvs: []const [2][]const u8, comptime normalizer: ?Normalizer, buf: []u8) !KeyValueList {
@@ -126,6 +138,15 @@ pub fn has(self: *const KeyValueList, name: []const u8) bool {
     return false;
 }
 
+pub fn hasPair(self: *const KeyValueList, name: []const u8, value: []const u8) bool {
+    for (self._entries.items) |*entry| {
+        if (entry.name.eqlSlice(name) and entry.value.eqlSlice(value)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 pub fn append(self: *KeyValueList, allocator: Allocator, name: []const u8, value: []const u8) !void {
     try self._entries.append(allocator, .{
         .name = try String.init(allocator, name, .{}),
@@ -146,7 +167,7 @@ pub fn delete(self: *KeyValueList, name: []const u8, value: ?[]const u8) void {
         const entry = self._entries.items[i];
         if (entry.name.eqlSlice(name)) {
             if (value == null or entry.value.eqlSlice(value.?)) {
-                _ = self._entries.swapRemove(i);
+                _ = self._entries.orderedRemove(i);
                 continue;
             }
         }
@@ -155,7 +176,34 @@ pub fn delete(self: *KeyValueList, name: []const u8, value: ?[]const u8) void {
 }
 
 pub fn set(self: *KeyValueList, allocator: Allocator, name: []const u8, value: []const u8) !void {
-    self.delete(name, null);
+    var first_idx: ?usize = null;
+    var i: usize = 0;
+    while (i < self._entries.items.len) {
+        if (self._entries.items[i].name.eqlSlice(name)) {
+            if (first_idx == null) {
+                first_idx = i;
+                self._entries.items[i].value = try String.init(allocator, value, .{});
+                i += 1;
+            } else {
+                _ = self._entries.orderedRemove(i);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    if (first_idx == null) {
+        try self.append(allocator, name, value);
+    }
+}
+
+/// Record-style init: update an existing normalized name in place, preserving enumeration order.
+pub fn upsert(self: *KeyValueList, allocator: Allocator, name: []const u8, value: []const u8) !void {
+    for (self._entries.items) |*entry| {
+        if (entry.name.eqlSlice(name)) {
+            entry.value = try String.init(allocator, value, .{});
+            return;
+        }
+    }
     try self.append(allocator, name, value);
 }
 
@@ -165,6 +213,171 @@ pub fn len(self: *const KeyValueList) usize {
 
 pub fn items(self: *const KeyValueList) []const Entry {
     return self._entries.items;
+}
+
+pub const UrlEncodedParseOpts = struct {
+    strip_leading_question_mark: bool = false,
+};
+
+/// Parse an application/x-www-form-urlencoded byte sequence (percent-decode, UTF-8).
+pub fn fromUrlEncodedString(
+    arena: Allocator,
+    input_: []const u8,
+    buf: []u8,
+    opts: UrlEncodedParseOpts,
+) !KeyValueList {
+    if (input_.len == 0) {
+        return .empty;
+    }
+
+    var input = input_;
+    if (opts.strip_leading_question_mark and input[0] == '?') {
+        input = input[1..];
+    }
+
+    if (input.len == 0) {
+        return .empty;
+    }
+
+    var params = KeyValueList.init();
+
+    var it = std.mem.splitScalar(u8, input, '&');
+    while (it.next()) |entry| {
+        if (entry.len == 0) continue;
+
+        const name, const value = if (std.mem.indexOfScalarPos(u8, entry, 0, '=')) |idx| .{
+            try percentDecodeField(arena, entry[0..idx], buf),
+            try percentDecodeField(arena, entry[idx + 1 ..], buf),
+        } else .{
+            try percentDecodeField(arena, entry, buf),
+            comptime String.wrap(""),
+        };
+
+        try params._entries.append(arena, .{ .name = name, .value = value });
+    }
+
+    return params;
+}
+
+fn percentDecodeField(arena: Allocator, value: []const u8, buf: []u8) !String {
+    if (value.len == 0) {
+        return comptime String.wrap("");
+    }
+
+    var has_plus = false;
+    var unescaped_len = value.len;
+
+    var in_i: usize = 0;
+    while (in_i < value.len) {
+        const b = value[in_i];
+        if (b == '%') {
+            if (in_i + 2 < value.len and std.ascii.isHex(value[in_i + 1]) and std.ascii.isHex(value[in_i + 2])) {
+                in_i += 3;
+                unescaped_len -= 2;
+            } else {
+                in_i += 1;
+            }
+        } else if (b == '+') {
+            has_plus = true;
+            in_i += 1;
+        } else {
+            in_i += 1;
+        }
+    }
+
+    if (unescaped_len == value.len and !has_plus) {
+        return String.init(arena, value, .{});
+    }
+
+    var out = buf;
+    var duped = false;
+    if (buf.len < unescaped_len) {
+        out = try arena.alloc(u8, unescaped_len);
+        duped = true;
+    }
+
+    in_i = 0;
+    for (0..unescaped_len) |i| {
+        const b = value[in_i];
+        if (b == '%') {
+            if (in_i + 2 < value.len and std.ascii.isHex(value[in_i + 1]) and std.ascii.isHex(value[in_i + 2])) {
+                out[i] = decodePercentHex(value[in_i + 1]) << 4 | decodePercentHex(value[in_i + 2]);
+                in_i += 3;
+            } else {
+                out[i] = '%';
+                in_i += 1;
+            }
+        } else if (b == '+') {
+            out[i] = ' ';
+            in_i += 1;
+        } else {
+            out[i] = b;
+            in_i += 1;
+        }
+    }
+
+    return String.init(arena, out[0..unescaped_len], .{ .dupe = !duped });
+}
+
+const PERCENT_HEX_DECODE_ARRAY = blk: {
+    var all: ['f' - '0' + 1]u8 = undefined;
+    for ('0'..('9' + 1)) |b| all[b - '0'] = b - '0';
+    for ('A'..('F' + 1)) |b| all[b - '0'] = b - 'A' + 10;
+    for ('a'..('f' + 1)) |b| all[b - '0'] = b - 'a' + 10;
+    break :blk all;
+};
+
+inline fn decodePercentHex(char: u8) u8 {
+    return @as([*]const u8, @ptrFromInt((@intFromPtr(&PERCENT_HEX_DECODE_ARRAY) - @as(usize, '0'))))[char];
+}
+
+const Utf16CodeUnitIter = struct {
+    s: []const u8,
+    pos: usize = 0,
+    pending: ?u16 = null,
+
+    fn next(self: *Utf16CodeUnitIter) ?u16 {
+        if (self.pending) |unit| {
+            self.pending = null;
+            return unit;
+        }
+        if (self.pos >= self.s.len) return null;
+
+        const seq_len = std.unicode.utf8ByteSequenceLength(self.s[self.pos]) catch {
+            self.pos += 1;
+            return 0xFFFD;
+        };
+        if (self.pos + seq_len > self.s.len) {
+            self.pos += 1;
+            return 0xFFFD;
+        }
+
+        const cp = std.unicode.utf8Decode(self.s[self.pos..][0..seq_len]) catch {
+            self.pos += 1;
+            return 0xFFFD;
+        };
+        self.pos += seq_len;
+
+        if (cp > 0xFFFF) {
+            const val = cp - 0x10000;
+            self.pending = @truncate(0xDC00 + (val & 0x3FF));
+            return @truncate(0xD800 + (val >> 10));
+        }
+        return @truncate(cp);
+    }
+};
+
+pub fn cmpUtf16CodeUnits(a: []const u8, b: []const u8) std.math.Order {
+    var ia: Utf16CodeUnitIter = .{ .s = a };
+    var ib: Utf16CodeUnitIter = .{ .s = b };
+    while (true) {
+        const ca = ia.next();
+        const cb = ib.next();
+        if (ca == null and cb == null) return .eq;
+        if (ca == null) return .lt;
+        if (cb == null) return .gt;
+        if (ca.? != cb.?) return std.math.order(ca.?, cb.?);
+    }
 }
 
 const URLEncodeMode = enum {
@@ -190,14 +403,10 @@ pub fn urlEncode(self: *const KeyValueList, comptime mode: URLEncodeMode, alloca
 
 fn urlEncodeEntry(entry: Entry, comptime mode: URLEncodeMode, allocator_: ?Allocator, charset: []const u8, writer: *std.Io.Writer) !void {
     try urlEncodeValue(entry.name.str(), mode, allocator_, charset, writer);
-
-    // for a form, for an empty value, we'll do "spice="
-    // but for a query, we do "spice"
-    if ((comptime mode == .query) and entry.value.len == 0) {
-        return;
-    }
-
+    // URL standard always emits "=" between name and value, even when either is empty.
+    // https://url.spec.whatwg.org/#concept-urlencoded-serializer
     try writer.writeByte('=');
+    if (entry.value.len == 0) return;
     try urlEncodeValue(entry.value.str(), mode, allocator_, charset, writer);
 }
 
@@ -510,6 +719,42 @@ test "KeyValueList: urlEncode .form normalizes legacy charsets too" {
     try list.urlEncode(.form, allocator, "GBK", &buf.writer);
 
     try testing.expectString("msg=a%0D%0Ab", buf.written());
+}
+
+test "KeyValueList: cmpUtf16CodeUnits surrogate vs BMP" {
+    // 🌈 sorts before ﬃ by UTF-16 code units (D83C < FB03).
+    try testing.expect(std.math.Order.lt == cmpUtf16CodeUnits("🌈", "ﬃ"));
+    try testing.expect(std.math.Order.gt == cmpUtf16CodeUnits("ﬃ", "🌈"));
+}
+
+test "KeyValueList: set updates first match and preserves order" {
+    const allocator = testing.arena_allocator;
+    var list = KeyValueList.init();
+    try list.append(allocator, "a", "b");
+    try list.append(allocator, "c", "d");
+    try list.set(allocator, "a", "B");
+    try testing.expectEqual(@as(usize, 2), list.len());
+    try testing.expectString("b", list.get("a").?);
+    try testing.expectString("a", list.items()[0].name.str());
+    try testing.expectString("B", list.items()[0].value.str());
+    try testing.expectString("c", list.items()[1].name.str());
+
+    try list.append(allocator, "a", "e");
+    try list.set(allocator, "a", "B");
+    try testing.expectEqual(@as(usize, 2), list.len());
+    try testing.expectString("B", list.get("a").?);
+}
+
+test "KeyValueList: urlEncode .query empty name and value" {
+    const allocator = testing.arena_allocator;
+    var list = KeyValueList.init();
+    try list.append(allocator, "", "");
+    try list.append(allocator, "", "");
+
+    var buf = std.Io.Writer.Allocating.init(allocator);
+    try list.urlEncode(.query, null, "UTF-8", &buf.writer);
+
+    try testing.expectString("=&=", buf.written());
 }
 
 test "KeyValueList: urlEncode .query does NOT normalize line endings" {

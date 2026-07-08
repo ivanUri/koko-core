@@ -1,0 +1,25 @@
+01-smoke	3	IDL smoke — idlharness	lists/01-smoke.txt
+02-api-basic	89	Core fetch — basic	lists/02-api-basic.txt
+03-api-request	68	Request API	lists/03-api-request.txt
+04-api-response	73	Response API	lists/04-api-response.txt
+05-api-headers	36	Headers	lists/05-api-headers.txt
+06-api-body	7	Body	lists/06-api-body.txt
+07-api-redirect	37	Redirect	lists/07-api-redirect.txt
+08-api-abort	9	AbortController	lists/08-api-abort.txt
+09-api-credentials	9	Credentials	lists/09-api-credentials.txt
+10-api-cors	41	CORS	lists/10-api-cors.txt
+11-api-crashtests	3	Crashtests	lists/11-api-crashtests.txt
+12-data-urls	7	data: URLs	lists/12-data-urls.txt
+13-content-encoding	31	Content-Encoding	lists/13-content-encoding.txt
+14-content-type	5	Content-Type	lists/14-content-type.txt
+15-content-length	4	Content-Length	lists/15-content-length.txt
+16-http-cache	36	HTTP cache	lists/16-http-cache.txt
+17-h1-parsing	20	H1 parsing	lists/17-h1-parsing.txt
+18-corp	11	CORP	lists/18-corp.txt
+19-orb	10	ORB	lists/19-orb.txt
+20-range	11	Range requests	lists/20-range.txt
+21-metadata	9	Sec-Fetch metadata	lists/21-metadata.txt
+22-security	5	Security misc	lists/22-security.txt
+23-fetch-later	39	fetchLater (experimental)	lists/23-fetch-later.txt
+24-lna	12	Local network access	lists/24-lna.txt
+25-stale-while-revalidate	3	fetch/stale-while-revalidate	lists/25-stale-while-revalidate.txt

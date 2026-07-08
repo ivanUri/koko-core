@@ -194,6 +194,7 @@ pub fn imageAddedCallback(self: *Image, frame: *Frame) !void {
             .headers = headers,
             .cookie_jar = &session.cookie_jar,
             .cookie_origin = frame.url,
+            .top_level_cookie_url = frame.topLevelUrl(),
             .resource_type = .image,
             .notification = session.notification,
         },

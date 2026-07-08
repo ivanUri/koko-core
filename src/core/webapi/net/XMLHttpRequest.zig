@@ -16,6 +16,7 @@ const RC = @import("../../../support/rc.zig").RC;
 const js = @import("../../js/js.zig");
 
 const HttpClient = @import("../../browser/HttpClient.zig");
+const GoogleSigninDebug = @import("../../browser/GoogleSigninDebug.zig");
 const http = @import("../../../runtime/network/http.zig");
 
 const URL = @import("../../browser/URL.zig");
@@ -233,6 +234,16 @@ pub fn send(self: *XMLHttpRequest, body_: ?[]const u8) !void {
         }
     }
 
+    if (GoogleSigninDebug.mi613eTraceEnabled() and std.mem.indexOf(u8, self._url, "rpcids=MI613e") != null) {
+        const b = self._request_body orelse &[_]u8{};
+        const prefix_len = @min(b.len, 512);
+        log.warn(.http, "signin.mi613e.trace", .{
+            .url = self._url,
+            .body_len = b.len,
+            .body_prefix = if (prefix_len > 0) b[0..prefix_len] else "",
+        });
+    }
+
     const exec = self._exec;
 
     if (std.mem.startsWith(u8, self._url, "blob:")) {
@@ -246,7 +257,7 @@ pub fn send(self: *XMLHttpRequest, body_: ?[]const u8) !void {
     // Only add cookies for same-origin or when withCredentials is true
     const cookie_support = self._with_credentials or exec.isSameOrigin(self._url);
 
-    try self._request_headers.populateHttpHeader(exec.call_arena, &headers);
+    try self._request_headers.populateHttpHeader(exec.call_arena, &headers, exec.buf);
     try exec.headersForRequest(&headers, .{
         .request_url = self._url,
         .resource_type = .xhr,
@@ -267,9 +278,11 @@ pub fn send(self: *XMLHttpRequest, body_: ?[]const u8) !void {
             .body = self._request_body,
             .cookie_jar = if (cookie_support) &session.cookie_jar else null,
             .cookie_origin = exec.url.*,
+            .top_level_cookie_url = exec.topLevelCookieUrl(),
             .resource_type = .xhr,
             .timeout_ms = self._timeout,
             .notification = session.notification,
+            .protect_from_abort = batchexecuteProtectFromAbort(self._url),
         },
         .start_callback = httpStartCallback,
         .header_callback = httpHeaderDoneCallback,
@@ -337,9 +350,8 @@ pub fn getResponseHeader(self: *const XMLHttpRequest, name: []const u8) ?[]const
 }
 
 pub fn getAllResponseHeaders(self: *const XMLHttpRequest, exec: *const Execution) ![]const u8 {
-    if (self._ready_state != .done) {
-        // MDN says this should return null, but it seems to return an empty string
-        // in every browser. Specs are too hard for a dumbo like me to understand.
+    // Chrome exposes headers once readyState >= HEADERS_RECEIVED (2).
+    if (@intFromEnum(self._ready_state) < @intFromEnum(ReadyState.headers_received)) {
         return "";
     }
 
@@ -492,10 +504,17 @@ fn httpDataCallback(response: HttpClient.Response, data: []const u8) !void {
     const self: *XMLHttpRequest = @ptrCast(@alignCast(response.ctx));
     try self._response_data.appendSlice(self._arena, data);
 
+    const exec = self._exec;
     try self._proto.dispatch(.progress, .{
         .total = self._response_len orelse 0,
         .loaded = self._response_data.items.len,
-    }, self._exec);
+    }, exec);
+
+    // Google batchexecute (rt=c) parses chunked bodies on readystatechange while
+    // readyState === LOADING (3). Re-dispatch so progressive responseText is visible.
+    if (self._ready_state == .loading) {
+        try self.dispatchReadyStateChange(exec);
+    }
 }
 
 fn httpDoneCallback(ctx: *anyopaque) !void {
@@ -526,6 +545,7 @@ fn httpDoneCallback(ctx: *anyopaque) !void {
         .loaded = loaded,
     }, exec);
 
+    exec.context.page.session.drainDeferredCommit();
     self.releaseSelfRef();
 }
 
@@ -536,6 +556,7 @@ fn httpErrorCallback(ctx: *anyopaque, err: anyerror) void {
     if (self._http_response != null) {
         self._http_response = null;
     }
+    self._exec.context.page.session.drainDeferredCommit();
     self.releaseSelfRef();
 }
 
@@ -590,18 +611,27 @@ fn _handleError(self: *XMLHttpRequest, err: anyerror) !void {
     });
 }
 
+fn dispatchReadyStateChange(self: *XMLHttpRequest, exec: *const Execution) !void {
+    const target = self.asEventTarget();
+    if (exec.hasDirectListeners(target, "readystatechange", self._on_ready_state_change)) {
+        const event = try Event.initTrusted(.wrap("readystatechange"), .{}, exec.context.page);
+        try exec.dispatch(target, event, self._on_ready_state_change, .{ .context = "XHR state change" });
+    }
+}
+
 fn stateChanged(self: *XMLHttpRequest, state: ReadyState, exec: *const Execution) !void {
     if (state == self._ready_state) {
         return;
     }
 
     self._ready_state = state;
+    try self.dispatchReadyStateChange(exec);
+}
 
-    const target = self.asEventTarget();
-    if (exec.hasDirectListeners(target, "readystatechange", self._on_ready_state_change)) {
-        const event = try Event.initTrusted(.wrap("readystatechange"), .{}, exec.context.page);
-        try exec.dispatch(target, event, self._on_ready_state_change, .{ .context = "XHR state change" });
-    }
+/// Google Identity batchexecute (rt=c) must finish even when sign-in JS schedules
+/// a navigation from a LOADING readystatechange handler (MI613e → zKAP2e chain).
+fn batchexecuteProtectFromAbort(url: []const u8) bool {
+    return std.mem.indexOf(u8, url, "batchexecute") != null;
 }
 
 fn parseMethod(method: []const u8) !http.Method {

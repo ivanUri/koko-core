@@ -11,14 +11,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-const std = @import("std");
 const js = @import("../js/js.zig");
 const Node = @import("Node.zig");
+
+const v8 = js.v8;
 
 const NodeFilter = @This();
 
 _func: ?js.Function.Global,
 _original_filter: ?FilterOpts,
+_active: bool = false,
 
 pub const FilterOpts = union(enum) {
     function: js.Function.Global,
@@ -60,9 +62,51 @@ pub const SHOW_DOCUMENT_TYPE: u32 = 0x200;
 pub const SHOW_DOCUMENT_FRAGMENT: u32 = 0x400;
 pub const SHOW_NOTATION: u32 = 0x800;
 
-pub fn acceptNode(self: *const NodeFilter, node: *Node, local: *const js.Local) !i32 {
+pub fn acceptNode(self: *NodeFilter, node: *Node, local: *const js.Local) !i32 {
     const func = self._func orelse return FILTER_ACCEPT;
-    return local.toLocal(func).callRethrow(i32, .{node});
+    if (self._active) return error.InvalidStateError;
+    self._active = true;
+    defer self._active = false;
+
+    // Nested filter / nextNode calls must propagate through pure JS throws so
+    // WPT assert_throws_* in NodeIterator sees the exception (native rethrow
+    // from a callback invoked by another native API is swallowed in V8 here).
+    var try_catch: js.TryCatch = undefined;
+    try_catch.init(local);
+
+    const f = local.toLocal(func);
+    const js_node = try local.zigValueToJs(node, .{});
+    const global_handle = v8.v8__Context__Global(local.handle).?;
+    const js_args: [1]*const v8.Value = .{js_node.handle};
+    const c_args = @as(?[*]const ?*v8.Value, @ptrCast(&js_args));
+
+    const handle = v8.v8__Function__Call(
+        @ptrCast(f.handle),
+        local.handle,
+        global_handle,
+        1,
+        c_args,
+    ) orelse {
+        const ex = try_catch.exceptionValue();
+        try_catch.deinit();
+        if (ex) |e| {
+            local.ctx.pending_callback_exception = true;
+            _ = local.isolate.throwException(e.handle);
+        }
+        return error.JsException;
+    };
+    try_catch.deinit();
+
+    const raw = try local.jsValueToZig(i32, .{ .local = local, .handle = handle });
+    return normalizeFilterResult(raw);
+}
+
+fn normalizeFilterResult(result: i32) i32 {
+    return switch (result) {
+        FILTER_ACCEPT, FILTER_REJECT, FILTER_SKIP => result,
+        // Legacy filters returned booleans: true → 1 (ACCEPT), false → 0 (REJECT).
+        else => FILTER_REJECT,
+    };
 }
 
 pub fn shouldShow(node: *const Node, what_to_show: u32) bool {

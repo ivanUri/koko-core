@@ -19,6 +19,10 @@ pub fn getLabels(self: *Output, frame: *Frame) !js.Array {
     return @import("Label.zig").getControlLabels(self.asElement(), frame);
 }
 
+pub fn getHtmlForList(self: *Output, frame: *Frame) !*@import("../../collections.zig").DOMTokenList {
+    return self.asElement().getHtmlForList(frame);
+}
+
 pub const JsApi = struct {
     pub const bridge = js.Bridge(Output);
 
@@ -29,4 +33,5 @@ pub const JsApi = struct {
     };
 
     pub const labels = bridge.accessor(Output.getLabels, null, .{});
+    pub const htmlFor = bridge.accessor(Output.getHtmlForList, null, .{});
 };

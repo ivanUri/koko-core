@@ -18,11 +18,13 @@ const RC = @import("../../../support/rc.zig").RC;
 const js = @import("../../js/js.zig");
 const Page = @import("../../browser/Page.zig");
 const HttpClient = @import("../../browser/HttpClient.zig");
+const URL = @import("../../browser/URL.zig");
 
 const Blob = @import("../Blob.zig");
 const ReadableStream = @import("../streams/ReadableStream.zig");
 
 const Headers = @import("Headers.zig");
+const FormData = @import("FormData.zig");
 
 const Execution = js.Execution;
 const Allocator = std.mem.Allocator;
@@ -55,6 +57,19 @@ const Body = union(enum) {
     bytes: []const u8,
     stream: *ReadableStream,
 };
+
+fn blobBodyBytes(arena: Allocator, js_val: js.Value) !?[]const u8 {
+    const File = @import("../File.zig");
+    const TaggedOpaque = @import("../../js/TaggedOpaque.zig");
+    if (js_val.isBranded(File)) {
+        const file = try TaggedOpaque.fromJS(*File, @ptrCast(js_val.toObject().handle));
+        return try arena.dupe(u8, file.getDataSlice());
+    }
+    if (js_val.local.jsValueToZig(*Blob, js_val)) |blob_obj| {
+        return try arena.dupe(u8, blob_obj.getSlice());
+    } else |_| {}
+    return null;
+}
 
 const InitOpts = struct {
     status: u16 = 200,
@@ -106,6 +121,9 @@ pub fn init(body_: ?BodyInit, opts_: ?InitOpts, exec: *const Execution) !*Respon
             .js_val => |js_val| {
                 if (js_val.isNullOrUndefined()) {
                     break :blk .empty;
+                }
+                if (try blobBodyBytes(arena, js_val)) |body_bytes| {
+                    break :blk .{ .bytes = body_bytes };
                 }
                 // Treat js_val as string body for Content-Type purposes.
                 if (try headers.get("content-type", exec) == null) {
@@ -219,7 +237,10 @@ pub fn getText(self: *Response, exec: *const Execution) !js.Promise {
             // null body: bodyUsed stays false, return empty string
             return local.resolvePromise(@as([]const u8, ""));
         },
-        .stream => return local.rejectPromise(.{ .type_error = "Cannot read text from stream body" }),
+        .stream => |stream| {
+            self._body_used = true;
+            return StreamConsumer.startText(stream, exec);
+        },
     };
     self._body_used = true;
     return local.resolvePromise(stripBom(body));
@@ -230,19 +251,23 @@ pub fn getJson(self: *Response, exec: *const Execution) !js.Promise {
     if (self._body_used) {
         return local.rejectPromise(.{ .type_error = "body has already been consumed" });
     }
-    const body = switch (self._body) {
-        .bytes => |b| b,
+    switch (self._body) {
+        .bytes => |body| {
+            self._body_used = true;
+            const value = local.parseJSON(body) catch {
+                return local.rejectPromise(.{ .syntax_error = "failed to parse" });
+            };
+            return local.resolvePromise(try value.persist());
+        },
         .empty => {
             self._body_used = false;
             return local.rejectPromise(.{ .syntax_error = "failed to parse" });
         },
-        .stream => return local.rejectPromise(.{ .type_error = "Cannot read JSON from stream body" }),
-    };
-    self._body_used = true;
-    const value = local.parseJSON(body) catch {
-        return local.rejectPromise(.{ .syntax_error = "failed to parse" });
-    };
-    return local.resolvePromise(try value.persist());
+        .stream => |stream| {
+            self._body_used = true;
+            return StreamConsumer.startJson(stream, exec);
+        },
+    }
 }
 
 pub fn arrayBuffer(self: *Response, exec: *const Execution) !js.Promise {
@@ -270,8 +295,27 @@ const StreamConsumer = struct {
     reader: *ReadableStreamDefaultReader,
     chunks: std.ArrayList([]const u8),
     resolver: js.PromiseResolver.Global,
+    mode: Mode,
+
+    const Mode = enum {
+        array_buffer,
+        text,
+        json,
+    };
 
     fn start(stream: *ReadableStream, exec: *const Execution) !js.Promise {
+        return startWithMode(stream, exec, .array_buffer);
+    }
+
+    fn startText(stream: *ReadableStream, exec: *const Execution) !js.Promise {
+        return startWithMode(stream, exec, .text);
+    }
+
+    fn startJson(stream: *ReadableStream, exec: *const Execution) !js.Promise {
+        return startWithMode(stream, exec, .json);
+    }
+
+    fn startWithMode(stream: *ReadableStream, exec: *const Execution, mode: Mode) !js.Promise {
         const local = exec.context.local.?;
         var resolver = local.createPromiseResolver();
         const promise = resolver.promise();
@@ -286,6 +330,7 @@ const StreamConsumer = struct {
             .total_len = 0,
             .arena = exec.arena,
             .resolver = try resolver.persist(),
+            .mode = mode,
         };
 
         try state.pumpRead();
@@ -329,7 +374,17 @@ const StreamConsumer = struct {
             // Stream is finished, concatenate all chunks and resolve
             self.reader.releaseLock();
             const result = try self.concatenateChunks(exec.call_arena);
-            local.toLocal(self.resolver).resolve("arrayBuffer complete", js.ArrayBuffer{ .values = result });
+            switch (self.mode) {
+                .array_buffer => local.toLocal(self.resolver).resolve("arrayBuffer complete", js.ArrayBuffer{ .values = result }),
+                .text => local.toLocal(self.resolver).resolve("text complete", stripBom(result)),
+                .json => {
+                    const value = local.parseJSON(result) catch {
+                        local.toLocal(self.resolver).rejectError("json parse", .{ .syntax_error = "failed to parse" });
+                        return;
+                    };
+                    local.toLocal(self.resolver).resolve("json complete", try value.persist());
+                },
+            }
             return;
         }
 
@@ -369,7 +424,10 @@ const StreamConsumer = struct {
 
     fn finish(self: *StreamConsumer, local: *const js.Local, err: ?[]const u8) void {
         self.reader.releaseLock();
-        local.toLocal(self.resolver).rejectError("arrayBuffer error", .{ .type_error = err orelse "Failed to read stream" });
+        switch (self.mode) {
+            .json => local.toLocal(self.resolver).rejectError("json stream read", .{ .syntax_error = err orelse "failed to parse" }),
+            else => local.toLocal(self.resolver).rejectError("stream body read", .{ .type_error = err orelse "Failed to read stream" }),
+        }
     }
 };
 
@@ -407,6 +465,71 @@ pub fn bytes(self: *Response, exec: *const Execution) !js.Promise {
         .stream => return local.rejectPromise(.{ .type_error = "Cannot read bytes from stream body" }),
     };
     return local.resolvePromise(js.TypedArray(u8){ .values = body });
+}
+
+pub fn formData(self: *Response, exec: *const Execution) !js.Promise {
+    const local = exec.context.local.?;
+    if (self._body_used) {
+        return local.rejectPromise(.{ .type_error = "body has already been consumed" });
+    }
+    const content_type = try self._headers.get("content-type", exec) orelse "";
+    if (!FormData.isUrlEncodedContentType(content_type)) {
+        return local.rejectPromise(.{ .type_error = "body is not a URL-encoded form" });
+    }
+    const body = switch (self._body) {
+        .bytes => |b| blk: {
+            self._body_used = true;
+            break :blk b;
+        },
+        .empty => {
+            const fd = try FormData.fromUrlEncodedBody("", exec);
+            return local.resolvePromise(fd);
+        },
+        .stream => return local.rejectPromise(.{ .type_error = "Cannot read formData from stream body" }),
+    };
+    const fd = try FormData.fromUrlEncodedBody(body, exec);
+    return local.resolvePromise(fd);
+}
+
+pub fn makeError(exec: *const Execution) !*Response {
+    const response = try init(null, .{ .status = 0 }, exec);
+    response._type = .@"error";
+    return response;
+}
+
+pub fn makeRedirect(url: []const u8, status: ?u16, exec: *const Execution) !*Response {
+    const resolved = try URL.resolve(exec.arena, exec.base(), url, .{ .always_dupe = true, .encoding = exec.charset.* });
+    const st: u16 = status orelse 302;
+    if (st < 300 or st > 399) return error.TypeError;
+
+    const response = try init(null, .{ .status = st }, exec);
+    response._type = .opaqueredirect;
+    response._url = try response._arena.dupeZ(u8, resolved);
+    try response._headers.set("Location", resolved, exec);
+    return response;
+}
+
+pub fn makeJson(data: js.Value, init_: ?InitOpts, exec: *const Execution) !*Response {
+    const json_str = data.toJson(exec.call_arena) catch return error.TypeError;
+    const response = try init(.{ .string = json_str }, init_, exec);
+    try response._headers.set("Content-Type", "application/json", exec);
+    return response;
+}
+
+pub fn textStream(self: *Response, exec: *const Execution) !*ReadableStream {
+    if (self._body_used) return error.TypeError;
+    return switch (self._body) {
+        .bytes => |body| blk: {
+            self._body_used = true;
+            break :blk try ReadableStream.initWithData(body, exec);
+        },
+        .empty => blk: {
+            const stream = try ReadableStream.init(null, null, exec);
+            try stream._controller.close();
+            break :blk stream;
+        },
+        .stream => |stream| stream,
+    };
 }
 
 pub fn clone(self: *const Response, exec: *const Execution) !*Response {
@@ -452,6 +575,9 @@ pub const JsApi = struct {
     };
 
     pub const constructor = bridge.constructor(Response.init, .{});
+    pub const error_static = bridge.function(Response.makeError, .{ .static = true, .js_name = "error" });
+    pub const redirect = bridge.function(Response.makeRedirect, .{ .static = true });
+    pub const json_static = bridge.function(Response.makeJson, .{ .static = true, .js_name = "json" });
     pub const ok = bridge.accessor(Response.isOK, null, .{});
     pub const status = bridge.accessor(Response.getStatus, null, .{});
     pub const statusText = bridge.accessor(Response.getStatusText, null, .{});
@@ -459,6 +585,7 @@ pub const JsApi = struct {
     pub const bodyUsed = bridge.accessor(Response.getBodyUsed, null, .{});
     pub const text = bridge.function(Response.getText, .{});
     pub const json = bridge.function(Response.getJson, .{});
+    pub const textStream = bridge.function(Response.textStream, .{});
     pub const headers = bridge.accessor(Response.getHeaders, null, .{});
     pub const body = bridge.accessor(Response.getBody, null, .{});
     pub const url = bridge.accessor(Response.getURL, null, .{});
@@ -466,6 +593,7 @@ pub const JsApi = struct {
     pub const arrayBuffer = bridge.function(Response.arrayBuffer, .{});
     pub const blob = bridge.function(Response.blob, .{});
     pub const bytes = bridge.function(Response.bytes, .{});
+    pub const formData = bridge.function(Response.formData, .{});
     pub const clone = bridge.function(Response.clone, .{});
 };
 

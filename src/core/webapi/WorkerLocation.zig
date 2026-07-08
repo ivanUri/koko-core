@@ -18,8 +18,8 @@ pub fn init(url: [:0]const u8, exec: *js.Execution, factory: *Factory) !*WorkerL
     });
 }
 
-pub fn getPathname(self: *const WorkerLocation) []const u8 {
-    return self._url.getPathname();
+pub fn getPathname(self: *const WorkerLocation, exec: *const js.Execution) ![]const u8 {
+    return self._url.getPathname(exec);
 }
 
 pub fn getProtocol(self: *const WorkerLocation) []const u8 {

@@ -27,6 +27,8 @@ const Parser = @import("../parser/Parser.zig");
 const h5e = @import("../parser/html5ever.zig");
 
 const URL = @import("URL.zig");
+const ContentSecurityPolicy = @import("ContentSecurityPolicy.zig");
+const ReferrerPolicy = @import("ReferrerPolicy.zig");
 const Blob = @import("../webapi/Blob.zig");
 const Node = @import("../dom/Node.zig");
 const Event = @import("../webapi/Event.zig");
@@ -54,6 +56,7 @@ const KeyboardEvent = @import("../webapi/event/KeyboardEvent.zig");
 const MouseEvent = @import("../webapi/event/MouseEvent.zig");
 
 const HttpClient = @import("HttpClient.zig");
+const GoogleSigninDebug = @import("GoogleSigninDebug.zig");
 const http = @import("../../runtime/network/http.zig");
 const build_config = @import("build_config");
 const FingerprintProfile = @import("../profile/types.zig");
@@ -112,6 +115,8 @@ _realm_has_js: bool = false,
 /// Set to true when runaway microtask execution is detected (circuit breaker).
 /// Once suppressed, the scheduler will reject further microtask checkpoints.
 _scheduler_suppressed: bool = false,
+/// Coalesce deferred frame_navigated notifications scheduled from HTTP callbacks.
+_deferred_frame_navigated_scheduled: bool = false,
 
 _page: *Page,
 
@@ -140,6 +145,8 @@ _element_datasets: Element.DatasetLookup = .empty,
 _element_class_lists: Element.ClassListLookup = .empty,
 _element_rel_lists: Element.RelListLookup = .empty,
 _element_sandbox_lists: Element.SandboxListLookup = .empty,
+_element_html_for_lists: Element.HtmlForListLookup = .empty,
+_element_sizes_lists: Element.SizesListLookup = .empty,
 _element_shadow_roots: Element.ShadowRootLookup = .empty,
 _node_owner_documents: Node.OwnerDocumentLookup = .empty,
 _element_assigned_slots: Element.AssignedSlotLookup = .empty,
@@ -185,6 +192,12 @@ _iframe_load_1: std.ArrayList(*IFrame) = .{},
 _iframe_load_2: std.ArrayList(*IFrame) = .{},
 _iframe_load: *std.ArrayList(*IFrame) = undefined,
 _iframe_load_scheduled: bool = false,
+
+// about:blank iframe loads queued during appendChild; flushed before returning to JS.
+_sync_iframe_pending_1: std.ArrayList(*IFrame) = .{},
+_sync_iframe_pending_2: std.ArrayList(*IFrame) = .{},
+_sync_iframe_pending: *std.ArrayList(*IFrame) = undefined,
+_sync_iframe_flush_scheduled: bool = false,
 
 _style_manager: StyleManager,
 _script_manager: ScriptManager,
@@ -275,6 +288,9 @@ base_url: ?[:0]const u8 = null,
 // referer header cache.
 referer_header: ?[:0]const u8 = null,
 
+content_security_policy: ?ContentSecurityPolicy.Policy = null,
+referrer_policy: ReferrerPolicy.Policy = .@"strict-origin-when-cross-origin",
+
 // Document charset (canonical name from encoding_rs, static lifetime)
 charset: []const u8 = "UTF-8",
 
@@ -315,6 +331,8 @@ _cdp_mouse_pending_x: f64 = 0,
 _cdp_mouse_pending_y: f64 = 0,
 _cdp_mouse_release_x: f64 = 0,
 _cdp_mouse_release_y: f64 = 0,
+/// Element pending LP/MCP click — activation runs on next scheduler tick.
+_lp_pending_activation: ?*Element = null,
 
 // Cached hosting `<iframe>` client size for child-frame hit-test layout.
 _hosting_iframe_layout_size: ?struct { width: f64, height: f64 } = null,
@@ -340,6 +358,7 @@ version: usize = 0,
 _pending_loads: u32,
 
 _parent_notified: bool = false,
+_detach_pending: bool = false,
 
 _type: enum { root, frame }, // only used for logs right now
 _req_id: u32 = 0,
@@ -381,6 +400,7 @@ pub fn init(self: *Frame, frame_id: u32, page: *Page, parent: ?*Frame) !void {
     };
     self._to_load = &self._to_load_1;
     self._iframe_load = &self._iframe_load_1;
+    self._sync_iframe_pending = &self._sync_iframe_pending_1;
 
     var screen: *Screen = undefined;
     var visual_viewport: *VisualViewport = undefined;
@@ -454,8 +474,87 @@ pub fn realmState(self: *const Frame) RealmLifecycleKernel.State {
     return self._realm_state;
 }
 
+pub fn realmParseComplete(self: *const Frame) bool {
+    return self._parse_state == .complete;
+}
+
 pub fn realmReadyForExternalObservers(self: *const Frame) bool {
     return self._realm_state == .active and self._realm_has_js and self._realm_has_window and self.document._frame == self;
+}
+
+fn fireUnloadLifecycleEvents(child_frame: *Frame) void {
+    for (child_frame.child_frames.items) |nested| {
+        fireUnloadLifecycleEvents(nested);
+    }
+
+    const doc = child_frame.document;
+    const doc_target = doc.asEventTarget();
+    const window_target = child_frame.window.asEventTarget();
+
+    doc.markVisibilityHidden();
+
+    if (Event.initTrusted(String.wrap("visibilitychange"), .{ .bubbles = true }, child_frame._page)) |visibility_event| {
+        child_frame._event_manager.dispatchDirect(doc_target, visibility_event, null, .{
+            .context = "iframe visibilitychange",
+            .skip_post_dispatch_microtasks = true,
+        }) catch |err| {
+            log.warn(.frame, "iframe visibilitychange", .{ .err = err });
+        };
+    } else |err| {
+        log.warn(.frame, "iframe visibilitychange init", .{ .err = err });
+    }
+
+    if (child_frame._event_manager.hasDirectListeners(window_target, "pagehide", null)) {
+        if (PageTransitionEvent.initTrusted(comptime .wrap("pagehide"), .{ .persisted = false }, child_frame)) |pagehide_event| {
+            child_frame._event_manager.dispatchDirect(window_target, pagehide_event.asEvent(), null, .{
+                .context = "iframe pagehide",
+                .skip_post_dispatch_microtasks = true,
+            }) catch |err| {
+                log.warn(.frame, "iframe pagehide", .{ .err = err });
+            };
+        } else |err| {
+            log.warn(.frame, "iframe pagehide init", .{ .err = err });
+        }
+    }
+
+    if (child_frame._event_manager.hasDirectListeners(window_target, "unload", null)) {
+        if (Event.initTrusted(comptime .wrap("unload"), .{}, child_frame._page)) |unload_event| {
+            child_frame._event_manager.dispatchDirect(window_target, unload_event, null, .{
+                .context = "iframe unload",
+                .skip_post_dispatch_microtasks = true,
+            }) catch |err| {
+                log.warn(.frame, "iframe unload", .{ .err = err });
+            };
+        } else |err| {
+            log.warn(.frame, "iframe unload init", .{ .err = err });
+        }
+    }
+}
+
+const DeferIframeChildDeinitCallback = struct {
+    child_frame: *Frame,
+
+    fn cancelled(ctx: *anyopaque) void {
+        const self: *DeferIframeChildDeinitCallback = @ptrCast(@alignCast(ctx));
+        self.child_frame.deinit();
+    }
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *DeferIframeChildDeinitCallback = @ptrCast(@alignCast(ctx));
+        self.child_frame.deinit();
+        return null;
+    }
+};
+
+fn deferIframeChildDeinit(parent: *Frame, child_frame: *Frame) !void {
+    const callback = try parent.arena.create(DeferIframeChildDeinitCallback);
+    callback.* = .{ .child_frame = child_frame };
+
+    try parent.js.scheduler.add(callback, DeferIframeChildDeinitCallback.run, 0, .{
+        .name = "Frame.deferIframeDeinit",
+        .low_priority = false,
+        .finalizer = DeferIframeChildDeinitCallback.cancelled,
+    });
 }
 
 fn detachChildFrameForIframe(self: *Frame, iframe: *IFrame) void {
@@ -464,6 +563,9 @@ fn detachChildFrameForIframe(self: *Frame, iframe: *IFrame) void {
     const child_frame_id = child_frame._frame_id;
 
     iframe._window = null;
+    child_frame._detach_pending = true;
+    child_frame._parent_notified = true;
+    self.removePendingIframeLoad(iframe);
     for (self.child_frames.items, 0..) |frame, i| {
         if (frame == child_frame) {
             self.child_frames_sorted = false;
@@ -478,7 +580,11 @@ fn detachChildFrameForIframe(self: *Frame, iframe: *IFrame) void {
         .timestamp = timestamp(.monotonic),
     });
 
-    child_frame.deinit();
+    fireUnloadLifecycleEvents(child_frame);
+    deferIframeChildDeinit(self, child_frame) catch |err| {
+        log.warn(.frame, "defer iframe deinit", .{ .err = err });
+        child_frame.deinit();
+    };
 }
 
 /// Returns true if the scheduler has been suppressed due to runaway microtask execution.
@@ -505,6 +611,7 @@ pub fn clearSchedulerSuppression(self: *Frame) void {
 pub fn bumpRealmNavigationEpoch(self: *Frame) void {
     self._realm_epoch +%= 1;
     self._realm_state = .initializing;
+    self._sync_iframe_flush_scheduled = false;
     // New navigation installs a new execution world; suppression belongs to
     // the discarded realm and must not poison the replacement realm.
     self._scheduler_suppressed = false;
@@ -637,6 +744,18 @@ pub fn removeWorker(self: *Frame, worker: *Worker) void {
     }
 }
 
+/// Tear down dedicated workers before a new document navigation. WPT worker
+/// batches navigate the same frame between *.worker.html tests; leaving workers
+/// alive leaks HTTP transfers and parent-scheduler callbacks into the next test.
+pub fn terminateAllWorkers(self: *Frame) void {
+    for (self.child_frames.items) |child| {
+        child.terminateAllWorkers();
+    }
+    while (self.workers.items.len > 0) {
+        self.workers.items[0].destroy();
+    }
+}
+
 pub fn identityProfile(self: *const Frame) *const FingerprintProfile.IdentityProfile {
     return self._session.browser.app.config.profile.identityPtr();
 }
@@ -678,6 +797,8 @@ pub const HeadersForRequestOpts = struct {
     /// Explicit Referer URL (without the "Referer: " prefix). Used by navigate()
     /// where self.url may already point at the destination.
     referer: ?[]const u8 = null,
+    referrer_policy: ?ReferrerPolicy.Policy = null,
+    referrer_source_url: ?[]const u8 = null,
     /// Document origin before this navigation (for Sec-Fetch-Site). navigate()
     /// updates self.origin before headers are built. Only meaningful when
     /// `is_document_navigation` is true.
@@ -687,6 +808,10 @@ pub const HeadersForRequestOpts = struct {
     omit_sec_fetch_user: bool = false,
     /// Site policy may rely on curl-impersonate default_headers only (cold first hop).
     curl_defaults_only: bool = false,
+    /// Fetch spec: omit Origin on GET/HEAD (§2.3).
+    include_origin_header: bool = true,
+    /// Per-request arena for header strings (fetch redirect refresh; avoids frame/call_arena races).
+    header_arena: ?Allocator = null,
 };
 
 fn navigateReasonForProfile(reason: NavigateReason) @import("../../runtime/profile/ProfileRuntime.zig").Reason {
@@ -702,9 +827,18 @@ fn navigateReasonForProfile(reason: NavigateReason) @import("../../runtime/profi
 }
 
 fn refererHeaderForRequest(self: *Frame, opts: HeadersForRequestOpts) ![:0]const u8 {
+    const alloc = opts.header_arena orelse self.arena;
+    if (opts.referrer_source_url) |source_url| {
+        const policy = opts.referrer_policy orelse self.referrer_policy;
+        const request_url = opts.request_url orelse "";
+        const referer = ReferrerPolicy.computeReferer(alloc, policy, source_url, request_url) catch null;
+        if (referer == null or referer.?.len == 0) return "";
+        return try std.mem.concatWithSentinel(alloc, u8, &.{ "Referer: ", referer.? }, 0);
+    }
     if (opts.referer) |explicit| {
         if (explicit.len == 0) return "";
-        return try std.mem.concatWithSentinel(self.arena, u8, &.{ "Referer: ", explicit }, 0);
+        const sanitized = ReferrerPolicy.sanitizeReferrerUrl(alloc, explicit) catch explicit;
+        return try std.mem.concatWithSentinel(alloc, u8, &.{ "Referer: ", sanitized }, 0);
     }
     if (self.referer_header == null) {
         if (std.mem.startsWith(u8, self.url, "http") and
@@ -724,6 +858,7 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
     const http_client = &self._session.browser.http_client;
     const profile_headers = &http_client.network.config.http_headers;
     const request_url = opts.request_url orelse return;
+    const hdr_alloc = opts.header_arena orelse self.arena;
 
     const static = HttpProfile.StaticHeaders{
         .user_agent_header = http_client.getUserAgentHeader(),
@@ -731,7 +866,7 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
         .accept_language_header = profile_headers.accept_language_header,
     };
 
-    const origin = if (opts.resource_type != .document)
+    const origin = if (opts.resource_type != .document and opts.include_origin_header)
         try self.requestOrigin()
     else
         null;
@@ -760,7 +895,7 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
                 };
                 try HttpProfile.appendCurlImpersonateColdHopSupplements(
                     headers,
-                    self.arena,
+                    hdr_alloc,
                     identity,
                     &static,
                     ctx,
@@ -771,7 +906,7 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
             try self._session.browser.app.config.profile_runtime.appendHeaderPlugins(
                 header_plan,
                 headers,
-                self.arena,
+                hdr_alloc,
                 http_client.getUserAgent(),
             );
             return;
@@ -779,7 +914,7 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
         const profile = self.loadedProfile();
         const header_plan = self._session.browser.app.config.profile_runtime.headerPlan(request_url);
         if (profile.isFirefox()) {
-            try HttpProfile.appendFirefoxHeaders(headers, self.arena, &static, ctx);
+            try HttpProfile.appendFirefoxHeaders(headers, hdr_alloc, &static, ctx);
         } else if (opts.resource_type == .document and opts.is_document_navigation) {
             const full_hints = opts.resource_type == .document or
                 self._session.clientHintsEnabledForUrl(self.arena, request_url);
@@ -792,11 +927,11 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
             };
             if (opts.omit_sec_fetch_user) {
                 // sei=/sg_ss= in-search hops: manual Chrome headers, no Sec-Fetch-User (guest HAR).
-                try HttpProfile.appendChromeHeaders(headers, self.arena, identity, &static, ctx, chrome_opts);
+                try HttpProfile.appendChromeHeaders(headers, hdr_alloc, identity, &static, ctx, chrome_opts);
             } else {
                 try HttpProfile.appendCurlImpersonateDocumentOverrides(
                     headers,
-                    self.arena,
+                    hdr_alloc,
                     &static,
                     ctx,
                     chrome_opts,
@@ -806,7 +941,7 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
             try self._session.browser.app.config.profile_runtime.appendHeaderPlugins(
                 header_plan,
                 headers,
-                self.arena,
+                hdr_alloc,
                 http_client.getUserAgent(),
             );
         } else {
@@ -819,11 +954,15 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
                 .omit_sec_fetch_user = opts.omit_sec_fetch_user,
                 .referer_url = if (opts.omit_sec_fetch_user) opts.referer else null,
             };
-            try HttpProfile.appendChromeHeaders(headers, self.arena, identity, &static, ctx, chrome_opts);
+            try HttpProfile.appendChromeHeaders(headers, hdr_alloc, identity, &static, ctx, chrome_opts);
+            const referer_hdr = try refererHeaderForRequest(self, opts);
+            if (referer_hdr.len > 0) {
+                try headers.add(referer_hdr);
+            }
             try self._session.browser.app.config.profile_runtime.appendHeaderPlugins(
                 header_plan,
                 headers,
-                self.arena,
+                hdr_alloc,
                 http_client.getUserAgent(),
             );
         }
@@ -831,7 +970,7 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
     }
 
     const referer = try refererHeaderForRequest(self, opts);
-    try HttpProfile.appendFallbackHeaders(headers, self.arena, identity, &static, ctx, referer);
+    try HttpProfile.appendFallbackHeaders(headers, hdr_alloc, identity, &static, ctx, referer);
 }
 
 // Origin for WebSocket upgrade and other callers that only need the origin token.
@@ -841,7 +980,7 @@ pub fn appendOriginHeader(self: *Frame, headers: *HttpClient.Headers) !void {
     try headers.add(origin_hdr);
 }
 
-fn requestOrigin(self: *Frame) ![]const u8 {
+pub fn requestOrigin(self: *Frame) ![]const u8 {
     if (self.origin) |o| return o;
     if (std.mem.startsWith(u8, self.url, "http")) {
         return (try URL.getOrigin(self.arena, self.url)) orelse "null";
@@ -857,35 +996,77 @@ pub fn releaseArena(self: *Frame, allocator: Allocator) void {
     return self._session.releaseArena(allocator);
 }
 
+/// Nested DOM (appendChild) may run while `Env.checkpoint_active`; `runMicrotasks`
+/// then defers and Y.ip never settles. Use per-context checkpoints + scheduler only.
+pub fn pumpSameTurnPromiseContinuations(self: *Frame) void {
+    const env = &self._session.browser.env;
+    const is_fp = std.mem.indexOf(u8, self.url, "fingerprint.com") != null;
+    var pass: u8 = 0;
+    while (pass < 48) : (pass += 1) {
+        if (is_fp) env.performMicrotaskCheckpointFp(self.js) else env.performMicrotaskCheckpoint(self.js);
+        if (@mod(pass, 4) == 3) {
+            _ = self.js.scheduler.runOne() catch {};
+            self.pumpDueTimersNow(10);
+        }
+    }
+}
+
+/// Fingerprint yb() resolves a hidden iframe Promise during appendChild. Property
+/// onload and Promise reactions queue microtasks while nested in the DOM API; the
+/// outer V8 callback must drain before returning to script or Y.ip stays pending.
+pub fn drainMicrotasksAfterDomInsertion(self: *Frame) void {
+    self.pumpSameTurnPromiseContinuations();
+
+    var owned_scope: JS.Local.Scope = undefined;
+    const nested = self.js.local != null;
+    if (!nested) self.js.localScope(&owned_scope);
+    defer if (!nested) owned_scope.deinit();
+
+    const env = &self._session.browser.env;
+    var sched_pass: u8 = 0;
+    while (sched_pass < 8) : (sched_pass += 1) {
+        _ = self.js.scheduler.run() catch break;
+        env.performMicrotaskCheckpoint(self.js);
+        if (!self.js.scheduler.hasReadyTasks()) break;
+    }
+}
+
+/// Run overdue scheduler tasks up to `max_delay_ms` without a full macrotask pump.
+pub fn pumpDueTimersNow(self: *Frame, max_delay_ms: u32) void {
+    const env = &self._session.browser.env;
+    var pass: u8 = 0;
+    while (pass < 32) : (pass += 1) {
+        const ms_to_next = self.js.scheduler.msToNext() orelse break;
+        if (ms_to_next > max_delay_ms) break;
+        if (!self.js.scheduler.hasReadyTasks()) break;
+        _ = self.js.scheduler.runOne() catch break;
+        // Nested yb() I() polls run while checkpoint_active; full runMicrotasks
+        // defers and leaves Y.ip pending for vv()'s 2s race.
+        var mt: u8 = 0;
+        while (mt < 8) : (mt += 1) {
+            env.performMicrotaskCheckpoint(self.js);
+        }
+    }
+}
+
 /// Schedule `runMacrotasks` on the next scheduler turn. Never call
 /// `runMacrotasks` synchronously from V8 API callbacks (postMessage,
 /// addEventListener, Worker setup) — it imbalances Context Enter/Exit.
-pub fn scheduleDeferredMacrotaskPump(self: *Frame) !void {
-    const arena = try self.getArena(.tiny, "Frame.deferPump");
-    errdefer self.releaseArena(arena);
+pub fn scheduleDeferredMacrotaskPump(self: *Frame, delay_ms: u32) !void {
+    const callback = try self.arena.create(DeferMacrotaskPumpCallback);
+    callback.* = .{ .frame = self };
 
-    const callback = try arena.create(DeferMacrotaskPumpCallback);
-    callback.* = .{ .frame = self, .arena = arena };
-
-    try self.js.scheduler.add(callback, DeferMacrotaskPumpCallback.run, 0, .{
+    try self.js.scheduler.add(callback, DeferMacrotaskPumpCallback.run, delay_ms, .{
         .name = "Frame.deferPump",
         .low_priority = false,
-        .finalizer = DeferMacrotaskPumpCallback.cancelled,
     });
 }
 
 const DeferMacrotaskPumpCallback = struct {
     frame: *Frame,
-    arena: Allocator,
-
-    fn cancelled(ctx: *anyopaque) void {
-        const self: *DeferMacrotaskPumpCallback = @ptrCast(@alignCast(ctx));
-        self.frame.releaseArena(self.arena);
-    }
 
     fn run(ctx: *anyopaque) !?u32 {
         const self: *DeferMacrotaskPumpCallback = @ptrCast(@alignCast(ctx));
-        defer self.frame.releaseArena(self.arena);
         self.frame._session.browser.runMacrotasks() catch |err| {
             log.warn(.browser, "deferred macrotask pump", .{ .err = err });
         };
@@ -921,24 +1102,53 @@ pub fn isSameOrigin(self: *const Frame, url: [:0]const u8) bool {
     return std.mem.eql(u8, URL.getHost(url), URL.getHost(current_origin));
 }
 
+/// URL of the root frame in this frame tree (top-level browsing context).
+pub fn topLevelUrl(self: *const Frame) [:0]const u8 {
+    var frame: *const Frame = self;
+    while (frame.parent) |parent| {
+        frame = parent;
+    }
+    return frame.url;
+}
+
 /// Look up a blob URL in this frame's registry.
 pub fn lookupBlobUrl(self: *Frame, url: []const u8) ?*Blob {
     return self._blob_urls.get(url);
 }
 
+/// Install a fresh Document for this browsing context. The previous document is
+/// detached (`_frame = null`) so JS references to it lose cookie access per spec.
+fn swapActiveDocument(self: *Frame) !void {
+    const new_doc = (try self._factory.document(Document.HTMLDocument{
+        ._proto = undefined,
+    })).asDocument();
+    const old_doc = self.document;
+    old_doc._frame = null;
+    self.document = new_doc;
+    self.window._document = new_doc;
+    new_doc._frame = self;
+}
+
 pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !void {
     assert(self._load_state == .waiting, "frame.renavigate", .{});
     const session = self._session;
+    try self.swapActiveDocument();
     session.cookie_jar.beginDocumentNavigation();
     self._load_state = .parsing;
+    self.terminateAllWorkers();
     self.bumpRealmNavigationEpoch();
     self.window._performance.recordNavigationStart();
+    self.window._performance.setIntegerNowMs(std.mem.indexOf(u8, request_url, "accounts.google.") != null);
     if (!self.loadedProfile().isFirefox()) {
         const nav_start = self.window._performance._timing.navigation_start;
         self.window._chrome.recordNavigationStart(nav_start);
     }
-    if (isGoogleKnitsailHost(request_url)) {
+    if (isGoogleKnitsailHost(request_url) or std.mem.indexOf(u8, request_url, "accounts.google.") != null) {
         self.window._google.ensureBootstrapDefaults(self);
+    }
+    if (GoogleSigninDebug.isAccountsGoogleUrl(request_url)) {
+        injectGoogleSigninClosureBusLog(self, request_url);
+        injectGoogleAccountsBioShim(self, request_url);
     }
     @import("../../runtime/profile/AutomationScrub.zig").applyOnce(self);
 
@@ -983,6 +1193,10 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
         // It's important to force a reset during the following navigation.
         self._parse_state = .complete;
 
+        // Inline navigations have no network commit; publish before injectBlank so
+        // parent scripts polling contentWindow during appendChild see readyState.
+        self.markRealmReadyForPublication();
+
         // Content injection
         if (is_blob) {
             // For navigation, walk up the parent chain to find blob URLs
@@ -1007,7 +1221,15 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
             };
         }
 
-        self.markRealmReadyForPublication();
+        // Fingerprint yb() polls contentWindow when appendChild returns to its
+        // Promise executor. Queue same-turn onload for flush at appendChild end.
+        if (self.iframe) |iframe_elt| {
+            if (self.parent) |parent| {
+                parent.queueSyncIframeLoad(iframe_elt) catch |err| {
+                    log.warn(.frame, "sync iframe load queue", .{ .err = err });
+                };
+            }
+        }
 
         session.notification.dispatch(.frame_navigate, &.{
             .opts = opts,
@@ -1054,6 +1276,8 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
     const http_client = &session.browser.http_client;
 
     const prior_url = self.url;
+    const cookie_origin = cookieOriginForNavigation(self, prior_url);
+    const is_top_level_navigation = self.parent == null;
     const nav_plan = try session.browser.app.config.profile_runtime.navigationPlan(self.arena, .{
         .prior_url = prior_url,
         .request_url = request_url,
@@ -1139,12 +1363,15 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
                 .headers = headers,
                 .body = opts.body,
                 .cookie_jar = &session.cookie_jar,
-                .cookie_origin = if (std.mem.startsWith(u8, prior_url, "http")) prior_url else self.url,
+                .cookie_origin = cookie_origin,
+                .top_level_cookie_url = self.topLevelUrl(),
+                .is_top_level_navigation = is_top_level_navigation,
                 .resource_type = .document,
                 .referer = nav_referer,
                 .omit_cookies = nav_plan.omit_cookies,
                 .omit_sec_fetch_user = nav_plan.omit_sec_fetch_user,
                 .notification = self._session.notification,
+                .browser_session = session,
                 .protect_from_abort = is_pending_root,
                 .skip_cache = opts.force,
             },
@@ -1165,13 +1392,16 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
             .headers = headers,
             .body = opts.body,
             .cookie_jar = &session.cookie_jar,
-            .cookie_origin = if (std.mem.startsWith(u8, prior_url, "http")) prior_url else self.url,
+            .cookie_origin = cookie_origin,
+            .top_level_cookie_url = self.topLevelUrl(),
+            .is_top_level_navigation = is_top_level_navigation,
             .resource_type = .document,
             .referer = nav_referer,
             .omit_cookies = nav_plan.omit_cookies,
             .omit_sec_fetch_user = nav_plan.omit_sec_fetch_user,
             .redirect_policy_refresh = refreshDocumentRedirectRequest,
             .notification = self._session.notification,
+            .browser_session = session,
             .protect_from_abort = is_pending_root,
             .skip_cache = opts.force,
         },
@@ -1264,7 +1494,7 @@ fn scheduleNavigationWithArena(originator: *Frame, arena: Allocator, request_url
         .type = target._type,
     });
 
-    session.browser.http_client.abortFrame(target._frame_id, .{});
+    session.browser.http_client.abortFrame(target._frame_id, .{ .skip_xhr = true });
 
     // Capture the originating frame's URL as the Referer for this
     // navigation. The originator's frame may be torn down before navigate()
@@ -1386,7 +1616,108 @@ pub fn scriptsCompletedLoading(self: *Frame) void {
     self.pendingLoadCompleted();
 }
 
+fn iframeChildLoadedSynchronously(iframe: *const IFrame) bool {
+    const child_window = iframe._window orelse return false;
+    const child = child_window._frame;
+    const url = child.url;
+    return std.mem.eql(u8, url, "about:blank") or
+        std.mem.eql(u8, url, "about:srcdoc") or
+        std.mem.startsWith(u8, url, "blob:");
+}
+
+pub fn queueSyncIframeLoad(self: *Frame, iframe: *IFrame) !void {
+    iframe._sync_load_queued = true;
+    try self._sync_iframe_pending.append(self.arena, iframe);
+    if (std.mem.indexOf(u8, self.url, "fingerprint.com") != null) {
+        log.warn(.frame, "fp iframe queued", .{ .url = self.url, .pending = self._sync_iframe_pending.items.len });
+    }
+}
+
+pub fn flushPendingSyncIframeLoads(self: *Frame) void {
+    if (self._sync_iframe_pending.items.len == 0) return;
+
+    if (std.mem.indexOf(u8, self.url, "fingerprint.com") != null) {
+        log.warn(.frame, "fp iframe flush", .{ .url = self.url, .count = self._sync_iframe_pending.items.len });
+    }
+
+    const to_process = self._sync_iframe_pending;
+    self._sync_iframe_pending = if (to_process == &self._sync_iframe_pending_1)
+        &self._sync_iframe_pending_2
+    else
+        &self._sync_iframe_pending_1;
+
+    for (to_process.items) |iframe| {
+        self.iframeCompletedLoading(iframe);
+    }
+    to_process.clearRetainingCapacity();
+
+    if (self._sync_iframe_pending.items.len > 0) {
+        self.flushPendingSyncIframeLoads();
+    }
+
+    self.pumpSameTurnPromiseContinuations();
+    if (std.mem.indexOf(u8, self.url, "fingerprint.com") != null) {
+        const env = &self._session.browser.env;
+        log.warn(.frame, "fp iframe flush done", .{
+            .scheduler_suppressed = self._scheduler_suppressed,
+            .realm = self._realm_state,
+            .checkpoint_active = env.checkpoint_active,
+        });
+        env.drainFingerprintYbMicrotasks(self.js);
+    }
+}
+
+/// Parser-inserted about:blank iframes queue sync `load` during HTML parse.
+/// Flush on the next scheduler turn — not from `frameDoneCallback` / HTTP
+/// callbacks, where cross-frame onload can imbalance V8 Enter/Exit.
+pub fn scheduleDeferredSyncIframeFlush(self: *Frame) !void {
+    if (self._sync_iframe_flush_scheduled) return;
+    if (self._sync_iframe_pending.items.len == 0) return;
+    self._sync_iframe_flush_scheduled = true;
+
+    const callback = try self.arena.create(DeferSyncIframeFlushCallback);
+    callback.* = .{ .frame = self };
+
+    try self.js.scheduler.add(callback, DeferSyncIframeFlushCallback.run, 0, .{
+        .name = "Frame.deferSyncIframeFlush",
+        .low_priority = false,
+    });
+}
+
+const DeferSyncIframeFlushCallback = struct {
+    frame: *Frame,
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *DeferSyncIframeFlushCallback = @ptrCast(@alignCast(ctx));
+        self.frame._sync_iframe_flush_scheduled = false;
+        self.frame.flushPendingSyncIframeLoads();
+        return null;
+    }
+};
+
 pub fn iframeCompletedLoading(self: *Frame, iframe: *IFrame) void {
+    if (iframe._window == null) return;
+    if (iframeChildLoadedSynchronously(iframe)) {
+        if (iframe._sync_onload_dispatched) return;
+        // Do not pump macrotasks here — we are still inside appendChild.
+        self.dispatchIframeLoadNow(&.{iframe}, .same_turn) catch |err| {
+            log.warn(.js, "iframe onload sync", .{ .err = err, .url = iframe._src });
+            self.pendingLoadCompleted();
+        };
+        self.pumpSameTurnPromiseContinuations();
+        // Queue macrotask pumps for setTimeout(10) readyState polls (yb I()).
+        self.scheduleDeferredMacrotaskPump(0) catch |err| {
+            log.warn(.js, "iframe defer pump", .{ .err = err, .url = iframe._src });
+        };
+        self.scheduleDeferredMacrotaskPump(10) catch |err| {
+            log.warn(.js, "iframe defer pump10", .{ .err = err, .url = iframe._src });
+        };
+        self.pumpDueTimersNow(15);
+        if (std.mem.indexOf(u8, self.url, "fingerprint.com") != null) {
+            self._session.browser.env.drainFingerprintYbMicrotasks(self.js);
+        }
+        return;
+    }
     self.queueIframeLoad(iframe) catch |err| {
         log.warn(.js, "iframe onload queue", .{ .err = err, .url = iframe._src });
         // Unblock parent load if we cannot queue the iframe load event.
@@ -1394,7 +1725,31 @@ pub fn iframeCompletedLoading(self: *Frame, iframe: *IFrame) void {
     };
 }
 
+fn removePendingIframeLoad(self: *Frame, iframe: *IFrame) void {
+    for (&[_]*std.ArrayList(*IFrame){ &self._iframe_load_1, &self._iframe_load_2 }) |list| {
+        var i: usize = 0;
+        while (i < list.items.len) {
+            if (list.items[i] == iframe) {
+                _ = list.swapRemove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+    for (&[_]*std.ArrayList(*IFrame){ &self._sync_iframe_pending_1, &self._sync_iframe_pending_2 }) |list| {
+        var i: usize = 0;
+        while (i < list.items.len) {
+            if (list.items[i] == iframe) {
+                _ = list.swapRemove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+}
+
 fn queueIframeLoad(self: *Frame, iframe: *IFrame) !void {
+    if (iframe._window == null) return;
     try self._iframe_load.append(self.arena, iframe);
     if (self._iframe_load_scheduled) return;
     self._iframe_load_scheduled = true;
@@ -1407,6 +1762,93 @@ fn queueIframeLoad(self: *Frame, iframe: *IFrame) !void {
     }.cleanup, 0, .{ .name = "frame.dispatchIframeLoad" });
 }
 
+const IframeLoadDispatch = enum { same_turn, deferred };
+
+fn dispatchIframeLoadNow(self: *Frame, iframes: []const *IFrame, comptime when: IframeLoadDispatch) !void {
+    for (iframes) |iframe| {
+        if (iframe._window == null) continue;
+        var invoked_onload = false;
+
+        const event = Event.initTrusted(comptime .wrap("load"), .{}, self._page) catch |err| {
+            log.err(.frame, "iframe event init", .{ .err = err, .url = iframe._src });
+            continue;
+        };
+        const target = iframe.asNode().asEventTarget();
+
+        if (comptime when == .same_turn) {
+            // Fingerprint yb() sets iframe.onload before appendChild. Invoke the
+            // property handler directly (getOnLoad also materializes onload="").
+            if (iframe.asNode().is(HtmlElement)) |html| {
+                if (html.getOnLoad(self) catch null) |handler| {
+                    var owned_scope: JS.Local.Scope = undefined;
+                    const local: *const JS.Local = blk: {
+                        if (self.js.local) |active| break :blk active;
+                        self.js.localScope(&owned_scope);
+                        break :blk &owned_scope.local;
+                    };
+                    defer if (self.js.local == null) owned_scope.deinit();
+
+                    event._target = target;
+                    event._current_target = target;
+                    const handler_handle = JS.v8.v8__Global__Get(&handler.handle, local.isolate.handle) orelse continue;
+                    const handler_local = JS.Function{
+                        .local = local,
+                        .handle = @ptrCast(handler_handle),
+                    };
+                    // Fingerprint yb() onload is () => { d=true; resolve(); } — zero-arg first.
+                    const invoke_ok = blk: {
+                        handler_local.callWithThis(void, target, .{}) catch {
+                            handler_local.callWithThis(void, target, .{event}) catch |err| {
+                                log.warn(.js, "iframe onload invoke", .{ .err = err, .url = iframe._src });
+                                break :blk false;
+                            };
+                            break :blk true;
+                        };
+                        break :blk true;
+                    };
+                    if (invoke_ok) invoked_onload = true;
+                }
+                // Always dispatch too — yb() tolerates duplicate p() via d=true guard.
+            }
+        }
+
+        self._event_manager.dispatch(target, event) catch |err| {
+            log.warn(.js, "iframe onload", .{ .err = err, .url = iframe._src });
+        };
+
+        if (comptime when == .same_turn) {
+            iframe._sync_load_queued = false;
+            if (invoked_onload) iframe._sync_onload_dispatched = true;
+            if (std.mem.indexOf(u8, self.url, "fingerprint.com") != null) {
+                log.warn(.frame, "fp iframe sync load", .{
+                    .invoked_onload = invoked_onload,
+                    .iframe_src = iframe._src,
+                    .url = self.url,
+                });
+            }
+            self.pumpSameTurnPromiseContinuations();
+            const env = &self._session.browser.env;
+            env.drainFingerprintYbMicrotasks(self.js);
+        }
+    }
+
+    if (comptime when == .deferred) {
+        // Run iframe load handlers (and same-turn subframe script) before the parent
+        // document `load` event — reCAPTCHA v3 posts recaptcha-setup from anchor iframes.
+        self._session.browser.runMacrotasks() catch |err| {
+            log.warn(.browser, "iframe load pump", .{ .err = err });
+        };
+    }
+
+    var completed: usize = 0;
+    for (iframes) |iframe| {
+        if (iframe._window != null) completed += 1;
+    }
+    for (0..completed) |_| {
+        self.pendingLoadCompleted();
+    }
+}
+
 fn dispatchIframeLoad(self: *Frame) !void {
     self._iframe_load_scheduled = false;
 
@@ -1416,26 +1858,7 @@ fn dispatchIframeLoad(self: *Frame) !void {
     else
         &self._iframe_load_1;
 
-    for (to_process.items) |iframe| {
-        const event = Event.initTrusted(comptime .wrap("load"), .{}, self._page) catch |err| {
-            log.err(.frame, "iframe event init", .{ .err = err, .url = iframe._src });
-            continue;
-        };
-        self._event_manager.dispatch(iframe.asNode().asEventTarget(), event) catch |err| {
-            log.warn(.js, "iframe onload", .{ .err = err, .url = iframe._src });
-        };
-    }
-
-    // Run iframe load handlers (and same-turn subframe script) before the parent
-    // document `load` event — reCAPTCHA v3 posts recaptcha-setup from anchor iframes.
-    self._session.browser.runMacrotasks() catch |err| {
-        log.warn(.browser, "iframe load pump", .{ .err = err });
-    };
-
-    for (to_process.items) |_| {
-        self.pendingLoadCompleted();
-    }
-
+    try self.dispatchIframeLoadNow(to_process.items, .deferred);
     to_process.clearRetainingCapacity();
 }
 
@@ -1456,7 +1879,12 @@ const knitsail_post_parse_target_page_t_ms: f64 = 192.59999999403954;
 const knitsail_timer_milestones_ms = [_]f64{ 22.600000001490116, 82.39999999850988, 165.10000000149012 };
 
 pub fn isGoogleKnitsailHost(url: []const u8) bool {
-    return std.mem.indexOf(u8, url, "google.") != null;
+    if (std.mem.indexOf(u8, url, "google.") == null) return false;
+    // Knitsail pageT freeze is Search sg_ss bootstrap only. Accounts Identity reads
+    // performance.now() as int32 ms — frozen 192.599… triggers protobuf "int32" reject.
+    if (std.mem.indexOf(u8, url, "accounts.google.") != null) return false;
+    if (std.mem.indexOf(u8, url, "myaccount.google.") != null) return false;
+    return true;
 }
 
 pub fn holdsKnitsailMicrotasks(self: *const Frame) bool {
@@ -1476,6 +1904,28 @@ fn pumpKnitsailTimerMilestones(self: *Frame) void {
             log.warn(.frame, "knitsail timer milestone", .{ .err = err, .ms = ms });
         };
     }
+}
+
+fn injectGoogleSigninClosureBusLog(self: *Frame, request_url: []const u8) void {
+    if (!GoogleSigninDebug.closureBusLogEnabled()) return;
+    if (!GoogleSigninDebug.isAccountsGoogleUrl(request_url)) return;
+    var ls: JS.Local.Scope = undefined;
+    self.js.localScope(&ls);
+    defer ls.deinit();
+    _ = ls.local.eval(GoogleSigninDebug.closure_bus_script, "google-signin-closure-bus") catch |err| {
+        log.warn(.frame, "google signin closure bus", .{ .err = err, .url = self.url });
+    };
+}
+
+fn injectGoogleAccountsBioShim(self: *Frame, request_url: []const u8) void {
+    if (!GoogleSigninDebug.bioShimEnabled()) return;
+    if (!GoogleSigninDebug.isAccountsGoogleUrl(request_url)) return;
+    var ls: JS.Local.Scope = undefined;
+    self.js.localScope(&ls);
+    defer ls.deinit();
+    _ = ls.local.eval(GoogleSigninDebug.bio_shim_script, "google-accounts-bio-shim") catch |err| {
+        log.warn(.frame, "google accounts bio shim", .{ .err = err, .url = self.url });
+    };
 }
 
 const google_knitsail_bootstrap_globals_script =
@@ -1505,6 +1955,11 @@ fn pumpPostParseTasksNow(self: *Frame) void {
         self._defer_knitsail_post_parse = false;
     }
 
+    if (GoogleSigninDebug.isAccountsGoogleUrl(self.url)) {
+        injectGoogleSigninClosureBusLog(self, self.url);
+        injectGoogleAccountsBioShim(self, self.url);
+    }
+
     if (self._defer_knitsail_dcl) {
         self._defer_knitsail_dcl = false;
         self.documentIsLoaded();
@@ -1526,6 +1981,10 @@ pub fn isDocumentParsing(self: *const Frame) bool {
 }
 
 pub fn documentIsComplete(self: *Frame) void {
+    if (self._detach_pending) return;
+    if (self.iframe) |iframe| {
+        if (iframe._window == null) return;
+    }
     if (self._load_state == .complete) {
         // Ideally, documentIsComplete would only be called once, but with
         // dynamic scripts, it can be hard to keep track of that. An async
@@ -1595,6 +2054,14 @@ fn _documentIsComplete(self: *Frame) !void {
 fn notifyParentLoadComplete(self: *Frame) void {
     const parent = self.parent orelse return;
 
+    if (self.iframe) |iframe| {
+        if (iframe._window == null) return;
+        if (iframe._sync_onload_dispatched or iframe._sync_load_queued) {
+            self._parent_notified = true;
+            return;
+        }
+    }
+
     if (self._parent_notified == true) {
         if (comptime IS_DEBUG) {
             std.debug.assert(false);
@@ -1607,22 +2074,48 @@ fn notifyParentLoadComplete(self: *Frame) void {
     parent.iframeCompletedLoading(self.iframe.?);
 }
 
+/// Initiating document URL for SameSite cookie inclusion. Embedded iframe loads
+/// from about:blank must use the parent's URL, not the navigation target.
+fn cookieOriginForNavigation(frame: *Frame, prior_url: [:0]const u8) [:0]const u8 {
+    if (std.mem.startsWith(u8, prior_url, "http")) return prior_url;
+    if (frame.parent) |parent| {
+        if (std.mem.startsWith(u8, parent.url, "http")) return parent.url;
+    }
+    return frame.url;
+}
+
+/// URL used for `document.cookie` get/set (about:blank inherits parent HTTP URL).
+pub fn cookieURL(self: *const Frame) [:0]const u8 {
+    return cookieOriginForNavigation(@constCast(self), self.url);
+}
+
 fn refreshDocumentRedirectRequest(
     ctx: *anyopaque,
     transfer: *HttpClient.Transfer,
     prior_url: [:0]const u8,
 ) !void {
-    const self: *Frame = @ptrCast(@alignCast(ctx));
+    if (transfer.aborted) return;
+
     const arena = transfer.req.params.arena;
-    const session = self._session;
+    const session = transfer.req.params.browser_session orelse blk: {
+        const stale: *Frame = @ptrCast(@alignCast(ctx));
+        break :blk stale._session;
+    };
     const http_client = &session.browser.http_client;
+
+    const frame = session.findFrameForHttpAttribution(transfer.req.params.frame_id);
+
+    const prior_origin = if (frame) |f|
+        f.origin
+    else
+        try URL.getOrigin(arena, if (std.mem.startsWith(u8, prior_url, "http")) prior_url else prior_url);
 
     const nav_plan = try session.browser.app.config.profile_runtime.navigationPlan(arena, .{
         .prior_url = prior_url,
         .request_url = transfer.req.params.url,
         .reason = .navigation,
         .referer = null,
-        .prior_origin = self.origin,
+        .prior_origin = prior_origin,
         .external_transport_enabled = false,
     });
 
@@ -1630,9 +2123,16 @@ fn refreshDocumentRedirectRequest(
     transfer.req.params.omit_cookies = nav_plan.omit_cookies;
     transfer.req.params.referer = nav_plan.referer;
 
+    const live_frame = frame orelse {
+        // Superseding root navigation discarded the pending frame while this
+        // transfer is still inside handleRedirect. Cookie/referer policy above
+        // is enough; skip header rebuild on a freed Frame.
+        return;
+    };
+
     transfer.req.params.headers.deinit();
     var headers = try http_client.newHeaders();
-    try self.headersForRequest(&headers, .{
+    try live_frame.headersForRequest(&headers, .{
         .request_url = transfer.req.params.url,
         .resource_type = .document,
         .referer = nav_plan.referer,
@@ -1702,6 +2202,17 @@ fn frameHeaderDoneCallback(response: HttpClient.Response) !bool {
     var accept_iter = response.headerIterator();
     try self._session.processAcceptClientHints(response.url(), &accept_iter);
 
+    self.content_security_policy = null;
+    self.referrer_policy = .@"strict-origin-when-cross-origin";
+    var hdr_it = response.headerIterator();
+    while (hdr_it.next()) |hdr| {
+        if (std.ascii.eqlIgnoreCase(hdr.name, "content-security-policy")) {
+            self.content_security_policy = ContentSecurityPolicy.Policy.parse(self.arena, hdr.value) catch null;
+        } else if (std.ascii.eqlIgnoreCase(hdr.name, "referrer-policy")) {
+            self.referrer_policy = ReferrerPolicy.Policy.parse(hdr.value);
+        }
+    }
+
     if (self._navigated_options) |_| {
         // _navigated_options will be null in special short-circuit cases, like
         // "navigating" to about:blank, in which case this notification has
@@ -1713,7 +2224,7 @@ fn frameHeaderDoneCallback(response: HttpClient.Response) !bool {
         // synchronous checkpoint from this HTTP callback imbalances V8 context
         // Enter/Exit when another realm is mid-dispatch.
         if (self.parent != null) {
-            self.scheduleDeferredMacrotaskPump() catch |err| {
+            self.scheduleDeferredMacrotaskPump(0) catch |err| {
                 log.warn(.frame, "defer subframe microtask drain", .{ .err = err });
             };
         }
@@ -1731,7 +2242,9 @@ fn frameHeaderDoneCallback(response: HttpClient.Response) !bool {
             // would kill the in-flight JS-initiated transfer. Defer commit
             // (and the protect_from_abort flip + frame_navigated dispatch)
             // until Session.drainDeferredCommit runs at a safe point.
-            if (session.activeIsEvaluating()) {
+            if (session.activeIsEvaluating() or
+                session.browser.http_client.hasProtectedTransfersForFrame(self._frame_id))
+            {
                 session._deferred_commit_pending = true;
                 return true;
             }
@@ -1744,13 +2257,17 @@ fn frameHeaderDoneCallback(response: HttpClient.Response) !bool {
                 .transfer => |t| t.req.params.protect_from_abort = false,
                 .fulfilled, .cached => {},
             }
-            self.dispatchFrameNavigated();
+            self.scheduleDeferredFrameNavigated() catch |err| {
+                log.warn(.frame, "defer frame_navigated after pending commit", .{ .err = err });
+            };
             return true;
         }
 
         // Non-pending-root path: the page is already active, no commit needed,
         // just notify observers.
-        self.dispatchFrameNavigated();
+        self.scheduleDeferredFrameNavigated() catch |err| {
+            log.warn(.frame, "defer frame_navigated", .{ .err = err });
+        };
     }
 
     return true;
@@ -1771,9 +2288,54 @@ pub fn finalizePendingRootCommit(self: *Frame) !void {
     // cleared the flag before calling us).
     session.browser.http_client.clearProtectForFrame(self._frame_id);
     if (self._navigated_options != null) {
-        self.dispatchFrameNavigated();
+        self.scheduleDeferredFrameNavigated() catch |err| {
+            log.warn(.frame, "defer frame_navigated after finalize commit", .{ .err = err });
+        };
     }
 }
+
+/// Emit frame_navigated on the next scheduler turn. Never call
+/// `dispatchFrameNavigated` synchronously from HTTP header callbacks — CDP
+/// `contextCreated` runs JS while curl may still be on the stack and races
+/// scheduled postMessage / microtask work (V8 DisallowJavascriptExecutionScope).
+pub fn scheduleDeferredFrameNavigated(self: *Frame) !void {
+    if (self._deferred_frame_navigated_scheduled) return;
+    if (self._navigated_options == null) return;
+    self._deferred_frame_navigated_scheduled = true;
+
+    const arena = try self.getArena(.tiny, "Frame.deferNavigated");
+    errdefer self.releaseArena(arena);
+
+    const callback = try arena.create(DeferFrameNavigatedCallback);
+    callback.* = .{ .frame = self, .arena = arena };
+
+    try self.js.scheduler.add(callback, DeferFrameNavigatedCallback.run, 0, .{
+        .name = "Frame.deferNavigated",
+        .low_priority = false,
+        .finalizer = DeferFrameNavigatedCallback.cancelled,
+    });
+}
+
+const DeferFrameNavigatedCallback = struct {
+    frame: *Frame,
+    arena: Allocator,
+
+    fn cancelled(ctx: *anyopaque) void {
+        const self: *DeferFrameNavigatedCallback = @ptrCast(@alignCast(ctx));
+        self.frame._deferred_frame_navigated_scheduled = false;
+        self.frame.releaseArena(self.arena);
+    }
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *DeferFrameNavigatedCallback = @ptrCast(@alignCast(ctx));
+        defer {
+            self.frame._deferred_frame_navigated_scheduled = false;
+            self.frame.releaseArena(self.arena);
+        }
+        self.frame.dispatchFrameNavigated();
+        return null;
+    }
+};
 
 fn dispatchFrameNavigated(self: *Frame) void {
     const no = self._navigated_options orelse return;
@@ -1822,7 +2384,7 @@ fn frameDataCallback(response: HttpClient.Response, data: []const u8) !void {
         }
 
         switch (mime.content_type) {
-            .text_html => {
+            .text_html, .text_xml => {
                 // Normalize and store the charset using encoding_rs canonical names
                 const charset_str = mime.charsetString();
                 const info = h5e.encoding_for_label(charset_str.ptr, charset_str.len);
@@ -1832,6 +2394,7 @@ fn frameDataCallback(response: HttpClient.Response, data: []const u8) !void {
                 self._parse_state = .{ .html = .{
                     .buffer = .empty,
                     .arena = try self.getArena(.large, "Frame.navigate"),
+                    .as_xml = mime.content_type == .text_xml,
                 } };
             },
             .application_json, .text_javascript, .text_css, .text_plain => {
@@ -1874,6 +2437,7 @@ fn frameDataCallback(response: HttpClient.Response, data: []const u8) !void {
 
 fn frameDoneCallback(ctx: *anyopaque) !void {
     var self: *Frame = @ptrCast(@alignCast(ctx));
+    if (self._detach_pending) return;
 
     log.debug(.frame, "navigate done", .{ .type = self._type, .url = self.url, .state = std.meta.activeTag(self._parse_state) });
 
@@ -1915,16 +2479,26 @@ fn frameDoneCallback(ctx: *anyopaque) !void {
                     .charset = self.charset,
                 });
 
-                if (std.mem.eql(u8, self.charset, "UTF-8")) {
+                if (html.as_xml) {
+                    parser.parseXML(raw_html);
+                } else if (std.mem.eql(u8, self.charset, "UTF-8")) {
                     parser.parse(raw_html);
                 } else {
                     parser.parseWithEncoding(raw_html, self.charset);
                 }
                 log.debug(.frame, "parse html done", .{ .type = self._type, .url = self.url, .len = raw_html.len });
+                self.reconcileParserIframeSrc();
+                self.drainQueuedNavigationsAfterParse();
             }
             log.debug(.frame, "static scripts done start", .{ .type = self._type, .url = self.url });
             self._script_manager.staticScriptsDone();
             self.pumpPostParseTasks();
+            // Parser-inserted iframes queue sync onload during parse (appendChild flush
+            // never runs). Defer flush to the next macrotask — frameDoneCallback runs
+            // inside HTTP callbacks where cross-frame onload crashes V8.
+            self.scheduleDeferredSyncIframeFlush() catch |err| {
+                log.warn(.frame, "defer sync iframe flush", .{ .err = err, .url = self.url });
+            };
             log.debug(.frame, "static scripts done complete", .{ .type = self._type, .url = self.url });
         },
         .text => |*buf| {
@@ -2037,13 +2611,119 @@ pub fn scriptAddedCallback(self: *Frame, comptime from_parser: bool, script: *El
     };
 }
 
+fn clearDocumentChildren(self: *Frame) void {
+    const doc_node = self.document.asNode();
+    while (doc_node.firstChild()) |child| {
+        self.removeNode(doc_node, child, .{ .will_be_reconnected = false });
+    }
+    self.document._ready_state = .loading;
+}
+
+fn loadIframeSrcdoc(self: *Frame, iframe: *IFrame, srcdoc: []const u8) !void {
+    const session = self._session;
+    const is_first_load = iframe._window == null;
+
+    const child: *Frame = blk: {
+        if (iframe._window) |w| break :blk w._frame;
+
+        iframe._executed = true;
+        const new_frame = try self.arena.create(Frame);
+        const frame_id = session.nextFrameId();
+
+        try Frame.init(new_frame, frame_id, self._page, self);
+        errdefer new_frame.deinit();
+
+        self._pending_loads += 1;
+        new_frame.iframe = iframe;
+        iframe._window = new_frame.window;
+        errdefer iframe._window = null;
+
+        try self.child_frames.append(self.arena, new_frame);
+
+        session.notification.dispatch(.frame_child_frame_created, &.{
+            .parent_id = self._frame_id,
+            .frame_id = new_frame._frame_id,
+            .loader_id = new_frame._loader_id,
+            .timestamp = timestamp(.monotonic),
+        });
+
+        break :blk new_frame;
+    };
+
+    if (!is_first_load) {
+        iframe._executed = true;
+        child._parent_notified = false;
+        child._load_state = .parsing;
+        clearDocumentChildren(child);
+    }
+
+    child.url = "about:srcdoc";
+    child.window._location = try Location.init("about:srcdoc", child);
+
+    const inherited_origin: ?[]const u8 = blk: {
+        if (IFrameSandbox.usesOpaqueOrigin(child.iframeSandboxFlags())) break :blk null;
+        break :blk self.origin;
+    };
+    try child.applySandboxOrigin(inherited_origin);
+
+    child._parse_state = .complete;
+
+    if (srcdoc.len == 0) {
+        try child.document.injectBlank(child);
+        child.markRealmReadyForPublication();
+        child.documentIsComplete();
+        return;
+    }
+
+    const parse_arena = try child.getArena(.medium, "Frame.srcdoc");
+    defer child.releaseArena(parse_arena);
+
+    var parser = Parser.init(parse_arena, child.document.asNode(), child);
+    parser.parse(srcdoc);
+    if (parser.err) |e| {
+        log.warn(.frame, "iframe srcdoc parse", .{ .err = e.err });
+        if (is_first_load) {
+            self._pending_loads -= 1;
+            iframe._window = null;
+        }
+        return error.IFrameLoadError;
+    }
+
+    child.markRealmReadyForPublication();
+    child.documentIsComplete();
+
+    if (!is_first_load) return;
+
+    const frames_len = self.child_frames.items.len;
+    if (frames_len == 1) return;
+
+    if (self.child_frames_sorted == false) return;
+
+    const iframe_a = self.child_frames.items[frames_len - 2].iframe.?;
+    const iframe_b = self.child_frames.items[frames_len - 1].iframe.?;
+
+    if (iframe_a.asNode().compareDocumentPosition(iframe_b.asNode()) & 0x04 == 0) {
+        self.child_frames_sorted = false;
+    }
+}
+
 pub fn iframeAddedCallback(self: *Frame, iframe: *IFrame) !void {
     if (self.isGoingAway()) {
         // if we're planning on navigating to another frame, don't load this iframe
         return;
     }
     if (iframe._executed) {
-        return;
+        // html5ever may run nodeComplete (pop) before addAttrsIfMissing sets
+        // attributes on void elements like <iframe>. We eagerly navigate to
+        // about:blank on the first pass; upgrade once the real src arrives.
+        IFrame.Build.complete(iframe.asNode(), self) catch {};
+        const src_attr = iframe.asElement().getAttributeSafe(comptime .wrap("src")) orelse "";
+        return self._session.upgradeIframeFromAboutBlank(self, iframe, src_attr);
+    }
+
+    const srcdoc = iframe.asElement().getAttributeSafe(comptime .wrap("srcdoc")) orelse "";
+    if (srcdoc.len > 0) {
+        return self.loadIframeSrcdoc(iframe, srcdoc);
     }
 
     var src = iframe.asElement().getAttributeSafe(comptime .wrap("src")) orelse "";
@@ -2064,6 +2744,8 @@ pub fn iframeAddedCallback(self: *Frame, iframe: *IFrame) !void {
     }
 
     iframe._executed = true;
+    iframe._sync_onload_dispatched = false;
+    iframe._sync_load_queued = false;
     const session = self._session;
 
     const new_frame = try self.arena.create(Frame);
@@ -2165,8 +2847,11 @@ pub fn openPopup(self: *Frame, opts: OpenPopupOpts) !*Frame {
         if (std.mem.eql(u8, opts.url, "about:blank")) {
             break :blk "about:blank";
         }
+        // window.open() encodes-parses url relative to the entry settings object
+        // (HTML), not the relevant global passed as `this`.
+        const url_base_frame = self.js.getEntryFrame() orelse self;
         const frame_base = base_blk: {
-            var frame = self;
+            var frame = url_base_frame;
             while (true) {
                 const maybe_base = frame.base();
                 if (!std.mem.eql(u8, maybe_base, "about:blank")) {
@@ -2175,7 +2860,7 @@ pub fn openPopup(self: *Frame, opts: OpenPopupOpts) !*Frame {
                 frame = frame.parent orelse break :base_blk "";
             }
         };
-        break :blk try URL.resolve(self.call_arena, frame_base, opts.url, .{ .always_dupe = true, .encoding = self.charset });
+        break :blk try URL.resolve(self.call_arena, frame_base, opts.url, .{ .always_dupe = true, .encoding = url_base_frame.charset });
     };
 
     const popup = try page.frame_arena.create(Frame);
@@ -4367,6 +5052,38 @@ pub fn parseHtmlAsChildren(self: *Frame, node: *Node, html: []const u8) !void {
     }
 }
 
+/// html5ever may run nodeComplete on void elements like `<iframe>` before their
+/// attributes are fully bound. Reconcile once the document parse is finished.
+fn reconcileParserIframeSrc(self: *Frame) void {
+    var tw = @import("../dom/TreeWalker.zig").Full.Elements.init(self.document.asNode(), .{});
+    while (tw.next()) |el| {
+        const iframe = el.is(IFrame) orelse continue;
+        IFrame.Build.complete(el.asNode(), self) catch continue;
+        const src = iframe.asElement().getAttributeSafe(comptime .wrap("src")) orelse iframe._src;
+        self._session.upgradeIframeFromAboutBlank(self, iframe, src) catch |err| {
+            log.warn(.frame, "reconcile iframe upgrade", .{ .err = err, .src = src });
+        };
+    }
+}
+
+fn drainQueuedNavigationsAfterParse(self: *Frame) void {
+    const session = self._session;
+    const page = session.currentPage() orelse return;
+
+    var passes: u8 = 0;
+    while (passes < 8) : (passes += 1) {
+        if (page.queued_navigation.items.len == 0) break;
+        session.processQueuedNavigation() catch |err| {
+            log.warn(.frame, "queued nav after parse", .{ .err = err, .url = self.url });
+            break;
+        };
+        var ticks: u8 = 0;
+        while (ticks < 32) : (ticks += 1) {
+            _ = session.browser.http_client.tick(0) catch break;
+        }
+    }
+}
+
 /// Fire deferred subresource/lifecycle callbacks for every descendant of
 /// `subtree_root` (the root itself is excluded, as callers handle it via
 /// `nodeIsReady`). This bridges the gap where iframes/scripts/links/styles/images
@@ -4438,6 +5155,7 @@ const ParseState = union(enum) {
     html: struct {
         arena: Allocator,
         buffer: std.ArrayList(u8),
+        as_xml: bool = false,
     },
     text: std.ArrayList(u8),
     image: std.ArrayList(u8),
@@ -4723,6 +5441,22 @@ pub fn triggerMouseRelease(self: *Frame, x: f64, y: f64) !void {
 /// Record CDP `mousePressed` coordinates; activation runs on `mouseReleased`.
 pub fn stashCdpMousePress(self: *Frame, x: f64, y: f64) void {
     self._cdp_mouse_press_stash = .{ .x = x, .y = y };
+}
+
+/// Queue element activation after LP.clickNode CDP reply (avoids blocking transport).
+pub fn scheduleActivationOnElement(self: *Frame, element: *Element) !void {
+    self._lp_pending_activation = element;
+    try self.js.scheduler.add(self, struct {
+        fn run(ctx: *anyopaque) !?u32 {
+            const frame: *Frame = @ptrCast(@alignCast(ctx));
+            const el = frame._lp_pending_activation orelse return null;
+            frame._lp_pending_activation = null;
+            @import("InputController.zig").dispatchActivationOnElementFast(el, frame) catch |err| {
+                log.err(.frame, "scheduled activation failed", .{ .err = err });
+            };
+            return null;
+        }
+    }.run, 0, .{ .name = "lp.clickNode" });
 }
 
 /// Queue the paired press+release after both CDP halves have been acknowledged.
@@ -5126,4 +5860,11 @@ test "Page: isSameOrigin" {
     try testing.expectEqual(false, frame.isSameOrigin(""));
     try testing.expectEqual(false, frame.isSameOrigin("not-a-url"));
     try testing.expectEqual(false, frame.isSameOrigin("//origin.com/foo"));
+}
+
+test "Frame.isGoogleKnitsailHost: search yes, accounts/myaccount no" {
+    try testing.expect(isGoogleKnitsailHost("https://www.google.com/search?q=test"));
+    try testing.expect(!isGoogleKnitsailHost("https://accounts.google.com/v3/signin/identifier"));
+    try testing.expect(!isGoogleKnitsailHost("https://myaccount.google.com/"));
+    try testing.expect(isGoogleKnitsailHost("https://www.google.com/"));
 }

@@ -43,6 +43,7 @@ _execution: *const Execution,
 _reader: ?*ReadableStreamDefaultReader,
 _controller: *ReadableStreamDefaultController,
 _stored_error: ?[]const u8,
+_closed_resolver: ?js.PromiseResolver.Global = null,
 _pull_fn: ?js.Function.Global = null,
 _pulling: bool = false,
 _pull_again: bool = false,
@@ -123,6 +124,42 @@ pub fn getAsyncIterator(self: *ReadableStream, exec: *const Execution) !*AsyncIt
 
 pub fn getLocked(self: *const ReadableStream) bool {
     return self._reader != null;
+}
+
+pub fn getClosedPromise(self: *ReadableStream, exec: *const Execution) !js.Promise {
+    const local = exec.context.local.?;
+    if (self._closed_resolver) |r| {
+        return local.toLocal(r).promise();
+    }
+    return switch (self._state) {
+        .closed => local.resolvePromise(.{}),
+        .errored => local.rejectPromise(.{ .type_error = "Stream errored" }),
+        .readable => blk: {
+            var resolver = local.createPromiseResolver();
+            self._closed_resolver = try resolver.persist();
+            break :blk resolver.promise();
+        },
+    };
+}
+
+pub fn notifyClosed(self: *ReadableStream, exec: *const Execution) void {
+    if (self._closed_resolver) |r| {
+        var ls: js.Local.Scope = undefined;
+        exec.context.localScope(&ls);
+        defer ls.deinit();
+        ls.toLocal(r).resolve("stream closed", {});
+        self._closed_resolver = null;
+    }
+}
+
+pub fn notifyErrored(self: *ReadableStream, exec: *const Execution) void {
+    if (self._closed_resolver) |r| {
+        var ls: js.Local.Scope = undefined;
+        exec.context.localScope(&ls);
+        defer ls.deinit();
+        ls.toLocal(r).rejectError("stream errored", .{ .type_error = "Stream errored" });
+        self._closed_resolver = null;
+    }
 }
 
 pub fn callPullIfNeeded(self: *ReadableStream) !void {

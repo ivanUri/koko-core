@@ -117,8 +117,8 @@ Traced `creepjs_compat_shim.js` move loop — `in` operator vs `Object.prototype
 ### Verification commands
 
 ```bash
-node google-search-debug/scripts/probe-sorry-grecaptcha.mjs
-npm run google:sorry-parity -- --query "test-$(date +%s)"
+# Start velora with warmed profile, navigate to /sorry page via CDP
+node scripts/cdp-profile-probe.mjs --profile chrome-local-huys-macbook-pro --max-sec 20
 ```
 
 ---
@@ -165,14 +165,13 @@ Sorry parity: recaptcha chain 2 → 6+ hits; anchor + webworker load. Remaining 
 - Google sorry page loads `/recaptcha/enterprise.js` → dynamic `recaptcha__en.js` → `grecaptcha.enterprise.render` on `window` `load` / `complete`
 - Velora: `src/core/js/creepjs_compat_shim.js`
 - Velora: `src/core/webapi/element/Html.zig`, `Element.zig`
-- Tooling: `npm run google:sorry-parity`, `google-search-debug/scripts/probe-sorry-grecaptcha.mjs`
+- Tooling: `scripts/cdp-profile-probe.mjs` (20s budget)
 
 ---
 
 ## Related Knowledge
 
 - [Google Search investigation journey](../captcha/detection/google-search-investigation-journey.md) — Phase 4 sorry parity
-- [Google Search knitsail window-keys prune](./2026-06-29-google-search-knitsail-window-keys-prune.md) — upstream bootstrap path
-- [Google Search signal inventory](../captcha/detection/google-search-signal-inventory.md) — captcha signal catalog
+- [Google Search investigation journey](../captcha/detection/google-search-investigation-journey.md) — long-path bootstrap context
 - [CreepJS navigator parity](../fingerprint/navigator/creepjs-navigator-parity.md) — prototype lie detection context
 - [Owner frame cross-document styles](../browser/iframe/owner-frame-cross-document-styles.md) — related Web API routing patterns

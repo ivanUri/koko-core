@@ -353,6 +353,67 @@ pub fn httpRequestDone(bc: *CDP.BrowserContext, msg: *const Notification.Request
     }, .{ .session_id = session_id });
 }
 
+const CdpRequestHeaderEntry = struct {
+    name: []const u8,
+    value: []const u8,
+};
+
+fn cdpRequestHeadersContain(entries: []const CdpRequestHeaderEntry, name: []const u8) bool {
+    for (entries) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.name, name)) return true;
+    }
+    return false;
+}
+
+fn appendOrMergeCdpRequestHeader(
+    arena: Allocator,
+    entries: *std.ArrayListUnmanaged(CdpRequestHeaderEntry),
+    name: []const u8,
+    value: []const u8,
+) !void {
+    for (entries.items) |*entry| {
+        if (std.ascii.eqlIgnoreCase(entry.name, name)) {
+            const sep = if (std.ascii.eqlIgnoreCase(name, "Cookie")) "; " else "\n";
+            entry.value = try std.fmt.allocPrint(arena, "{s}{s}{s}", .{ entry.value, sep, value });
+            return;
+        }
+    }
+    try entries.append(arena, .{
+        .name = try arena.dupe(u8, name),
+        .value = try arena.dupe(u8, value),
+    });
+}
+
+/// CDP request headers JSON must not duplicate header names. curl-impersonate may
+/// emit multiple Cookie lines; getCookieString() would add another if missing.
+fn writeCdpRequestHeadersObject(request: *Request, jws: anytype) !void {
+    const arena = request.params.arena;
+    var entries: std.ArrayListUnmanaged(CdpRequestHeaderEntry) = .empty;
+    defer entries.deinit(arena);
+
+    var it = request.params.headers.iterator();
+    while (it.next()) |hdr| {
+        try appendOrMergeCdpRequestHeader(arena, &entries, hdr.name, hdr.value);
+    }
+    if (!cdpRequestHeadersContain(entries.items, "Cookie")) {
+        if (try request.getCookieString()) |cookies| {
+            try appendOrMergeCdpRequestHeader(arena, &entries, "Cookie", cookies);
+        }
+    }
+    if (!cdpRequestHeadersContain(entries.items, "Referer")) {
+        if (request.params.referer) |referer| {
+            try appendOrMergeCdpRequestHeader(arena, &entries, "Referer", referer);
+        }
+    }
+
+    try jws.beginObject();
+    for (entries.items) |entry| {
+        try jws.objectField(entry.name);
+        try jws.write(entry.value);
+    }
+    try jws.endObject();
+}
+
 pub const RequestWriter = struct {
     request: *Request,
 
@@ -395,21 +456,7 @@ pub const RequestWriter = struct {
 
         {
             try jws.objectField("headers");
-            try jws.beginObject();
-            var it = request.params.headers.iterator();
-            while (it.next()) |hdr| {
-                try jws.objectField(hdr.name);
-                try jws.write(hdr.value);
-            }
-            if (try request.getCookieString()) |cookies| {
-                try jws.objectField("Cookie");
-                try jws.write(cookies);
-            }
-            if (request.params.referer) |referer| {
-                try jws.objectField("Referer");
-                try jws.write(referer);
-            }
-            try jws.endObject();
+            try writeCdpRequestHeadersObject(request, jws);
         }
         try jws.endObject();
     }
@@ -422,22 +469,12 @@ const RequestHeadersWriter = struct {
         return .{ .request = request };
     }
 
-    pub fn jsonStringify(self: *const RequestHeadersWriter, jws: anytype) !void {
-        try jws.beginObject();
-        var it = self.request.params.headers.iterator();
-        while (it.next()) |hdr| {
-            try jws.objectField(hdr.name);
-            try jws.write(hdr.value);
-        }
-        if (try self.request.getCookieString()) |cookies| {
-            try jws.objectField("Cookie");
-            try jws.write(cookies);
-        }
-        if (self.request.params.referer) |referer| {
-            try jws.objectField("Referer");
-            try jws.write(referer);
-        }
-        try jws.endObject();
+    pub fn jsonStringify(self: *const RequestHeadersWriter, jws: anytype) error{WriteFailed}!void {
+        self._jsonStringify(jws) catch return error.WriteFailed;
+    }
+
+    fn _jsonStringify(self: *const RequestHeadersWriter, jws: anytype) !void {
+        try writeCdpRequestHeadersObject(self.request, jws);
     }
 };
 
@@ -449,7 +486,7 @@ const ResponseHeadersWriter = struct {
         return .{ .arena = arena, .response = response };
     }
 
-    pub fn jsonStringify(self: *const ResponseHeadersWriter, jws: anytype) !void {
+    pub fn jsonStringify(self: *const ResponseHeadersWriter, jws: anytype) error{WriteFailed}!void {
         self._jsonStringify(jws) catch return error.WriteFailed;
     }
 

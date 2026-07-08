@@ -33,31 +33,43 @@ pub const eqlDocument = @import("../browser/URL.zig").eqlDocument;
 
 pub fn init(url: [:0]const u8, base_: ?[:0]const u8, exec: *const Execution) !*URL {
     const arena = exec.arena;
-    const context_url = exec.url.*;
 
-    if (std.mem.eql(u8, url, "about:blank")) {
+    if (std.mem.eql(u8, url, "about:blank") or std.mem.eql(u8, url, "about:srcdoc")) {
         return exec._factory.create(URL{
-            ._raw = "about:blank",
+            ._raw = url,
             ._arena = arena,
         });
     }
-    const url_is_absolute = @import("../browser/URL.zig").isCompleteHTTPUrl(url);
 
-    const base = if (base_) |b| blk: {
-        // If URL is absolute, base is ignored (but we still use context url internally)
-        if (url_is_absolute) {
-            break :blk context_url;
-        }
-        // For relative URLs, base must be a valid absolute URL
-        if (!@import("../browser/URL.zig").isCompleteHTTPUrl(b)) {
-            return error.TypeError;
-        }
-        break :blk b;
-    } else if (!url_is_absolute) {
-        return error.TypeError;
-    } else context_url;
+    if (url.len == 0) {
+        const base = base_ orelse return error.TypeError;
+        const base_z = try arena.dupeZ(u8, base);
+        if (!U.isValidBaseURL(base_z)) return error.TypeError;
+        return exec._factory.create(URL{
+            ._raw = base_z,
+            ._arena = arena,
+        });
+    }
 
-    const raw = try resolve(arena, base, url, .{ .always_dupe = true });
+    const url_processed = if (base_ != null)
+        try U.preprocessInput(arena, url)
+    else
+        try U.preprocessAbsoluteInput(arena, url);
+    const url_is_absolute = U.isAbsoluteUrl(url_processed);
+
+    const resolve_base: [:0]const u8 = if (base_) |b| blk: {
+        if (url_is_absolute and !U.shouldResolveAgainstBase(url_processed, b)) {
+            break :blk "";
+        }
+        const base_z = try arena.dupeZ(u8, b);
+        if (!U.isValidParserBase(base_z)) return error.TypeError;
+        break :blk base_z;
+    } else blk: {
+        if (!url_is_absolute) return error.TypeError;
+        break :blk "";
+    };
+
+    const raw = try resolve(arena, resolve_base, url_processed, .{ .always_dupe = true });
 
     return exec._factory.create(URL{
         ._raw = raw,
@@ -83,7 +95,13 @@ pub fn setPassword(self: *URL, value: []const u8) !void {
     self._raw = try U.setPassword(self._raw, value, allocator);
 }
 
-pub fn getPathname(self: *const URL) []const u8 {
+pub fn getPathname(self: *const URL, exec: *const Execution) ![]const u8 {
+    if (self._search_params) |sp| {
+        if (sp.isMutated()) {
+            const href = try self.toString(exec);
+            return U.getPathname(href);
+        }
+    }
     return U.getPathname(self._raw);
 }
 
@@ -111,8 +129,11 @@ pub fn getOrigin(self: *const URL, exec: *const Execution) ![]const u8 {
 }
 
 pub fn getSearch(self: *const URL, exec: *const Execution) ![]const u8 {
-    // If searchParams has been accessed, generate search from it
+    // Until searchParams are mutated, preserve the original query serialization.
     if (self._search_params) |sp| {
+        if (!sp.isMutated()) {
+            return U.getSearch(self._raw);
+        }
         if (sp.getSize() == 0) {
             return "";
         }
@@ -137,14 +158,17 @@ pub fn getSearchParams(self: *URL, exec: *const Execution) !*URLSearchParams {
     const search = try self.getSearch(exec);
     const search_value = if (search.len > 0) search[1..] else "";
 
-    const params = try URLSearchParams.init(.{ .query_string = search_value }, exec);
+    const params = try URLSearchParams.initFromQueryString(search_value, exec);
     self._search_params = params;
     return params;
 }
 
 pub fn setHref(self: *URL, value: []const u8, exec: *const Execution) !void {
-    const base = if (U.isCompleteHTTPUrl(value)) exec.url.* else self._raw;
-    const raw = try U.resolve(self._arena orelse exec.arena, base, value, .{ .always_dupe = true });
+    // URL.href setter parses with no base (relative values must throw).
+    if (!U.isCompleteHTTPUrl(value)) {
+        return error.TypeError;
+    }
+    const raw = try U.resolve(self._arena orelse exec.arena, exec.url.*, value, .{ .always_dupe = true });
     self._raw = raw;
 
     // Update existing searchParams if it exists
@@ -202,6 +226,11 @@ pub fn toString(self: *const URL, exec: *const Execution) ![:0]const u8 {
         return self._raw;
     };
 
+    // Until searchParams are mutated, preserve the original href serialization.
+    if (!sp.isMutated()) {
+        return self._raw;
+    }
+
     // Rebuild URL from searchParams
     const raw = self._raw;
 
@@ -214,13 +243,21 @@ pub fn toString(self: *const URL, exec: *const Execution) ![:0]const u8 {
 
     // Build the new URL string
     var buf = std.Io.Writer.Allocating.init(exec.call_arena);
-    try buf.writer.writeAll(base);
+    if (U.isCannotBeABase(raw)) {
+        const protocol = U.getProtocol(raw);
+        const pathname = U.getPathname(raw);
+        const serialized_path = try U.serializeCannotBeABasePath(exec.call_arena, pathname);
+        try buf.writer.writeAll(protocol);
+        try buf.writer.writeAll(serialized_path);
+    } else {
+        try buf.writer.writeAll(base);
 
-    // Add / if missing (e.g., "https://example.com" -> "https://example.com/")
-    // Only add if pathname is just "/" and not already in the base
-    const pathname = U.getPathname(raw);
-    if (std.mem.eql(u8, pathname, "/") and !std.mem.endsWith(u8, base, "/")) {
-        try buf.writer.writeByte('/');
+        // Add / if missing (e.g., "https://example.com" -> "https://example.com/")
+        // Only add if pathname is just "/" and not already in the base
+        const pathname = U.getPathname(raw);
+        if (std.mem.eql(u8, pathname, "/") and !std.mem.endsWith(u8, base, "/")) {
+            try buf.writer.writeByte('/');
+        }
     }
 
     // Only add ? if there are params
@@ -235,11 +272,33 @@ pub fn toString(self: *const URL, exec: *const Execution) ![:0]const u8 {
     return buf.written()[0 .. buf.written().len - 1 :0];
 }
 
-pub fn canParse(url: []const u8, base_: ?[]const u8) bool {
-    if (base_) |b| {
-        return U.isCompleteHTTPUrl(b);
-    }
-    return U.isCompleteHTTPUrl(url);
+pub fn canParse(url_: ?[]const u8, base_: ?[]const u8) !bool {
+    if (url_ == null) return error.TypeError;
+    return U.canParse(url_, base_);
+}
+
+pub fn parse(url_: ?[]const u8, base_: ?[]const u8, exec: *const Execution) !?*URL {
+    if (url_ == null) return error.TypeError;
+    if (!try canParse(url_, base_)) return null;
+
+    const url = url_ orelse "";
+    const base = base_ orelse "";
+    const arena = exec.arena;
+
+    const raw: [:0]const u8 = if (url.len == 0)
+        try arena.dupeZ(u8, base)
+    else blk: {
+        const base_z: [:0]const u8 = if (base.len > 0)
+            try arena.dupeZ(u8, base)
+        else
+            "";
+        break :blk try resolve(arena, base_z, url, .{ .always_dupe = true });
+    };
+
+    return exec._factory.create(URL{
+        ._raw = raw,
+        ._arena = arena,
+    });
 }
 
 pub fn createObjectURL(blob: *Blob, exec: *const Execution) ![]const u8 {
@@ -285,7 +344,8 @@ pub const JsApi = struct {
     };
 
     pub const constructor = bridge.constructor(URL.init, .{});
-    pub const canParse = bridge.function(URL.canParse, .{ .static = true });
+    pub const canParse = bridge.function(URL.canParse, .{ .static = true, .length = 1 });
+    pub const parse = bridge.function(URL.parse, .{ .static = true, .length = 1 });
     pub const createObjectURL = bridge.function(URL.createObjectURL, .{ .static = true });
     pub const revokeObjectURL = bridge.function(URL.revokeObjectURL, .{ .static = true });
     pub const toString = bridge.function(URL.toString, .{});

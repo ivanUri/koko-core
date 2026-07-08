@@ -125,12 +125,6 @@ pub const CdpCookie = struct {
 };
 
 pub fn setCdpCookie(cookie_jar: *CookieJar, param: CdpCookie) !void {
-    // Silently ignore partitionKey since we don't support partitioned cookies (CHIPS).
-    // This allows Puppeteer's frame.setCookie() to work, which may send cookies with
-    // partitionKey as part of its cookie-setting workflow.
-    if (param.partitionKey != null) {
-        log.warn(.not_implemented, "partition key", .{ .src = "setCdpCookie" });
-    }
     // Chrome Network.getAllCookies includes metadata we do not persist (priority,
     // sourceScheme, sameParty). Ignore so Network.setCookies round-trips work.
     _ = param.priority;
@@ -146,6 +140,13 @@ pub fn setCdpCookie(cookie_jar: *CookieJar, param: CdpCookie) !void {
     const path = if (param.path == null) "/" else try Cookie.parsePath(a, null, param.path);
 
     const secure = if (param.secure) |s| s else if (param.url) |url| URL.isHTTPS(url) else false;
+    const source_url = param.url orelse "https://localhost/";
+    const partitioned = param.partitionKey != null;
+    const top_level_url: ?[:0]const u8 = blk: {
+        if (param.partitionKey) |pk| break :blk try a.dupeZ(u8, pk.topLevelSite);
+        if (param.url) |u| break :blk u;
+        break :blk null;
+    };
 
     const cookie = Cookie{
         .arena = arena,
@@ -161,8 +162,11 @@ pub fn setCdpCookie(cookie_jar: *CookieJar, param: CdpCookie) !void {
             .Lax => .lax,
             .None => .none,
         },
+        .partitioned = partitioned,
+        .source_secure = URL.isSecureOrigin(source_url),
+        .source_port = Cookie.canonicalPort(source_url),
     };
-    try cookie_jar.add(cookie, std.time.timestamp(), true);
+    try cookie_jar.addWithTopLevel(cookie, std.time.timestamp(), true, top_level_url);
 }
 
 pub const CookieWriter = struct {

@@ -288,6 +288,8 @@ pub const Connection = struct {
     transport: Transport,
     origin: Origin,
     node: std.DoublyLinkedList.Node = .{},
+    _upload_body: ?[]const u8 = null,
+    _upload_offset: usize = 0,
 
     pub const Origin = enum {
         unknown,
@@ -335,6 +337,8 @@ pub const Connection = struct {
         self.transport = .none;
         self.origin = .unknown;
         self.in_use = false;
+        self._upload_body = null;
+        self._upload_offset = 0;
         try self.reset(config, ca_blob, ip_filter);
     }
 
@@ -380,15 +384,63 @@ pub const Connection = struct {
         try libcurl.curl_easy_setopt(easy, .custom_request, m.ptr);
     }
 
-    pub fn setBody(self: *const Connection, body: []const u8) !void {
+    pub fn setMethodString(self: *const Connection, method: [:0]const u8) !void {
+        try libcurl.curl_easy_setopt(self._easy, .custom_request, method.ptr);
+    }
+
+    pub fn setBody(self: *Connection, body: []const u8) !void {
         const easy = self._easy;
+        self.clearUploadBody();
+        try libcurl.curl_easy_setopt(easy, .http_get, false);
         try libcurl.curl_easy_setopt(easy, .post, true);
         try libcurl.curl_easy_setopt(easy, .post_field_size, body.len);
         try libcurl.curl_easy_setopt(easy, .copy_post_fields, body.ptr);
     }
 
-    pub fn setGetMode(self: *const Connection) !void {
-        try libcurl.curl_easy_setopt(self._easy, .http_get, true);
+    /// POST body via CUSTOMREQUEST + UPLOAD read callback (no CURLOPT_POST → no Content-Type).
+    /// Wire Content-Length is supplied in the HTTPHEADER list (FetchRedirectState).
+    pub fn setBodyRaw(self: *Connection, body: []const u8) !void {
+        const easy = self._easy;
+        self._upload_body = body;
+        self._upload_offset = 0;
+        try libcurl.curl_easy_setopt(easy, .http_get, false);
+        try libcurl.curl_easy_setopt(easy, .post, false);
+        try libcurl.curl_easy_setopt(easy, .copy_post_fields, null);
+        try libcurl.curl_easy_setopt(easy, .post_field_size, @as(c_long, 0));
+        try libcurl.curl_easy_setopt(easy, .upload, true);
+        try libcurl.curl_easy_setopt(easy, .read_data, self);
+        try libcurl.curl_easy_setopt(easy, .read_function, rawBodyReadCallback);
+        try libcurl.curl_easy_setopt(easy, .infilesize_large, @as(libcurl.CurlOffT, @intCast(body.len)));
+    }
+
+    fn clearUploadBody(self: *Connection) void {
+        self._upload_body = null;
+        self._upload_offset = 0;
+        libcurl.curl_easy_setopt(self._easy, .upload, false) catch {};
+        libcurl.curl_easy_setopt(self._easy, .read_function, null) catch {};
+        libcurl.curl_easy_setopt(self._easy, .infilesize_large, @as(libcurl.CurlOffT, 0)) catch {};
+    }
+
+    pub fn setGetMode(self: *Connection) !void {
+        const easy = self._easy;
+        self.clearUploadBody();
+        try libcurl.curl_easy_setopt(easy, .nobody, false);
+        try libcurl.curl_easy_setopt(easy, .post, false);
+        try libcurl.curl_easy_setopt(easy, .post_field_size, @as(c_long, 0));
+        try libcurl.curl_easy_setopt(easy, .http_get, true);
+    }
+
+    pub fn setHeadMode(self: *Connection) !void {
+        const easy = self._easy;
+        self.clearUploadBody();
+        try libcurl.curl_easy_setopt(easy, .post, false);
+        try libcurl.curl_easy_setopt(easy, .post_field_size, @as(c_long, 0));
+        try libcurl.curl_easy_setopt(easy, .http_get, false);
+        try libcurl.curl_easy_setopt(easy, .nobody, true);
+    }
+
+    pub fn clearHeaders(self: *const Connection) !void {
+        try libcurl.curl_easy_setopt(self._easy, .http_header, null);
     }
 
     pub fn setHeaders(self: *const Connection, headers: *Headers) !void {
@@ -486,7 +538,8 @@ pub const Connection = struct {
         self.transport = .none;
         self.origin = .unknown;
         self.in_multi = false;
-        self.in_multi = false;
+        self._upload_body = null;
+        self._upload_offset = 0;
 
         if (build_config.curl_impersonate) {
             try self.clearInternalCookies();
@@ -610,6 +663,20 @@ pub const Connection = struct {
 
     fn discardBody(_: [*]const u8, count: usize, len: usize, _: ?*anyopaque) usize {
         return count * len;
+    }
+
+    fn rawBodyReadCallback(buffer: [*]u8, buf_count: usize, buf_len: usize, data: *anyopaque) usize {
+        if (comptime ENABLE_DEBUG) {
+            std.debug.assert(buf_count == 1);
+        }
+        const conn: *Connection = @ptrCast(@alignCast(data));
+        const body = conn._upload_body orelse return 0;
+        const offset = conn._upload_offset;
+        if (offset >= body.len) return 0;
+        const to_copy = @min(buf_len, body.len - offset);
+        @memcpy(buffer[0..to_copy], body[offset..][0..to_copy]);
+        conn._upload_offset = offset + to_copy;
+        return to_copy;
     }
 
     pub fn setProxy(self: *const Connection, proxy: ?[:0]const u8) !void {

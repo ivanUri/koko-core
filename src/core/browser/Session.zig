@@ -25,6 +25,8 @@ const History = @import("../webapi/History.zig");
 
 const Frame = @import("Frame.zig");
 const Page = @import("Page.zig");
+const IFrame = @import("../webapi/element/html/IFrame.zig");
+const URL = @import("../webapi/URL.zig");
 pub const Runner = @import("Runner.zig");
 const Browser = @import("Browser.zig");
 const ClientHints = @import("../../runtime/profile/ClientHints.zig");
@@ -98,6 +100,8 @@ loader_id_gen: u32 = 0,
 /// Origins that sent `Accept-CH` for UA client hints (high-entropy hints enabled).
 _client_hints_origins: ClientHints.OriginSet = .empty,
 
+_shared_workers: std.StringHashMapUnmanaged(*@import("../webapi/shared_worker.zig").SharedWorkerRuntime) = .{},
+
 pub fn init(self: *Session, browser: *Browser, notification: *Notification) !void {
     const allocator = browser.app.allocator;
     const arena_pool = browser.arena_pool;
@@ -159,6 +163,7 @@ pub fn deinit(self: *Session) void {
             self.tearDownActivePage();
         }
     }
+    self.destroySharedWorkers();
     self.cookie_jar.deinit();
     self._client_hints_origins.deinit(self.arena);
 
@@ -331,6 +336,42 @@ pub fn runner(self: *Session, opts: Runner.Opts) !Runner {
 
 pub fn scheduleNavigation(self: *Session, frame: *Frame) !void {
     return self.currentPage().?.scheduleNavigation(frame);
+}
+
+/// Upgrade a parser-inserted iframe from `about:blank` to its real `src` immediately.
+/// html5ever may run `nodeComplete` before attributes are bound on void elements.
+pub fn upgradeIframeFromAboutBlank(self: *Session, parent: *Frame, iframe: *IFrame, src: []const u8) !void {
+    if (src.len == 0 or std.mem.eql(u8, src, "about:blank")) return;
+    const window = iframe._window orelse return;
+    const child = window._frame;
+    if (!std.mem.eql(u8, child.url, "about:blank")) return;
+
+    const arena = try self.getArena(.small, "upgradeIframe");
+    errdefer self.releaseArena(arena);
+
+    const resolved_url = try URL.resolve(arena, parent.base(), src, .{
+        .always_dupe = true,
+        .encoding = parent.charset,
+    });
+
+    var nav_opts: Frame.NavigateOpts = .{
+        .reason = .initialFrameNavigation,
+        .kind = .{ .push = null },
+    };
+    if (std.mem.startsWith(u8, parent.url, "http")) {
+        nav_opts.referer = try arena.dupe(u8, parent.url);
+    }
+
+    const qn = try arena.create(QueuedNavigation);
+    qn.* = .{
+        .opts = nav_opts,
+        .arena = arena,
+        .url = resolved_url,
+        .is_about_blank = false,
+        .navigation_type = .iframe,
+    };
+
+    return self.processFrameNavigation(child, qn);
 }
 
 pub fn processQueuedNavigation(self: *Session) !void {
@@ -703,6 +744,7 @@ pub fn drainDeferredCommit(self: *Session) void {
         self._deferred_commit_pending = false;
         return;
     };
+    if (self.browser.http_client.hasProtectedTransfersForFrame(pending.frame._frame_id)) return;
     self._deferred_commit_pending = false;
     pending.frame.finalizePendingRootCommit() catch |err| {
         log.err(.browser, "drain deferred commit", .{ .err = err });
@@ -719,6 +761,38 @@ pub fn nextLoaderId(self: *Session) u32 {
     const id = self.loader_id_gen +% 1;
     self.loader_id_gen = id;
     return id;
+}
+
+const SharedWorkerRuntime = @import("../webapi/shared_worker.zig").SharedWorkerRuntime;
+
+pub fn getOrCreateSharedWorkerRuntime(self: *Session, params: SharedWorkerRuntime.CreateParams) !*SharedWorkerRuntime {
+    if (self._shared_workers.get(params.identity_key)) |existing| {
+        return existing;
+    }
+    const runtime = try SharedWorkerRuntime.create(self, params);
+    try self._shared_workers.put(self.arena, runtime.identity_key, runtime);
+    return runtime;
+}
+
+pub fn unregisterSharedWorkerRuntime(self: *Session, runtime: *SharedWorkerRuntime) void {
+    _ = self._shared_workers.remove(runtime.identity_key);
+}
+
+fn destroySharedWorkers(self: *Session) void {
+    if (self._shared_workers.count() == 0) return;
+    var list: std.ArrayList(*SharedWorkerRuntime) = .{};
+    var it = self._shared_workers.valueIterator();
+    while (it.next()) |runtime| {
+        list.append(self.arena, runtime.*) catch {};
+    }
+    self._shared_workers.deinit(self.arena);
+    self._shared_workers = .{};
+    for (list.items) |runtime| {
+        if (!runtime.host._terminated) {
+            runtime.host.deinitForSession(self);
+        }
+        self.releaseArena(runtime.arena);
+    }
 }
 
 // Every finalizable instance of Zig gets 1 FinalizerCallback registered in the

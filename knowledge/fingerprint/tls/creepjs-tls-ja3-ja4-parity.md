@@ -92,7 +92,7 @@ The script launches Velora and real Chrome with the same profile policy, fetches
 
 ### Relationship to CreepJS
 
-CreepJS does not hash TLS. CreepJS section parity (navigator, css, fonts, etc.) is necessary but **not sufficient** for sites that terminate TLS at the edge and score the handshake independently. See `knowledge/captcha/detection/google-search-signal-inventory.md` for how Google layers TLS with JS fingerprint signals.
+CreepJS does not hash TLS. CreepJS section parity (navigator, css, fonts, etc.) is necessary but **not sufficient** for sites that terminate TLS at the edge and score the handshake independently. See `knowledge/captcha/detection/google-search-investigation-journey.md` for how Google layers TLS with session cookies and JS fingerprint signals.
 
 ---
 
@@ -125,7 +125,7 @@ CreepJS does not hash TLS. CreepJS section parity (navigator, css, fonts, etc.) 
 - `src/support/sys/libcurl.zig` — curl-impersonate CURLOPT bindings
 - `vendor/curl-impersonate/` — vendored binaries and version pin
 - [browserleaks TLS](https://tls.browserleaks.com/json) / [QUIC](https://quic.browserleaks.com/)
-- `knowledge/captcha/detection/google-search-signal-inventory.md` — TLS layer in Google scoring
+- `knowledge/captcha/detection/google-search-investigation-journey.md` — TLS as Layer 2 wire hygiene
 
 ---
 

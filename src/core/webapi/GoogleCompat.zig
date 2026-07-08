@@ -59,6 +59,7 @@ pub fn shouldExposeBootstrap(frame: *Frame) bool {
     if (shouldExpose(frame)) return false;
     const url = frame.url;
     if (std.mem.indexOf(u8, url, "google.") == null) return false;
+    if (std.mem.indexOf(u8, url, "accounts.google.") != null) return true;
     return std.mem.indexOf(u8, url, "/search") != null or std.mem.indexOf(u8, url, "sei=") != null;
 }
 

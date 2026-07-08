@@ -12,9 +12,27 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+const std = @import("std");
+
 const js = @import("js.zig");
 const v8 = js.v8;
 const bridge = js.bridge;
+
+const max_sane_prototype_len: u16 = 64;
+
+fn castTaggedOpaque(ptr: *anyopaque) !*TaggedOpaque {
+    if (@intFromPtr(ptr) == 0) return error.InvalidArgument;
+    const addr = @intFromPtr(ptr);
+    if (!std.mem.isAligned(addr, @alignOf(TaggedOpaque))) return error.InvalidArgument;
+    return @ptrCast(@alignCast(ptr));
+}
+
+fn castInstance(comptime T: type, ptr: *anyopaque) !*T {
+    if (@intFromPtr(ptr) == 0) return error.InvalidArgument;
+    const addr = @intFromPtr(ptr);
+    if (!std.mem.isAligned(addr, @alignOf(T))) return error.InvalidArgument;
+    return @ptrCast(@alignCast(ptr));
+}
 
 // When we return a Zig object to V8, we put it on the heap and pass it into
 // v8 as an *anyopaque (i.e. void *). When V8 gives us back the value, say, as a
@@ -102,13 +120,17 @@ pub fn fromJS(comptime R: type, js_obj_handle: *const v8.Object) !R {
         @compileError("unknown Zig type: " ++ @typeName(R));
     }
 
-    const tao_ptr = v8.v8__Object__GetAlignedPointerFromInternalField(js_obj_handle, 0).?;
-    const tao: *TaggedOpaque = @ptrCast(@alignCast(tao_ptr));
+    const tao_ptr = v8.v8__Object__GetAlignedPointerFromInternalField(js_obj_handle, 0) orelse return error.InvalidArgument;
+    const tao = try castTaggedOpaque(tao_ptr);
     const expected_type_index = bridge.JsApiLookup.getId(JsApi);
+
+    if (tao.prototype_len == 0 or tao.prototype_len > max_sane_prototype_len) {
+        return error.InvalidArgument;
+    }
 
     const prototype_chain = tao.prototype_chain[0..tao.prototype_len];
     if (prototype_chain[0].index == expected_type_index) {
-        return @ptrCast(@alignCast(tao.value));
+        return castInstance(T, tao.value);
     }
 
     // Ok, let's walk up the chain
@@ -117,9 +139,23 @@ pub fn fromJS(comptime R: type, js_obj_handle: *const v8.Object) !R {
         ptr += proto.offset; // the offset to the _proto field
         const proto_ptr: **anyopaque = @ptrFromInt(ptr);
         if (proto.index == expected_type_index) {
-            return @ptrCast(@alignCast(proto_ptr.*));
+            return castInstance(T, proto_ptr.*);
         }
         ptr = @intFromPtr(proto_ptr.*);
+    }
+    return error.InvalidArgument;
+}
+
+/// Resolve a legacy platform object used as `this` for named/indexed handlers.
+/// Walks the JSObject prototype chain when the receiver is a plain object that
+/// inherits from a collection (e.g. `Object.create(document.all)`).
+pub fn fromJSLegacyPlatformReceiver(comptime R: type, js_obj_handle: *const v8.Object) !R {
+    var current: ?*const v8.Object = js_obj_handle;
+    while (current) |obj| {
+        if (fromJS(R, obj)) |instance| return instance else |err| {
+            if (err != error.InvalidArgument) return err;
+        }
+        current = v8.v8__Object__GetPrototype(obj);
     }
     return error.InvalidArgument;
 }

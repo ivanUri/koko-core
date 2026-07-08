@@ -17,6 +17,7 @@ const builtin = @import("builtin");
 
 const js = @import("../js/js.zig");
 const Frame = @import("../browser/Frame.zig");
+const EventManagerBase = @import("../browser/EventManagerBase.zig");
 const Console = @import("Console.zig");
 const History = @import("History.zig");
 const Navigation = @import("navigation/Navigation.zig");
@@ -47,8 +48,11 @@ const IDBFactory = @import("idb.zig").IDBFactory;
 const CacheStorage = @import("cache_storage.zig").CacheStorage;
 const SpeechSynthesis = @import("speech/SpeechSynthesis.zig").SpeechSynthesis;
 const TrustedTypePolicyFactory = @import("trusted_types.zig").TrustedTypePolicyFactory;
+const CookieStore = @import("cookie_store.zig").CookieStore;
+const TaskScheduler = @import("scheduler_api.zig").Scheduler;
 const Chrome = @import("Chrome.zig");
 const GoogleCompat = @import("GoogleCompat.zig");
+const global_event_handlers = @import("global_event_handlers.zig");
 
 const log = @import("../../support/log.zig");
 const IS_DEBUG = builtin.mode == .Debug;
@@ -90,6 +94,8 @@ _indexed_db: IDBFactory = .{},
 _caches: CacheStorage = .{},
 _speech_synthesis: SpeechSynthesis = .{},
 _trusted_types: TrustedTypePolicyFactory = .{},
+_cookie_store: CookieStore = .{},
+_task_scheduler: TaskScheduler = .{},
 _scroll_pos: struct {
     x: u32,
     y: u32,
@@ -281,6 +287,25 @@ pub fn getTrustedTypes(self: *Window) *TrustedTypePolicyFactory {
     return &self._trusted_types;
 }
 
+pub fn getCookieStore(self: *Window) *CookieStore {
+    return &self._cookie_store;
+}
+
+pub fn getTaskScheduler(self: *Window) *TaskScheduler {
+    return &self._task_scheduler;
+}
+
+pub fn getIsSecureContext(self: *const Window, _: *Frame) bool {
+    const protocol = self._location.getProtocol();
+    if (std.mem.eql(u8, protocol, "https:")) return true;
+    if (std.mem.eql(u8, protocol, "file:")) return true;
+    const hostname = self._location.getHostname();
+    if (std.mem.eql(u8, hostname, "localhost")) return true;
+    if (std.mem.eql(u8, hostname, "127.0.0.1")) return true;
+    if (std.mem.eql(u8, hostname, "[::1]")) return true;
+    return false;
+}
+
 pub fn getOnLoad(self: *const Window) ?js.Function.Global {
     return self._on_load;
 }
@@ -322,6 +347,57 @@ pub fn setOnMessage(self: *Window, setter: ?FunctionSetter) void {
     self.flushPendingPostMessages();
 }
 
+fn getTouchHandler(self: *Window, handler: global_event_handlers.Handler, frame: *Frame) !?js.Function.Global {
+    return frame._event_target_attr_listeners.get(.{ .target = self.asEventTarget(), .handler = handler });
+}
+
+fn setTouchHandler(self: *Window, handler: global_event_handlers.Handler, setter: ?FunctionSetter, frame: *Frame) !void {
+    const callback = getFunctionFromSetter(setter);
+    if (callback) |cb| {
+        try frame._event_target_attr_listeners.put(frame.arena, .{
+            .target = self.asEventTarget(),
+            .handler = handler,
+        }, cb);
+    } else {
+        _ = frame._event_target_attr_listeners.remove(.{
+            .target = self.asEventTarget(),
+            .handler = handler,
+        });
+    }
+}
+
+pub fn getOnTouchStart(self: *Window, frame: *Frame) !?js.Function.Global {
+    return getTouchHandler(self, .ontouchstart, frame);
+}
+
+pub fn setOnTouchStart(self: *Window, setter: ?FunctionSetter, frame: *Frame) !void {
+    return setTouchHandler(self, .ontouchstart, setter, frame);
+}
+
+pub fn getOnTouchEnd(self: *Window, frame: *Frame) !?js.Function.Global {
+    return getTouchHandler(self, .ontouchend, frame);
+}
+
+pub fn setOnTouchEnd(self: *Window, setter: ?FunctionSetter, frame: *Frame) !void {
+    return setTouchHandler(self, .ontouchend, setter, frame);
+}
+
+pub fn getOnTouchMove(self: *Window, frame: *Frame) !?js.Function.Global {
+    return getTouchHandler(self, .ontouchmove, frame);
+}
+
+pub fn setOnTouchMove(self: *Window, setter: ?FunctionSetter, frame: *Frame) !void {
+    return setTouchHandler(self, .ontouchmove, setter, frame);
+}
+
+pub fn getOnTouchCancel(self: *Window, frame: *Frame) !?js.Function.Global {
+    return getTouchHandler(self, .ontouchcancel, frame);
+}
+
+pub fn setOnTouchCancel(self: *Window, setter: ?FunctionSetter, frame: *Frame) !void {
+    return setTouchHandler(self, .ontouchcancel, setter, frame);
+}
+
 /// Deliver window.postMessage events that arrived before any message listener was registered.
 pub fn flushPendingPostMessages(self: *Window) void {
     const frame = self._frame;
@@ -342,7 +418,7 @@ pub fn flushPendingPostMessages(self: *Window) void {
         pending.deinit();
     }
 
-    frame.scheduleDeferredMacrotaskPump() catch |err| {
+    frame.scheduleDeferredMacrotaskPump(0) catch |err| {
         log.warn(.browser, "flush pending postMessage pump", .{ .err = err });
     };
 }
@@ -452,9 +528,32 @@ pub fn cancelIdleCallback(self: *Window, id: u32) void {
 }
 
 pub fn reportError(self: *Window, err: js.Value, frame: *Frame) !void {
+    try self.reportUncaughtException(
+        err,
+        err.toStringSlice() catch "Unknown error",
+        frame.url,
+        0,
+        0,
+        frame,
+    );
+}
+
+/// Report an uncaught exception to `window.onerror` and `error` listeners.
+pub fn reportUncaughtException(
+    self: *Window,
+    err: js.Value,
+    message: []const u8,
+    filename: []const u8,
+    line: u32,
+    col: u32,
+    frame: *Frame,
+) !void {
     const error_event = try ErrorEvent.initTrusted(comptime .wrap("error"), .{
         .@"error" = try err.temp(),
-        .message = err.toStringSlice() catch "Unknown error",
+        .message = message,
+        .filename = filename,
+        .lineno = line,
+        .colno = col,
         .bubbles = false,
         .cancelable = true,
     }, frame._page);
@@ -469,13 +568,13 @@ pub fn reportError(self: *Window, err: js.Value, frame: *Frame) !void {
         defer ls.deinit();
 
         const local_func = ls.toLocal(on_error);
-        const result = local_func.call(js.Value, .{
+        const result = EventManagerBase.invokeCallback(&ls.local, ls.local.ctx, local_func, js.Value, .{
             error_event._message,
             error_event._filename,
             error_event._line_number,
             error_event._column_number,
             err,
-        }) catch null;
+        }, "window.onerror");
 
         // Per spec: returning true from onerror cancels the event
         if (result) |r| {
@@ -488,12 +587,12 @@ pub fn reportError(self: *Window, err: js.Value, frame: *Frame) !void {
     // Pass null as handler: onerror was already called above with 5 args.
     // We still dispatch so that addEventListener('error', ...) listeners fire.
     try frame._event_manager.dispatchDirect(self.asEventTarget(), event, null, .{
-        .context = "window.reportError",
+        .context = "window.uncaughtException",
     });
 
     if (comptime builtin.is_test == false) {
         if (!event._prevent_default) {
-            log.warn(.js, "window.reportError", .{
+            log.warn(.js, "window.uncaughtException", .{
                 .message = error_event._message,
                 .filename = error_event._filename,
                 .line_number = error_event._line_number,
@@ -649,7 +748,9 @@ pub fn postMessage(self: *Window, message: js.Value.Temp, target_origin: ?[]cons
     _ = target_origin;
 
     const target_frame = self._frame;
-    const source_window = frame.window;
+    // MessageEvent.source reflects the incumbent settings object (HTML), not `this`.
+    const source_frame = resolvePostMessageSourceFrame(frame.js.getIncumbent(), frame);
+    const source_window = source_frame.window;
 
     const arena = try target_frame.getArena(.medium, "Window.postMessage");
     errdefer target_frame.releaseArena(arena);
@@ -673,12 +774,12 @@ pub fn postMessage(self: *Window, message: js.Value.Temp, target_origin: ?[]cons
         target_frame.js.localScope(&target_owned);
         defer target_owned.deinit();
 
-        const cloned = try message.local(source_local).structuredCloneTo(&target_owned.local);
+        const cloned = try message.local(source_local).structuredCloneTo(&target_owned.local, null);
         break :blk try cloned.temp();
     };
 
-    // Origin should be the source window's origin (where the message came from)
-    const origin = try source_window._location.getOrigin(&frame.js.execution);
+    // Origin follows the incumbent settings object, same as MessageEvent.source.
+    const origin = try source_window._location.getOrigin(&source_frame.js.execution);
     const callback = try arena.create(PostMessageCallback);
     callback.* = .{
         .arena = arena,
@@ -750,6 +851,26 @@ pub fn postMessage(self: *Window, message: js.Value.Temp, target_origin: ?[]cons
     try schedulePostMessageDelivery(target_frame, callback);
 }
 
+/// Resolve MessageEvent.source for window.postMessage. Uses V8 incumbent context,
+/// with fallbacks for promise-job backup-incumbent cases where only a bound
+/// function (or entry realm) remains on the JS stack.
+fn resolvePostMessageSourceFrame(incumbent_frame: *Frame, relevant_frame: *Frame) *Frame {
+    if (incumbent_frame.parent) |parent| {
+        // Bound handler realm (e.g. current/) vs `this` (relevant/): use shared parent.
+        if (relevant_frame.parent == parent and incumbent_frame != parent) {
+            return parent;
+        }
+    }
+    // V8 incumbent fallback to entry realm — use `this` frame's parent document.
+    if (relevant_frame.parent) |rp| {
+        const page_root = &relevant_frame._page.frame;
+        if (incumbent_frame == page_root or incumbent_frame.parent == null) {
+            return rp;
+        }
+    }
+    return incumbent_frame;
+}
+
 fn schedulePostMessageDelivery(target_frame: *Frame, callback: *PostMessageCallback) !void {
     try target_frame.js.scheduler.add(callback, PostMessageCallback.run, 0, .{
         .name = "postMessage",
@@ -757,7 +878,7 @@ fn schedulePostMessageDelivery(target_frame: *Frame, callback: *PostMessageCallb
         .finalizer = PostMessageCallback.cancelled,
     });
 
-    target_frame.scheduleDeferredMacrotaskPump() catch |err| {
+    target_frame.scheduleDeferredMacrotaskPump(0) catch |err| {
         log.warn(.browser, "postMessage pump", .{ .err = err });
     };
 }
@@ -994,13 +1115,21 @@ const PostMessageCallback = struct {
             .cancelable = false,
         }, frame._page)).asEvent();
         try frame._event_manager.dispatchDirect(event_target, event, window._on_message, .{ .context = "window.postMessage" });
-        try frame.scheduleDeferredMacrotaskPump();
+        try frame.scheduleDeferredMacrotaskPump(0);
     }
 
     fn run(ctx: *anyopaque) !?u32 {
         const self: *PostMessageCallback = @ptrCast(@alignCast(ctx));
 
         const frame = self.frame;
+        if (!frame.realmSchedulingActive()) {
+            try frame.js.scheduler.add(self, PostMessageCallback.run, 0, .{
+                .name = "window.postMessage.defer",
+                .low_priority = false,
+                .finalizer = PostMessageCallback.cancelled,
+            });
+            return null;
+        }
         const window = frame.window;
         const event_target = window.asEventTarget();
         const has_listeners = frame._event_manager.hasDirectListeners(event_target, "message", window._on_message);
@@ -1089,11 +1218,17 @@ pub const JsApi = struct {
     pub const caches = bridge.accessor(Window.getCaches, null, .{});
     pub const speechSynthesis = bridge.accessor(Window.getSpeechSynthesis, null, .{});
     pub const trustedTypes = bridge.accessor(Window.getTrustedTypes, null, .{});
+    pub const cookieStore = bridge.accessor(Window.getCookieStore, null, .{});
+    pub const scheduler = bridge.accessor(Window.getTaskScheduler, null, .{});
     pub const onload = bridge.accessor(Window.getOnLoad, Window.setOnLoad, .{});
     pub const onpageshow = bridge.accessor(Window.getOnPageShow, Window.setOnPageShow, .{});
     pub const onpopstate = bridge.accessor(Window.getOnPopState, Window.setOnPopState, .{});
     pub const onerror = bridge.accessor(Window.getOnError, Window.setOnError, .{});
     pub const onmessage = bridge.accessor(Window.getOnMessage, Window.setOnMessage, .{});
+    pub const ontouchstart = bridge.accessor(Window.getOnTouchStart, Window.setOnTouchStart, .{});
+    pub const ontouchend = bridge.accessor(Window.getOnTouchEnd, Window.setOnTouchEnd, .{});
+    pub const ontouchmove = bridge.accessor(Window.getOnTouchMove, Window.setOnTouchMove, .{});
+    pub const ontouchcancel = bridge.accessor(Window.getOnTouchCancel, Window.setOnTouchCancel, .{});
     pub const onrejectionhandled = bridge.accessor(Window.getOnRejectionHandled, Window.setOnRejectionHandled, .{});
     pub const onunhandledrejection = bridge.accessor(Window.getOnUnhandledRejection, Window.setOnUnhandledRejection, .{});
     pub const event = bridge.accessor(Window.getEvent, null, .{ .null_as_undefined = true });
@@ -1114,7 +1249,7 @@ pub const JsApi = struct {
     pub const btoa = bridge.function(Window.btoa, .{ .dom_exception = true });
     pub const atob = bridge.function(Window.atob, .{ .dom_exception = true });
     pub const reportError = bridge.function(Window.reportError, .{});
-    pub const structuredClone = bridge.function(Window.structuredClone, .{});
+    pub const structuredClone = bridge.function(Window.structuredClone, .{ .dom_exception = true });
     pub const getComputedStyle = bridge.function(Window.getComputedStyle, .{});
     pub const getSelection = bridge.function(Window.getSelection, .{});
 
@@ -1129,11 +1264,8 @@ pub const JsApi = struct {
     pub const scroll = bridge.function(Window.scrollTo, .{});
     pub const scrollBy = bridge.function(Window.scrollBy, .{});
 
-    // Return false since we don't have secure-context-only APIs implemented
-    // (webcam, geolocation, clipboard, etc.)
-    // This is safer and could help avoid processing errors by hinting at
-    // sites not to try to access those features
-    pub const isSecureContext = bridge.attribute(false, .{});
+    pub const isSecureContext = bridge.accessor(Window.getIsSecureContext, null, .{});
+    pub const crossOriginIsolated = bridge.attribute(false, .{});
 
     pub fn getInnerWidth(_: *const Window, frame: *Frame) u32 {
         return frame.windowProfile().inner_width;
@@ -1211,7 +1343,7 @@ pub const JsApi = struct {
         }
     }.prompt, .{});
 
-    pub const webdriver = bridge.accessor(Window.getWebDriver, null, .{ .wpt_only = true });
+    pub const webdriver = bridge.accessor(Window.getWebDriver, null, .{});
 };
 
 const CrossOriginWindow = struct {

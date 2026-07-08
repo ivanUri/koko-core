@@ -15,6 +15,8 @@ const std = @import("std");
 const js = @import("../js/js.zig");
 
 const Page = @import("../browser/Page.zig");
+const Frame = @import("../browser/Frame.zig");
+const Node = @import("../dom/Node.zig");
 const EventManager = @import("../browser/EventManager.zig");
 
 const Event = @import("Event.zig");
@@ -60,14 +62,23 @@ pub fn init(page: *Page) !*EventTarget {
     });
 }
 
+fn ownerFrameForTarget(target: *EventTarget, entry: *Frame) *Frame {
+    return switch (target._type) {
+        .node => |n| n.ownerFrame(entry),
+        .window => |w| w._frame,
+        else => entry,
+    };
+}
+
 pub fn dispatchEvent(self: *EventTarget, event: *Event, exec: *js.Execution) !bool {
-    if (event._event_phase != .none) {
+    if (event.isBeingDispatched()) {
         return error.InvalidStateError;
     }
     event._is_trusted = false;
 
     switch (exec.context.global) {
-        .frame => |frame| {
+        .frame => |entry| {
+            const frame = ownerFrameForTarget(self, entry);
             event.acquireRef();
             defer _ = event.releaseRef(frame._page);
             try frame._event_manager.dispatch(self, event);
@@ -103,13 +114,30 @@ pub fn addEventListener(self: *EventTarget, typ: []const u8, callback_: ?EventLi
     };
 
     switch (exec.context.global) {
-        inline else => |g| _ = try g._event_manager.register(self, typ, em_callback, options),
+        .frame => |entry| {
+            const frame = ownerFrameForTarget(self, entry);
+            try frame._event_manager.register(self, typ, em_callback, options);
+        },
+        .worker => |wgs| {
+            _ = try wgs._event_manager.registerIgnoringNoops(self, typ, em_callback, options);
+        },
     }
 
     if (std.mem.eql(u8, typ, "message")) {
         switch (self._type) {
-            .message_port => |port| port.start() catch {},
+            .message_port => |port| {
+                port.start() catch {};
+                port.flushPendingDeliveries() catch {};
+            },
             .worker_global_scope => |wgs| wgs.scheduleDeferredFlushUndelivered() catch {},
+            .worker => |w| w.scheduleDeferredFlushUndelivered() catch {},
+            else => {},
+        }
+    }
+
+    if (std.mem.eql(u8, typ, "connect")) {
+        switch (self._type) {
+            .worker_global_scope => |wgs| wgs.flushPendingConnects() catch {},
             else => {},
         }
     }
@@ -147,7 +175,13 @@ pub fn removeEventListener(self: *EventTarget, typ: []const u8, callback_: ?Even
     };
 
     switch (exec.context.global) {
-        inline else => |g| g._event_manager.remove(self, typ, em_callback, use_capture),
+        .frame => |entry| {
+            const frame = ownerFrameForTarget(self, entry);
+            frame._event_manager.remove(self, typ, em_callback, use_capture);
+        },
+        .worker => |wgs| {
+            wgs._event_manager.remove(self, typ, em_callback, use_capture);
+        },
     }
 }
 

@@ -20,6 +20,7 @@ const std = @import("std");
 
 const JS = @import("../js/js.zig");
 const URL = @import("../browser/URL.zig");
+const Mime = @import("../browser/Mime.zig");
 const Frame = @import("../browser/Frame.zig");
 const Page = @import("../browser/Page.zig");
 const Factory = @import("../browser/Factory.zig");
@@ -36,11 +37,15 @@ const Console = @import("Console.zig");
 const Timers = @import("Timers.zig");
 const EventTarget = @import("EventTarget.zig");
 const MessageEvent = @import("event/MessageEvent.zig");
+const ConnectEvent = @import("event/ConnectEvent.zig");
 const ErrorEvent = @import("event/ErrorEvent.zig");
 const Fetch = @import("net/Fetch.zig");
 const Performance = @import("Performance.zig");
 const WorkerNavigator = @import("WorkerNavigator.zig");
 const WorkerLocation = @import("WorkerLocation.zig");
+const DOMException = @import("../dom/DOMException.zig");
+
+const v8 = JS.v8;
 
 const builtin = @import("builtin");
 const IS_DEBUG = builtin.mode == .Debug;
@@ -63,6 +68,8 @@ _identity: JS.Identity = .{},
 arena: Allocator,
 call_arena: Allocator,
 url: [:0]const u8,
+/// SharedWorkerGlobalScope name (empty for dedicated workers).
+_name: []const u8 = "",
 // Same-origin constraint: a worker's origin is inherited from its parent frame.
 origin: ?[]const u8 = null,
 buf: [1024]u8 = undefined, // same size as frame.buf
@@ -105,12 +112,14 @@ _on_rejection_handled: ?JS.Function.Global = null,
 _on_unhandled_rejection: ?JS.Function.Global = null,
 _on_message: ?JS.Function.Global = null,
 _on_messageerror: ?JS.Function.Global = null,
+_on_connect: ?JS.Function.Global = null,
 _pending_undelivered: std.ArrayListUnmanaged(PendingInboundMessage) = .{},
+_pending_connect_ports: std.ArrayList(*MessagePort) = .{},
 _debug_next_message_id: u64 = 1,
 
 _timers: Timers = .{},
 
-pub fn init(worker: *Worker, url: [:0]const u8) !*WorkerGlobalScope {
+pub fn init(worker: *Worker, url: [:0]const u8, shared: bool) !*WorkerGlobalScope {
     const arena = worker._arena;
     const parent = worker._frame;
     const session = worker._frame._session;
@@ -119,10 +128,17 @@ pub fn init(worker: *Worker, url: [:0]const u8) !*WorkerGlobalScope {
     errdefer session.releaseArena(call_arena);
 
     const factory = parent._factory;
+    // data: workers use an opaque origin for inside settings (dynamic import CORS).
+    const worker_origin: ?[]const u8 = if (std.mem.startsWith(u8, url, "data:"))
+        null
+    else if (parent.origin) |o|
+        o
+    else
+        try URL.getOrigin(arena, url);
     const self = try factory.eventTargetWithAllocator(arena, WorkerGlobalScope{
         .url = url,
         .arena = arena,
-        .origin = parent.origin,
+        .origin = worker_origin,
         .js = undefined,
         .call_arena = call_arena,
         ._session = session,
@@ -146,11 +162,18 @@ pub fn init(worker: *Worker, url: [:0]const u8) !*WorkerGlobalScope {
         .{ .worker = self },
     );
 
-    self.js = try session.browser.env.createWorkerContext(self, .{
-        .call_arena = call_arena,
-        .identity_arena = arena,
-        .identity = &self._identity,
-    });
+    self.js = if (shared)
+        try session.browser.env.createSharedWorkerContext(self, .{
+            .call_arena = call_arena,
+            .identity_arena = arena,
+            .identity = &self._identity,
+        })
+    else
+        try session.browser.env.createWorkerContext(self, .{
+            .call_arena = call_arena,
+            .identity_arena = arena,
+            .identity = &self._identity,
+        });
 
     return self;
 }
@@ -182,9 +205,12 @@ fn enterRealmDead(self: *WorkerGlobalScope) void {
 }
 
 pub fn deinit(self: *WorkerGlobalScope) void {
+    self.deinitForSession(self._session);
+}
+
+pub fn deinitForSession(self: *WorkerGlobalScope, session: *Session) void {
     self.enterRealmDraining();
     self.releasePendingUndelivered();
-    self._identity.deinit();
     self._script_manager.deinit();
 
     const page = self._page;
@@ -193,8 +219,9 @@ pub fn deinit(self: *WorkerGlobalScope) void {
         blob.*.releaseRef(page);
     }
     self.enterRealmDead();
-    page.session.browser.env.destroyContext(self.js);
-    page.releaseArena(self.call_arena);
+    session.browser.env.destroyContext(self.js);
+    page.shutdownIdentity(&self._identity);
+    session.releaseArena(self.call_arena);
 }
 
 pub fn base(self: *const WorkerGlobalScope) [:0]const u8 {
@@ -213,6 +240,8 @@ pub fn dispatch(
     handler: anytype,
     comptime opts: EventManagerBase.DispatchDirectOptions,
 ) !void {
+    self._event_manager.beginDispatch();
+    defer self._event_manager.endDispatch();
     try self._event_manager.dispatchDirect(
         self.call_arena,
         self.js,
@@ -247,6 +276,23 @@ pub fn lookupBlobUrl(self: *WorkerGlobalScope, url: []const u8) ?*Blob {
     return self._blob_urls.get(url);
 }
 
+fn lookupBlobUrlFuzzy(self: *WorkerGlobalScope, url: []const u8) ?*Blob {
+    if (self.lookupBlobUrl(url)) |blob| return blob;
+    if (self._worker._frame.lookupBlobUrl(url)) |blob| return blob;
+    const slash = std.mem.lastIndexOfScalar(u8, url, '/') orelse return null;
+    const suffix = url[slash + 1 ..];
+    if (suffix.len == 0) return null;
+    var it = self._blob_urls.iterator();
+    while (it.next()) |entry| {
+        if (std.mem.endsWith(u8, entry.key_ptr.*, suffix)) return entry.value_ptr.*;
+    }
+    var frame_it = self._worker._frame._blob_urls.iterator();
+    while (frame_it.next()) |entry| {
+        if (std.mem.endsWith(u8, entry.key_ptr.*, suffix)) return entry.value_ptr.*;
+    }
+    return null;
+}
+
 pub fn getSelf(self: *WorkerGlobalScope) *WorkerGlobalScope {
     return self;
 }
@@ -269,6 +315,23 @@ pub fn getNavigator(self: *WorkerGlobalScope) *WorkerNavigator {
 
 pub fn getLocation(self: *WorkerGlobalScope) *WorkerLocation {
     return self._location;
+}
+
+pub fn getName(self: *const WorkerGlobalScope) []const u8 {
+    return self._name;
+}
+
+/// Sloppy worker scripts may assign `name = …` to shadow the readonly IDL
+/// attribute (WPT `setting.js`). Define an own data property on the global.
+pub fn setName(self: *WorkerGlobalScope, value: JS.Value) void {
+    const scope = activeLocal(self);
+    var owned_scope = scope.owned;
+    defer if (owned_scope) |*s| s.deinit();
+
+    const global_handle = v8.v8__Context__Global(scope.local.handle).?;
+    const global = JS.Object{ .local = scope.local, .handle = global_handle };
+    // DefineOwnProperty — Object::Set would re-enter this setter.
+    _ = global.defineOwnProperty("name", value, v8.None);
 }
 
 pub fn getOnError(self: *const WorkerGlobalScope) ?JS.Function.Global {
@@ -338,6 +401,11 @@ const DeferFlushUndeliveredCallback = struct {
 };
 
 pub fn flushPendingUndelivered(self: *WorkerGlobalScope) !void {
+    var ls: JS.Local.Scope = undefined;
+    self.js.localScope(&ls);
+    defer ls.deinit();
+    self.syncScriptHandlerSlotsFromLocal(&ls.local);
+
     const target = self.asEventTarget();
 
     while (self._pending_undelivered.items.len > 0) {
@@ -353,8 +421,10 @@ pub fn flushPendingUndelivered(self: *WorkerGlobalScope) !void {
             .cancelable = false,
         }, self._page)).asEvent();
         try self.dispatch(target, event, self._on_message, .{});
+        self.pumpDueTimersNow(0);
     }
     try scheduleDeferredMacrotaskPump(self);
+    try self._worker._frame.scheduleDeferredMacrotaskPump(20);
 }
 
 fn releasePendingUndelivered(self: *WorkerGlobalScope) void {
@@ -373,9 +443,242 @@ pub fn setOnMessageError(self: *WorkerGlobalScope, setter: ?FunctionSetter) void
     self._on_messageerror = getFunctionFromSetter(setter);
 }
 
+pub fn getOnConnect(self: *const WorkerGlobalScope) ?JS.Function.Global {
+    return self._on_connect;
+}
+
+pub fn setOnConnect(self: *WorkerGlobalScope, setter: ?FunctionSetter) void {
+    self._on_connect = getFunctionFromSetter(setter);
+    self.flushPendingConnects() catch |err| {
+        log.warn(.browser, "WorkerGlobalScope.flushPendingConnects", .{ .err = err });
+    };
+}
+
+fn activeLocal(self: *WorkerGlobalScope) struct { local: *const JS.Local, owned: ?JS.Local.Scope } {
+    const nested_in_api = self.js.local != null;
+    var owned_scope: JS.Local.Scope = undefined;
+    const local: *const JS.Local = blk: {
+        if (self.js.local) |active| break :blk active;
+        self.js.localScope(&owned_scope);
+        break :blk &owned_scope.local;
+    };
+    return .{
+        .local = local,
+        .owned = if (nested_in_api) null else owned_scope,
+    };
+}
+
+fn materializeGlobalHandler(
+    self: *WorkerGlobalScope,
+    comptime field: []const u8,
+    slot: *?JS.Function.Global,
+) void {
+    if (slot.* != null) return;
+    // V8 disallows allocation/property access during microtask checkpoints and
+    // while a worker local scope is still entered (DisallowJavascriptExecution).
+    if (self._session.browser.env.checkpoint_active) return;
+    if (self.js.local != null) return;
+    if (!self.js.execution.canEnterJs(.strict_active)) return;
+
+    const scope = activeLocal(self);
+    var owned_scope = scope.owned;
+    defer if (owned_scope) |*s| s.deinit();
+
+    const global_handle = v8.v8__Context__Global(scope.local.handle).?;
+    const global = JS.Object{ .local = scope.local, .handle = global_handle };
+    const func = global.getFunction(field) catch null orelse return;
+    slot.* = func.persist() catch null;
+}
+
+/// Worker scripts assign handlers as own global properties during initial eval;
+/// if the accessor setter was not invoked, Zig slots stay null.
+fn materializeOnConnect(self: *WorkerGlobalScope) void {
+    materializeGlobalHandler(self, "onconnect", &self._on_connect);
+}
+
+fn materializeOnError(self: *WorkerGlobalScope) void {
+    materializeGlobalHandler(self, "onerror", &self._on_error);
+}
+
+fn syncHandlerSlotFromLocal(
+    local: *const JS.Local,
+    comptime field: []const u8,
+    slot: *?JS.Function.Global,
+) void {
+    if (slot.* != null) return;
+    const global_handle = v8.v8__Context__Global(local.handle).?;
+    const global = JS.Object{ .local = local, .handle = global_handle };
+    const func = global.getFunction(field) catch null orelse return;
+    slot.* = func.persist() catch null;
+}
+
+/// Sync Zig handler slots after classic worker eval while `local` is still entered.
+pub fn syncScriptHandlerSlotsFromLocal(self: *WorkerGlobalScope, local: *const JS.Local) void {
+    syncHandlerSlotFromLocal(local, "onmessage", &self._on_message);
+    syncHandlerSlotFromLocal(local, "onmessageerror", &self._on_messageerror);
+    syncHandlerSlotFromLocal(local, "onerror", &self._on_error);
+    if (self._worker._shared_mode) {
+        syncHandlerSlotFromLocal(local, "onconnect", &self._on_connect);
+    }
+}
+
+/// Notify a shared-worker's `onerror` handler for a runtime throw when the
+/// pending exception object is unavailable on the outer TryCatch.
+pub fn reportSharedScriptRuntimeError(
+    self: *WorkerGlobalScope,
+    message: []const u8,
+    filename: []const u8,
+    line: u32,
+    col: u32,
+) void {
+    materializeOnError(self);
+    const on_error = self._on_error orelse return;
+
+    var ls: JS.Local.Scope = undefined;
+    self.js.localScope(&ls);
+    defer ls.deinit();
+
+    const msg_val = ls.local.zigValueToJs(message, .{}) catch return;
+    const file_val = ls.local.zigValueToJs(filename, .{}) catch return;
+    const line_val = ls.local.zigValueToJs(line, .{}) catch return;
+    const col_val = ls.local.zigValueToJs(col, .{}) catch return;
+    const err_val = (ls.local.zigValueToJs(@as(?[]const u8, null), .{}) catch return);
+
+    const local_func = ls.toLocal(on_error);
+    _ = local_func.call(JS.Value, .{ msg_val, file_val, line_val, col_val, err_val }) catch {};
+    materializeOnError(self);
+}
+
+pub fn dispatchConnectEvent(self: *WorkerGlobalScope, port: *MessagePort) !void {
+    port.start() catch |err| {
+        log.warn(.browser, "SharedWorker connect port.start", .{ .err = err });
+    };
+
+    const target = self.asEventTarget();
+    var on_connect = self._on_connect;
+    if (!self._event_manager.hasDirectListeners(target, "connect", on_connect)) {
+        materializeOnConnect(self);
+        on_connect = self._on_connect;
+        if (!self._event_manager.hasDirectListeners(target, "connect", on_connect)) {
+            try self._pending_connect_ports.append(self.arena, port);
+            return;
+        }
+    }
+
+    const event = (try ConnectEvent.initTrusted(comptime .wrap("connect"), .{
+        .ports = &.{port},
+        .bubbles = false,
+        .cancelable = false,
+    }, self._page)).asEvent();
+    try self.dispatch(target, event, on_connect, .{ .context = "SharedWorker.onconnect" });
+    if (self._worker._shared_mode) {
+        try drainSharedConnectAsyncWork(self);
+        try scheduleDeferredSharedConnectPump(self, 0);
+    } else {
+        try scheduleDeferredMacrotaskPump(self);
+    }
+}
+
+fn drainSharedConnectAsyncWork(self: *WorkerGlobalScope) !void {
+    const frame = self._worker._frame;
+    const browser = frame._session.browser;
+    var pass: u32 = 0;
+    var idle_passes: u32 = 0;
+    while (pass < 128 and idle_passes < 8) : (pass += 1) {
+        _ = browser.http_client.tick(0) catch {};
+        try browser.runMacrotasks();
+        const busy = self.js.scheduler.hasReadyTasks() or frame.js.scheduler.hasReadyTasks();
+        if (busy) {
+            idle_passes = 0;
+        } else {
+            idle_passes += 1;
+        }
+    }
+}
+
+const shared_connect_pump_min_rounds: u32 = 8;
+const shared_connect_pump_max_rounds: u32 = 64;
+
+fn scheduleDeferredSharedConnectPump(self: *WorkerGlobalScope, round: u32) !void {
+    const arena = try self._session.getArena(.tiny, "WGS.deferSharedConnectPump");
+    errdefer self._session.releaseArena(arena);
+
+    const callback = try arena.create(DeferSharedConnectPumpCallback);
+    callback.* = .{ .worker_scope = self, .arena = arena, .round = round };
+
+    try self.js.scheduler.add(callback, DeferSharedConnectPumpCallback.run, 0, .{
+        .name = "WorkerGlobalScope.deferSharedConnectPump",
+        .low_priority = false,
+        .finalizer = DeferSharedConnectPumpCallback.cancelled,
+    });
+}
+
+const DeferSharedConnectPumpCallback = struct {
+    worker_scope: *WorkerGlobalScope,
+    arena: Allocator,
+    round: u32,
+
+    fn cancelled(ctx: *anyopaque) void {
+        const self: *DeferSharedConnectPumpCallback = @ptrCast(@alignCast(ctx));
+        self.worker_scope._session.releaseArena(self.arena);
+    }
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *DeferSharedConnectPumpCallback = @ptrCast(@alignCast(ctx));
+        const wgs = self.worker_scope;
+        const frame = wgs._worker._frame;
+        const browser = frame._session.browser;
+
+        _ = browser.http_client.tick(0) catch {};
+        browser.runMacrotasks() catch |err| {
+            log.warn(.browser, "shared connect deferred pump", .{ .err = err });
+        };
+        try frame.scheduleDeferredMacrotaskPump(0);
+
+        const worker_pending = wgs.js.scheduler.hasReadyTasks();
+        const frame_pending = frame.js.scheduler.hasReadyTasks();
+        defer wgs._session.releaseArena(self.arena);
+
+        const should_continue = worker_pending or frame_pending or self.round < shared_connect_pump_min_rounds;
+        if (should_continue and self.round + 1 < shared_connect_pump_max_rounds) {
+            try scheduleDeferredSharedConnectPump(wgs, self.round + 1);
+        }
+        return null;
+    }
+};
+
+pub fn flushPendingConnects(self: *WorkerGlobalScope) !void {
+    const target = self.asEventTarget();
+    while (self._pending_connect_ports.items.len > 0) {
+        var on_connect = self._on_connect;
+        if (!self._event_manager.hasDirectListeners(target, "connect", on_connect)) {
+            materializeOnConnect(self);
+            on_connect = self._on_connect;
+            if (!self._event_manager.hasDirectListeners(target, "connect", on_connect)) {
+                break;
+            }
+        }
+        const port = self._pending_connect_ports.orderedRemove(0);
+        try self.dispatchConnectEvent(port);
+    }
+}
+
 // Posts a message from the worker back to the frame.
 // The message is cloned via structured clone and dispatched on the Worker object.
-pub fn postMessage(self: *WorkerGlobalScope, data: JS.Value, transfer: ?[]JS.Value) !void {
+pub fn postMessage(self: *WorkerGlobalScope, data: JS.Value, transfer_arg: ?JS.Value) !void {
+    const FormData = @import("net/FormData.zig");
+    const TaggedOpaque = @import("../js/TaggedOpaque.zig");
+    if (data.isBranded(FormData) or
+        data.isInstanceOf("FormData") or
+        data.hasGlobalConstructorPrototype("FormData") or
+        data.hasConstructorName("FormData"))
+        return error.DataClone;
+    if (data.isObject()) {
+        if (TaggedOpaque.fromJS(*FormData, @ptrCast(data.toObject().handle)) catch null) |_| {
+            return error.DataClone;
+        }
+    }
+
     const message_id = self._debug_nextMessageId();
     if (comptime IS_DEBUG) {
         log.info(.browser, "worker postMessage to page", .{
@@ -385,19 +688,42 @@ pub fn postMessage(self: *WorkerGlobalScope, data: JS.Value, transfer: ?[]JS.Val
     }
 
     const frame = self._worker._frame;
-    const transferred_ports = if (transfer) |list|
-        try MessagePort.processTransferList(list, &self.js.execution, &frame.js.execution, self.arena)
-    else
-        &[_]*MessagePort{};
+    const transfer_list = try MessagePort.parseTransferArg(data.local, transfer_arg);
+    const transferred_ports = try MessagePort.processTransferList(
+        transfer_list,
+        &self.js.execution,
+        &frame.js.execution,
+        self.arena,
+    );
 
-    try self._worker.receiveMessage(data, message_id, transferred_ports);
-    if (self._worker._bootstrap_complete) {
-        Worker.pumpBootstrapMessaging(&self.js.execution);
-    }
-    // Defer macrotask pumping: Turnstile blob workers call postMessage from
-    // eval/onmessage; running macrotasks synchronously there trips V8's
-    // "Unexpected level after return from api call" check.
+    try self._worker.receiveMessage(data, message_id, transferred_ports, transfer_list);
+    Worker.pumpMessageDelivery(frame);
     try scheduleDeferredMacrotaskPump(self);
+}
+
+/// Run overdue worker scheduler tasks (setTimeout/setInterval) without nesting
+/// `runMacrotasks` from inside an active macrotask callback.
+pub fn pumpDueTimersNow(self: *WorkerGlobalScope, max_delay_ms: u32) void {
+    const exec = &self.js.execution;
+    if (exec.realmState() == .dead) return;
+    if (!exec.canEnterJs(.strict_active)) return;
+
+    var hs: JS.HandleScope = undefined;
+    const entered = self.js.enter(&hs) orelse return;
+    defer entered.exit();
+
+    const env = &self._session.browser.env;
+    var pass: u8 = 0;
+    while (pass < 32) : (pass += 1) {
+        const ms_to_next = self.js.scheduler.msToNext() orelse break;
+        if (ms_to_next > max_delay_ms) break;
+        if (!self.js.scheduler.hasReadyTasks()) break;
+        _ = self.js.scheduler.runOne() catch break;
+        var mt: u8 = 0;
+        while (mt < 8) : (mt += 1) {
+            env.performMicrotaskCheckpoint(self.js);
+        }
+    }
 }
 
 fn scheduleDeferredMacrotaskPump(worker_scope: *WorkerGlobalScope) !void {
@@ -405,7 +731,7 @@ fn scheduleDeferredMacrotaskPump(worker_scope: *WorkerGlobalScope) !void {
     errdefer worker_scope._session.releaseArena(arena);
 
     const callback = try arena.create(DeferPumpCallback);
-    callback.* = .{ .session = worker_scope._session, .arena = arena };
+    callback.* = .{ .frame = worker_scope._worker._frame, .arena = arena };
 
     try worker_scope.js.scheduler.add(callback, DeferPumpCallback.run, 0, .{
         .name = "WorkerGlobalScope.deferPump",
@@ -415,26 +741,30 @@ fn scheduleDeferredMacrotaskPump(worker_scope: *WorkerGlobalScope) !void {
 }
 
 const DeferPumpCallback = struct {
-    session: *Session,
+    frame: *Frame,
     arena: Allocator,
 
     fn cancelled(ctx: *anyopaque) void {
         const self: *DeferPumpCallback = @ptrCast(@alignCast(ctx));
-        self.session.releaseArena(self.arena);
+        self.frame.releaseArena(self.arena);
     }
 
     fn run(ctx: *anyopaque) !?u32 {
         const self: *DeferPumpCallback = @ptrCast(@alignCast(ctx));
-        defer self.session.releaseArena(self.arena);
-        self.session.browser.runMacrotasks() catch |err| {
-            log.warn(.browser, "worker postMessage pump", .{ .err = err });
-        };
+        defer self.frame.releaseArena(self.arena);
+        Worker.pumpMessageDelivery(self.frame);
         return null;
     }
 };
 
 // Called internally by Worker when it wants to post a message to us
-pub fn receiveMessage(self: *WorkerGlobalScope, data: JS.Value, message_id: u64, ports: []const *MessagePort) !void {
+pub fn receiveMessage(
+    self: *WorkerGlobalScope,
+    data: JS.Value,
+    message_id: u64,
+    ports: []const *MessagePort,
+    transfer_list: ?[]const JS.Value,
+) !void {
     if (self._closed) {
         return;
     }
@@ -447,7 +777,7 @@ pub fn receiveMessage(self: *WorkerGlobalScope, data: JS.Value, message_id: u64,
         self.js.localScope(&target_ls);
         defer target_ls.deinit();
 
-        const cloned = data.structuredCloneTo(&target_ls.local) catch break :blk null;
+        const cloned = data.structuredCloneTo(&target_ls.local, transfer_list) catch break :blk null;
         break :blk cloned.temp() catch break :blk null;
     };
 
@@ -547,22 +877,92 @@ fn _debug_schedulerQueueLen(_: *WorkerGlobalScope, scheduler: anytype) usize {
     return 0;
 }
 
+const ImportScriptCallerSite = struct {
+    filename: []const u8 = "",
+    line: u32 = 0,
+    col: u32 = 0,
+};
+
+const ImportedScript = struct {
+    body: []const u8,
+    script_url: [:0]const u8,
+};
+
 pub fn importScripts(self: *WorkerGlobalScope, urls: []const [:0]const u8) !void {
+    if (urls.len > 0) {
+        log.warn(.http, "importScripts begin", .{
+            .worker_url = self.url,
+            .count = urls.len,
+            .first = urls[0],
+        });
+    }
+
     const session = self._session;
     const arena = try session.getArena(.large, "importScript");
     defer session.releaseArena(arena);
 
+    const caller_site = try captureImportScriptsCallerSite(self, arena);
+
     for (urls) |url| {
         defer session.arena_pool.resetRetain(arena);
-        try self.importScript(arena, url);
+        try self.importScript(arena, url, caller_site);
     }
 }
 
-fn importScript(self: *WorkerGlobalScope, arena: Allocator, url: [:0]const u8) !void {
+pub fn decodeDataUrlJavaScript(allocator: Allocator, url: []const u8) ![]const u8 {
+    const media_type = importScriptDataUrlMediaType(url) orelse return error.NetworkError;
+    if (!Mime.isImportScriptsJavaScriptMime(media_type)) return error.NetworkError;
+    return decodeImportScriptDataUrlBody(allocator, url);
+}
+
+fn importScriptDataUrlMediaType(url: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, url, "data:")) return null;
+    const rest = url[5..];
+    const comma = std.mem.indexOfScalar(u8, rest, ',') orelse return null;
+    if (comma == 0) return "text/plain";
+    return rest[0..comma];
+}
+
+fn decodeImportScriptDataUrlBody(allocator: Allocator, url: []const u8) ![]const u8 {
+    const rest = url[5..];
+    const comma = std.mem.indexOfScalar(u8, rest, ',') orelse return error.NetworkError;
+    const data = rest[comma + 1 ..];
+    const metadata = rest[0..comma];
+    if (std.mem.endsWith(u8, metadata, ";base64")) {
+        var stripped = try std.ArrayList(u8).initCapacity(allocator, data.len);
+        defer stripped.deinit(allocator);
+        for (data) |c| {
+            if (!std.ascii.isWhitespace(c)) try stripped.append(allocator, c);
+        }
+        const trimmed = std.mem.trimRight(u8, stripped.items, "=");
+        if (trimmed.len % 4 == 1) return error.NetworkError;
+        const decoded_size = std.base64.standard_no_pad.Decoder.calcSizeForSlice(trimmed) catch return error.NetworkError;
+        const buffer = try allocator.alloc(u8, decoded_size);
+        std.base64.standard_no_pad.Decoder.decode(buffer, trimmed) catch return error.NetworkError;
+        return buffer;
+    }
+    return URL.unescape(allocator, data);
+}
+
+fn importScriptBody(self: *WorkerGlobalScope, arena: Allocator, resolved_url: [:0]const u8) !ImportedScript {
+    if (std.mem.startsWith(u8, resolved_url, "data:")) {
+        const media_type = importScriptDataUrlMediaType(resolved_url) orelse return error.NetworkError;
+        if (!Mime.isImportScriptsJavaScriptMime(media_type)) return error.NetworkError;
+        return .{
+            .body = try decodeImportScriptDataUrlBody(arena, resolved_url),
+            .script_url = resolved_url,
+        };
+    }
+    if (std.mem.startsWith(u8, resolved_url, "blob:")) {
+        const blob = self.lookupBlobUrlFuzzy(resolved_url) orelse return error.NetworkError;
+        if (!Mime.isImportScriptsJavaScriptMime(blob.getType())) return error.NetworkError;
+        return .{
+            .body = blob._slice,
+            .script_url = resolved_url,
+        };
+    }
+
     const session = self._session;
-
-    const resolved_url = try URL.resolve(arena, self.url, url, .{});
-
     const http_client = &session.browser.http_client;
 
     var headers = try http_client.newHeaders();
@@ -579,17 +979,186 @@ fn importScript(self: *WorkerGlobalScope, arena: Allocator, url: [:0]const u8) !
         .headers = headers,
         .cookie_jar = &session.cookie_jar,
         .cookie_origin = self.url,
+        .top_level_cookie_url = self.url,
         .resource_type = .script,
         .notification = session.notification,
-    }) catch |err| {
-        log.warn(.http, "importScript", .{ .url = resolved_url, .err = err });
+    }) catch {
         return error.NetworkError;
     };
 
-    if (response.status != 200) {
-        log.warn(.http, "importScript", .{ .url = resolved_url, .status = response.status });
+    if (response.status != 200) return error.NetworkError;
+    if (response.content_type) |ct| {
+        if (!Mime.isImportScriptsJavaScriptMime(ct)) return error.NetworkError;
+    } else {
         return error.NetworkError;
     }
+    const script_url = response.final_url orelse resolved_url;
+    return .{
+        .body = response.body.items,
+        .script_url = script_url,
+    };
+}
+
+fn captureImportScriptsCallerSite(self: *WorkerGlobalScope, arena: Allocator) !ImportScriptCallerSite {
+    var ls: JS.Local.Scope = undefined;
+    self.js.localScope(&ls);
+    defer ls.deinit();
+
+    const isolate = ls.local.isolate;
+    const stack_trace_handle = v8.v8__StackTrace__CurrentStackTrace__STATIC(isolate.handle, 12) orelse
+        return .{};
+    const frame_count = v8.v8__StackTrace__GetFrameCount(stack_trace_handle);
+
+    var i: u32 = 0;
+    while (i < frame_count) : (i += 1) {
+        const frame_handle = v8.v8__StackTrace__GetFrame(stack_trace_handle, isolate.handle, i) orelse continue;
+        if (!v8.v8__StackFrame__IsUserJavaScript(frame_handle)) continue;
+
+        const script_handle = v8.v8__StackFrame__GetScriptNameOrSourceURL(frame_handle) orelse continue;
+        const script_val = JS.Value{ .local = &ls.local, .handle = script_handle };
+        const script_name = script_val.toStringSlice() catch continue;
+        if (script_name.len == 0) continue;
+        if (std.mem.indexOf(u8, script_name, "worker-importscripts-mime-shim") != null) continue;
+        if (std.mem.indexOf(u8, script_name, "worker-rethrow-shim") != null) continue;
+        if (std.mem.indexOf(u8, script_name, "worker-domexception-throw-shim") != null) continue;
+
+        const line_raw = v8.v8__StackFrame__GetLineNumber(frame_handle);
+        const col_raw = v8.v8__StackFrame__GetColumn(frame_handle);
+        return .{
+            .filename = try arena.dupe(u8, script_name),
+            .line = if (line_raw < 0) 0 else @intCast(line_raw),
+            .col = if (col_raw < 0) 0 else @intCast(col_raw),
+        };
+    }
+    return .{};
+}
+
+fn isScriptCrossOrigin(self: *const WorkerGlobalScope, arena: Allocator, script_url: [:0]const u8) bool {
+    if (std.mem.startsWith(u8, script_url, "data:") or std.mem.startsWith(u8, script_url, "blob:")) {
+        return false;
+    }
+    const worker_origin = self.origin orelse blk: {
+        const o = URL.getOrigin(arena, self.url) catch return true;
+        break :blk o orelse return true;
+    };
+    const script_origin = blk: {
+        const o = URL.getOrigin(arena, script_url) catch return true;
+        break :blk o orelse return true;
+    };
+    return !std.mem.eql(u8, worker_origin, script_origin);
+}
+
+fn tryCatchMessageSite(tc: *const JS.TryCatch, local: *const JS.Local, fallback: ImportScriptCallerSite) struct {
+    filename: []const u8,
+    line: u32,
+    col: u32,
+} {
+    const msg_handle = v8.v8__TryCatch__Message(&tc.handle) orelse {
+        return .{
+            .filename = fallback.filename,
+            .line = fallback.line,
+            .col = fallback.col,
+        };
+    };
+
+    const filename = blk: {
+        const resource_handle = v8.v8__Message__GetScriptResourceName(msg_handle) orelse break :blk fallback.filename;
+        const name_val = JS.Value{ .local = local, .handle = resource_handle };
+        if (name_val.toStringSlice() catch null) |s| {
+            if (s.len > 0) break :blk s;
+        }
+        break :blk fallback.filename;
+    };
+
+    const line_raw = v8.v8__Message__GetLineNumber(msg_handle, local.handle);
+    const col_raw = v8.v8__Message__GetStartColumn(msg_handle);
+    return .{
+        .filename = filename,
+        .line = if (line_raw < 0) fallback.line else @intCast(line_raw),
+        .col = if (col_raw < 0) fallback.col else @intCast(col_raw),
+    };
+}
+
+fn stashImportScriptError(local: *const JS.Local, err: JS.Value) void {
+    const global_handle = v8.v8__Context__Global(local.handle).?;
+    const global = JS.Object{ .local = local, .handle = global_handle };
+    _ = global.set("__veloraImportScriptError", err, .{}) catch {};
+}
+
+fn stashImportScriptNetworkError(local: *const JS.Local) void {
+    const dom_ex = DOMException.fromError(error.NetworkError).?;
+    const dom_val = local.zigValueToJs(dom_ex, .{}) catch return;
+    stashImportScriptError(local, dom_val);
+}
+
+fn compileAndRunImportedScript(local: *const JS.Local, src: []const u8, name: []const u8) !JS.Value {
+    const script_name = local.isolate.initStringHandle(name);
+    const script_source = local.isolate.initStringHandle(src);
+
+    var origin: v8.ScriptOrigin = undefined;
+    v8.v8__ScriptOrigin__CONSTRUCT(&origin, @ptrCast(script_name));
+
+    var script_comp_source: v8.ScriptCompilerSource = undefined;
+    v8.v8__ScriptCompiler__Source__CONSTRUCT2(script_source, &origin, null, &script_comp_source);
+    defer v8.v8__ScriptCompiler__Source__DESTRUCT(&script_comp_source);
+
+    const v8_script = v8.v8__ScriptCompiler__Compile(
+        local.handle,
+        &script_comp_source,
+        v8.kNoCompileOptions,
+        v8.kNoCacheNoReason,
+    ) orelse return error.JsException;
+
+    const result = v8.v8__Script__Run(v8_script, local.handle) orelse return error.JsException;
+    return .{ .local = local, .handle = result };
+}
+
+fn handleImportScriptEvalError(
+    self: *WorkerGlobalScope,
+    arena: Allocator,
+    tc: *const JS.TryCatch,
+    local: *const JS.Local,
+    script_url: [:0]const u8,
+    caller_site: ImportScriptCallerSite,
+) !void {
+    const ex = tc.exceptionValue() orelse return error.JsException;
+
+    const muted = isScriptCrossOrigin(self, arena, script_url);
+    const script_site = tryCatchMessageSite(tc, local, caller_site);
+    const message = ex.toStringSlice() catch "Error";
+
+    if (muted) {
+        const dom_ex = DOMException.fromError(error.NetworkError).?;
+        const dom_val = try local.zigValueToJs(dom_ex, .{});
+
+        try self.reportUncaughtException(
+            dom_val,
+            message,
+            caller_site.filename,
+            caller_site.line,
+            caller_site.col,
+        );
+        stashImportScriptError(local, dom_val);
+        return;
+    }
+
+    try self.reportUncaughtException(
+        ex,
+        message,
+        script_site.filename,
+        script_site.line,
+        script_site.col,
+    );
+    stashImportScriptError(local, ex);
+}
+
+fn evalImportedScript(
+    self: *WorkerGlobalScope,
+    arena: Allocator,
+    imported: ImportedScript,
+    caller_site: ImportScriptCallerSite,
+) !void {
+    const session = self._session;
 
     var ls: JS.Local.Scope = undefined;
     self.js.localScope(&ls);
@@ -599,22 +1168,17 @@ fn importScript(self: *WorkerGlobalScope, arena: Allocator, url: [:0]const u8) !
     try_catch.init(&ls.local);
     defer try_catch.deinit();
 
-    // Imported classic scripts often end with `.call(this)`. Wrap like the
-    // initial worker bootstrap so `this` resolves to the worker global.
-    const wrapped_script = try std.fmt.allocPrint(
-        arena,
-        "(function(){{\n{s}\n}}).call(globalThis);",
-        .{response.body.items},
-    );
-
     session.browser.env.pumpSchedulerTasks();
-    _ = ls.local.eval(wrapped_script, url) catch |err| {
-        const caught = try_catch.caughtOrError(arena, err);
-        log.err(.browser, "importScript", .{
-            .url = resolved_url,
-            .body_len = response.body.items.len,
+    _ = compileAndRunImportedScript(&ls.local, imported.body, imported.script_url) catch |err| {
+        if (try_catch.hasCaught()) {
+            try handleImportScriptEvalError(self, arena, &try_catch, &ls.local, imported.script_url, caller_site);
+            return;
+        }
+        log.err(.browser, "importScript eval failed", .{
+            .worker_url = self.url,
+            .url = imported.script_url,
+            .body_len = imported.body.len,
             .err = err,
-            .caught = caught,
         });
         return err;
     };
@@ -628,10 +1192,67 @@ fn importScript(self: *WorkerGlobalScope, arena: Allocator, url: [:0]const u8) !
     };
 }
 
+fn importScript(self: *WorkerGlobalScope, arena: Allocator, url: [:0]const u8, caller_site: ImportScriptCallerSite) !void {
+    const resolved_url: [:0]const u8 = if (std.mem.startsWith(u8, url, "blob:") or std.mem.startsWith(u8, url, "data:"))
+        try arena.dupeZ(u8, url)
+    else
+        try URL.resolve(arena, self.url, url, .{});
+
+    log.warn(.http, "importScript fetch", .{
+        .worker_url = self.url,
+        .url = url,
+        .resolved = resolved_url,
+    });
+
+    const imported = importScriptBody(self, arena, resolved_url) catch |err| {
+        log.err(.http, "importScript NetworkError", .{
+            .worker_url = self.url,
+            .url = url,
+            .resolved = resolved_url,
+            .err = err,
+        });
+        var ls: JS.Local.Scope = undefined;
+        self.js.localScope(&ls);
+        defer ls.deinit();
+        stashImportScriptNetworkError(&ls.local);
+        return;
+    };
+
+    try self.evalImportedScript(arena, imported, caller_site);
+
+    log.warn(.http, "importScript ok", .{
+        .worker_url = self.url,
+        .resolved = resolved_url,
+        .body_len = imported.body.len,
+    });
+}
+
 pub fn reportError(self: *WorkerGlobalScope, err: JS.Value) !void {
+    try self.reportUncaughtException(
+        err,
+        err.toStringSlice() catch "Unknown error",
+        self.url,
+        0,
+        0,
+    );
+}
+
+pub fn reportUncaughtException(
+    self: *WorkerGlobalScope,
+    err: JS.Value,
+    message: []const u8,
+    filename: []const u8,
+    line: u32,
+    col: u32,
+) !void {
+    materializeOnError(self);
+
     const error_event = try ErrorEvent.initTrusted(comptime .wrap("error"), .{
         .@"error" = try err.temp(),
-        .message = err.toStringSlice() catch "Unknown error",
+        .message = message,
+        .filename = filename,
+        .lineno = line,
+        .colno = col,
         .bubbles = false,
         .cancelable = true,
     }, self._page);
@@ -646,13 +1267,13 @@ pub fn reportError(self: *WorkerGlobalScope, err: JS.Value) !void {
         defer ls.deinit();
 
         const local_func = ls.toLocal(on_error);
-        const result = local_func.call(JS.Value, .{
+        const result = EventManagerBase.invokeCallback(&ls.local, ls.local.ctx, local_func, JS.Value, .{
             error_event._message,
             error_event._filename,
             error_event._line_number,
             error_event._column_number,
             err,
-        }) catch null;
+        }, "worker.onerror");
 
         // Per spec: returning true from onerror cancels the event
         if (result) |r| {
@@ -668,7 +1289,7 @@ pub fn reportError(self: *WorkerGlobalScope, err: JS.Value) !void {
 
     if (comptime builtin.is_test == false) {
         if (!event._prevent_default) {
-            log.warn(.js, "worker.reportError", .{
+            log.warn(.js, "worker.uncaughtException", .{
                 .message = error_event._message,
                 .filename = error_event._filename,
                 .line_number = error_event._line_number,
@@ -712,7 +1333,7 @@ pub fn clearInterval(self: *WorkerGlobalScope, id: u32) void {
     self._timers.clear(id);
 }
 
-const FunctionSetter = union(enum) {
+pub const FunctionSetter = union(enum) {
     func: JS.Function.Global,
     anything: JS.Value,
 };
@@ -777,6 +1398,11 @@ const ReceiveMessageCallback = struct {
             return null;
         }
 
+        var ls: JS.Local.Scope = undefined;
+        worker_scope.js.localScope(&ls);
+        defer ls.deinit();
+        worker_scope.syncScriptHandlerSlotsFromLocal(&ls.local);
+
         const on_message = worker_scope._on_message;
 
         // Queue until onmessage / addEventListener is registered (reCAPTCHA worker setup).
@@ -797,7 +1423,10 @@ const ReceiveMessageCallback = struct {
             .cancelable = false,
         }, worker_scope._page)).asEvent();
         try worker_scope.dispatch(target, event, on_message, .{});
+        worker_scope.pumpDueTimersNow(0);
         try scheduleDeferredMacrotaskPump(worker_scope);
+        const frame = worker_scope._worker._frame;
+        try frame.scheduleDeferredMacrotaskPump(20);
         return null;
     }
 };
@@ -824,8 +1453,8 @@ pub const JsApi = struct {
 
     pub const btoa = bridge.function(WorkerGlobalScope.btoa, .{ .dom_exception = true });
     pub const atob = bridge.function(WorkerGlobalScope.atob, .{ .dom_exception = true });
-    pub const structuredClone = bridge.function(WorkerGlobalScope.structuredClone, .{});
-    pub const postMessage = bridge.function(WorkerGlobalScope.postMessage, .{});
+    pub const structuredClone = bridge.function(WorkerGlobalScope.structuredClone, .{ .dom_exception = true });
+    pub const postMessage = bridge.function(WorkerGlobalScope.postMessage, .{ .dom_exception = true });
     pub const reportError = bridge.function(WorkerGlobalScope.reportError, .{});
     pub const close = bridge.function(WorkerGlobalScope.close, .{});
     pub const fetch = bridge.function(WorkerGlobalScope.fetch, .{});

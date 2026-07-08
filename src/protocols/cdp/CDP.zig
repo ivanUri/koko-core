@@ -266,8 +266,12 @@ pub fn dispatch(self: *CDP, arena: Allocator, sender: Command.Sender, str: []con
             bc.inspector_reply_session_id = input.sessionId orelse bc.session_id;
         }
         defer if (command.browser_context) |bc| {
-            bc.session.cdp_frame_override = null;
-            bc.inspector_reply_session_id = null;
+            // disposeBrowserContext tears down the session before this defer
+            // runs; skip session field cleanup when the context is gone.
+            if (self.browser_context != null) {
+                bc.session.cdp_frame_override = null;
+                bc.inspector_reply_session_id = null;
+            }
         };
         dispatchCommand(&command, input.method) catch |err| {
             command.sendError(-31998, @errorName(err), .{}) catch return err;
@@ -396,9 +400,18 @@ pub fn disposeBrowserContext(self: *CDP, browser_context_id: []const u8) bool {
             return true;
         }
     }
+    // Drain pending tasks while contexts are still registered and valid.
+    self.browser.env.pumpMessageLoop();
+    self.browser.runMicrotasks();
+
+    persistSessionState(bc.session, self.app.config);
     bc.deinit();
-    self.browser.closeSession();
     self.browser_context = null;
+    // BrowserContext teardown uses browser_context_arena allocations (id strings,
+    // session_id, captured bodies). Reset so createBrowserContext can run again on
+    // this CDP connection without leaving the server wedged.
+    _ = self.browser_context_arena.reset(.retain_capacity);
+    _ = self.frame_arena.reset(.retain_capacity);
     return true;
 }
 
@@ -576,13 +589,6 @@ pub const BrowserContext = struct {
 
     pub fn deinit(self: *BrowserContext) void {
         const browser = &self.cdp.browser;
-        const env = &browser.env;
-
-        // resetContextGroup detach the inspector from all contexts.
-        // It appends async tasks, so we make sure we run the message loop
-        // before deinit it.
-        env.inspector.?.resetContextGroup();
-        env.inspector.?.stopSession();
 
         // abort all intercepted requests before closing the session/page
         // since some of these might callback into the page/scriptmanager
@@ -607,21 +613,21 @@ pub const BrowserContext = struct {
             }
         }
 
+        // closeSession dispatches frame_remove → frameRemove, which resets
+        // inspector contexts, isolated worlds, and node registries while the
+        // page is still walkable. Do not resetContextGroup or unregister
+        // notifications before this — that skips frameRemove and leaves stale
+        // Env.context entries that segfault on the next microtask checkpoint.
+        browser.closeSession();
+
+        if (browser.env.inspector) |inspector| {
+            inspector.stopSession();
+        }
+
         for (self.isolated_worlds.items) |world| {
             world.deinit();
         }
         self.isolated_worlds.clearRetainingCapacity();
-
-        // do this before closeSession, since we don't want to process any
-        // new notification (Or maybe, instead of the deinit above, we just
-        // rely on those notifications to do our normal cleanup?)
-
-        self.notification.unregisterAll(self);
-
-        // If the session has a frame, we need to clear it first. The page
-        // context is always nested inside of the isolated world context,
-        // so we need to shutdown the page one first.
-        browser.closeSession();
 
         self.node_registry.deinit();
         self.node_search_list.deinit();

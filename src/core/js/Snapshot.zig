@@ -22,6 +22,7 @@ const log = @import("../../support/log.zig");
 const JsApis = bridge.JsApis;
 const PageJsApis = bridge.PageJsApis;
 const WorkerJsApis = bridge.WorkerJsApis;
+const SharedWorkerJsApis = bridge.SharedWorkerJsApis;
 const IS_DEBUG = @import("builtin").mode == .Debug;
 
 const Snapshot = @This();
@@ -184,9 +185,15 @@ pub fn create() !Snapshot {
         }
 
         {
-            const WorkerGlobalScope = @import("../webapi/WorkerGlobalScope.zig");
-            const index = try createSnapshotContext(&WorkerJsApis, WorkerGlobalScope.JsApi, isolate, snapshot_creator.?, &templates);
+            const DedicatedWorkerGlobalScope = @import("../webapi/DedicatedWorkerGlobalScope.zig");
+            const index = try createSnapshotContext(&WorkerJsApis, DedicatedWorkerGlobalScope.JsApi, isolate, snapshot_creator.?, &templates);
             std.debug.assert(index == 1);
+        }
+
+        {
+            const SharedWorkerGlobalScope = @import("../webapi/SharedWorkerGlobalScope.zig");
+            const index = try createSnapshotContext(&SharedWorkerJsApis, SharedWorkerGlobalScope.JsApi, isolate, snapshot_creator.?, &templates);
+            std.debug.assert(index == 2);
         }
     }
 
@@ -359,6 +366,8 @@ fn countExternalReferences() comptime_int {
                 count += 1;
             } else if (T == bridge.Indexed) {
                 count += 1;
+                if (value.setter != null) count += 1;
+                if (value.deleter != null) count += 1;
                 if (value.enumerator != null) {
                     count += 1;
                 }
@@ -433,6 +442,14 @@ fn collectExternalReferences() [countExternalReferences()]isize {
             } else if (T == bridge.Indexed) {
                 references[idx] = @bitCast(@intFromPtr(value.getter));
                 idx += 1;
+                if (value.setter) |setter| {
+                    references[idx] = @bitCast(@intFromPtr(setter));
+                    idx += 1;
+                }
+                if (value.deleter) |deleter| {
+                    references[idx] = @bitCast(@intFromPtr(deleter));
+                    idx += 1;
+                }
                 if (value.enumerator) |enumerator| {
                     references[idx] = @bitCast(@intFromPtr(enumerator));
                     idx += 1;
@@ -629,6 +646,7 @@ fn attachClass(comptime JsApi: type, isolate: *v8.Isolate, template: *const v8.F
                 const setter_callback = if (value.setter) |setter| blk: {
                     const cb = v8.v8__FunctionTemplate__New__Config(isolate, &.{
                         .callback = setter,
+                        .length = 1,
                         .signature = getter_signature,
                     }).?;
                     const setter_name_str = "set " ++ name;
@@ -667,7 +685,8 @@ fn attachClass(comptime JsApi: type, isolate: *v8.Isolate, template: *const v8.F
                     .length = value.arity,
                     .signature = func_signature,
                 }).?;
-                const js_name = v8.v8__String__NewFromUtf8(isolate, name.ptr, v8.kNormal, @intCast(name.len));
+                const js_name_str: [:0]const u8 = if (value.js_name) |n| n else name;
+                const js_name = v8.v8__String__NewFromUtf8(isolate, js_name_str.ptr, v8.kNormal, @intCast(js_name_str.len));
                 v8.v8__FunctionTemplate__SetClassName(function_template, js_name);
                 if (value.static) {
                     v8.v8__Template__Set(@ptrCast(template), js_name, @ptrCast(function_template), v8.None);
@@ -679,9 +698,9 @@ fn attachClass(comptime JsApi: type, isolate: *v8.Isolate, template: *const v8.F
                 var configuration: v8.IndexedPropertyHandlerConfiguration = .{
                     .getter = value.getter,
                     .enumerator = value.enumerator,
-                    .setter = null,
+                    .setter = value.setter,
                     .query = null,
-                    .deleter = null,
+                    .deleter = value.deleter,
                     .definer = null,
                     .descriptor = value.descriptor,
                     .data = null,
@@ -710,7 +729,8 @@ fn attachClass(comptime JsApi: type, isolate: *v8.Isolate, template: *const v8.F
                     v8.v8__Symbol__GetAsyncIterator(isolate)
                 else
                     v8.v8__Symbol__GetIterator(isolate);
-                v8.v8__Template__Set(@ptrCast(prototype), js_name, @ptrCast(function_template), v8.None);
+                // Web IDL: @@iterator is non-enumerable on interface prototypes.
+                v8.v8__Template__Set(@ptrCast(prototype), js_name, @ptrCast(function_template), v8.DontEnum);
             },
             bridge.Property => {
                 const js_value = switch (value.value) {

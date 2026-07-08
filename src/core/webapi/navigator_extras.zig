@@ -29,6 +29,7 @@ pub fn registerTypes() []const type {
         ServiceWorkerContainer,
         ServiceWorker,
         ServiceWorkerRegistration,
+        PushManager,
     };
 }
 
@@ -384,6 +385,24 @@ pub const CredentialsContainer = struct {
         return local.resolvePromise(null);
     }
 
+    pub fn create(self: *const CredentialsContainer, frame: *Frame) !js.Promise {
+        _ = self;
+        const local = frame.js.local orelse return error.NotHandled;
+        return local.resolvePromise(null);
+    }
+
+    pub fn store(self: *const CredentialsContainer, frame: *Frame) !js.Promise {
+        _ = self;
+        const local = frame.js.local orelse return error.NotHandled;
+        return local.resolvePromise(js.Undefined{});
+    }
+
+    pub fn preventSilentAccess(self: *const CredentialsContainer, frame: *Frame) !js.Promise {
+        _ = self;
+        const local = frame.js.local orelse return error.NotHandled;
+        return local.resolvePromise(js.Undefined{});
+    }
+
     pub const JsApi = struct {
         pub const bridge = js.Bridge(CredentialsContainer);
         pub const Meta = struct {
@@ -393,6 +412,9 @@ pub const CredentialsContainer = struct {
             pub const empty_with_no_proto = true;
         };
         pub const get = bridge.function(CredentialsContainer.get, .{});
+        pub const create = bridge.function(CredentialsContainer.create, .{});
+        pub const store = bridge.function(CredentialsContainer.store, .{});
+        pub const preventSilentAccess = bridge.function(CredentialsContainer.preventSilentAccess, .{});
     };
 };
 
@@ -543,6 +565,35 @@ pub const ServiceWorker = struct {
         pub const scriptURL = bridge.accessor(ServiceWorker.getScriptURL, null, .{});
         pub const state = bridge.accessor(ServiceWorker.getState, null, .{});
         pub const postMessage = bridge.function(ServiceWorker.postMessage, .{});
+    };
+};
+
+// Google sign-in browserinfo st field 4: !!window.PushManager (needs a global constructor)
+pub const PushManager = struct {
+    _pad: bool = false,
+
+    pub fn subscribe(self: *const PushManager, _: js.Value, frame: *Frame) !js.Promise {
+        _ = self;
+        const local = frame.js.local orelse return error.NotHandled;
+        return local.rejectPromise(.{ .dom_exception = .{ .err = error.NotSupported } });
+    }
+
+    pub fn getSubscription(self: *const PushManager, frame: *Frame) !js.Promise {
+        _ = self;
+        const local = frame.js.local orelse return error.NotHandled;
+        return local.resolvePromise(null);
+    }
+
+    pub const JsApi = struct {
+        pub const bridge = js.Bridge(PushManager);
+        pub const Meta = struct {
+            pub const name = "PushManager";
+            pub const prototype_chain = bridge.prototypeChain();
+            pub var class_id: bridge.ClassId = undefined;
+            pub const empty_with_no_proto = true;
+        };
+        pub const subscribe = bridge.function(PushManager.subscribe, .{ .dom_exception = true });
+        pub const getSubscription = bridge.function(PushManager.getSubscription, .{});
     };
 };
 

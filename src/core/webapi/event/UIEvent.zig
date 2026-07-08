@@ -25,6 +25,7 @@ _type: Type,
 _proto: *Event,
 _detail: u32 = 0,
 _view: ?*Window = null,
+_source_capabilities: ?*@import("InputDeviceCapabilities.zig") = null,
 
 pub const Type = union(enum) {
     generic,
@@ -34,6 +35,7 @@ pub const Type = union(enum) {
     text_event: *@import("TextEvent.zig"),
     input_event: *@import("InputEvent.zig"),
     composition_event: *@import("CompositionEvent.zig"),
+    touch_event: *@import("TouchEvent.zig"),
 };
 
 pub const UIEventOptions = struct {
@@ -83,6 +85,7 @@ pub fn is(self: *UIEvent, comptime T: type) ?*T {
         .text_event => |e| return if (T == @import("TextEvent.zig")) e else null,
         .input_event => |e| return if (T == @import("InputEvent.zig")) e else null,
         .composition_event => |e| return if (T == @import("CompositionEvent.zig")) e else null,
+        .touch_event => |e| return if (T == @import("TouchEvent.zig")) e else null,
     }
     return null;
 }
@@ -100,7 +103,12 @@ pub fn getDetail(self: *UIEvent) u32 {
     return self._detail;
 }
 
-// sourceCapabilities not implemented
+pub fn getSourceCapabilities(self: *UIEvent, frame: *Frame) !?*@import("InputDeviceCapabilities.zig") {
+    if (self._source_capabilities) |caps| return caps;
+    const caps = try @import("InputDeviceCapabilities.zig").init(frame);
+    self._source_capabilities = caps;
+    return caps;
+}
 
 pub fn getView(self: *UIEvent, frame: *Frame) *Window {
     return self._view orelse frame.window;
@@ -146,6 +154,7 @@ pub const JsApi = struct {
 
     pub const constructor = bridge.constructor(UIEvent.init, .{});
     pub const detail = bridge.accessor(UIEvent.getDetail, null, .{});
+    pub const sourceCapabilities = bridge.accessor(UIEvent.getSourceCapabilities, null, .{ .null_as_undefined = true });
     pub const view = bridge.accessor(UIEvent.getView, null, .{});
     pub const which = bridge.accessor(UIEvent.getWhich, null, .{});
     pub const initUIEvent = bridge.function(UIEvent.initUIEvent, .{});

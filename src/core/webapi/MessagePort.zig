@@ -30,9 +30,56 @@ fn scheduleDeferredPump(exec: *const js.Execution) void {
         .frame => |f| f,
         .worker => |wgs| wgs._worker._frame,
     };
-    frame.scheduleDeferredMacrotaskPump() catch |err| {
+    scheduleDeferredMessageDelivery(frame) catch |err| {
         log.warn(.browser, "MessagePort pump", .{ .err = err });
     };
+}
+
+fn scheduleDeferredMessageDelivery(frame: *Frame) !void {
+    const arena = try frame.getArena(.tiny, "MessagePort.deferDelivery");
+    errdefer frame.releaseArena(arena);
+
+    const callback = try arena.create(DeferMessageDeliveryCallback);
+    callback.* = .{ .frame = frame, .arena = arena };
+
+    try frame.js.scheduler.add(callback, DeferMessageDeliveryCallback.run, 0, .{
+        .name = "MessagePort.deferDelivery",
+        .low_priority = false,
+        .finalizer = DeferMessageDeliveryCallback.cancelled,
+    });
+}
+
+const DeferMessageDeliveryCallback = struct {
+    frame: *Frame,
+    arena: Allocator,
+
+    fn cancelled(ctx: *anyopaque) void {
+        const self: *DeferMessageDeliveryCallback = @ptrCast(@alignCast(ctx));
+        self.frame.releaseArena(self.arena);
+    }
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *DeferMessageDeliveryCallback = @ptrCast(@alignCast(ctx));
+        defer self.frame.releaseArena(self.arena);
+        Worker.pumpMessageDelivery(self.frame);
+        return null;
+    }
+};
+
+/// After a MessagePort `message` event, pump worker/page timer queues so the next
+/// `postMessage` round-trip is not stalled (WPT structured-clone Blob `compare_Blob`
+/// uses `await Response#arrayBuffer()` between sequential port tests).
+fn pumpMessagingAfterDispatch(exec: *const js.Execution) void {
+    const frame: *Frame = switch (exec.context.global) {
+        .frame => |f| f,
+        .worker => |wgs| wgs._worker._frame,
+    };
+    Worker.pumpMessageDelivery(frame);
+    if (exec.context.global == .frame) {
+        frame.scheduleDeferredMacrotaskPump(0) catch |err| {
+            log.warn(.browser, "MessagePort macrotask pump", .{ .err = err });
+        };
+    }
 }
 
 const MessagePort = @This();
@@ -77,6 +124,32 @@ pub fn transferTo(self: *MessagePort, sender_exec: *const js.Execution, receiver
     self._active_exec = receiver_exec;
 }
 
+/// Parse postMessage's optional second argument: sequence, `{transfer: sequence}`, or absent.
+pub fn parseTransferArg(local: *const js.Local, transfer_arg: ?js.Value) ![]js.Value {
+    const arg = transfer_arg orelse return &.{};
+    if (arg.isNullOrUndefined()) return &.{};
+
+    const sequence = if (arg.isArray())
+        arg
+    else if (arg.isObject())
+        arg.toObject().get("transfer") catch return error.TypeError
+    else
+        return error.TypeError;
+
+    if (sequence.isNullOrUndefined()) return &.{};
+    if (!sequence.isArray()) return error.TypeError;
+
+    const js_arr = sequence.toArray();
+    const len = js_arr.len();
+    const items = try local.call_arena.alloc(js.Value, len);
+    for (items, 0..) |*slot, i| {
+        const item = try js_arr.get(@intCast(i));
+        if (item.isNull()) return error.TypeError;
+        slot.* = item;
+    }
+    return items;
+}
+
 pub fn processTransferList(
     transfer: []js.Value,
     sender_exec: *const js.Execution,
@@ -87,6 +160,8 @@ pub fn processTransferList(
     errdefer ports.deinit(arena);
 
     for (transfer) |item| {
+        if (item.isNull()) return error.TypeError;
+        if (item.isArrayBuffer()) continue;
         if (!item.isObject()) return error.DataClone;
         const port = TaggedOpaque.fromJS(*MessagePort, @ptrCast(item.handle)) catch return error.DataClone;
         if (port._closed) return error.DataClone;
@@ -98,7 +173,12 @@ pub fn processTransferList(
     return try ports.toOwnedSlice(arena);
 }
 
-pub fn postMessage(self: *MessagePort, message: js.Value.Temp, exec: *const js.Execution) !void {
+pub fn postMessage(
+    self: *MessagePort,
+    message: js.Value.Temp,
+    transfer_arg: ?js.Value,
+    exec: *const js.Execution,
+) !void {
     if (self._closed) {
         return;
     }
@@ -114,7 +194,7 @@ pub fn postMessage(self: *MessagePort, message: js.Value.Temp, exec: *const js.E
 
     const receiver_exec = other._active_exec;
 
-    const cloned_message = blk: {
+    const cloned_message, const transferred_ports = blk: {
         var source_ls: js.Local.Scope = undefined;
         exec.context.localScope(&source_ls);
         defer source_ls.deinit();
@@ -122,8 +202,16 @@ pub fn postMessage(self: *MessagePort, message: js.Value.Temp, exec: *const js.E
         receiver_exec.context.localScope(&target_ls);
         defer target_ls.deinit();
 
-        const cloned = message.local(&source_ls.local).structuredCloneTo(&target_ls.local) catch return;
-        break :blk try cloned.temp();
+        const transfer_list = try parseTransferArg(&source_ls.local, transfer_arg);
+        const transfer_slice: ?[]const js.Value = if (transfer_list.len > 0) transfer_list else null;
+        const cloned = try message.local(&source_ls.local).structuredCloneTo(&target_ls.local, transfer_slice);
+        const ports = try processTransferList(
+            transfer_list,
+            exec,
+            receiver_exec,
+            receiver_exec.arena,
+        );
+        break :blk .{ try cloned.temp(), ports };
     };
 
     if (!other._enabled) {
@@ -131,32 +219,77 @@ pub fn postMessage(self: *MessagePort, message: js.Value.Temp, exec: *const js.E
         return;
     }
 
-    try other.enqueueMessage(cloned_message, receiver_exec);
+    // When listeners are already registered, deliver synchronously so worker
+    // onmessage → port.postMessage round-trips complete inside one postMessage
+    // (WPT structured-clone/shared.html reuses the same port across 152 tests).
+    if (try dispatchMessageNow(other, cloned_message, transferred_ports, receiver_exec)) {
+        scheduleDeferredPump(receiver_exec);
+        if (exec.context != receiver_exec.context) {
+            scheduleDeferredPump(exec);
+        }
+        return;
+    }
+
+    try other.enqueueMessage(cloned_message, transferred_ports, receiver_exec, exec);
 }
 
-fn enqueueMessage(self: *MessagePort, message: js.Value.Temp, exec: *const js.Execution) !void {
-    const callback = try exec._factory.create(PostMessageCallback{
-        .exec = exec,
+fn dispatchMessageNow(
+    self: *MessagePort,
+    message: js.Value.Temp,
+    ports: []const *MessagePort,
+    exec: *const js.Execution,
+) !bool {
+    if (self._closed) return false;
+
+    const target = self.asEventTarget();
+    if (!exec.hasDirectListeners(target, "message", self._on_message)) {
+        return false;
+    }
+
+    const event = (try MessageEvent.initTrusted(comptime .wrap("message"), .{
+        .data = .{ .value = message },
+        .ports = ports,
+        .origin = "",
+        .source = null,
+    }, exec.context.page)).asEvent();
+
+    try exec.dispatch(target, event, self._on_message, .{ .context = "MessagePort message" });
+    pumpMessagingAfterDispatch(exec);
+    return true;
+}
+
+fn enqueueMessage(
+    self: *MessagePort,
+    message: js.Value.Temp,
+    ports: []const *MessagePort,
+    receiver_exec: *const js.Execution,
+    sender_exec: *const js.Execution,
+) !void {
+    const ports_copy = try receiver_exec.arena.dupe(*MessagePort, ports);
+    const callback = try receiver_exec._factory.create(PostMessageCallback{
+        .exec = receiver_exec,
         .port = self,
         .message = message,
+        .ports = ports_copy,
     });
 
-    try exec._scheduler.add(callback, PostMessageCallback.run, 0, .{
+    try receiver_exec._scheduler.add(callback, PostMessageCallback.run, 0, .{
         .name = "MessagePort.postMessage",
         .low_priority = false,
     });
 
-    if (Worker.bootstrapMessagingActive(exec)) {
-        Worker.pumpBootstrapMessaging(exec);
-    } else {
-        scheduleDeferredPump(exec);
+    // Defer pumpMessageDelivery (runOne) — never runMacrotasks from postMessage
+    // (MAX_MACROTASK_RUN_DEPTH) and never pump synchronously (reentrancy).
+    scheduleDeferredPump(receiver_exec);
+    if (sender_exec.context != receiver_exec.context) {
+        scheduleDeferredPump(sender_exec);
     }
 }
 
 fn flushPendingMessages(self: *MessagePort) !void {
     const exec = self._active_exec;
     for (self._pending_messages.items) |message| {
-        try self.enqueueMessage(message, exec);
+        try self.enqueueMessage(message, &.{}, exec, exec);
     }
     self._pending_messages.clearRetainingCapacity();
 }
@@ -178,6 +311,7 @@ pub fn start(self: *MessagePort) !void {
     }
     self._enabled = true;
     try self.flushPendingMessages();
+    try self.flushPendingDeliveries();
 }
 
 pub fn close(self: *MessagePort) void {
@@ -206,14 +340,13 @@ pub fn setOnMessage(self: *MessagePort, cb: ?js.Function.Global) !void {
 
 pub fn flushPendingDeliveries(self: *MessagePort) !void {
     const exec = self._active_exec;
-    const target = self.asEventTarget();
 
     while (self._pending_deliveries.items.len > 0) {
-        if (!exec.hasDirectListeners(target, "message", self._on_message)) {
+        const message = self._pending_deliveries.orderedRemove(0);
+        if (!try dispatchMessageNow(self, message, &.{}, exec)) {
+            try self._pending_deliveries.append(exec.arena, message);
             break;
         }
-        const message = self._pending_deliveries.orderedRemove(0);
-        try self.enqueueMessage(message, exec);
     }
 
     scheduleDeferredPump(exec);
@@ -230,6 +363,7 @@ pub fn setOnMessageError(self: *MessagePort, cb: ?js.Function.Global) !void {
 const PostMessageCallback = struct {
     port: *MessagePort,
     message: js.Value.Temp,
+    ports: []const *MessagePort,
     exec: *const js.Execution,
 
     fn deinit(self: *PostMessageCallback) void {
@@ -244,22 +378,7 @@ const PostMessageCallback = struct {
             return null;
         }
 
-        const target = self.port.asEventTarget();
-        if (self.exec.hasDirectListeners(target, "message", self.port._on_message)) {
-            const event = (MessageEvent.initTrusted(comptime .wrap("message"), .{
-                .data = .{ .value = self.message },
-                .origin = "",
-                .source = null,
-            }, self.exec.context.page) catch |err| {
-                log.err(.dom, "MessagePort.postMessage", .{ .err = err });
-                self.message.release();
-                return null;
-            }).asEvent();
-
-            self.exec.dispatch(target, event, self.port._on_message, .{ .context = "MessagePort message" }) catch |err| {
-                log.err(.dom, "MessagePort.postMessage", .{ .err = err });
-            };
-        } else {
+        if (!try dispatchMessageNow(self.port, self.message, self.ports, self.exec)) {
             try self.port._pending_deliveries.append(self.exec.arena, self.message);
             return null;
         }

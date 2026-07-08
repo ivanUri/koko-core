@@ -100,6 +100,99 @@ export function buildQueue(lang, titles) {
     }));
 }
 
+/** Fixed wiki page for pre-measurement warmup (not in the crawl queue). */
+export function warmupUrlFor(lang = "en") {
+    return `https://${lang}.wikipedia.org/wiki/Main_Page`;
+}
+
+/** Profile-scoped on-disk HTTP cache for fair crawl lane. */
+export function profileHttpCacheDir(opts) {
+    if (opts.enableHttpCache !== true) return null;
+    if (typeof opts.httpCacheDir === "string") return opts.httpCacheDir;
+    const profile = opts.browserProfile || "default";
+    const safe = profile.replace(/[^a-zA-Z0-9._-]+/g, "_");
+    return resolve(repoRoot, "code-check/tmp/benchmarks/cache", safe);
+}
+
+export function buildVeloraServeArgs(port, opts) {
+    const args = [
+        "serve",
+        "--host", "127.0.0.1",
+        "--port", String(port),
+        "--log-level", opts.logLevel ?? "warn",
+        "--browser-profile", opts.browserProfile,
+        "--http-timeout", String(opts.timeoutMs),
+    ];
+    if (opts.automation) args.push("--automation", opts.automation);
+    const httpCacheDir = profileHttpCacheDir(opts);
+    if (httpCacheDir) {
+        mkdirSync(httpCacheDir, { recursive: true });
+        args.push("--http-cache-dir", httpCacheDir);
+    }
+    return { args, httpCacheDir };
+}
+
+const defaultDensityReport = resolve(repoRoot, "code-check/tmp/benchmarks/crawl-wikipedia.json");
+const defaultFairReport = resolve(repoRoot, "code-check/tmp/benchmarks/crawl-wikipedia-fair.json");
+
+/** Apply lane presets without breaking the legacy density default. */
+export function applyLaneDefaults(opts) {
+    const lane = opts.lane ?? "density";
+    opts.lane = lane;
+    if (lane === "fair") {
+        opts.veloraMultiProcess = false;
+        if (!opts.warmupExplicit) opts.warmup = true;
+        opts.enableHttpCache = true;
+        opts.benchmarkLane = "fair";
+        opts.benchmarkName = "Wikipedia crawl — fair throughput lane";
+        if (!opts.reportExplicit) {
+            opts.report = defaultFairReport;
+        }
+        return opts;
+    }
+    opts.veloraMultiProcess = opts.veloraMultiProcess !== false;
+    if (!opts.warmupExplicit) opts.warmup = false;
+    opts.enableHttpCache = false;
+    opts.benchmarkLane = "density";
+    opts.benchmarkName = "Wikipedia crawl — agent density lane";
+    if (!opts.reportExplicit) {
+        opts.report = defaultDensityReport;
+    }
+    return opts;
+}
+
+export async function preWarmupVeloraServe(endpoint, opts) {
+    const client = await connectCdp(endpoint, 15_000);
+    try {
+        const { browserContextId } = await client.send("Target.createBrowserContext", {});
+        const { targetId } = await client.send("Target.createTarget", {
+            url: "about:blank",
+            browserContextId,
+        });
+        const { sessionId } = await client.send("Target.attachToTarget", { targetId, flatten: true });
+        await client.send("Page.enable", {}, sessionId);
+        await client.send("Runtime.enable", {}, sessionId);
+        const url = opts.warmupUrl ?? warmupUrlFor(opts.lang);
+        await fetchPage(client, sessionId, url, opts.timeoutMs, opts.mode, opts.expressions, opts.pageWaitFor);
+        await client.send("Target.disposeBrowserContext", { browserContextId }).catch(() => {});
+    } finally {
+        client.close();
+    }
+}
+
+export async function preWarmupChromium(client, opts) {
+    const { targetId } = await client.send("Target.createTarget", { url: "about:blank" });
+    const { sessionId } = await client.send("Target.attachToTarget", { targetId, flatten: true });
+    await client.send("Page.enable", {}, sessionId);
+    await client.send("Runtime.enable", {}, sessionId);
+    try {
+        const url = opts.warmupUrl ?? warmupUrlFor(opts.lang);
+        await fetchPage(client, sessionId, url, opts.timeoutMs, opts.mode, opts.expressions, opts.pageWaitFor);
+    } finally {
+        await client.send("Target.closeTarget", { targetId }).catch(() => {});
+    }
+}
+
 export class CdpClient {
     constructor(ws) {
         this.ws = ws;
@@ -374,15 +467,7 @@ export async function crawlVelora(queue, opts) {
         let monitorStarted = false;
         const results = await runPool(queue, parallelism, async (workerId) => {
             const port = await getFreePort();
-            const args = [
-                "serve",
-                "--host", "127.0.0.1",
-                "--port", String(port),
-                "--log-level", opts.logLevel,
-                "--browser-profile", opts.browserProfile,
-                "--http-timeout", String(opts.timeoutMs),
-            ];
-            if (opts.automation) args.push("--automation", opts.automation);
+            const { args } = buildVeloraServeArgs(port, opts);
             const proc = spawn(veloraBin, args, { cwd: repoRoot, stdio: "ignore" });
             monitor.addRootPid(proc.pid);
             if (!monitorStarted) {
@@ -456,24 +541,22 @@ export async function crawlVelora(queue, opts) {
     }
 
     const port = await getFreePort();
-    const args = [
-        "serve",
-        "--host", "127.0.0.1",
-        "--port", String(port),
-        "--log-level", opts.logLevel,
-        "--browser-profile", opts.browserProfile,
-        "--http-timeout", String(opts.timeoutMs),
-    ];
-    if (opts.automation) args.push("--automation", opts.automation);
+    const { args, httpCacheDir } = buildVeloraServeArgs(port, opts);
     const proc = spawn(veloraBin, args, { cwd: repoRoot, stdio: "ignore" });
     monitor.addRootPid(proc.pid);
-    monitor.start();
 
     try {
         const endpoint = `http://127.0.0.1:${port}`;
-        const client = await connectCdp(endpoint, 8000);
-        const workers = [];
-        for (let workerId = 0; workerId < parallelism; workerId += 1) {
+        await waitFor(`${endpoint}/json/version`, 15_000);
+        if (opts.warmup) {
+            console.log(`[warmup] Velora single-process → ${opts.warmupUrl ?? warmupUrlFor(opts.lang)}`);
+            await preWarmupVeloraServe(endpoint, opts);
+        }
+        monitor.start();
+        const measuredStart = Date.now();
+
+        const results = await runPool(queue, parallelism, async (workerId) => {
+            const client = await connectCdp(endpoint, 8000);
             const { browserContextId } = await client.send("Target.createBrowserContext", {});
             const { targetId } = await client.send("Target.createTarget", {
                 url: "about:blank",
@@ -482,25 +565,21 @@ export async function crawlVelora(queue, opts) {
             const { sessionId } = await client.send("Target.attachToTarget", { targetId, flatten: true });
             await client.send("Page.enable", {}, sessionId);
             await client.send("Runtime.enable", {}, sessionId);
-            workers.push({ browserContextId, sessionId });
-        }
-
-        const results = await runPool(queue, parallelism, async (workerId) => {
-            const { browserContextId, sessionId } = workers[workerId];
             return {
                 fetch: (item) => fetchPage(client, sessionId, item.url, opts.timeoutMs, opts.mode, opts.expressions, opts.pageWaitFor),
                 close: async () => {
                     await client.send("Target.disposeBrowserContext", { browserContextId }).catch(() => {});
+                    client.close();
                 },
             };
         }, opts.interItemDelayMs ?? 0);
-        client.close();
         const resources = monitor.stop(queue.length, parallelism);
-        return summarize(results, Date.now() - wallStart, parallelism, {
+        return summarize(results, Date.now() - measuredStart, parallelism, {
             engine: "velora",
             resources,
+            httpCacheDir,
             parallelismModel: "multi-session-single-process",
-            architectureNote: "Velora: N browser contexts (1 tab each) in 1 velora serve process; shared V8 isolate + HttpClient.",
+            architectureNote: "Velora: 1 velora serve process; N CDP connections (1 browser context each); shared Network, HttpClient, and optional HTTP cache.",
         }, opts.benchmarkClass);
     } finally {
         if (proc.exitCode == null) {
@@ -535,11 +614,15 @@ export async function crawlChromium(queue, opts) {
     const parallelism = Math.max(1, Math.min(opts.concurrency, queue.length));
     const monitor = new ProcessMonitor({ label: "chromium", intervalMs: opts.sampleIntervalMs ?? 100 });
     monitor.addRootPid(proc.pid);
-    monitor.start();
-    const wallStart = Date.now();
 
     try {
         const client = await connectCdp(`http://127.0.0.1:${cdpPort}`, 15000);
+        if (opts.warmup) {
+            console.log(`[warmup] Chromium → ${opts.warmupUrl ?? warmupUrlFor(opts.lang)}`);
+            await preWarmupChromium(client, opts);
+        }
+        monitor.start();
+        const measuredStart = Date.now();
         const results = await runPool(queue, parallelism, async (workerId) => {
             const { targetId } = await client.send("Target.createTarget", { url: "about:blank" });
             const { sessionId } = await client.send("Target.attachToTarget", { targetId, flatten: true });
@@ -554,7 +637,7 @@ export async function crawlChromium(queue, opts) {
         }, opts.interItemDelayMs ?? 0);
         client.close();
         const resources = monitor.stop(queue.length, parallelism);
-        return summarize(results, Date.now() - wallStart, parallelism, {
+        return summarize(results, Date.now() - measuredStart, parallelism, {
             engine: "chromium",
             chromePath,
             resources,
@@ -581,6 +664,7 @@ export function collectMeta(opts) {
     } catch (_) {}
 
     const cpu = cpus()[0];
+    const httpCacheDir = profileHttpCacheDir(opts);
     return {
         timestamp: new Date().toISOString(),
         hostname: hostname(),
@@ -597,6 +681,13 @@ export function collectMeta(opts) {
         veloraProfile: opts.browserProfile,
         chromiumTarget: "playwright-chromium-headless",
         benchmarkClass: "crawler-runtime",
+        benchmarkLane: opts.benchmarkLane ?? (opts.veloraMultiProcess === false ? "fair" : "density"),
+        benchmarkName: opts.benchmarkName ?? "Real-world crawl benchmark",
+        veloraMultiProcess: opts.veloraMultiProcess !== false,
+        warmup: opts.warmup === true,
+        warmupUrl: opts.warmup ? (opts.warmupUrl ?? warmupUrlFor(opts.lang)) : null,
+        httpCacheDir,
+        httpCacheEnabled: httpCacheDir != null,
     };
 }
 
