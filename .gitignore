@@ -22,3 +22,10 @@ diff.txt
 .clinerules
 /.grok
 telegram.config.local.js
+
+# Browser session secrets — never commit real cookies
+browser/profiles/sessions/
+browser/profiles/assets/*cookies*
+browser/profiles/assets/*session-cookies*
+browser/profiles/assets/*.bak-*
+dist/
