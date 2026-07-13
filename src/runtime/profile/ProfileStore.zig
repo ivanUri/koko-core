@@ -1,13 +1,15 @@
 const std = @import("std");
 const c = std.c;
 const Profile = @import("Profile.zig");
+const ProfilePaths = @import("ProfilePaths.zig");
+const ProfileManager = @import("ProfileManager.zig");
 const HostEnvironment = @import("HostEnvironment.zig");
 const Spoofing = @import("Spoofing.zig");
 const TransportProfile = @import("TransportProfile.zig");
 const MeasureTextIntelligent = @import("MeasureTextIntelligent.zig");
 const CanvasIntelligent = @import("CanvasIntelligent.zig");
 const WebGLParameters = @import("WebGLParameters.zig");
-const MathsIntelligent = @import("MathsIntelligent.zig");
+const MathsNative = @import("MathsNative.zig");
 const ClientRectsIntelligent = @import("ClientRectsIntelligent.zig");
 const SvgIntelligent = @import("SvgIntelligent.zig");
 
@@ -113,17 +115,12 @@ pub const LoadedProfile = struct {
     css_computed_named_keys: []const []const u8 = &.{},
     /// Full merged key list for CSSStyleDeclaration `in`/named getter parity (creep alias expansion).
     css_computed_in_keys: []const []const u8 = &.{},
-    maths_baseline: []const MathsIntelligent.Entry = &.{},
+    maths_baseline: []const MathsNative.Entry = &.{},
     client_rects: []const ClientRectsIntelligent.Rect = &.{},
     client_rects_emoji_dims: []const ClientRectsIntelligent.EmojiDim = &.{},
     svg_baseline: SvgIntelligent.Baseline = .{},
     /// Site policy ids enabled for this profile (e.g. "google-search").
     policies: []const []const u8 = &.{},
-    /// Baked session state paths (cookie seed + mutable runtime jar).
-    session: struct {
-        cookie_seed_file: []const u8 = "",
-        cookie_runtime_file: []const u8 = "",
-    } = .{},
 
     pub fn hasPolicy(self: *const LoadedProfile, policy_id: []const u8) bool {
         for (self.policies) |id| {
@@ -319,11 +316,6 @@ const JsonSvgBaseline = struct {
     dataFile: []const u8 = "",
 };
 
-const JsonSession = struct {
-    cookieSeedFile: []const u8 = "",
-    cookieRuntimeFile: []const u8 = "",
-};
-
 const JsonClientRectEntry = struct {
     x: f64,
     y: f64,
@@ -387,22 +379,27 @@ const JsonProfile = struct {
     clientRectsBaseline: JsonClientRectsBaseline = .{},
     svgBaseline: JsonSvgBaseline = .{},
     policies: []const []const u8 = &.{},
-    session: JsonSession = .{},
 };
 
-pub fn resolve(name: ?[]const u8) !LoadedProfile {
-    const path = try profilePath(name);
+pub fn resolve(paths: *const ProfilePaths.ProfilePaths) !LoadedProfile {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    errdefer arena.deinit();
+    const template_id = try paths.templateId(arena.allocator());
+
+    const path = try templatePath(template_id);
     defer if (path.allocated) std.heap.page_allocator.free(path.slice);
 
     const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path.slice, 1024 * 1024) catch |err| switch (err) {
         error.FileNotFound => {
-            var embedded = try fromEmbedded(name);
+            arena.deinit();
+            var embedded = try fromEmbedded(template_id);
             applyProcessTimezone(&embedded);
             return embedded;
         },
         else => return err,
     };
     defer std.heap.page_allocator.free(bytes);
+    arena.deinit();
 
     var loaded = try parseJson(bytes);
     try applyHostEnvironment(&loaded);
@@ -437,15 +434,8 @@ const PathResult = struct {
     allocated: bool,
 };
 
-fn profilePath(name: ?[]const u8) !PathResult {
-    const profile_name = name orelse "velora";
-    if (std.mem.eql(u8, profile_name, "velora")) {
-        return .{ .slice = "browser/velora.json", .allocated = false };
-    }
-    if (std.mem.indexOfScalar(u8, profile_name, '/')) |_| {
-        return .{ .slice = profile_name, .allocated = false };
-    }
-    const path = try std.fmt.allocPrint(std.heap.page_allocator, "browser/profiles/{s}.json", .{profile_name});
+fn templatePath(template_id: []const u8) !PathResult {
+    const path = try ProfileManager.templateJsonPath(std.heap.page_allocator, template_id);
     return .{ .slice = path, .allocated = true };
 }
 
@@ -646,9 +636,6 @@ fn parseJson(bytes: []const u8) !LoadedProfile {
     profile.maths_baseline = try loadMathsBaseline(allocator, doc.mathsBaseline);
     try loadClientRectsBaseline(allocator, doc.clientRectsBaseline, &profile);
     try loadSvgBaseline(allocator, doc.svgBaseline, &profile);
-
-    profile.session.cookie_seed_file = try allocator.dupe(u8, doc.session.cookieSeedFile);
-    profile.session.cookie_runtime_file = try allocator.dupe(u8, doc.session.cookieRuntimeFile);
 
     return profile;
 }
@@ -902,22 +889,38 @@ fn jsonF64(value: ?std.json.Value, default: f64) f64 {
     };
 }
 
-fn loadMathsBaseline(allocator: std.mem.Allocator, spec: JsonMathsBaseline) ![]const MathsIntelligent.Entry {
+fn loadMathsBaseline(allocator: std.mem.Allocator, spec: JsonMathsBaseline) ![]const MathsNative.Entry {
     if (spec.dataFile.len == 0) return &.{};
     const bytes = try std.fs.cwd().readFileAlloc(allocator, spec.dataFile, 8 * 1024 * 1024);
     const parsed = try std.json.parseFromSlice([]const JsonMathsBaselineEntry, allocator, bytes, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     const src = parsed.value;
-    const out = try allocator.alloc(MathsIntelligent.Entry, src.len);
+    const out = try allocator.alloc(MathsNative.Entry, src.len);
     for (src, 0..) |e, i| {
-        const args_json = try argsToJson(allocator, e.args);
         out[i] = .{
             .method = try allocator.dupe(u8, e.method),
-            .args_json = args_json,
+            .args = try loadMathsArgs(allocator, e.args),
             .result = e.result,
         };
     }
     return out;
+}
+
+fn loadMathsArgs(allocator: std.mem.Allocator, args: []std.json.Value) ![]const f64 {
+    const out = try allocator.alloc(f64, args.len);
+    for (args, 0..) |arg, i| {
+        out[i] = try jsonValueToF64(arg);
+    }
+    return out;
+}
+
+fn jsonValueToF64(v: std.json.Value) !f64 {
+    return switch (v) {
+        .float => |f| f,
+        .integer => |n| @as(f64, @floatFromInt(n)),
+        .number_string => |s| std.fmt.parseFloat(f64, s),
+        else => error.InvalidArg,
+    };
 }
 
 fn argsToJson(allocator: std.mem.Allocator, args: []std.json.Value) ![]const u8 {
@@ -1158,22 +1161,36 @@ fn validateAntidetect(
 
 const testing = @import("../../testing/testing.zig");
 
+fn testPaths(allocator: std.mem.Allocator, profile_name: []const u8) !ProfilePaths.ProfilePaths {
+    const base = try std.fmt.allocPrint(allocator, "/tmp/velora-profilestore-test-{s}", .{profile_name});
+    defer allocator.free(base);
+    var paths = try ProfilePaths.ProfilePaths.init(allocator, base, profile_name);
+    try paths.ensureProfileReady();
+    return paths;
+}
+
 test "ProfileStore: load velora profile" {
-    const profile = try resolve("velora");
+    var paths = try testPaths(std.testing.allocator, "velora");
+    defer paths.deinit();
+    const profile = try resolve(&paths);
     defer profile.deinit();
     try testing.expectEqual(Mode.velora, profile.mode);
     try testing.expect(profile.http.brands.len >= 1);
 }
 
 test "ProfileStore: load chrome antidetect profile" {
-    const profile = try resolve("chrome-macos-catalina");
+    var paths = try testPaths(std.testing.allocator, "chrome-macos-catalina");
+    defer paths.deinit();
+    const profile = try resolve(&paths);
     defer profile.deinit();
     try testing.expectEqual(Mode.antidetect, profile.mode);
     try testing.expect(std.mem.indexOf(u8, profile.http.user_agent, "Chrome") != null);
 }
 
 test "ProfileStore: load chrome-macos-sonoma with transport" {
-    const profile = try resolve("chrome-macos-sonoma");
+    var paths = try testPaths(std.testing.allocator, "chrome-macos-sonoma");
+    defer paths.deinit();
+    const profile = try resolve(&paths);
     defer profile.deinit();
     try testing.expectEqual(Mode.antidetect, profile.mode);
     try testing.expectEqual(BrowserFamily.chrome, profile.browser_family);
@@ -1187,20 +1204,17 @@ test "ProfileStore: load chrome-macos-sonoma with transport" {
 }
 
 test "ProfileStore: velora profile has no site policies" {
-    const profile = try resolve("velora");
+    var paths = try testPaths(std.testing.allocator, "velora");
+    defer paths.deinit();
+    const profile = try resolve(&paths);
     defer profile.deinit();
     try testing.expectEqual(@as(usize, 0), profile.policies.len);
 }
 
-test "ProfileStore: chrome-local session cookie paths" {
-    const profile = try resolve("chrome-local-huys-macbook-pro");
-    defer profile.deinit();
-    try testing.expect(std.mem.endsWith(u8, profile.session.cookie_seed_file, "-session-cookies.json"));
-    try testing.expect(std.mem.endsWith(u8, profile.session.cookie_runtime_file, "-cookies.json"));
-}
-
 test "ProfileStore: load firefox-macos profile" {
-    const profile = try resolve("firefox-macos");
+    var paths = try testPaths(std.testing.allocator, "firefox-macos");
+    defer paths.deinit();
+    const profile = try resolve(&paths);
     defer profile.deinit();
     try testing.expectEqual(Mode.antidetect, profile.mode);
     try testing.expectEqual(BrowserFamily.firefox, profile.browser_family);

@@ -1,6 +1,5 @@
 const std = @import("std");
 const Session = @import("../core/browser/Session.zig");
-const storage = @import("../core/webapi/storage/storage.zig");
 const log = @import("../support/log.zig");
 
 const KeyValue = struct { key: []const u8, value: []const u8 };
@@ -10,6 +9,26 @@ const JsonEntry = struct {
     local: []const KeyValue,
 };
 
+pub const storage_filename = "storage.json";
+
+pub fn storageFilePath(dir: []const u8, buf: []u8) ?[]const u8 {
+    return std.fmt.bufPrint(buf, "{s}/{s}", .{ dir, storage_filename }) catch null;
+}
+
+pub fn loadStorageDir(session: *Session, dir: []const u8) void {
+    var path_buf: [512]u8 = undefined;
+    const path = storageFilePath(dir, &path_buf) orelse return;
+    loadStorage(session, path);
+}
+
+pub fn saveStorageDir(session: *Session, dir: []const u8) void {
+    std.fs.cwd().makePath(dir) catch {};
+    var path_buf: [512]u8 = undefined;
+    const path = storageFilePath(dir, &path_buf) orelse return;
+    saveStorage(session, path);
+}
+
+/// @deprecated Sidecar format; use loadStorageDir.
 pub fn storagePathForCookieJar(cookie_jar_path: []const u8, allocator: std.mem.Allocator) ![]const u8 {
     return std.fmt.allocPrint(allocator, "{s}.storage.json", .{cookie_jar_path});
 }
@@ -74,6 +93,12 @@ fn _saveStorage(session: *Session, path: []const u8) !void {
         }
         if (pairs.items.len == 0) continue;
         try origins.append(allocator, .{ .origin = kv.key_ptr.*, .local = try pairs.toOwnedSlice(allocator) });
+    }
+
+    if (origins.items.len == 0) return;
+
+    if (std.fs.path.dirname(path)) |parent| {
+        try std.fs.cwd().makePath(parent);
     }
 
     var file = try std.fs.cwd().createFile(path, .{});

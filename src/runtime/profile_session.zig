@@ -12,28 +12,18 @@ fn cookieFileUsable(path: []const u8) bool {
     return size > 2;
 }
 
-/// Load cookies for a new session: runtime jar → profile seed → CLI --cookie override.
+/// Load cookies + localStorage from the active profile directory.
 pub fn bootstrapCookies(session: *Session, config: *const Config) void {
-    if (config.cookieJarFile()) |jar_path| {
+    var jar_buf: [512]u8 = undefined;
+    if (config.cookieJarFile(&jar_buf)) |jar_path| {
         if (cookieFileUsable(jar_path)) {
             cookies.loadFromFile(session, jar_path);
-            var storage_buf: [512]u8 = undefined;
-            if (std.fmt.bufPrint(&storage_buf, "{s}.storage.json", .{jar_path})) |storage_path| {
-                session_persist.loadStorage(session, storage_path);
-            } else |_| {}
+            var ls_buf: [512]u8 = undefined;
+            if (config.localStorageDir(&ls_buf)) |ls_dir| {
+                session_persist.loadStorageDir(session, ls_dir);
+            }
+            log.info(.app, "profile_session.bootstrap", .{ .source = "profile", .path = jar_path });
         }
-    }
-
-    if (session.cookie_jar.cookies.items.len == 0) {
-        if (config.profileCookieSeedFile()) |seed_path| {
-            cookies.loadFromFile(session, seed_path);
-            log.info(.app, "profile_session.bootstrap", .{ .source = "seed", .path = seed_path });
-        }
-    } else if (config.profileCookieSeedFile()) |seed_path| {
-        log.debug(.app, "profile_session.bootstrap", .{
-            .note = "runtime jar loaded",
-            .seed_unused = seed_path,
-        });
     }
 
     if (config.cookieCliOverride()) |cli_path| {
@@ -47,13 +37,16 @@ fn ensureParentDir(path: []const u8) void {
     std.fs.cwd().makePath(parent) catch {};
 }
 
-/// Persist runtime jar + sidecar storage when profile or CLI configures a jar path.
+/// Persist cookies + localStorage into the active profile directory.
 pub fn persistCookies(session: *Session, config: *const Config) void {
-    const jar_path = config.cookieJarFile() orelse return;
+    var jar_buf: [512]u8 = undefined;
+    const jar_path = config.cookieJarFile(&jar_buf) orelse return;
     if (session.cookie_jar.cookies.items.len == 0) return;
     ensureParentDir(jar_path);
     cookies.saveToFile(&session.cookie_jar, jar_path);
-    var storage_buf: [512]u8 = undefined;
-    const storage_path = std.fmt.bufPrint(&storage_buf, "{s}.storage.json", .{jar_path}) catch return;
-    session_persist.saveStorage(session, storage_path);
+
+    var ls_buf: [512]u8 = undefined;
+    if (config.localStorageDir(&ls_buf)) |ls_dir| {
+        session_persist.saveStorageDir(session, ls_dir);
+    }
 }

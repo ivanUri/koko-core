@@ -1616,9 +1616,6 @@ pub fn _documentIsLoaded(self: *Frame) !void {
     const NavigatorKeysIntelligent = @import("../../runtime/profile/NavigatorKeysIntelligent.zig");
     NavigatorKeysIntelligent.installOnDocument(self, self.js);
 
-    const MathsIntelligent = @import("../../runtime/profile/MathsIntelligent.zig");
-    MathsIntelligent.installOnGlobal(self, self.js);
-
     const event = try Event.initTrusted(.wrap("DOMContentLoaded"), .{ .bubbles = true }, self._page);
     try self._event_manager.dispatch(
         self.document.asEventTarget(),

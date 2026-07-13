@@ -14,6 +14,8 @@
 
 const std = @import("std");
 const ProfileStore = @import("profile/ProfileStore.zig");
+const ProfilePaths = @import("profile/ProfilePaths.zig");
+const ProfileManager = @import("profile/ProfileManager.zig");
 const ProfileRotation = @import("profile/ProfileRotation.zig");
 const ProfileRuntime = @import("profile/ProfileRuntime.zig");
 const log = @import("../support/log.zig");
@@ -110,6 +112,7 @@ const CommonOptions = .{
     .{ .name = "web_bot_auth_keyid", .type = ?[]const u8 },
     .{ .name = "web_bot_auth_domain", .type = ?[]const u8 },
     .{ .name = "user_agent", .type = ?[]const u8 },
+    .{ .name = "user_data_dir", .type = ?[]const u8 },
     .{ .name = "browser_profile", .type = ?[]const u8 },
     .{ .name = "browser_profile_pool", .type = ?[]const u8 },
     .{ .name = "block_private_networks", .type = bool },
@@ -198,6 +201,16 @@ const Commands = cli.Builder(.{
         },
         .shared_options = CommonOptions,
     },
+    .{
+        .name = "profile",
+        .positional = .{ .name = "action", .type = ?[]const u8 },
+        .options = .{
+            .{ .name = "name", .type = ?[]const u8 },
+            .{ .name = "template", .type = ?[]const u8 },
+            .{ .name = "from", .type = ?[]const u8 },
+            .{ .name = "user_data_dir", .type = ?[]const u8 },
+        },
+    },
     .{ .name = "version", .options = .{} },
     .{ .name = "help", .options = .{} },
 });
@@ -207,10 +220,11 @@ pub const Mode = Commands.Union;
 
 mode: Mode,
 exec_name: []const u8,
+profile_paths: ProfilePaths.ProfilePaths,
 profile: ProfileStore.LoadedProfile,
 profile_runtime: ProfileRuntime.ProfileRuntime,
 http_headers: HttpHeaders,
-/// Default HTTP cache directory when --http-cache-dir is omitted (serve/mcp).
+/// Default HTTP cache directory when --http-cache-dir is omitted.
 http_cache_dir_default: ?[]u8 = null,
 
 /// ProfileRuntime stores a pointer into Config.profile; must run after Config is at its final address.
@@ -224,15 +238,43 @@ pub fn initInPlace(self: *Config, allocator: Allocator, exec_name: []const u8, m
     self.profile = undefined;
     self.profile_runtime = undefined;
     self.http_headers = undefined;
+    self.profile_paths = undefined;
+    self.http_cache_dir_default = null;
 
-    const picked_profile = try self.resolveBrowserProfileName(allocator);
-    defer if (picked_profile) |name| allocator.free(name);
-    self.profile = try ProfileStore.resolve(picked_profile orelse self.browserProfile());
+    if (modeSkipsProfileBootstrap(mode)) return;
+
+    const pool_pick = try self.resolveBrowserProfilePoolPick(allocator);
+    defer if (pool_pick) |name| allocator.free(name);
+
+    var bootstrap_paths = try ProfilePaths.ProfilePaths.init(
+        allocator,
+        self.userDataDir(),
+        ProfilePaths.default_profile_name,
+    );
+    defer bootstrap_paths.deinit();
+    try ProfileManager.ensureFirstRun(allocator, bootstrap_paths.user_data_dir);
+
+    const active_name = try ProfileManager.resolveActiveProfileName(
+        allocator,
+        bootstrap_paths.user_data_dir,
+        self.browserProfile(),
+        pool_pick,
+    );
+    defer allocator.free(active_name);
+
+    self.profile_paths = try ProfilePaths.ProfilePaths.init(
+        allocator,
+        self.userDataDir(),
+        active_name,
+    );
+    errdefer self.profile_paths.deinit();
+    try self.profile_paths.ensureProfileReady();
+
+    self.profile = try ProfileStore.resolve(&self.profile_paths);
     errdefer self.profile.deinit();
     self.profile_runtime = try ProfileRuntime.ProfileRuntime.init(allocator, &self.profile);
     errdefer self.profile_runtime.deinit(allocator);
     self.http_headers = try HttpHeaders.init(allocator, self);
-    self.http_cache_dir_default = null;
     try self.ensureDefaultHttpCacheDir(allocator);
     self.rebindProfilePointers();
 }
@@ -241,15 +283,15 @@ fn ensureDefaultHttpCacheDir(self: *Config, allocator: Allocator) !void {
     const explicit: ?[]const u8 = switch (self.mode) {
         .serve => |opts| opts.http_cache_dir,
         .mcp => |opts| opts.http_cache_dir,
+        .fetch => |opts| opts.http_cache_dir,
         else => return,
     };
     if (explicit != null) return;
 
-    const tmp = std.process.getEnvVarOwned(allocator, "TMPDIR") catch
-        try allocator.dupe(u8, if (builtin.os.tag == .windows) "C:\\Temp" else "/tmp");
-    defer allocator.free(tmp);
-
-    self.http_cache_dir_default = try std.fs.path.join(allocator, &.{ tmp, "velora-http-cache" });
+    const cache = try self.profile_paths.cacheDirAlloc();
+    defer self.profile_paths.allocator.free(cache);
+    self.http_cache_dir_default = try allocator.dupe(u8, cache);
+    try std.fs.cwd().makePath(self.http_cache_dir_default.?);
 }
 
 pub fn init(allocator: Allocator, exec_name: []const u8, mode: Mode) !Config {
@@ -260,11 +302,18 @@ pub fn init(allocator: Allocator, exec_name: []const u8, mode: Mode) !Config {
     return out;
 }
 
+fn modeSkipsProfileBootstrap(mode: Mode) bool {
+    return mode == .profile or mode == .help or mode == .version;
+}
+
 pub fn deinit(self: *Config, allocator: Allocator) void {
     if (self.http_cache_dir_default) |path| allocator.free(path);
-    self.http_headers.deinit(allocator);
-    self.profile_runtime.deinit(allocator);
-    self.profile.deinit();
+    if (!modeSkipsProfileBootstrap(self.mode)) {
+        self.http_headers.deinit(allocator);
+        self.profile_runtime.deinit(allocator);
+        self.profile.deinit();
+        self.profile_paths.deinit();
+    }
 }
 
 pub fn tlsVerifyHost(self: *const Config) bool {
@@ -291,7 +340,7 @@ pub fn httpProxy(self: *const Config) ?[:0]const u8 {
 pub fn proxyBearerToken(self: *const Config) ?[:0]const u8 {
     return switch (self.mode) {
         inline .serve, .fetch, .mcp => |opts| opts.proxy_bearer_token,
-        .help, .version => null,
+        .profile, .help, .version => null,
     };
 }
 
@@ -410,13 +459,21 @@ pub fn runModeName(self: *const Config) []const u8 {
 pub fn userAgentSuffix(self: *const Config) ?[]const u8 {
     return switch (self.mode) {
         inline .serve, .fetch, .mcp => |opts| opts.user_agent_suffix,
-        .help, .version => null,
+        .profile, .help, .version => null,
     };
 }
 
 pub fn userAgent(self: *const Config) ?[]const u8 {
     return switch (self.mode) {
         inline .serve, .fetch, .mcp => |opts| opts.user_agent,
+        .profile, .help, .version => null,
+    };
+}
+
+pub fn userDataDir(self: *const Config) ?[]const u8 {
+    return switch (self.mode) {
+        inline .serve, .fetch, .mcp => |opts| opts.user_data_dir,
+        .profile => |opts| opts.user_data_dir,
         .help, .version => null,
     };
 }
@@ -424,18 +481,26 @@ pub fn userAgent(self: *const Config) ?[]const u8 {
 pub fn browserProfile(self: *const Config) ?[]const u8 {
     return switch (self.mode) {
         inline .serve, .fetch, .mcp => |opts| opts.browser_profile,
-        .help, .version => null,
+        .profile, .help, .version => null,
     };
+}
+
+pub fn activeProfileName(self: *const Config) []const u8 {
+    return self.profile_paths.profile_name;
+}
+
+pub fn activeProfileDir(self: *const Config) []const u8 {
+    return self.profile_paths.profile_dir;
 }
 
 pub fn browserProfilePool(self: *const Config) ?[]const u8 {
     return switch (self.mode) {
         inline .serve, .fetch, .mcp => |opts| opts.browser_profile_pool,
-        .help, .version => null,
+        .profile, .help, .version => null,
     };
 }
 
-fn resolveBrowserProfileName(self: *const Config, allocator: Allocator) !?[]const u8 {
+fn resolveBrowserProfilePoolPick(self: *const Config, allocator: Allocator) !?[]const u8 {
     const pool = self.browserProfilePool() orelse return null;
     if (self.browserProfile() != null) return null;
     return try ProfileRotation.pickFromPool(allocator, pool, std.crypto.random);
@@ -445,7 +510,7 @@ pub fn httpCacheDir(self: *const Config) ?[]const u8 {
     return switch (self.mode) {
         .serve => |opts| opts.http_cache_dir orelse self.http_cache_dir_default,
         .mcp => |opts| opts.http_cache_dir orelse self.http_cache_dir_default,
-        .fetch => |opts| opts.http_cache_dir,
+        .fetch => |opts| opts.http_cache_dir orelse self.http_cache_dir_default,
         else => null,
     };
 }
@@ -463,25 +528,18 @@ pub fn cookieFile(self: *const Config) ?[]const u8 {
     return self.cookieCliOverride();
 }
 
-/// Baked cookie snapshot path from browser profile JSON (`session.cookieSeedFile`).
-pub fn profileCookieSeedFile(self: *const Config) ?[]const u8 {
-    if (self.profile.session.cookie_seed_file.len > 0) {
-        return self.profile.session.cookie_seed_file;
-    }
-    return null;
-}
-
-/// Runtime cookie jar: CLI `--cookie-jar` overrides `session.cookieRuntimeFile` on the profile.
-pub fn cookieJarFile(self: *const Config) ?[]const u8 {
+/// Runtime cookie jar: CLI `--cookie-jar` overrides profile dir `Cookies.json`.
+pub fn cookieJarFile(self: *const Config, buf: []u8) ?[]const u8 {
     const cli_jar = switch (self.mode) {
         inline .serve, .fetch, .mcp => |opts| opts.cookie_jar,
         else => null,
     };
-    if (cli_jar != null) return cli_jar;
-    if (self.profile.session.cookie_runtime_file.len > 0) {
-        return self.profile.session.cookie_runtime_file;
-    }
-    return null;
+    if (cli_jar) |path| return path;
+    return self.profile_paths.cookiesPath(buf);
+}
+
+pub fn localStorageDir(self: *const Config, buf: []u8) ?[]const u8 {
+    return self.profile_paths.localStorageDir(buf);
 }
 
 pub fn port(self: *const Config) u16 {
@@ -507,7 +565,7 @@ pub fn webBotAuth(self: *const Config) ?WebBotAuthConfig {
             .keyid = opts.web_bot_auth_keyid orelse return null,
             .domain = opts.web_bot_auth_domain orelse return null,
         },
-        .help, .version => null,
+        .profile, .help, .version => null,
     };
 }
 
@@ -756,18 +814,31 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\--log-level-system
         \\                Per-channel log level overrides (debug, info, warn, error, fatal).
         \\
+        \\--user-data-dir
+        \\                Chrome-style user data root (default: OS app data dir, e.g.
+        \\                ~/Library/Application Support/velora on macOS).
+        \\
+        \\profile command
+        \\Manage browser profiles (Chrome-style user-data-dir folders).
+        \\Example: {0s} profile list
+        \\
+        \\  profile list
+        \\  profile create --name <id> [--template <template-id>]
+        \\  profile delete --name <id>
+        \\  profile import-cookies [--name <id>] --from <cookies.json>
+        \\
+        \\
         \\--browser-profile
-        \\                Browser fingerprint profile: velora (default), chrome-macos-sonoma,
-        \\                chrome-windows-11, chrome-macos-catalina, or path/to/custom.json.
-        \\                Antidetect profiles align User-Agent, Sec-CH-UA, navigator, and TLS.
+        \\                Profile folder name inside user-data-dir (default: Default).
+        \\                On first use, creates the folder with Preferences.json pointing at
+        \\                a fingerprint template (e.g. chrome-macos-sonoma).
         \\
         \\--browser-profile-pool
-        \\                Comma-separated profile names; picks one at random when --browser-profile
-        \\                is omitted. E.g. chrome-macos-sonoma,chrome-windows-11
+        \\                Comma-separated profile folder names; picks one at random when
+        \\                --browser-profile is omitted.
         \\
         \\--cookie-jar
-        \\                Save cookies (and localStorage snapshot) to this path on exit.
-        \\                Works with serve, fetch, and mcp. Pair with --cookie to restore session.
+        \\                Override profile Cookies.json path (deprecated; prefer profile dir).
         \\
         \\--user-agent    Override the User-Agent header entirely
         \\                User-Agent mustn't impersonate other browser.
@@ -788,9 +859,7 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\                Your domain e.g. yourdomain.com
         \\
         \\--http-cache-dir
-        \\                Path to a directory to use as a Filesystem Cache for network resources.
-        \\                Omitting this will result is no caching.
-        \\                Defaults to no caching.
+        \\                HTTP cache directory. Defaults to profile Cache/ under user-data-dir.
         \\
         \\--storage-engine
         \\                The storage engine to use. Choices are: none, sqlite.
@@ -805,7 +874,7 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
     const usage =
         \\usage: {0s} command [options] [URL]
         \\
-        \\Command can be either 'fetch', 'serve', 'mcp' or 'help'
+        \\Command can be 'fetch', 'serve', 'mcp', 'profile', or 'help'
         \\
         \\fetch command
         \\Fetches the specified URL
@@ -906,12 +975,8 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\Starts an MCP (Model Context Protocol) server over stdio
         \\Example: {0s} mcp
         \\
-        \\--cookie        Path to a JSON file to load cookies from (CLI override; profile seed loads automatically).
+        \\--cookie        Path to a JSON file to load cookies from (one-shot CLI override).
         \\                Defaults to no cookie loading.
-        \\
-        \\--cookie-jar    Path to runtime cookie jar (overrides profile session.cookieRuntimeFile).
-        \\                Available for fetch and mcp commands.
-        \\                Defaults to no cookie saving.
         \\
     ++ common_options ++
         \\
@@ -939,7 +1004,9 @@ pub fn parseArgsInPlace(self: *Config, cli_allocator: Allocator, config_allocato
         log.warn(.app, "--timeout is deprecated", .{});
     }
     try initInPlace(self, config_allocator, exec_name, command);
-    self.rebindProfilePointers();
+    if (!modeSkipsProfileBootstrap(command)) {
+        self.rebindProfilePointers();
+    }
 }
 
 pub fn parseArgs(cli_allocator: Allocator, config_allocator: Allocator) !Config {

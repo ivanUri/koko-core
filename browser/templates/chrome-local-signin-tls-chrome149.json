@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "id": "chrome-local-signin-cd24",
+  "id": "chrome-local-signin-tls-chrome149",
   "mode": "antidetect",
   "policies": [
     "google-search"
@@ -89,8 +89,8 @@
     "availWidth": 1680,
     "availHeight": 936,
     "devicePixelRatio": 1,
-    "colorDepth": 24,
-    "pixelDepth": 24,
+    "colorDepth": 30,
+    "pixelDepth": 30,
     "touch": false
   },
   "window": {
@@ -213,44 +213,40 @@
   "timezone": "Asia/Saigon",
   "locale": "en-US",
   "canvasProbe": {
-    "dataUrlFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-canvas-probe.txt",
-    "probesFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-canvas-probes.json"
+    "dataUrlFile": "browser/templates/assets/chrome-local-huys-macbook-pro-canvas-probe.txt",
+    "probesFile": "browser/templates/assets/chrome-local-huys-macbook-pro-canvas-probes.json"
   },
   "audioProbe": {
-    "dataFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-audio-probe.json"
+    "dataFile": "browser/templates/assets/chrome-local-huys-macbook-pro-audio-probe.json"
   },
-  "fontsFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-fonts.json",
-  "speechVoicesFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-voices.json",
+  "fontsFile": "browser/templates/assets/chrome-local-huys-macbook-pro-fonts.json",
+  "speechVoicesFile": "browser/templates/assets/chrome-local-huys-macbook-pro-voices.json",
   "measureTextBaseline": {
-    "dataFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-measuretext.json"
+    "dataFile": "browser/templates/assets/chrome-local-huys-macbook-pro-measuretext.json"
   },
   "webglProbe": {
-    "dataFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-webgl-probe.json"
+    "dataFile": "browser/templates/assets/chrome-local-huys-macbook-pro-webgl-probe.json"
   },
   "windowKeys": {
-    "dataFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-window-keys.json"
+    "dataFile": "browser/templates/assets/chrome-local-huys-macbook-pro-window-keys.json"
   },
   "navigatorKeys": {
-    "dataFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-navigator-keys.json"
+    "dataFile": "browser/templates/assets/chrome-local-huys-macbook-pro-navigator-keys.json"
   },
   "htmlElementKeys": {
-    "dataFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-html-element-keys.json"
+    "dataFile": "browser/templates/assets/chrome-local-huys-macbook-pro-html-element-keys.json"
   },
   "cssComputedKeys": {
-    "enumerableKeysFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-css-enumerable-keys.json",
-    "dataFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-css-computed-keys.json"
+    "enumerableKeysFile": "browser/templates/assets/chrome-local-huys-macbook-pro-css-enumerable-keys.json",
+    "dataFile": "browser/templates/assets/chrome-local-huys-macbook-pro-css-computed-keys.json"
   },
   "mathsBaseline": {
-    "dataFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-maths-baseline.json"
+    "dataFile": "browser/templates/assets/chrome-local-huys-macbook-pro-maths-baseline.json"
   },
   "clientRectsBaseline": {
-    "dataFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-client-rects.json"
+    "dataFile": "browser/templates/assets/chrome-local-huys-macbook-pro-client-rects.json"
   },
   "svgBaseline": {
-    "dataFile": "browser/profiles/assets/chrome-local-huys-macbook-pro-svg-baseline.json"
-  },
-  "session": {
-    "cookieSeedFile": "browser/profiles/assets/chrome-local-signin-cd24-session-cookies.json",
-    "cookieRuntimeFile": "browser/profiles/sessions/chrome-local-signin-cd24-cookies.json"
+    "dataFile": "browser/templates/assets/chrome-local-huys-macbook-pro-svg-baseline.json"
   }
 }

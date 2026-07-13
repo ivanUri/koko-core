@@ -58,6 +58,20 @@ fn run(allocator: Allocator, main_arena: Allocator) !void {
     }
 
     switch (config.mode) {
+        .profile => |opts| {
+            lp.profile_cmd.run(main_arena, .{
+                .action = opts.action,
+                .name = opts.name,
+                .template = opts.template,
+                .from = opts.from,
+                .user_data_dir = opts.user_data_dir,
+            }) catch |err| {
+                log.fatal(.app, "profile command failed", .{ .err = err });
+            };
+            config.deinit(allocator);
+            allocator.destroy(config);
+            return std.process.cleanExit();
+        },
         .help => {
             config.printUsageAndExit(true);
             config.deinit(allocator);
@@ -256,10 +270,11 @@ fn fetchThread(app: *App, ft: *FetchTerminator, url: [:0]const u8, fetch_opts: l
     };
     defer notification.deinit();
 
-    _ = browser.newSession(notification) catch |err| {
+    const session = browser.newSession(notification) catch |err| {
         log.fatal(.app, "session init error", .{ .err = err });
         return;
     };
+    lp.profile_session.bootstrapCookies(session, app.config);
 
     ft.storeBrowser(&browser);
     // if this exits normally, we want to disarm the FetchTerminator so that
@@ -270,6 +285,8 @@ fn fetchThread(app: *App, ft: *FetchTerminator, url: [:0]const u8, fetch_opts: l
     lp.fetch(app, &browser, url, fetch_opts) catch |err| {
         log.fatal(.app, "fetch error", .{ .err = err, .url = url });
     };
+
+    lp.profile_session.persistCookies(session, app.config);
 }
 
 fn mcpThread(allocator: std.mem.Allocator, app: *App) void {

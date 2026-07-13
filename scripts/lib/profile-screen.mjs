@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 /** Load `screen` + `window` from browser profile JSON. */
 export function loadProfileDisplay(repo, profileId) {
-    const path = resolve(repo, `browser/profiles/${profileId}.json`);
+    const path = resolve(repo, `browser/templates/${profileId}.json`);
     const profile = JSON.parse(readFileSync(path, "utf8"));
     if (!profile.screen) throw new Error(`profile ${profileId} missing screen`);
     return { screen: profile.screen, window: profile.window ?? {} };

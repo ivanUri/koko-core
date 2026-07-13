@@ -25,9 +25,13 @@ diff.txt
 /.grok
 telegram.config.local.js
 
-# Browser session secrets — never commit real cookies
+# Browser session secrets — never commit real cookies or user profile data
+browser/templates/sessions/
 browser/profiles/sessions/
+browser/templates/assets/*cookies*
+browser/templates/assets/*session-cookies*
 browser/profiles/assets/*cookies*
 browser/profiles/assets/*session-cookies*
-browser/profiles/assets/*.bak-*
+browser/templates/assets/*.bak-*
+.velora-user-data/
 dist/

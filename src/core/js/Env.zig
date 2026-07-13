@@ -29,6 +29,7 @@ const SharedWorkerGlobalScope = @import("../webapi/SharedWorkerGlobalScope.zig")
 const WorkerGlobalScope = @import("../webapi/WorkerGlobalScope.zig");
 
 const RealmLifecycleKernel = @import("../../runtime/RealmLifecycleKernel.zig");
+const MathsNative = @import("../../runtime/profile/MathsNative.zig");
 
 const v8 = js.v8;
 const log = @import("../../support/log.zig");
@@ -391,6 +392,7 @@ fn _createContext(self: *Env, global: anytype, params: ContextParams, kind: Cont
         installUrlSearchParamsConstructorShim(context);
         installWebSocketConstructorShim(context);
         installCreepJsCompatShim(context);
+        MathsNative.installOnContext(context, global);
     } else {
         installWorkerIntlShim(context);
         installUrlSearchParamsConstructorShim(context);
@@ -399,6 +401,7 @@ fn _createContext(self: *Env, global: anytype, params: ContextParams, kind: Cont
         installWorkerRethrowShim(context);
         installWorkerImportScriptsMimeShim(context);
         installWorkerPostMessageShim(context);
+        MathsNative.installOnContext(context, global._worker._frame);
     }
 
     return context;

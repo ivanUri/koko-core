@@ -27,7 +27,7 @@ class Velora < Formula
   def caveats
     <<~EOS
       Browser profiles:
-        #{share}/velora/browser/profiles
+        #{share}/velora/browser/templates
 
       Start CDP server:
         velora serve --host 127.0.0.1 --port 9222

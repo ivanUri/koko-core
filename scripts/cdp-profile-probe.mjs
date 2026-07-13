@@ -151,7 +151,7 @@ async function spawnVelora(profile, port) {
 }
 
 function loadProfileExpectations(profileId) {
-    const path = resolve(REPO, `browser/profiles/${profileId}.json`);
+    const path = resolve(REPO, `browser/templates/${profileId}.json`);
     if (!existsSync(path)) return null;
     const doc = JSON.parse(readFileSync(path, "utf8"));
     return {
