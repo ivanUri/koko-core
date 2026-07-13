@@ -120,6 +120,7 @@ const CommonOptions = .{
     .{ .name = "google_chrome_transport", .type = bool },
     .{ .name = "cookie", .type = ?[]const u8 },
     .{ .name = "cookie_jar", .type = ?[]const u8 },
+    .{ .name = "profile_snapshot", .type = ?[]const u8 },
     .{ .name = "storage_engine", .type = ?Storage.EngineType },
     .{ .name = "storage_sqlite_path", .type = ?[:0]const u8 },
 };
@@ -208,6 +209,8 @@ const Commands = cli.Builder(.{
             .{ .name = "name", .type = ?[]const u8 },
             .{ .name = "template", .type = ?[]const u8 },
             .{ .name = "from", .type = ?[]const u8 },
+            .{ .name = "to", .type = ?[]const u8 },
+            .{ .name = "version", .type = u32, .default = 1 },
             .{ .name = "user_data_dir", .type = ?[]const u8 },
         },
     },
@@ -250,6 +253,7 @@ pub fn initInPlace(self: *Config, allocator: Allocator, exec_name: []const u8, m
         allocator,
         self.userDataDir(),
         ProfilePaths.default_profile_name,
+        self.profileSnapshot(),
     );
     defer bootstrap_paths.deinit();
     try ProfileManager.ensureFirstRun(allocator, bootstrap_paths.user_data_dir);
@@ -266,6 +270,7 @@ pub fn initInPlace(self: *Config, allocator: Allocator, exec_name: []const u8, m
         allocator,
         self.userDataDir(),
         active_name,
+        self.profileSnapshot(),
     );
     errdefer self.profile_paths.deinit();
     try self.profile_paths.ensureProfileReady();
@@ -536,6 +541,14 @@ pub fn cookieJarFile(self: *const Config, buf: []u8) ?[]const u8 {
     };
     if (cli_jar) |path| return path;
     return self.profile_paths.cookiesPath(buf);
+}
+
+/// Self-contained fingerprint bundle dir or fingerprint.json path (`--profile-snapshot`).
+pub fn profileSnapshot(self: *const Config) ?[]const u8 {
+    return switch (self.mode) {
+        inline .serve, .fetch, .mcp => |opts| opts.profile_snapshot,
+        else => null,
+    };
 }
 
 pub fn localStorageDir(self: *const Config, buf: []u8) ?[]const u8 {
@@ -826,6 +839,12 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\  profile create --name <id> [--template <template-id>]
         \\  profile delete --name <id>
         \\  profile import-cookies [--name <id>] --from <cookies.json>
+        \\  profile publish --template <id[@version]>
+        \\  profile export --name <id> [--to <bundle-dir>]
+        \\  profile import --name <id> --from <bundle-dir>
+        \\
+        \\--profile-snapshot
+        \\                Self-contained fingerprint bundle dir (SaaS / offline profile).
         \\
         \\
         \\--browser-profile

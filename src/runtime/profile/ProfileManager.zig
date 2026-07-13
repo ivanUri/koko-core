@@ -1,5 +1,6 @@
 const std = @import("std");
 const ProfilePaths = @import("ProfilePaths.zig");
+const ProfileSnapshot = @import("ProfileSnapshot.zig");
 const BrowserRoot = @import("BrowserRoot.zig");
 const log = @import("../../support/log.zig");
 
@@ -196,10 +197,13 @@ pub fn resolveActiveProfileName(
     return try allocator.dupe(u8, ProfilePaths.default_profile_name);
 }
 
-pub fn templateExists(template: []const u8) !bool {
+pub fn templateExists(template: []const u8, template_version: u32) !bool {
     const path = try templateJsonPath(std.heap.page_allocator, template);
     defer std.heap.page_allocator.free(path);
-    return try templateFileExists(path);
+    if (try templateFileExists(path)) return true;
+    const catalog = try ProfileSnapshot.catalogFingerprintPath(std.heap.page_allocator, template, template_version);
+    defer std.heap.page_allocator.free(catalog);
+    return try templateFileExists(catalog);
 }
 
 pub fn templateJsonPath(allocator: Allocator, template: []const u8) ![]const u8 {
@@ -231,11 +235,12 @@ pub fn createProfile(
     user_data_dir: []const u8,
     name: []const u8,
     template: []const u8,
+    template_version: u32,
 ) !void {
     if (name.len == 0) return error.InvalidProfileName;
-    if (!try templateExists(template)) return error.UnknownTemplate;
+    if (!try templateExists(template, template_version)) return error.UnknownTemplate;
 
-    var paths = try ProfilePaths.ProfilePaths.init(allocator, user_data_dir, name);
+    var paths = try ProfilePaths.ProfilePaths.init(allocator, user_data_dir, name, null);
     defer paths.deinit();
 
     var prefs_buf: [512]u8 = undefined;
@@ -246,8 +251,10 @@ pub fn createProfile(
     try std.fs.cwd().makePath(paths.user_data_dir);
     try std.fs.cwd().makePath(paths.profile_dir);
     try writePreferences(prefs_path, .{
+        .version = 2,
         .name = name,
         .template = template,
+        .template_version = template_version,
     });
 
     _ = try syncLocalState(allocator, user_data_dir);
@@ -259,7 +266,7 @@ pub fn createProfile(
 pub fn deleteProfile(allocator: Allocator, user_data_dir: []const u8, name: []const u8) !void {
     if (std.mem.eql(u8, name, ProfilePaths.default_profile_name)) return error.CannotDeleteDefaultProfile;
 
-    var paths = try ProfilePaths.ProfilePaths.init(allocator, user_data_dir, name);
+    var paths = try ProfilePaths.ProfilePaths.init(allocator, user_data_dir, name, null);
     defer paths.deinit();
 
     try std.fs.cwd().deleteTree(paths.profile_dir);
@@ -296,7 +303,7 @@ pub fn importCookies(
     name: []const u8,
     from_path: []const u8,
 ) !void {
-    var paths = try ProfilePaths.ProfilePaths.init(allocator, user_data_dir, name);
+    var paths = try ProfilePaths.ProfilePaths.init(allocator, user_data_dir, name, null);
     defer paths.deinit();
 
     var prefs_buf: [512]u8 = undefined;
@@ -304,7 +311,7 @@ pub fn importCookies(
     if (try templateFileExists(prefs_path)) {
         try paths.ensureProfileReadyWithTemplate(defaultTemplateForName(name));
     } else {
-        try createProfile(allocator, user_data_dir, name, defaultTemplateForName(name));
+        try createProfile(allocator, user_data_dir, name, defaultTemplateForName(name), ProfileSnapshot.default_template_version);
     }
 
     const cookies_path = try paths.cookiesPathAlloc();
@@ -325,7 +332,7 @@ pub fn listProfileEntries(allocator: Allocator, user_data_dir: []const u8) ![]Pr
     errdefer out.deinit(allocator);
 
     for (state.profiles) |name| {
-        var paths = try ProfilePaths.ProfilePaths.init(allocator, user_data_dir, name);
+        var paths = try ProfilePaths.ProfilePaths.init(allocator, user_data_dir, name, null);
         defer paths.deinit();
 
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -335,9 +342,14 @@ pub fn listProfileEntries(allocator: Allocator, user_data_dir: []const u8) ![]Pr
             .template = defaultTemplateForName(name),
         };
 
+        const template_label = if (prefs.template_version > 1)
+            try std.fmt.allocPrint(allocator, "{s}@{d}", .{ prefs.template, prefs.template_version })
+        else
+            try allocator.dupe(u8, prefs.template);
+
         try out.append(allocator, .{
             .name = try allocator.dupe(u8, name),
-            .template = try allocator.dupe(u8, prefs.template),
+            .template = template_label,
             .profile_dir = try allocator.dupe(u8, paths.profile_dir),
         });
     }
@@ -356,9 +368,9 @@ pub fn freeProfileEntries(allocator: Allocator, entries: []ProfileEntry) void {
 
 pub fn ensureFirstRun(allocator: Allocator, user_data_dir: []const u8) !void {
     try std.fs.cwd().makePath(user_data_dir);
-    if (!try templateExists("velora")) return;
+    if (!try templateExists("velora", ProfileSnapshot.default_template_version)) return;
 
-    var default_paths = try ProfilePaths.ProfilePaths.init(allocator, user_data_dir, ProfilePaths.default_profile_name);
+    var default_paths = try ProfilePaths.ProfilePaths.init(allocator, user_data_dir, ProfilePaths.default_profile_name, null);
     defer default_paths.deinit();
     try default_paths.ensureProfileReadyWithTemplate("velora");
 
@@ -371,10 +383,12 @@ fn writePreferences(path: []const u8, prefs: ProfilePaths.Preferences) !void {
     var buf: [1024]u8 = undefined;
     var writer = file.writer(&buf);
     try std.json.Stringify.value(.{
-        .version = 1,
+        .version = if (prefs.version > 0) prefs.version else 2,
         .name = prefs.name,
         .template = prefs.template,
-        .created = "",
+        .template_version = if (prefs.template_version > 0) prefs.template_version else 1,
+        .snapshot = prefs.snapshot,
+        .created = prefs.created,
     }, .{}, &writer.interface);
     try writer.interface.writeByte('\n');
     try writer.end();

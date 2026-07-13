@@ -64,6 +64,8 @@ fn run(allocator: Allocator, main_arena: Allocator) !void {
                 .name = opts.name,
                 .template = opts.template,
                 .from = opts.from,
+                .to = opts.to,
+                .version = opts.version,
                 .user_data_dir = opts.user_data_dir,
             }) catch |err| {
                 log.fatal(.app, "profile command failed", .{ .err = err });

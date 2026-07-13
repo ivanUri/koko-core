@@ -15,6 +15,10 @@ pub const Preferences = struct {
     version: u32 = 1,
     name: []const u8,
     template: []const u8,
+    /// Pinned catalog version for SaaS template registry (default 1).
+    template_version: u32 = 1,
+    /// Relative subdir under profile_dir containing fingerprint.json (e.g. "snapshot").
+    snapshot: []const u8 = "",
     created: []const u8 = "",
 };
 
@@ -23,11 +27,14 @@ pub const ProfilePaths = struct {
     user_data_dir: []const u8,
     profile_name: []const u8,
     profile_dir: []const u8,
+    /// CLI `--profile-snapshot` override (absolute path to fingerprint.json or bundle snapshot dir).
+    snapshot_cli: ?[]const u8 = null,
 
     pub fn init(
         allocator: Allocator,
         user_data_dir_cli: ?[]const u8,
         profile_name_cli: ?[]const u8,
+        snapshot_cli: ?[]const u8,
     ) !ProfilePaths {
         const user_data_dir = if (user_data_dir_cli) |p|
             try allocator.dupe(u8, p)
@@ -41,15 +48,19 @@ pub const ProfilePaths = struct {
 
         const profile_dir = try std.fs.path.join(allocator, &.{ user_data_dir, profile_name });
 
+        const snapshot = if (snapshot_cli) |s| try allocator.dupe(u8, s) else null;
+
         return .{
             .allocator = allocator,
             .user_data_dir = user_data_dir,
             .profile_name = profile_name,
             .profile_dir = profile_dir,
+            .snapshot_cli = snapshot,
         };
     }
 
     pub fn deinit(self: *ProfilePaths) void {
+        if (self.snapshot_cli) |s| self.allocator.free(s);
         self.allocator.free(self.profile_dir);
         self.allocator.free(self.profile_name);
         self.allocator.free(self.user_data_dir);
@@ -125,15 +136,15 @@ pub const ProfilePaths = struct {
         const parsed = try std.json.parseFromSliceLeaky(Preferences, arena, bytes, .{
             .ignore_unknown_fields = true,
         });
-        if (parsed.template.len == 0) {
-            return .{
-                .version = parsed.version,
-                .name = if (parsed.name.len > 0) parsed.name else self.profile_name,
-                .template = self.profile_name,
-                .created = parsed.created,
-            };
-        }
-        return parsed;
+        const template = if (parsed.template.len > 0) parsed.template else self.profile_name;
+        return .{
+            .version = parsed.version,
+            .name = if (parsed.name.len > 0) parsed.name else self.profile_name,
+            .template = template,
+            .template_version = if (parsed.template_version > 0) parsed.template_version else 1,
+            .snapshot = parsed.snapshot,
+            .created = parsed.created,
+        };
     }
 
     pub fn templateId(self: *const ProfilePaths, arena: Allocator) ![]const u8 {
@@ -164,10 +175,12 @@ fn writePreferences(path: []const u8, prefs: Preferences) !void {
     var buf: [1024]u8 = undefined;
     var writer = file.writer(&buf);
     try std.json.Stringify.value(.{
-        .version = 1,
+        .version = if (prefs.version > 0) prefs.version else 2,
         .name = prefs.name,
         .template = prefs.template,
-        .created = "",
+        .template_version = if (prefs.template_version > 0) prefs.template_version else 1,
+        .snapshot = prefs.snapshot,
+        .created = prefs.created,
     }, .{}, &writer.interface);
     try writer.interface.writeByte('\n');
     try writer.end();
@@ -177,7 +190,7 @@ const testing = @import("../../testing/testing.zig");
 
 test "ProfilePaths: default layout" {
     const allocator = std.testing.allocator;
-    var paths = try ProfilePaths.init(allocator, "/tmp/velora-profile-paths-test", "TestProfile");
+    var paths = try ProfilePaths.init(allocator, "/tmp/velora-profile-paths-test", "TestProfile", null);
     defer paths.deinit();
 
     var buf: [512]u8 = undefined;

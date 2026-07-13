@@ -10,6 +10,23 @@ const MeasureTextIntelligent = @import("MeasureTextIntelligent.zig");
 const CanvasIntelligent = @import("CanvasIntelligent.zig");
 const WebGLParameters = @import("WebGLParameters.zig");
 const MathsNative = @import("MathsNative.zig");
+const ProfileSnapshot = @import("ProfileSnapshot.zig");
+
+/// Base directory for relative asset paths in bundled fingerprints (profile snapshot / catalog).
+var g_asset_base: ?[]const u8 = null;
+
+fn resolveAssetPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    if (path.len == 0) return error.EmptyPath;
+    if (std.fs.path.isAbsolute(path)) return try allocator.dupe(u8, path);
+    if (g_asset_base) |base| return try std.fs.path.join(allocator, &.{ base, path });
+    return try allocator.dupe(u8, path);
+}
+
+fn readAssetFile(allocator: std.mem.Allocator, path: []const u8, limit: usize) ![]u8 {
+    const resolved = try resolveAssetPath(allocator, path);
+    defer allocator.free(resolved);
+    return std.fs.cwd().readFileAlloc(allocator, resolved, limit);
+}
 const ClientRectsIntelligent = @import("ClientRectsIntelligent.zig");
 const SvgIntelligent = @import("SvgIntelligent.zig");
 
@@ -382,24 +399,25 @@ const JsonProfile = struct {
 };
 
 pub fn resolve(paths: *const ProfilePaths.ProfilePaths) !LoadedProfile {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    errdefer arena.deinit();
-    const template_id = try paths.templateId(arena.allocator());
+    var fp_src = try ProfileSnapshot.resolveFingerprintSource(
+        std.heap.page_allocator,
+        paths,
+        paths.snapshot_cli,
+    );
+    defer ProfileSnapshot.freeFingerprintSource(std.heap.page_allocator, &fp_src);
 
-    const path = try templatePath(template_id);
-    defer if (path.allocated) std.heap.page_allocator.free(path.slice);
-
-    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path.slice, 1024 * 1024) catch |err| switch (err) {
+    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, fp_src.path, 1024 * 1024) catch |err| switch (err) {
         error.FileNotFound => {
-            arena.deinit();
-            var embedded = try fromEmbedded(template_id);
+            var embedded = try fromEmbedded(fp_src.template_id);
             applyProcessTimezone(&embedded);
             return embedded;
         },
         else => return err,
     };
     defer std.heap.page_allocator.free(bytes);
-    arena.deinit();
+
+    g_asset_base = fp_src.asset_base;
+    defer g_asset_base = null;
 
     var loaded = try parseJson(bytes);
     try applyHostEnvironment(&loaded);
@@ -427,16 +445,6 @@ fn applyProcessTimezone(profile: *const LoadedProfile) void {
     @memcpy(buf[0..tz.len], tz);
     buf[tz.len] = 0;
     _ = setenv("TZ", &buf, 1);
-}
-
-const PathResult = struct {
-    slice: []const u8,
-    allocated: bool,
-};
-
-fn templatePath(template_id: []const u8) !PathResult {
-    const path = try ProfileManager.templateJsonPath(std.heap.page_allocator, template_id);
-    return .{ .slice = path, .allocated = true };
 }
 
 fn fromEmbedded(name: ?[]const u8) !LoadedProfile {
@@ -642,7 +650,7 @@ fn parseJson(bytes: []const u8) !LoadedProfile {
 
 fn loadMeasureTextBaseline(allocator: std.mem.Allocator, spec: JsonMeasureTextBaseline) ![]const MeasureTextIntelligent.Entry {
     if (spec.dataFile.len == 0) return &.{};
-    const bytes = try std.fs.cwd().readFileAlloc(allocator, spec.dataFile, 32 * 1024 * 1024);
+    const bytes = try readAssetFile(allocator, spec.dataFile, 32 * 1024 * 1024);
     const parsed = try std.json.parseFromSlice([]const JsonMeasureTextEntry, allocator, bytes, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     const src = parsed.value;
@@ -667,7 +675,7 @@ fn loadMeasureTextBaseline(allocator: std.mem.Allocator, spec: JsonMeasureTextBa
 
 fn loadWebGLProbe(allocator: std.mem.Allocator, probe: JsonWebGLProbe, profile: *LoadedProfile) !void {
     if (probe.dataFile.len == 0) return;
-    const bytes = std.fs.cwd().readFileAlloc(allocator, probe.dataFile, 4 * 1024 * 1024) catch return;
+    const bytes = readAssetFile(allocator, probe.dataFile, 4 * 1024 * 1024) catch return;
     defer allocator.free(bytes);
 
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return;
@@ -728,7 +736,7 @@ fn jsonU8Slice(allocator: std.mem.Allocator, value: std.json.Value) ![]u8 {
 
 fn loadWindowKeys(allocator: std.mem.Allocator, spec: JsonWindowKeys) ![]const []const u8 {
     if (spec.dataFile.len == 0) return &.{};
-    const bytes = try std.fs.cwd().readFileAlloc(allocator, spec.dataFile, 8 * 1024 * 1024);
+    const bytes = try readAssetFile(allocator, spec.dataFile, 8 * 1024 * 1024);
     const parsed = try std.json.parseFromSlice([]const []const u8, allocator, bytes, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     return dupeStringList(allocator, parsed.value);
@@ -736,7 +744,7 @@ fn loadWindowKeys(allocator: std.mem.Allocator, spec: JsonWindowKeys) ![]const [
 
 fn loadNavigatorKeys(allocator: std.mem.Allocator, spec: JsonNavigatorKeys) ![]const []const u8 {
     if (spec.dataFile.len == 0) return &.{};
-    const bytes = try std.fs.cwd().readFileAlloc(allocator, spec.dataFile, 8 * 1024 * 1024);
+    const bytes = try readAssetFile(allocator, spec.dataFile, 8 * 1024 * 1024);
     const parsed = try std.json.parseFromSlice([]const []const u8, allocator, bytes, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     return dupeStringList(allocator, parsed.value);
@@ -744,14 +752,14 @@ fn loadNavigatorKeys(allocator: std.mem.Allocator, spec: JsonNavigatorKeys) ![]c
 
 fn loadCssComputedKeys(allocator: std.mem.Allocator, spec: JsonCssComputedKeys, profile: *LoadedProfile) !void {
     if (spec.enumerableKeysFile.len > 0) {
-        const bytes = try std.fs.cwd().readFileAlloc(allocator, spec.enumerableKeysFile, 8 * 1024 * 1024);
+        const bytes = try readAssetFile(allocator, spec.enumerableKeysFile, 8 * 1024 * 1024);
         const parsed = try std.json.parseFromSlice(JsonCssEnumerableKeys, allocator, bytes, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
         profile.css_computed_indexed_keys = try dupeStringList(allocator, parsed.value.indexed);
         profile.css_computed_named_keys = try dupeStringList(allocator, parsed.value.named);
     }
     if (spec.dataFile.len > 0) {
-        const bytes = try std.fs.cwd().readFileAlloc(allocator, spec.dataFile, 8 * 1024 * 1024);
+        const bytes = try readAssetFile(allocator, spec.dataFile, 8 * 1024 * 1024);
         const parsed = try std.json.parseFromSlice([]const []const u8, allocator, bytes, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
         profile.css_computed_keys = try dupeStringList(allocator, parsed.value);
@@ -765,7 +773,7 @@ fn loadCssComputedKeys(allocator: std.mem.Allocator, spec: JsonCssComputedKeys, 
 
 fn loadHtmlElementKeys(allocator: std.mem.Allocator, spec: JsonHtmlElementKeys) ![]const []const u8 {
     if (spec.dataFile.len == 0) return &.{};
-    const bytes = try std.fs.cwd().readFileAlloc(allocator, spec.dataFile, 8 * 1024 * 1024);
+    const bytes = try readAssetFile(allocator, spec.dataFile, 8 * 1024 * 1024);
     const parsed = try std.json.parseFromSlice([]const []const u8, allocator, bytes, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     return dupeStringList(allocator, parsed.value);
@@ -773,7 +781,7 @@ fn loadHtmlElementKeys(allocator: std.mem.Allocator, spec: JsonHtmlElementKeys) 
 
 fn loadClientRectsBaseline(allocator: std.mem.Allocator, spec: JsonClientRectsBaseline, profile: *LoadedProfile) !void {
     if (spec.dataFile.len == 0) return;
-    const bytes = std.fs.cwd().readFileAlloc(allocator, spec.dataFile, 8 * 1024 * 1024) catch return;
+    const bytes = readAssetFile(allocator, spec.dataFile, 8 * 1024 * 1024) catch return;
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{ .ignore_unknown_fields = true }) catch return;
     defer parsed.deinit();
     const root = switch (parsed.value) {
@@ -824,7 +832,7 @@ fn loadClientRectsBaseline(allocator: std.mem.Allocator, spec: JsonClientRectsBa
 
 fn loadSvgBaseline(allocator: std.mem.Allocator, spec: JsonSvgBaseline, profile: *LoadedProfile) !void {
     if (spec.dataFile.len == 0) return;
-    const bytes = std.fs.cwd().readFileAlloc(allocator, spec.dataFile, 8 * 1024 * 1024) catch return;
+    const bytes = readAssetFile(allocator, spec.dataFile, 8 * 1024 * 1024) catch return;
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{ .ignore_unknown_fields = true }) catch return;
     defer parsed.deinit();
     const root = switch (parsed.value) {
@@ -891,7 +899,7 @@ fn jsonF64(value: ?std.json.Value, default: f64) f64 {
 
 fn loadMathsBaseline(allocator: std.mem.Allocator, spec: JsonMathsBaseline) ![]const MathsNative.Entry {
     if (spec.dataFile.len == 0) return &.{};
-    const bytes = try std.fs.cwd().readFileAlloc(allocator, spec.dataFile, 8 * 1024 * 1024);
+    const bytes = try readAssetFile(allocator, spec.dataFile, 8 * 1024 * 1024);
     const parsed = try std.json.parseFromSlice([]const JsonMathsBaselineEntry, allocator, bytes, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     const src = parsed.value;
@@ -944,7 +952,7 @@ fn argsToJson(allocator: std.mem.Allocator, args: []std.json.Value) ![]const u8 
 fn loadFonts(allocator: std.mem.Allocator, embedded: []const []const u8, file_path: []const u8) ![]const []const u8 {
     if (embedded.len > 0) return dupeStringList(allocator, embedded);
     if (file_path.len == 0) return &.{};
-    const bytes = try std.fs.cwd().readFileAlloc(allocator, file_path, 4 * 1024 * 1024);
+    const bytes = try readAssetFile(allocator, file_path, 4 * 1024 * 1024);
     const parsed = try std.json.parseFromSlice([]const []const u8, allocator, bytes, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     return dupeStringList(allocator, parsed.value);
@@ -952,7 +960,7 @@ fn loadFonts(allocator: std.mem.Allocator, embedded: []const []const u8, file_pa
 
 fn loadSpeechVoices(allocator: std.mem.Allocator, file_path: []const u8) ![]const SpeechVoiceSpec {
     if (file_path.len == 0) return &.{};
-    const bytes = try std.fs.cwd().readFileAlloc(allocator, file_path, 4 * 1024 * 1024);
+    const bytes = try readAssetFile(allocator, file_path, 4 * 1024 * 1024);
     const parsed = try std.json.parseFromSlice([]const JsonSpeechVoice, allocator, bytes, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     const src = parsed.value;
@@ -975,7 +983,7 @@ fn loadSpeechVoices(allocator: std.mem.Allocator, file_path: []const u8) ![]cons
 
 fn loadAudioProbe(allocator: std.mem.Allocator, probe: JsonAudioProbe, profile: *LoadedProfile) !void {
     if (probe.dataFile.len == 0) return;
-    const bytes = std.fs.cwd().readFileAlloc(allocator, probe.dataFile, 4 * 1024 * 1024) catch return;
+    const bytes = readAssetFile(allocator, probe.dataFile, 4 * 1024 * 1024) catch return;
     defer allocator.free(bytes);
 
     const parsed = std.json.parseFromSlice(JsonAudioBaseline, allocator, bytes, .{ .ignore_unknown_fields = true }) catch return;
@@ -1002,7 +1010,7 @@ fn loadCanvasProbe(allocator: std.mem.Allocator, probe: JsonCanvasProbe) !?[]con
         return try allocator.dupe(u8, probe.dataUrl);
     }
     if (probe.dataUrlFile.len == 0) return null;
-    const bytes = std.fs.cwd().readFileAlloc(allocator, probe.dataUrlFile, 64 * 1024) catch return null;
+    const bytes = readAssetFile(allocator, probe.dataUrlFile, 64 * 1024) catch return null;
     return bytes;
 }
 
@@ -1019,7 +1027,7 @@ const JsonCanvasProbesFile = struct {
 
 fn loadCanvasProbes(allocator: std.mem.Allocator, probe: JsonCanvasProbe, profile: *LoadedProfile) !void {
     if (probe.probesFile.len == 0) return;
-    const bytes = try std.fs.cwd().readFileAlloc(allocator, probe.probesFile, 2 * 1024 * 1024);
+    const bytes = try readAssetFile(allocator, probe.probesFile, 2 * 1024 * 1024);
     const parsed = try std.json.parseFromSlice(JsonCanvasProbesFile, allocator, bytes, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     const doc = parsed.value;
@@ -1164,7 +1172,7 @@ const testing = @import("../../testing/testing.zig");
 fn testPaths(allocator: std.mem.Allocator, profile_name: []const u8) !ProfilePaths.ProfilePaths {
     const base = try std.fmt.allocPrint(allocator, "/tmp/velora-profilestore-test-{s}", .{profile_name});
     defer allocator.free(base);
-    var paths = try ProfilePaths.ProfilePaths.init(allocator, base, profile_name);
+    var paths = try ProfilePaths.ProfilePaths.init(allocator, base, profile_name, null);
     try paths.ensureProfileReady();
     return paths;
 }
