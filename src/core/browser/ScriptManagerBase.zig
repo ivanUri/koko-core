@@ -17,6 +17,7 @@ const assert = @import("../../support/assert.zig").assert;
 const builtin = @import("builtin");
 
 const HttpClient = @import("HttpClient.zig");
+const LoadGuard = @import("LoadGuard.zig");
 const ContentSecurityPolicy = @import("ContentSecurityPolicy.zig");
 const http = @import("../../runtime/network/http.zig");
 const GoogleSigninDebug = @import("GoogleSigninDebug.zig");
@@ -151,6 +152,13 @@ pub const Owner = union(enum) {
         };
     }
 
+    pub fn attributionFrame(self: Owner) *anyopaque {
+        return switch (self) {
+            .frame => |f| f,
+            .worker => |w| @ptrCast(w._worker._frame),
+        };
+    }
+
     pub fn loaderId(self: Owner) u32 {
         return switch (self) {
             .frame => |f| f._loader_id,
@@ -170,6 +178,10 @@ pub const Owner = union(enum) {
             .frame => |f| f.js,
             .worker => |w| w.js,
         };
+    }
+
+    pub fn captureTaskOwner(self: Owner) LoadGuard.TaskOwner {
+        return self.jsContext().execution.captureTaskOwner();
     }
 
     pub fn addHeaders(self: Owner, headers: *HttpClient.Headers, opts: Frame.HeadersForRequestOpts) !void {
@@ -256,6 +268,10 @@ shutdown: bool = false,
 client: *HttpClient,
 allocator: Allocator,
 
+/// Detached HTTP callback contexts whose Script arenas were released while a
+/// transfer may still hold the ctx pointer. Freed on reset/deinit after kill+tick.
+orphaned_http_ctxs: std.ArrayListUnmanaged(*Script.HttpCtx) = .empty,
+
 // See ScriptManager.zig for the type's documentation.
 imported_modules: std.StringHashMapUnmanaged(ImportedModule),
 
@@ -289,10 +305,20 @@ pub fn init(allocator: Allocator, http_client: *HttpClient, owner: Owner) Script
 pub fn deinit(self: *ScriptManagerBase) void {
     // necessary to free any arenas scripts may be referencing
     self.reset();
+    self.reapOrphanedHttpCtxs();
 
     self.imported_modules.deinit(self.allocator);
     // we don't deinit self.importmap b/c we use the owner's arena for its
     // allocations.
+}
+
+/// `imported_modules` keys are always allocated with `allocator.dupeZ` (buffer
+/// length = key.len + 1 for the NUL). Freeing them as plain `[]const u8` of
+/// `key.len` triggers DebugAllocator "Invalid free" / off-by-one (seen on
+/// nytimes.com when module preloads are reset mid-navigation).
+fn freeImportedModuleKey(allocator: Allocator, key: []const u8) void {
+    const z: [:0]const u8 = key.ptr[0..key.len :0];
+    allocator.free(z);
 }
 
 fn clearImportedModules(self: *ScriptManagerBase) void {
@@ -302,7 +328,7 @@ fn clearImportedModules(self: *ScriptManagerBase) void {
             .done => |script| script.deinit(),
             else => {},
         }
-        self.allocator.free(entry.key_ptr.*);
+        freeImportedModuleKey(self.allocator, entry.key_ptr.*);
     }
     self.imported_modules.clearRetainingCapacity();
 }
@@ -319,6 +345,32 @@ pub fn reset(self: *ScriptManagerBase) void {
     clearList(&self.async_scripts);
     clearList(&self.ready_scripts);
     self.static_scripts_done = false;
+    // Script.deinit nulls HttpCtx.script; free the ctx shells after lists clear.
+    self.reapOrphanedHttpCtxs();
+}
+
+fn reapOrphanedHttpCtxs(self: *ScriptManagerBase) void {
+    for (self.orphaned_http_ctxs.items) |ctx| {
+        self.allocator.destroy(ctx);
+    }
+    self.orphaned_http_ctxs.clearRetainingCapacity();
+}
+
+/// Allocate a stable HTTP callback context that outlives the Script arena.
+/// Transfer.req.ctx points here so late error/done after Script.deinit is safe.
+pub fn attachHttpCtx(self: *ScriptManagerBase, script: *Script) !*Script.HttpCtx {
+    const ctx = try self.allocator.create(Script.HttpCtx);
+    ctx.* = .{ .script = script, .manager = self };
+    script.http_ctx = ctx;
+    return ctx;
+}
+
+pub fn retireHttpCtx(self: *ScriptManagerBase, ctx: *Script.HttpCtx) void {
+    ctx.script = null;
+    self.orphaned_http_ctxs.append(self.allocator, ctx) catch {
+        // Best-effort: free immediately if we cannot track it.
+        self.allocator.destroy(ctx);
+    };
 }
 
 fn clearList(list: *std.DoublyLinkedList) void {
@@ -450,7 +502,7 @@ pub fn preloadImport(self: *ScriptManagerBase, url: [:0]const u8, referrer: []co
             },
             .err => {
                 if (self.imported_modules.fetchRemove(url)) |kv| {
-                    self.allocator.free(kv.key);
+                    freeImportedModuleKey(self.allocator, kv.key);
                 }
             },
         }
@@ -464,7 +516,7 @@ pub fn preloadImport(self: *ScriptManagerBase, url: [:0]const u8, referrer: []co
     const owned_url = try self.allocator.dupeZ(u8, url);
     gop.key_ptr.* = owned_url;
     errdefer if (self.imported_modules.fetchRemove(owned_url)) |kv| {
-        self.allocator.free(kv.key);
+        freeImportedModuleKey(self.allocator, kv.key);
     };
 
     const arena = try self.acquireArena(.large, "SM.preloadImport");
@@ -479,6 +531,7 @@ pub fn preloadImport(self: *ScriptManagerBase, url: [:0]const u8, referrer: []co
         .complete = false,
         .source = .{ .remote = .{} },
         .extra = .import,
+        .guard = LoadGuard.Guard.init(&self.owner.jsContext().execution),
     };
 
     gop.value_ptr.* = ImportedModule{};
@@ -509,12 +562,14 @@ pub fn preloadImport(self: *ScriptManagerBase, url: [:0]const u8, referrer: []co
     }
 
     const session = self.owner.session();
+    const http_ctx = try self.attachHttpCtx(script);
     self.client.request(.{
-        .ctx = script,
+        .ctx = http_ctx,
         .params = .{
             .url = owned_url,
             .method = .GET,
             .frame_id = self.owner.frameId(),
+            .attribution_frame = self.owner.attributionFrame(),
             .loader_id = self.owner.loaderId(),
             .headers = try self.getHeaders(owned_url, .script, self.moduleReferrerKind()),
             .cookie_jar = &session.cookie_jar,
@@ -524,13 +579,16 @@ pub fn preloadImport(self: *ScriptManagerBase, url: [:0]const u8, referrer: []co
             .resource_type = .script,
             .notification = session.notification,
         },
-        .start_callback = if (log.enabled(.http, .debug)) Script.startCallback else null,
-        .header_callback = Script.headerCallback,
-        .data_callback = Script.dataCallback,
-        .done_callback = Script.doneCallback,
-        .error_callback = Script.errorCallback,
+        .start_callback = if (log.enabled(.http, .debug)) Script.HttpCtx.startCallback else null,
+        .header_callback = Script.HttpCtx.headerCallback,
+        .data_callback = Script.HttpCtx.dataCallback,
+        .done_callback = Script.HttpCtx.doneCallback,
+        .error_callback = Script.HttpCtx.errorCallback,
+        .shutdown_callback = Script.HttpCtx.shutdownCallback,
     }) catch |err| {
         self.async_scripts.remove(&script.node);
+        script.http_ctx = null;
+        self.retireHttpCtx(http_ctx);
         return err;
     };
 }
@@ -594,6 +652,7 @@ pub fn getAsyncImport(self: *ScriptManagerBase, url: [:0]const u8, cb: ImportAsy
                 .callback = cb,
                 .data = cb_data,
             } },
+            .guard = LoadGuard.Guard.init(&self.owner.jsContext().execution),
         };
         cb(cb_data, .{
             .shared = false,
@@ -618,6 +677,7 @@ pub fn getAsyncImport(self: *ScriptManagerBase, url: [:0]const u8, cb: ImportAsy
             .callback = cb,
             .data = cb_data,
         } },
+        .guard = LoadGuard.Guard.init(&self.owner.jsContext().execution),
     };
 
     if (comptime IS_DEBUG) {
@@ -644,12 +704,14 @@ pub fn getAsyncImport(self: *ScriptManagerBase, url: [:0]const u8, cb: ImportAsy
 
     const session = self.owner.session();
     self.async_scripts.append(&script.node);
+    const http_ctx = try self.attachHttpCtx(script);
     self.client.request(.{
-        .ctx = script,
+        .ctx = http_ctx,
         .params = .{
             .url = url,
             .method = .GET,
             .frame_id = self.owner.frameId(),
+            .attribution_frame = self.owner.attributionFrame(),
             .loader_id = self.owner.loaderId(),
             .headers = try self.getHeaders(url, .script, .worker_dynamic),
             .resource_type = .script,
@@ -659,13 +721,16 @@ pub fn getAsyncImport(self: *ScriptManagerBase, url: [:0]const u8, cb: ImportAsy
             .omit_cookies = self.owner.omitCookies(url),
             .notification = session.notification,
         },
-        .start_callback = if (log.enabled(.http, .debug)) Script.startCallback else null,
-        .header_callback = Script.headerCallback,
-        .data_callback = Script.dataCallback,
-        .done_callback = Script.doneCallback,
-        .error_callback = Script.errorCallback,
+        .start_callback = if (log.enabled(.http, .debug)) Script.HttpCtx.startCallback else null,
+        .header_callback = Script.HttpCtx.headerCallback,
+        .data_callback = Script.HttpCtx.dataCallback,
+        .done_callback = Script.HttpCtx.doneCallback,
+        .error_callback = Script.HttpCtx.errorCallback,
+        .shutdown_callback = Script.HttpCtx.shutdownCallback,
     }) catch |err| {
         self.async_scripts.remove(&script.node);
+        script.http_ctx = null;
+        self.retireHttpCtx(http_ctx);
         return err;
     };
 }
@@ -675,7 +740,122 @@ pub fn getAsyncImport(self: *ScriptManagerBase, url: [:0]const u8, cb: ImportAsy
 pub fn staticScriptsDone(self: *ScriptManagerBase) void {
     assert(self.static_scripts_done == false, "ScriptManagerBase.staticScriptsDone", .{});
     self.static_scripts_done = true;
-    self.evaluate();
+    if (!self.evaluateOneScript()) {
+        if (self.tail_hook) |hook| hook(self);
+        return;
+    }
+    self.scheduleEvaluateSlice() catch {
+        self.evaluate();
+    };
+}
+
+const EvaluateSliceCallback = struct {
+    manager: *ScriptManagerBase,
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *EvaluateSliceCallback = @ptrCast(@alignCast(ctx));
+        if (!self.manager.evaluateOneScript()) {
+            if (self.manager.tail_hook) |hook| hook(self.manager);
+            return null;
+        }
+        self.manager.scheduleEvaluateSlice() catch {
+            self.manager.evaluate();
+        };
+        return null;
+    }
+};
+
+fn scheduleEvaluateSlice(self: *ScriptManagerBase) !void {
+    const frame = self.owner.parentFrame();
+    const callback = try frame.arena.create(EvaluateSliceCallback);
+    callback.* = .{ .manager = self };
+    try frame.js.scheduler.add(callback, EvaluateSliceCallback.run, 0, .{
+        .name = "ScriptManager.evaluateSlice",
+        .low_priority = false,
+    });
+}
+
+fn hasPendingEvaluateWork(self: *ScriptManagerBase) bool {
+    if (self.async_scripts.first) |n| {
+        const script: *Script = @fieldParentPtr("node", n);
+        switch (script.extra) {
+            .frame => |fe| {
+                if (fe.mode == .async and script.complete) return true;
+            },
+            else => {},
+        }
+    }
+    if (self.ready_scripts.first != null) return true;
+    if (!self.static_scripts_done) return false;
+    if (self.defer_scripts.first) |n| {
+        const script: *Script = @fieldParentPtr("node", n);
+        if (script.complete) return true;
+    }
+    return false;
+}
+
+/// Run at most one ready/defer/async script. CDP interleaving: each slice ends
+/// on a scheduler turn so inbound Runtime.evaluate is not starved (ebay.com).
+fn evaluateOneScript(self: *ScriptManagerBase) bool {
+    if (self.is_evaluating) return self.hasPendingEvaluateWork();
+    self.is_evaluating = true;
+    defer self.is_evaluating = false;
+
+    if (self.async_scripts.first) |n| {
+        var script: *Script = @fieldParentPtr("node", n);
+        switch (script.extra) {
+            .frame => |fe| {
+                if (fe.mode != .async or !script.complete) return false;
+                _ = self.async_scripts.popFirst();
+                defer script.deinit();
+                script.eval();
+                self.serviceCdpInbound();
+                return self.hasPendingEvaluateWork();
+            },
+            else => return false,
+        }
+    }
+
+    if (self.ready_scripts.popFirst()) |n| {
+        var script: *Script = @fieldParentPtr("node", n);
+        switch (script.extra) {
+            .frame => {
+                defer script.deinit();
+                script.eval();
+                self.serviceCdpInbound();
+                return self.hasPendingEvaluateWork();
+            },
+            .import_async => |ia| {
+                if (script.status < 200 or script.status > 299) {
+                    script.deinit();
+                    ia.callback(ia.data, error.FailedToLoad);
+                } else {
+                    ia.callback(ia.data, .{
+                        .shared = false,
+                        .script = script,
+                        .buffer = script.source.remote,
+                    });
+                }
+                self.serviceCdpInbound();
+                return self.hasPendingEvaluateWork();
+            },
+            .import => unreachable,
+        }
+    }
+
+    if (!self.static_scripts_done) return false;
+
+    if (self.defer_scripts.first) |n| {
+        var script: *Script = @fieldParentPtr("node", n);
+        if (!script.complete) return false;
+        _ = self.defer_scripts.popFirst();
+        defer script.deinit();
+        script.eval();
+        self.serviceCdpInbound();
+        return self.hasPendingEvaluateWork();
+    }
+
+    return false;
 }
 
 /// Run downloaded frame `.async` scripts in insertion order. Callable while a
@@ -695,6 +875,10 @@ pub fn drainOrderedAsyncScripts(self: *ScriptManagerBase) void {
             else => break :drain_async,
         }
     }
+}
+
+fn serviceCdpInbound(self: *ScriptManagerBase) void {
+    self.client.serviceInboundCdpIfReadable();
 }
 
 pub fn evaluate(self: *ScriptManagerBase) void {
@@ -717,6 +901,7 @@ pub fn evaluate(self: *ScriptManagerBase) void {
                 // defer_scripts, normal is sync and never queued).
                 defer script.deinit();
                 script.eval();
+                self.serviceCdpInbound();
             },
             .import_async => |ia| {
                 if (script.status < 200 or script.status > 299) {
@@ -754,6 +939,7 @@ pub fn evaluate(self: *ScriptManagerBase) void {
         }
         // Only frame scripts populate defer_scripts.
         script.eval();
+        self.serviceCdpInbound();
     }
 
     // Frame wrapper uses this to fire documentIsLoaded and
@@ -770,6 +956,9 @@ pub const Script = struct {
     extra: Extra,
     node: std.DoublyLinkedList.Node,
     manager: *ScriptManagerBase,
+    guard: LoadGuard.Guard,
+    /// Stable HTTP callback shell (manager.allocator). Null after detach.
+    http_ctx: ?*HttpCtx = null,
 
     // for debugging a rare production issue
     header_callback_called: bool = false,
@@ -833,17 +1022,144 @@ pub const Script = struct {
         };
     };
 
+    fn execution(self: *const Script) *js.Execution {
+        return switch (self.extra) {
+            .frame => |fe| &fe.frame.js.execution,
+            else => &self.manager.owner.jsContext().execution,
+        };
+    }
+
+    fn deliverable(self: *const Script) bool {
+        if (self.guard.isFinished()) return false;
+        if (self.manager.shutdown) return false;
+        return switch (self.extra) {
+            // HTTP terminal callbacks can run after navigation abort while the
+            // Script ctx is still alive. Do not read fe.frame — use manager.owner
+            // (authoritative frame for this script manager) and bail on null.
+            .frame => deliverableFrameScript(self),
+            else => self.guard.isDeliverable(self.execution(), .{
+                .manager_shutdown = false,
+            }),
+        };
+    }
+
+    fn deliverableFrameScript(self: *const Script) bool {
+        const owner = self.manager.owner;
+        const frame = owner.parentFrame();
+        if (@intFromPtr(frame) == 0) return false;
+        return self.guard.isDeliverableForRealm(owner.captureTaskOwner(), .{
+            .manager_shutdown = false,
+            .realm_dead_or_draining = frame._realm_state == .dead or frame._realm_state == .draining,
+            .going_away = frame.isGoingAway(),
+        });
+    }
+
+    /// Authoritative frame for frame-attached scripts — never read fe.frame after
+    /// navigation abort / commitPendingPage may have torn the extra pointer down.
+    fn activeFrame(self: *const Script) ?*Frame {
+        if (self.guard.isFinished()) return null;
+        if (self.manager.shutdown) return null;
+        return switch (self.extra) {
+            .frame => blk: {
+                const frame = self.manager.owner.parentFrame();
+                if (@intFromPtr(frame) == 0) return null;
+                if (frame.isGoingAway()) return null;
+                if (frame._realm_state == .dead or frame._realm_state == .draining) return null;
+                break :blk frame;
+            },
+            else => null,
+        };
+    }
+
     pub fn deinit(self: *Script) void {
+        if (self.guard.isFinished()) return;
+        self.guard.finished = true;
+        // Detach HTTP ctx *before* freeing the Script arena so late transfer
+        // callbacks see script == null instead of UAF (nytimes.com).
+        if (self.http_ctx) |ctx| {
+            self.http_ctx = null;
+            self.manager.retireHttpCtx(ctx);
+        }
         self.manager.releaseArena(self.arena);
+    }
+
+    fn frameIsGoingAway(self: *const Script) bool {
+        return switch (self.extra) {
+            .frame => |fe| fe.frame.isGoingAway(),
+            else => false,
+        };
+    }
+
+    /// HTTP callback context allocated with ScriptManager.allocator so it
+    /// outlives Script arenas released on navigation/reset.
+    pub const HttpCtx = struct {
+        script: ?*Script,
+        manager: *ScriptManagerBase,
+
+        fn scriptOrNull(ctx: *anyopaque) ?*Script {
+            const self: *HttpCtx = @ptrCast(@alignCast(ctx));
+            const script = self.script orelse return null;
+            if (script.guard.isFinished()) return null;
+            return script;
+        }
+
+        pub fn shutdownCallback(ctx: *anyopaque) void {
+            const self: *HttpCtx = @ptrCast(@alignCast(ctx));
+            const script = self.script orelse return;
+            // Null first so re-entrant paths cannot re-enter Script after free.
+            self.script = null;
+            if (script.http_ctx == self) script.http_ctx = null;
+            if (!script.guard.isFinished()) {
+                script.manager.scriptList(script).remove(&script.node);
+                // deinit skips retire when http_ctx already nulled; we own free.
+                script.guard.finished = true;
+                script.manager.releaseArena(script.arena);
+            }
+            self.manager.retireHttpCtx(self);
+        }
+
+        pub fn startCallback(response: HttpClient.Response) !void {
+            log.debug(.http, "script fetch start", .{ .req = response });
+        }
+
+        pub fn headerCallback(response: HttpClient.Response) !bool {
+            const script = scriptOrNull(response.ctx) orelse return false;
+            return script.headerCallback(response);
+        }
+
+        pub fn dataCallback(response: HttpClient.Response, data: []const u8) !void {
+            const script = scriptOrNull(response.ctx) orelse return;
+            try script.dataCallback(response, data);
+        }
+
+        pub fn doneCallback(ctx: *anyopaque) !void {
+            const self: *HttpCtx = @ptrCast(@alignCast(ctx));
+            const script = self.script orelse return;
+            if (script.guard.isFinished()) return;
+            try script.doneCallback();
+        }
+
+        pub fn errorCallback(ctx: *anyopaque, err: anyerror) void {
+            const self: *HttpCtx = @ptrCast(@alignCast(ctx));
+            const script = self.script orelse return;
+            if (script.guard.isFinished()) return;
+            script.errorCallback(err);
+        }
+    };
+
+    pub fn shutdownCallback(ctx: *anyopaque) void {
+        // Legacy direct Script ctx path (should not be used for new requests).
+        const self: *Script = @ptrCast(@alignCast(ctx));
+        if (self.guard.isFinished()) return;
+        self.manager.scriptList(self).remove(&self.node);
+        self.deinit();
     }
 
     pub fn startCallback(response: HttpClient.Response) !void {
         log.debug(.http, "script fetch start", .{ .req = response });
     }
 
-    pub fn headerCallback(response: HttpClient.Response) !bool {
-        const self: *Script = @ptrCast(@alignCast(response.ctx));
-
+    pub fn headerCallback(self: *Script, response: HttpClient.Response) !bool {
         self.status = response.status().?;
         if (response.status() != 200) {
             log.info(.http, "script header", .{
@@ -912,8 +1228,7 @@ pub const Script = struct {
         return true;
     }
 
-    pub fn dataCallback(response: HttpClient.Response, data: []const u8) !void {
-        const self: *Script = @ptrCast(@alignCast(response.ctx));
+    pub fn dataCallback(self: *Script, response: HttpClient.Response, data: []const u8) !void {
         self._dataCallback(response, data) catch |err| {
             log.err(.http, "SM.dataCallback", .{ .err = err, .transfer = response, .len = data.len });
             return err;
@@ -924,8 +1239,9 @@ pub const Script = struct {
         try self.source.remote.appendSlice(self.arena, data);
     }
 
-    pub fn doneCallback(ctx: *anyopaque) !void {
-        const self: *Script = @ptrCast(@alignCast(ctx));
+    pub fn doneCallback(self: *Script) !void {
+        if (self.guard.isFinished() or self.manager.shutdown) return;
+        if (!self.deliverable()) return;
         self.complete = true;
         if (comptime IS_DEBUG) {
             log.debug(.http, "script fetch complete", .{ .req = self.url });
@@ -954,11 +1270,21 @@ pub const Script = struct {
                 entry.buffer = self.source.remote;
             },
         }
-        manager.evaluate();
+        if (!manager.shutdown) manager.evaluate();
     }
 
-    pub fn errorCallback(ctx: *anyopaque, err: anyerror) void {
-        const self: *Script = @ptrCast(@alignCast(ctx));
+    pub fn errorCallback(self: *Script, err: anyerror) void {
+        // Guard first: after kill/shutdown/reset the Script arena may already
+        // be finished. deliverable() reads finished before any other fields.
+        if (self.guard.isFinished()) return;
+        if (self.manager.shutdown) {
+            // Navigation/teardown already owns cleanup (clearList / kill
+            // shutdown_callback). Do not remove from lists or evaluate.
+            self.deinit();
+            return;
+        }
+        if (!self.deliverable()) return;
+        const manager = self.manager;
         if (self.status == 404) {
             log.info(.http, "script 404", .{
                 .req = self.url,
@@ -981,23 +1307,29 @@ pub const Script = struct {
             return;
         }
 
-        const manager = self.manager;
         manager.scriptList(self).remove(&self.node);
-        if (manager.shutdown) {
-            self.deinit();
-            return;
-        }
 
         switch (self.extra) {
-            .import_async => |ia| ia.callback(ia.data, error.FailedToLoad),
-            .import => {
-                const entry = manager.imported_modules.getPtr(self.url).?;
-                entry.state = .err;
+            .import_async => |ia| {
+                if (self.deliverable()) ia.callback(ia.data, error.FailedToLoad);
             },
-            .frame => {},
+            .import => {
+                if (manager.imported_modules.getPtr(self.url)) |entry| {
+                    entry.state = .err;
+                }
+            },
+            // Frame <script> fetch failures must not re-enter evaluate() from the
+            // HTTP tick. defer_scripts are drained from doneCallback /
+            // staticScriptsDone; calling evaluate here raced aborted transfers
+            // (e.g. BBC Optimizely) into V8 entry while the realm was still
+            // initializing and segfaulted in compile.
+            .frame => {
+                self.deinit();
+                return;
+            },
         }
         self.deinit();
-        manager.evaluate();
+        if (!manager.shutdown) manager.evaluate();
     }
 
     fn pumpScriptScheduler(frame: *Frame, local: *const js.Local) void {
@@ -1010,6 +1342,7 @@ pub const Script = struct {
                 break;
             };
             local.ctx.env.runMicrotasks(.after_evaluate);
+            frame.pollCdpDuringLongWork();
             if (!frame.js.scheduler.hasReadyTasks()) break;
         }
     }
@@ -1018,12 +1351,7 @@ pub const Script = struct {
     // reach here (workers only produce .import / .import_async).
     pub fn eval(self: *Script) void {
         const fe = self.extra.frame;
-        const frame = fe.frame;
-
-        if (frame.isGoingAway()) {
-            // don't evaluate scripts for a dying frame.
-            return;
-        }
+        const frame = self.activeFrame() orelse return;
 
         const previous_script = frame.document._current_script;
         frame.document._current_script = fe.script_element;
@@ -1142,7 +1470,7 @@ pub const Script = struct {
 
     fn executeCallback(self: *const Script, typ: String) void {
         const fe = self.extra.frame;
-        const frame = fe.frame;
+        const frame = self.activeFrame() orelse return;
         const Event = @import("../webapi/Event.zig");
         const event = Event.initTrusted(typ, .{}, frame._page) catch |err| {
             log.warn(.js, "script internal callback", .{

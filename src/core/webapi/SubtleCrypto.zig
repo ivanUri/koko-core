@@ -278,6 +278,8 @@ pub fn importKey(
 
     return switch (algo) {
         .aes_key_gen => |params| AES.importKey(params, key_data, extractable, key_usages, exec),
+        .hmac_key_gen => |params| HMAC.importKey(params, key_data, extractable, key_usages, exec),
+        // Stubs for algorithms we parse but do not fully import yet.
         else => importKeyStub(extractable, key_usages, exec),
     };
 }

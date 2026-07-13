@@ -15,6 +15,7 @@ const std = @import("std");
 const js = @import("../../../js/js.zig");
 const Frame = @import("../../../browser/Frame.zig");
 const HttpClient = @import("../../../browser/HttpClient.zig");
+const LoadGuard = @import("../../../browser/LoadGuard.zig");
 const URL = @import("../../../browser/URL.zig");
 const Event = @import("../../Event.zig");
 
@@ -144,6 +145,7 @@ fn fetchPreloadImage(self: *Link, frame: *Frame, href: []const u8) !void {
         .link = self,
         .frame = frame,
         .arena = scratch,
+        .guard = LoadGuard.Guard.init(&frame.js.execution),
     };
 
     const session = frame._session;
@@ -160,6 +162,7 @@ fn fetchPreloadImage(self: *Link, frame: *Frame, href: []const u8) !void {
             .url = owned_url,
             .method = .GET,
             .frame_id = frame._frame_id,
+            .attribution_frame = frame,
             .loader_id = frame._loader_id,
             .headers = headers,
             .cookie_jar = &session.cookie_jar,
@@ -172,6 +175,7 @@ fn fetchPreloadImage(self: *Link, frame: *Frame, href: []const u8) !void {
         .data_callback = PreloadLoad.dataCallback,
         .done_callback = PreloadLoad.doneCallback,
         .error_callback = PreloadLoad.errorCallback,
+        .shutdown_callback = PreloadLoad.shutdownCallback,
     });
 }
 
@@ -180,6 +184,19 @@ const PreloadLoad = struct {
     frame: *Frame,
     arena: std.mem.Allocator,
     status: u16 = 0,
+    guard: LoadGuard.Guard,
+
+    fn deliverable(self: *const PreloadLoad) bool {
+        const frame = self.frame;
+        return self.guard.isDeliverableForRealm(.{
+            .realm_id = frame._frame_id,
+            .epoch = frame._realm_epoch,
+            .document_id = frame._loader_id,
+        }, .{
+            .realm_dead_or_draining = frame._realm_state == .dead or frame._realm_state == .draining,
+            .going_away = frame.isGoingAway(),
+        });
+    }
 
     fn headerCallback(response: HttpClient.Response) !bool {
         const self: *PreloadLoad = @ptrCast(@alignCast(response.ctx));
@@ -189,9 +206,15 @@ const PreloadLoad = struct {
 
     fn dataCallback(_: HttpClient.Response, _: []const u8) !void {}
 
+    fn shutdownCallback(ctx: *anyopaque) void {
+        const self: *PreloadLoad = @ptrCast(@alignCast(ctx));
+        self.finish();
+    }
+
     fn doneCallback(ctx: *anyopaque) !void {
         const self: *PreloadLoad = @ptrCast(@alignCast(ctx));
         defer self.finish();
+        if (!self.deliverable()) return;
 
         self.link._preload_loading = false;
         const ok = self.status >= 200 and self.status <= 299;
@@ -205,9 +228,10 @@ const PreloadLoad = struct {
 
     fn errorCallback(ctx: *anyopaque, _: anyerror) void {
         const self: *PreloadLoad = @ptrCast(@alignCast(ctx));
+        defer self.finish();
+        if (!self.deliverable()) return;
         self.link._preload_loading = false;
         self.dispatchError() catch {};
-        self.finish();
     }
 
     fn dispatchError(self: *PreloadLoad) !void {
@@ -219,6 +243,8 @@ const PreloadLoad = struct {
     }
 
     fn finish(self: *PreloadLoad) void {
+        if (self.guard.isFinished()) return;
+        self.guard.finished = true;
         self.frame.releaseArena(self.arena);
     }
 };

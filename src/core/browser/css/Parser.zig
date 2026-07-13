@@ -294,6 +294,14 @@ pub const Rule = struct {
     block: []const u8,
 };
 
+/// Top-level stylesheet entry. Style rules are fully parsed; at-rules are
+/// returned as source slices so callers can keep cssRules indices stable even
+/// when full CSSOM at-rule objects are not implemented.
+pub const StylesheetItem = union(enum) {
+    style: Rule,
+    at_rule: []const u8,
+};
+
 pub fn parseStylesheet(input: []const u8) RulesIterator {
     return RulesIterator.init(input);
 }
@@ -310,7 +318,19 @@ pub const RulesIterator = struct {
         };
     }
 
+    /// Yields only style rules (at-rules are skipped). Prefer `nextItem` when
+    /// index-stable cssRules population is required.
     pub fn next(self: *RulesIterator) ?Rule {
+        while (self.nextItem()) |item| {
+            switch (item) {
+                .style => |rule| return rule,
+                .at_rule => continue,
+            }
+        }
+        return null;
+    }
+
+    pub fn nextItem(self: *RulesIterator) ?StylesheetItem {
         var selector_start: ?usize = null;
         var selector_end: ?usize = null;
 
@@ -347,18 +367,18 @@ pub const RulesIterator = struct {
                 var selector = self.input[selector_start.?..selector_end.?];
                 selector = std.mem.trim(u8, selector, &std.ascii.whitespace);
 
-                return .{
+                return .{ .style = .{
                     .selector = selector,
                     .block = self.input[block_start..block_end],
-                };
+                } };
             }
 
             if (peeked.token == .at_keyword) {
                 self.has_skipped_at_rule = true;
-                self.skipAtRule();
+                const at_text = self.consumeAtRule();
                 selector_start = null;
                 selector_end = null;
-                continue;
+                return .{ .at_rule = at_text };
             }
 
             if (selector_start == null and (isWhitespaceOrComment(peeked.token) or isSemicolon(peeked.token))) {
@@ -390,19 +410,24 @@ pub const RulesIterator = struct {
         }
     }
 
-    fn skipAtRule(self: *RulesIterator) void {
-        _ = self.stream.next(); // consume @keyword
+    /// Consume an at-rule and return its full source slice (including the
+    /// leading `@` keyword and trailing `;` or block).
+    fn consumeAtRule(self: *RulesIterator) []const u8 {
+        const start_span = self.stream.next() orelse return ""; // @keyword
+        const start = start_span.start;
         var depth: usize = 0;
         var saw_block = false;
+        var end = start_span.end;
 
         while (true) {
-            const peeked = self.stream.peek() orelse return;
+            const peeked = self.stream.peek() orelse return self.input[start..end];
             if (!saw_block and isSemicolon(peeked.token) and depth == 0) {
-                _ = self.stream.next();
-                return;
+                const semi = self.stream.next() orelse return self.input[start..end];
+                return self.input[start..semi.end];
             }
 
-            const span = self.stream.next() orelse return;
+            const span = self.stream.next() orelse return self.input[start..end];
+            end = span.end;
             if (isWhitespaceOrComment(span.token)) continue;
 
             if (span.token == .curly_bracket_block) {
@@ -410,7 +435,7 @@ pub const RulesIterator = struct {
                 saw_block = true;
             } else if (span.token == .close_curly_bracket) {
                 if (depth > 0) depth -= 1;
-                if (saw_block and depth == 0) return;
+                if (saw_block and depth == 0) return self.input[start..end];
             }
         }
     }

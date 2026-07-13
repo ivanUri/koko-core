@@ -2,6 +2,7 @@ const std = @import("std");
 const js = @import("../../../js/js.zig");
 const Frame = @import("../../../browser/Frame.zig");
 const HttpClient = @import("../../../browser/HttpClient.zig");
+const LoadGuard = @import("../../../browser/LoadGuard.zig");
 const URL = @import("../../../browser/URL.zig");
 const Event = @import("../../Event.zig");
 const Node = @import("../../../dom/Node.zig");
@@ -174,6 +175,7 @@ pub fn imageAddedCallback(self: *Image, frame: *Frame) !void {
         .image = self,
         .frame = frame,
         .arena = arena,
+        .guard = LoadGuard.Guard.init(&frame.js.execution),
     };
 
     const session = frame._session;
@@ -190,6 +192,7 @@ pub fn imageAddedCallback(self: *Image, frame: *Frame) !void {
             .url = owned_url,
             .method = .GET,
             .frame_id = frame._frame_id,
+            .attribution_frame = frame,
             .loader_id = frame._loader_id,
             .headers = headers,
             .cookie_jar = &session.cookie_jar,
@@ -202,6 +205,7 @@ pub fn imageAddedCallback(self: *Image, frame: *Frame) !void {
         .data_callback = ImageLoad.dataCallback,
         .done_callback = ImageLoad.doneCallback,
         .error_callback = ImageLoad.errorCallback,
+        .shutdown_callback = ImageLoad.shutdownCallback,
     });
 }
 
@@ -210,6 +214,19 @@ const ImageLoad = struct {
     frame: *Frame,
     arena: std.mem.Allocator,
     status: u16 = 0,
+    guard: LoadGuard.Guard,
+
+    fn deliverable(self: *const ImageLoad) bool {
+        const frame = self.frame;
+        return self.guard.isDeliverableForRealm(.{
+            .realm_id = frame._frame_id,
+            .epoch = frame._realm_epoch,
+            .document_id = frame._loader_id,
+        }, .{
+            .realm_dead_or_draining = frame._realm_state == .dead or frame._realm_state == .draining,
+            .going_away = frame.isGoingAway(),
+        });
+    }
 
     fn headerCallback(response: HttpClient.Response) !bool {
         const self: *ImageLoad = @ptrCast(@alignCast(response.ctx));
@@ -219,9 +236,15 @@ const ImageLoad = struct {
 
     fn dataCallback(_: HttpClient.Response, _: []const u8) !void {}
 
+    fn shutdownCallback(ctx: *anyopaque) void {
+        const self: *ImageLoad = @ptrCast(@alignCast(ctx));
+        self.finish();
+    }
+
     fn doneCallback(ctx: *anyopaque) !void {
         const self: *ImageLoad = @ptrCast(@alignCast(ctx));
         defer self.finish();
+        if (!self.deliverable()) return;
 
         const ok = self.status >= 200 and self.status <= 299;
         self.image._loading = false;
@@ -237,11 +260,12 @@ const ImageLoad = struct {
 
     fn errorCallback(ctx: *anyopaque, _: anyerror) void {
         const self: *ImageLoad = @ptrCast(@alignCast(ctx));
+        defer self.finish();
+        if (!self.deliverable()) return;
         self.image._loading = false;
         self.image._complete = true;
         self.image._failed = true;
         self.dispatchError() catch {};
-        self.finish();
     }
 
     fn dispatchError(self: *ImageLoad) !void {
@@ -253,6 +277,8 @@ const ImageLoad = struct {
     }
 
     fn finish(self: *ImageLoad) void {
+        if (self.guard.isFinished()) return;
+        self.guard.finished = true;
         self.frame.releaseArena(self.arena);
     }
 };

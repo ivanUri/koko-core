@@ -747,7 +747,7 @@ pub fn runMicrotasks(self: *Env, source: TaskSource) void {
     }
 
     if (builtin.mode == .Debug) {
-        log.info(.frame, "microtask.checkpoint.begin", .{
+        log.debug(.frame, "microtask.checkpoint.begin", .{
             .source = @tagName(source),
         });
     }
@@ -818,7 +818,7 @@ pub fn runMicrotasks(self: *Env, source: TaskSource) void {
             RealmLifecycleKernel.traceMicrotaskCheckpoint(true, frame_id, epoch, st);
             v8.v8__MicrotaskQueue__PerformCheckpoint(ctx.microtask_queue, v8_isolate);
             if (builtin.mode == .Debug) {
-                log.info(.frame, "microtask.checkpoint.done", .{
+                log.debug(.frame, "microtask.checkpoint.done", .{
                     .frame_id = frame_id,
                     .checkpoint_passes = checkpoint_passes,
                     .pending_after = self.checkpoint_pending,
@@ -910,6 +910,32 @@ pub fn runMacrotasks(self: *Env) !void {
     }
 }
 
+/// Run at most one ready scheduler task across all contexts. CDP serve mode
+/// interleaves this with inbound socket polling so Runtime.evaluate is not
+/// starved by long macrotask batches (ebay.com).
+pub fn runOneMacrotaskRound(self: *Env) !bool {
+    if (v8.v8__Isolate__IsExecutionTerminating(self.isolate.handle)) {
+        return false;
+    }
+    if (self.macrotask_run_depth >= MAX_MACROTASK_RUN_DEPTH) return false;
+    self.macrotask_run_depth += 1;
+    defer self.macrotask_run_depth -= 1;
+
+    for (self.contexts[0..self.context_count]) |ctx| {
+        const exec = &ctx.execution;
+        if (exec.realmState() == .dead) continue;
+        if (!exec.canEnterJs(.strict_active)) continue;
+        if (contextBlocksTimerPump(ctx)) continue;
+        if (!ctx.scheduler.hasReadyTasks()) continue;
+
+        var hs: js.HandleScope = undefined;
+        const entered = ctx.enter(&hs) orelse continue;
+        defer entered.exit();
+        if (try ctx.scheduler.runOne()) return true;
+    }
+    return false;
+}
+
 pub fn msToNextMacrotask(self: *Env) ?u64 {
     var next_task: u64 = std.math.maxInt(u64);
     for (self.contexts[0..self.context_count]) |ctx| {
@@ -960,6 +986,20 @@ fn anyFrameHoldsKnitsailMicrotasks(self: *const Env) bool {
         switch (ctx.global) {
             .frame => |frame| {
                 if (frame.holdsKnitsailMicrotasks()) return true;
+            },
+            .worker => {},
+        }
+    }
+    return false;
+}
+
+/// True while a parser-inserted or deferred script is mid-eval. Inbound CDP
+/// must not call the V8 inspector reentrantly (ebay Runtime.evaluate hang).
+pub fn blocksInboundCdp(self: *const Env) bool {
+    for (self.contexts[0..self.context_count]) |ctx| {
+        switch (ctx.global) {
+            .frame => |frame| {
+                if (frame._script_manager.base.is_evaluating) return true;
             },
             .worker => {},
         }

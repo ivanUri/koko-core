@@ -8,6 +8,7 @@ import { createRequire } from "node:module";
 
 import {
     JS_WORKLOADS,
+    assertReleaseFastBinary,
     collectHtmlFiles,
     collectMeta,
     connectCDP,
@@ -30,7 +31,6 @@ import {
     startStaticServer,
     stopProcess,
     testRoot,
-    veloraBin,
     waitForServer,
     writeJsonFile,
 } from "./lib/compare-core.mjs";
@@ -55,6 +55,7 @@ const defaults = {
     logLevel: "warn",
     logFormat: "pretty",
     browserProfile: "chrome-macos-catalina",
+    navMode: "reuse",
 };
 
 function usage() {
@@ -71,6 +72,7 @@ Options:
   --startup-warmup <n>    Startup warmup iterations (default: ${defaults.startupWarmup})
   --timeout <ms>          Navigation timeout (default: ${defaults.timeoutMs})
   --profile <name>        Velora browser profile (default: ${defaults.browserProfile})
+  --nav-mode reuse|fresh  Velora page per iteration (default: ${defaults.navMode})
   --help                  Show this help
 `;
 }
@@ -93,6 +95,7 @@ function parseArgs(argv) {
             case "--startup-warmup": options.startupWarmup = Number(next()); break;
             case "--timeout": options.timeoutMs = Number(next()); break;
             case "--profile": options.browserProfile = next(); break;
+            case "--nav-mode": options.navMode = next(); break;
             case "--help":
             case "-h": options.help = true; break;
             default:
@@ -101,6 +104,7 @@ function parseArgs(argv) {
         }
     }
     if (options.repeats < 1) throw new Error("--repeats must be >= 1");
+    if (!["reuse", "fresh"].includes(options.navMode)) throw new Error("--nav-mode must be reuse or fresh");
     return options;
 }
 
@@ -110,9 +114,7 @@ async function main() {
         console.log(usage());
         return;
     }
-    if (!existsSync(veloraBin)) {
-        throw new Error(`Velora binary not found: ${veloraBin}. Run: zig build`);
-    }
+    assertReleaseFastBinary();
 
     ensureDir(tmpDir);
     ensureDir(resolve(options.report, ".."));
@@ -167,6 +169,9 @@ async function main() {
             "velora",
             navItems,
             async (item, opts) => {
+                if (opts.navMode === "fresh") {
+                    veloraPage = await createVeloraPage(cdp);
+                }
                 const result = await runVeloraNavigate(cdp, veloraPage, item.url, opts);
                 if (!result.ok && /websocket|not open/i.test(result.error || "")) {
                     await restartVelora().catch(() => undefined);
@@ -216,6 +221,9 @@ async function main() {
             "velora",
             jsItems,
             async (item, opts) => {
+                if (opts.navMode === "fresh") {
+                    veloraPage = await createVeloraPage(cdp);
+                }
                 const result = await runVeloraJs(cdp, veloraPage, item.url, item.call, opts);
                 if (!result.ok && /websocket|not open/i.test(result.error || "")) {
                     await restartVelora().catch(() => undefined);

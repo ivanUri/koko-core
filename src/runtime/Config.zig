@@ -69,6 +69,17 @@ fn logLevelValidator(_: Allocator, args: *std.process.ArgIterator) !?log.Level {
     };
 }
 
+fn logDirValidator(allocator: Allocator, args: *std.process.ArgIterator) !?[]const u8 {
+    var peek_it = args.*;
+    if (peek_it.next()) |val| {
+        if (val.len > 0 and val[0] != '-') {
+            _ = args.next();
+            return try allocator.dupe(u8, val);
+        }
+    }
+    return try allocator.dupe(u8, "logs");
+}
+
 /// Common CLI args.
 const CommonOptions = .{
     .{ .name = "obey_robots", .type = bool },
@@ -84,6 +95,15 @@ const CommonOptions = .{
     .{ .name = "log_level", .type = ?log.Level, .validator = logLevelValidator },
     .{ .name = "log_format", .type = ?log.Format },
     .{ .name = "log_filter_scopes", .type = log.Scope, .multiple = true, .validator = logFilterScopesValidator },
+    .{ .name = "log_dir", .type = ?[]const u8, .validator = logDirValidator },
+    .{ .name = "log_run_id", .type = ?[]const u8 },
+    .{ .name = "log_no_combined", .type = bool },
+    .{ .name = "log_cdp_trace", .type = bool },
+    .{ .name = "log_level_js", .type = ?log.Level, .validator = logLevelValidator },
+    .{ .name = "log_level_core", .type = ?log.Level, .validator = logLevelValidator },
+    .{ .name = "log_level_network", .type = ?log.Level, .validator = logLevelValidator },
+    .{ .name = "log_level_protocol", .type = ?log.Level, .validator = logLevelValidator },
+    .{ .name = "log_level_system", .type = ?log.Level, .validator = logLevelValidator },
     .{ .name = "user_agent_suffix", .type = ?[]const u8 },
     .{ .name = "http_cache_dir", .type = ?[]const u8 },
     .{ .name = "web_bot_auth_key_file", .type = ?[]const u8 },
@@ -340,6 +360,51 @@ pub fn logFilterScopes(self: *const Config) std.ArrayList(log.Scope) {
         inline .serve, .fetch, .mcp => |opts| opts.log_filter_scopes,
         else => unreachable,
     };
+}
+
+pub fn logDir(self: *const Config) ?[]const u8 {
+    return switch (self.mode) {
+        inline .serve, .fetch, .mcp => |opts| opts.log_dir,
+        else => unreachable,
+    };
+}
+
+pub fn logRunId(self: *const Config) ?[]const u8 {
+    return switch (self.mode) {
+        inline .serve, .fetch, .mcp => |opts| opts.log_run_id,
+        else => unreachable,
+    };
+}
+
+pub fn logNoCombined(self: *const Config) bool {
+    return switch (self.mode) {
+        inline .serve, .fetch, .mcp => |opts| opts.log_no_combined,
+        else => unreachable,
+    };
+}
+
+pub fn logCdpTrace(self: *const Config) bool {
+    return switch (self.mode) {
+        inline .serve, .fetch, .mcp => |opts| opts.log_cdp_trace,
+        else => unreachable,
+    };
+}
+
+pub fn logChannelLevels(self: *const Config) log.ChannelLevels {
+    return switch (self.mode) {
+        inline .serve, .fetch, .mcp => |opts| .{
+            .js = opts.log_level_js,
+            .core = opts.log_level_core,
+            .network = opts.log_level_network,
+            .protocol = opts.log_level_protocol,
+            .system = opts.log_level_system,
+        },
+        else => unreachable,
+    };
+}
+
+pub fn runModeName(self: *const Config) []const u8 {
+    return @tagName(self.mode);
 }
 
 pub fn userAgentSuffix(self: *const Config) ?[]const u8 {
@@ -670,6 +735,26 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\--log-filter-scopes
         \\                Filter out too verbose logs per scope:
         \\                http, unknown_prop, event, ...
+        \\
+        \\--log-dir [PATH]
+        \\                Write structured logs to PATH/<run-id>/ (default PATH: logs).
+        \\                Creates js/, core/, network/, protocol/, system/ subfolders.
+        \\
+        \\--log-run-id ID
+        \\                Override the per-run log folder name.
+        \\
+        \\--log-no-combined
+        \\                Do not write combined.log in the run folder.
+        \\
+        \\--log-cdp-trace
+        \\                Write raw CDP wire messages to protocol/cdp-wire.log.
+        \\
+        \\--log-level-js
+        \\--log-level-core
+        \\--log-level-network
+        \\--log-level-protocol
+        \\--log-level-system
+        \\                Per-channel log level overrides (debug, info, warn, error, fatal).
         \\
         \\--browser-profile
         \\                Browser fingerprint profile: velora (default), chrome-macos-sonoma,

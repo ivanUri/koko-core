@@ -34,10 +34,14 @@ const Identity = @This();
 identity_map: std.AutoHashMapUnmanaged(usize, v8.Global) = .empty,
 
 pub fn deinit(self: *Identity) void {
+    // Only entries that never got a weak finalizer remain here. Finalizers
+    // Reset their Global copy (same V8 node) then queueIdentityRemoval so the
+    // map entry is dropped without a second Reset (see Local.zig).
     var it = self.identity_map.valueIterator();
     while (it.next()) |global| {
         v8.v8__Global__Reset(global);
     }
+    self.identity_map = .{};
 }
 
 /// Re-key an existing JS wrapper from `old_ptr` to `new_ptr`, updating the

@@ -281,7 +281,10 @@ pub fn arrayBuffer(self: *Response, exec: *const Execution) !js.Promise {
             break :blk local.resolvePromise(js.ArrayBuffer{ .values = body });
         },
         .empty => local.resolvePromise(js.ArrayBuffer{ .values = "" }),
-        .stream => |stream| StreamConsumer.start(stream, exec),
+        .stream => |stream| blk: {
+            self._body_used = true;
+            break :blk StreamConsumer.start(stream, exec);
+        },
     };
 }
 
@@ -349,13 +352,21 @@ const StreamConsumer = struct {
         };
     }
 
+    // Must match the JS shape of ReadableStreamDefaultReader.ReadResult after
+    // the Zig→JS union unwrap: when done=true, `value` is undefined (empty
+    // chunk). A non-optional js.Value failed conversion, threw inside the
+    // then-callback, and left the outer arrayBuffer/text/json promise hanging
+    // forever (Amazon AWS WAF NetworkBandwidth / fetch().arrayBuffer()).
     const ReadData = struct {
         done: bool,
-        value: js.Value,
+        value: ?js.Value = null,
     };
 
     fn onReadFulfilled(self: *StreamConsumer, data_: ?ReadData) void {
-        const local = self.execution.context.local.?;
+        const local = self.execution.context.local orelse {
+            // Context gone; nothing we can settle on V8.
+            return;
+        };
 
         const data = data_ orelse {
             return self.finish(local, null);
@@ -388,8 +399,11 @@ const StreamConsumer = struct {
             return;
         }
 
-        // Collect the chunk data
-        const value = data.value;
+        // Collect the chunk data (undefined/null when producer sent empty chunk)
+        const value = data.value orelse {
+            try self.pumpRead();
+            return;
+        };
         if (!value.isUndefined()) {
             // Try to get bytes from the value (could be Uint8Array or string)
             if (value.isTypedArray() or value.isArrayBufferView() or value.isArrayBuffer()) {
@@ -409,7 +423,9 @@ const StreamConsumer = struct {
     }
 
     fn onReadRejected(self: *StreamConsumer) void {
-        self.finish(self.execution.context.local.?, null);
+        if (self.execution.context.local) |local| {
+            self.finish(local, null);
+        }
     }
 
     fn concatenateChunks(self: *StreamConsumer, allocator: Allocator) ![]const u8 {

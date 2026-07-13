@@ -89,17 +89,54 @@ pub fn getOwnerRule(self: *const CSSStyleSheet) ?*CSSRule {
     return self._owner_rule;
 }
 
+/// Map an at-rule source string to a CSSRule type tag for placeholder entries.
+/// Full at-rule CSSOM objects (CSSMediaRule, etc.) are not implemented yet; we
+/// still need stable cssRules indices so CSS-in-JS insertRule/deleteRule pairs
+/// (BBC/Next, Expo/Reanimated, styled-jsx) do not throw IndexSizeError.
+fn placeholderTypeForAtRule(rule: []const u8) CSSRule.Type {
+    const trimmed = std.mem.trim(u8, rule, &std.ascii.whitespace);
+    if (std.ascii.startsWithIgnoreCase(trimmed, "@media")) return .{ .media = {} };
+    if (std.ascii.startsWithIgnoreCase(trimmed, "@keyframes") or std.ascii.startsWithIgnoreCase(trimmed, "@-webkit-keyframes")) return .{ .keyframes = {} };
+    if (std.ascii.startsWithIgnoreCase(trimmed, "@font-face")) return .{ .font_face = {} };
+    if (std.ascii.startsWithIgnoreCase(trimmed, "@import")) return .{ .import = {} };
+    if (std.ascii.startsWithIgnoreCase(trimmed, "@supports")) return .{ .supports = {} };
+    if (std.ascii.startsWithIgnoreCase(trimmed, "@charset")) return .{ .charset = {} };
+    if (std.ascii.startsWithIgnoreCase(trimmed, "@namespace")) return .{ .namespace = {} };
+    if (std.ascii.startsWithIgnoreCase(trimmed, "@counter-style")) return .{ .counter_style = {} };
+    // @layer, @container, @property, @starting-style, etc. — keep a neutral slot.
+    return .{ .supports = {} };
+}
+
+fn clampInsertIndex(requested_index: u32, length: u32) u32 {
+    // Per spec, index > length should throw IndexSizeError. Because we still
+    // have incomplete at-rule support and historical length skew, clamp to tail.
+    // See #2214 (and the sibling #1970 / #1972 tolerance for at-rules).
+    if (requested_index > length) {
+        log.debug(.not_implemented, "insertRule clamped index", .{});
+        return length;
+    }
+    return requested_index;
+}
+
+fn insertPlaceholderAtRule(self: *CSSStyleSheet, rule: []const u8, requested_index: u32, frame: *Frame) !u32 {
+    log.debug(.not_implemented, "CSSStyleSheet.insertRule at-rule placeholder", .{});
+    const rules = try self.getCssRules(frame);
+    const index = clampInsertIndex(requested_index, rules.length());
+    const placeholder = try CSSRule.init(placeholderTypeForAtRule(rule), frame);
+    try rules.insert(index, placeholder, frame);
+    ownerFrameFor(self, frame)._style_manager.sheetModified();
+    return index;
+}
+
 pub fn insertRule(self: *CSSStyleSheet, rule: []const u8, maybe_index: ?u32, frame: *Frame) !u32 {
     const requested_index = maybe_index orelse 0;
     var it = Parser.parseStylesheet(rule);
     const parsed_rule = it.next() orelse {
         if (it.has_skipped_at_rule) {
-            log.debug(.not_implemented, "CSSStyleSheet.insertRule", .{});
-            // Velora currently skips at-rules (e.g., @keyframes, @media) in its
-            // CSS parser. To prevent JS apps (like Expo/Reanimated) from crashing
-            // during initialization, we simulate a successful insertion by returning
-            // the requested index.
-            return requested_index;
+            // Previously returned requested_index without storing a rule, which
+            // left cssRules.length short and made deleteRule(index) throw
+            // IndexSizeError (seen on www.bbc.com/news during Next hydration).
+            return self.insertPlaceholderAtRule(rule, requested_index, frame);
         }
         return error.SyntaxError;
     };
@@ -114,16 +151,7 @@ pub fn insertRule(self: *CSSStyleSheet, rule: []const u8, maybe_index: ?u32, fra
     try style.setCssText(parsed_rule.block, frame);
 
     const rules = try self.getCssRules(frame);
-
-    // Per spec, an index > rules.length should throw IndexSizeError. But because
-    // we don't process @import and @font-face, indexes that code hard-codes can
-    // be off. As a workaround, we clamp to the tail.
-    // See #2214 (and the sibling #1970 / #1972 tolerance for at-rules).
-    const length = rules.length();
-    const index = if (requested_index > length) length else requested_index;
-    if (index != requested_index) {
-        log.debug(.not_implemented, "insertRule clamped index", .{});
-    }
+    const index = clampInsertIndex(requested_index, rules.length());
     try rules.insert(index, style_rule._proto, frame);
 
     // Notify StyleManager that rules have changed
@@ -134,6 +162,12 @@ pub fn insertRule(self: *CSSStyleSheet, rule: []const u8, maybe_index: ?u32, fra
 
 pub fn deleteRule(self: *CSSStyleSheet, index: u32, frame: *Frame) !void {
     const rules = try self.getCssRules(frame);
+    // Defensive: legacy sheets (or mixed insert paths) may still have index skew.
+    // Prefer no-op over IndexSizeError so CSS-in-JS cleanup does not crash the page.
+    if (index >= rules.length()) {
+        log.debug(.not_implemented, "deleteRule no-op out-of-range index", .{});
+        return;
+    }
     try rules.remove(index);
 
     // Notify StyleManager that rules have changed
@@ -151,16 +185,27 @@ pub fn replaceSync(self: *CSSStyleSheet, text: []const u8, frame: *Frame) CSSErr
 
     var it = Parser.parseStylesheet(text);
     var index: u32 = 0;
-    while (it.next()) |parsed_rule| {
-        const style_rule = try CSSStyleRule.init(frame);
-        try style_rule.setSelectorText(parsed_rule.selector, frame);
+    while (it.nextItem()) |item| {
+        switch (item) {
+            .style => |parsed_rule| {
+                const style_rule = try CSSStyleRule.init(frame);
+                try style_rule.setSelectorText(parsed_rule.selector, frame);
 
-        const style_props = try style_rule.getStyle(frame);
-        const style = style_props.asCSSStyleDeclaration();
-        try style.setCssText(parsed_rule.block, frame);
+                const style_props = try style_rule.getStyle(frame);
+                const style = style_props.asCSSStyleDeclaration();
+                try style.setCssText(parsed_rule.block, frame);
 
-        try rules.insert(index, style_rule._proto, frame);
-        index += 1;
+                try rules.insert(index, style_rule._proto, frame);
+                index += 1;
+            },
+            .at_rule => |at_text| {
+                // Keep cssRules length aligned with real browsers so callers that
+                // index into sheets (or round-trip insertRule/deleteRule) work.
+                const placeholder = try CSSRule.init(placeholderTypeForAtRule(at_text), frame);
+                try rules.insert(index, placeholder, frame);
+                index += 1;
+            },
+        }
     }
 
     // Notify StyleManager that rules have changed

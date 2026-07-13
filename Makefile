@@ -88,6 +88,10 @@ test:
 		| grep --line-buffered -v "^/.*zig test -freference-trace"
 endif
 
+## Microbench Velora vs Chromium (ReleaseFast preflight via npm)
+bench: build
+	npm run bench:compare:publish
+
 ## Run demo/runner end to end tests
 end2end:
 	@test -d ../demo

@@ -84,6 +84,26 @@ fn run(allocator: Allocator, main_arena: Allocator) !void {
     // Set log filter scopes.
     log.opts.filter_scopes = config.logFilterScopes().items;
 
+    defer log.deinitSink();
+
+    if (config.logDir()) |base_dir| {
+        const level_name = if (config.logLevel()) |ll| @tagName(ll) else @tagName(log.opts.level);
+        try log.initSink(allocator, .{
+            .base_dir = base_dir,
+            .run_id = config.logRunId(),
+            .no_combined = config.logNoCombined(),
+            .cdp_trace = config.logCdpTrace(),
+            .channel_levels = config.logChannelLevels(),
+            .version = lp.build_config.version,
+            .mode = config.runModeName(),
+            .profile = config.browserProfile(),
+            .log_level = level_name,
+        });
+        if (log.logRunDir()) |run_dir| {
+            log.info(.app, "log dir ready", .{ .path = run_dir, .cdp_trace = log.cdp_trace_enabled });
+        }
+    }
+
     // must be installed before any other threads
     const sighandler = try main_arena.create(SigHandler);
     sighandler.* = .{ .arena = main_arena };

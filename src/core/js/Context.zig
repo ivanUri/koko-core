@@ -329,11 +329,17 @@ pub const InstalledLocal = struct {
 };
 
 // Any operation on the context have to be made from a local.
-pub fn localScope(self: *Context, ls: *js.Local.Scope) void {
+// Returns false when the V8 context Global is empty (e.g. after destroyContext
+// during Page/Frame teardown). Callers must not use `ls` when false.
+// HandleScope must be entered before Global::Get (V8 requires it).
+pub fn tryLocalScope(self: *Context, ls: *js.Local.Scope) bool {
     const isolate = self.isolate;
     js.HandleScope.init(&ls.handle_scope, isolate);
-
-    const local_v8_context: *const v8.Context = @ptrCast(v8.v8__Global__Get(&self.handle, isolate.handle));
+    const local_v8_context_opt = v8.v8__Global__Get(&self.handle, isolate.handle) orelse {
+        ls.handle_scope.deinit();
+        return false;
+    };
+    const local_v8_context: *const v8.Context = @ptrCast(local_v8_context_opt);
     v8.v8__Context__Enter(local_v8_context);
 
     // TODO: add and init ls.hs  for the handlescope
@@ -343,6 +349,14 @@ pub fn localScope(self: *Context, ls: *js.Local.Scope) void {
         .handle = local_v8_context,
         .call_arena = self.call_arena,
     };
+    return true;
+}
+
+pub fn localScope(self: *Context, ls: *js.Local.Scope) void {
+    if (!self.tryLocalScope(ls)) {
+        log.err(.js, "localScope after context destroyed", .{});
+        @panic("localScope called after V8 context destroyed");
+    }
 }
 
 pub fn toLocal(self: *Context, global: anytype) js.Local.ToLocalReturnType(@TypeOf(global)) {
@@ -1113,7 +1127,12 @@ fn dynamicModuleSourceCallback(ctx: *anyopaque, module_source_: anyerror!ScriptM
 }
 
 fn resolveDynamicModule(self: *Context, state: *DynamicModuleResolveState, module_entry: ModuleEntry, local: *const js.Local) void {
-    defer local.ctx.env.runMicrotasks(.module_resolution);
+    if (local.ctx.execution.realmState() == .dead) return;
+    defer {
+        if (local.ctx.execution.realmState() != .dead and !local.ctx.execution.schedulerSuppressed()) {
+            local.ctx.env.runMicrotasks(.module_resolution);
+        }
+    }
 
     // we can only be here if the module has been evaluated and if
     // we have a resolve loading this asynchronously.

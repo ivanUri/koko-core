@@ -14,6 +14,8 @@ node_modules
 sdk/node_modules
 code-check/tmp
 code-check/wpt-fetch/results/
+logs-demo/
+logs-test/
 google-search-debug/tmp/
 Kameleo-decode/
 wpt-lightpanda-fork-backup/

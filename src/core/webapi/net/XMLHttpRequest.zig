@@ -98,11 +98,15 @@ pub fn init(exec: *const Execution) !*XMLHttpRequest {
 }
 
 pub fn deinit(self: *XMLHttpRequest, page: *Page) void {
-    if (self._http_response) |resp| {
-        resp.abort(error.Abort);
-        self._http_response = null;
-    }
+    // Mark finished so httpErrorCallback / handleError skip JS event dispatch.
+    // Page teardown force_deinit aborts the transfer after destroyContext; firing
+    // readystatechange would call Context.localScope on a null V8 context
+    // (reason: cast causes pointer to be null — nytimes.com SPA navigations).
     self._active_request = false;
+    if (self._http_response) |resp| {
+        self._http_response = null;
+        resp.abort(error.Abort);
+    }
 
     if (self._on_ready_state_change) |func| {
         func.release();
@@ -556,7 +560,11 @@ fn httpErrorCallback(ctx: *anyopaque, err: anyerror) void {
     if (self._http_response != null) {
         self._http_response = null;
     }
-    self._exec.context.page.session.drainDeferredCommit();
+    // Skip session commits when the request was already torn down (force_deinit
+    // during Page.deinit) or the realm cannot enter JS.
+    if (self._active_request and self._exec.canEnterJs(.allow_draining)) {
+        self._exec.context.page.session.drainDeferredCommit();
+    }
     self.releaseSelfRef();
 }
 
@@ -590,17 +598,22 @@ fn _handleError(self: *XMLHttpRequest, err: anyerror) !void {
     const new_state: ReadyState = if (is_abort) .unsent else .done;
     if (new_state != self._ready_state) {
         const exec = self._exec;
-
-        try self.stateChanged(new_state, exec);
-        if (is_abort) {
-            try self._proto.dispatch(.abort, null, exec);
-        } else if (is_timeout) {
-            try self._proto.dispatch(.timeout, null, exec);
+        // Teardown / navigated-away: update readyState only — no DOM events.
+        // Event dispatch needs a live V8 context (localScope).
+        if (!self._active_request or !exec.canEnterJs(.allow_draining)) {
+            self._ready_state = new_state;
+        } else {
+            try self.stateChanged(new_state, exec);
+            if (is_abort) {
+                try self._proto.dispatch(.abort, null, exec);
+            } else if (is_timeout) {
+                try self._proto.dispatch(.timeout, null, exec);
+            }
+            if (!is_timeout) {
+                try self._proto.dispatch(.err, null, exec);
+            }
+            try self._proto.dispatch(.load_end, null, exec);
         }
-        if (!is_timeout) {
-            try self._proto.dispatch(.err, null, exec);
-        }
-        try self._proto.dispatch(.load_end, null, exec);
     }
 
     const level: log.Level = if (err == error.Abort) .debug else .err;

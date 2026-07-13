@@ -156,7 +156,7 @@ function renderMarkdown(report) {
     lines.push("## Reproduce");
     lines.push("");
     lines.push("```bash");
-    lines.push("zig build");
+    lines.push("npm run bench:preflight");
     lines.push("npm run bench:compare:publish");
     lines.push("```");
     lines.push("");

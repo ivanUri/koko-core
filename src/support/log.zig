@@ -16,8 +16,14 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const Thread = std.Thread;
+const sink = @import("log_sink.zig");
 
 const is_debug = builtin.mode == .Debug;
+
+pub const Channel = sink.Channel;
+pub const ChannelLevels = sink.ChannelLevels;
+pub const LogContext = sink.Context;
+pub const SinkInitOpts = sink.InitOpts;
 
 pub const Scope = enum {
     app,
@@ -48,12 +54,13 @@ const Opts = struct {
 };
 
 pub var opts = Opts{};
+pub var cdp_trace_enabled: bool = false;
 
 // synchronizes access to last_log
 var last_log_lock: Thread.Mutex = .{};
 
 pub fn enabled(comptime scope: Scope, level: Level) bool {
-    if (@intFromEnum(level) < @intFromEnum(opts.level)) {
+    if (sink.channelEnabled(scope, level, opts.level) == false) {
         return false;
     }
 
@@ -66,6 +73,36 @@ pub fn enabled(comptime scope: Scope, level: Level) bool {
     }
 
     return true;
+}
+
+pub fn initSink(allocator: std.mem.Allocator, init_opts: SinkInitOpts) !void {
+    cdp_trace_enabled = init_opts.cdp_trace;
+    try sink.init(allocator, init_opts);
+}
+
+pub fn deinitSink() void {
+    cdp_trace_enabled = false;
+    sink.deinit();
+}
+
+pub fn logRunDir() ?[]const u8 {
+    return sink.runDir();
+}
+
+pub fn bumpNavId() ?u32 {
+    return sink.bumpNavId();
+}
+
+pub fn setContext(ctx: LogContext) void {
+    sink.setContext(ctx);
+}
+
+pub fn clearContext() void {
+    sink.clearContext();
+}
+
+pub fn writeCdpWire(direction: []const u8, payload: []const u8) void {
+    sink.writeCdpWire(direction, payload);
 }
 
 // Ugliness to support complex debug parameters. Could add better support for
@@ -113,16 +150,30 @@ pub fn log(comptime scope: Scope, level: Level, comptime msg: []const u8, data: 
         return;
     }
 
-    std.debug.lockStdErr();
-    defer std.debug.unlockStdErr();
+    {
+        std.debug.lockStdErr();
+        defer std.debug.unlockStdErr();
 
-    var buf: [4096]u8 = undefined;
-    var stderr = std.fs.File.stderr();
-    var writer = stderr.writer(&buf);
+        var buf: [4096]u8 = undefined;
+        var stderr = std.fs.File.stderr();
+        var writer = stderr.writer(&buf);
 
-    logTo(scope, level, msg, data, &writer.interface) catch |log_err| {
-        std.debug.print("$time={d} $level=fatal $scope={s} $msg=\"log err\" err={s} log_msg=\"{s}\"\n", .{ timestamp(.clock), @errorName(log_err), @tagName(scope), msg });
-    };
+        logTo(scope, level, msg, data, &writer.interface) catch |log_err| {
+            std.debug.print("$time={d} $level=fatal $scope={s} $msg=\"log err\" err={s} log_msg=\"{s}\"\n", .{ timestamp(.clock), @errorName(log_err), @tagName(scope), msg });
+        };
+    }
+
+    if (sink.isActive()) {
+        const ctx = sink.getContext();
+        var file_buf: [65536]u8 = undefined;
+        var fba = std.heap.FixedBufferAllocator.init(&file_buf);
+        var aw = std.Io.Writer.Allocating.init(fba.allocator());
+        logToFileWithContext(scope, level, msg, data, ctx, &aw.writer) catch |log_err| {
+            std.debug.print("log file format err: {s}\n", .{@errorName(log_err)});
+            return;
+        };
+        sink.routeFormattedLine(scope, level, msg, aw.written());
+    }
 }
 
 fn logTo(comptime scope: Scope, level: Level, comptime msg: []const u8, data: anytype, out: *std.Io.Writer) !void {
@@ -146,6 +197,29 @@ fn logTo(comptime scope: Scope, level: Level, comptime msg: []const u8, data: an
 
 fn logLogfmt(comptime scope: Scope, level: Level, comptime msg: []const u8, data: anytype, writer: *std.Io.Writer) !void {
     try logLogFmtPrefix(scope, level, msg, writer);
+    try logLogfmtFields(data, writer, false);
+    try writer.writeByte('\n');
+}
+
+fn logToFileWithContext(comptime scope: Scope, level: Level, comptime msg: []const u8, data: anytype, ctx: LogContext, writer: *std.Io.Writer) !void {
+    try logLogFmtPrefix(scope, level, msg, writer);
+    try writer.writeAll(" $channel=");
+    try writer.writeAll(sink.scopeChannel(scope).tag());
+    if (ctx.nav_id) |nav_id| {
+        try writer.print(" $nav_id={d}", .{nav_id});
+    }
+    if (ctx.frame_id) |frame_id| {
+        try writer.print(" $frame_id={d}", .{frame_id});
+    }
+    if (ctx.url) |url| {
+        try writer.writeAll(" $url=");
+        try writeString(.logfmt, url, writer);
+    }
+    try logLogfmtFields(data, writer, true);
+    try writer.writeByte('\n');
+}
+
+fn logLogfmtFields(data: anytype, writer: *std.Io.Writer, redact: bool) !void {
     inline for (@typeInfo(@TypeOf(data)).@"struct".fields) |f| {
         const value = @field(data, f.name);
         if (std.meta.hasMethod(@TypeOf(value), "logFmt")) {
@@ -153,10 +227,13 @@ fn logLogfmt(comptime scope: Scope, level: Level, comptime msg: []const u8, data
         } else {
             const key = " " ++ f.name ++ "=";
             try writer.writeAll(key);
-            try writeValue(.logfmt, value, writer);
+            if (redact and sink.shouldRedactField(f.name)) {
+                try writer.writeAll("[REDACTED]");
+            } else {
+                try writeValue(.logfmt, value, writer);
+            }
         }
     }
-    try writer.writeByte('\n');
 }
 
 fn logLogFmtPrefix(comptime scope: Scope, level: Level, comptime msg: []const u8, writer: *std.Io.Writer) !void {
@@ -392,6 +469,20 @@ test "log: data" {
             "nn=33 n=null lit=over9000! slice=spice_must_flow " ++
             "err=Nope level=warn\n", aw.written());
     }
+}
+
+test "log: scope channel map" {
+    try testing.expectEqual(sink.Channel.js, sink.scopeChannel(.js));
+    try testing.expectEqual(sink.Channel.core, sink.scopeChannel(.frame));
+    try testing.expectEqual(sink.Channel.network, sink.scopeChannel(.http));
+    try testing.expectEqual(sink.Channel.protocol, sink.scopeChannel(.cdp));
+    try testing.expectEqual(sink.Channel.system, sink.scopeChannel(.app));
+    try testing.expectEqual(sink.JsSubfile.console, sink.jsSubfile("console.log"));
+    try testing.expectEqual(sink.JsSubfile.calls, sink.jsSubfile("velora-js-call"));
+    try testing.expectEqual(sink.JsSubfile.engine, sink.jsSubfile("script error"));
+    try testing.expect(sink.shouldRedactField("set-cookie"));
+    try testing.expect(sink.shouldRedactField("Authorization"));
+    try testing.expect(!sink.shouldRedactField("url"));
 }
 
 test "log: string escape" {

@@ -273,6 +273,7 @@ fn _createElementCallbackWithDefaultnamespace(ctx: *anyopaque, data: *anyopaque,
 }
 fn _createElementCallback(self: *Parser, data: *anyopaque, qname: h5e.QualName, attributes: h5e.AttributeIterator, default_namespace: Element.Namespace) !*anyopaque {
     const frame = self.frame;
+    frame.pollCdpDuringLongWork();
     const name = qname.local.slice();
     const namespace_string = qname.ns.slice();
     const namespace = if (namespace_string.len == 0) default_namespace else Element.Namespace.parse(namespace_string);
@@ -413,6 +414,7 @@ fn appendCallback(ctx: *anyopaque, parent_ref: *anyopaque, node_or_text: h5e.Nod
     };
 }
 fn _appendCallback(self: *Parser, parent: *Node, node_or_text: h5e.NodeOrText) !void {
+    self.frame.pollCdpDuringLongWork();
     // child node is guaranteed not to belong to another parent
     switch (node_or_text.toUnion()) {
         .node => |cpn| {

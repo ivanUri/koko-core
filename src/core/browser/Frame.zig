@@ -117,6 +117,8 @@ _realm_has_js: bool = false,
 _scheduler_suppressed: bool = false,
 /// Coalesce deferred frame_navigated notifications scheduled from HTTP callbacks.
 _deferred_frame_navigated_scheduled: bool = false,
+/// CDP Page.navigate ack is sent at header time; observer work runs after body.
+_pending_frame_navigated_observers: bool = false,
 
 _page: *Page,
 
@@ -198,6 +200,10 @@ _sync_iframe_pending_1: std.ArrayList(*IFrame) = .{},
 _sync_iframe_pending_2: std.ArrayList(*IFrame) = .{},
 _sync_iframe_pending: *std.ArrayList(*IFrame) = undefined,
 _sync_iframe_flush_scheduled: bool = false,
+/// HTML parse + static scripts deferred off the document HTTP done_callback (CDP poll).
+_document_parse_scheduled: bool = false,
+/// Throttle inbound CDP socket polls during long sync parse / script eval.
+_cdp_poll_counter: u16 = 0,
 
 _style_manager: StyleManager,
 _script_manager: ScriptManager,
@@ -224,7 +230,8 @@ _mutation_delivery_task_owner: RealmLifecycleKernel.TaskOwner = .{ .realm_id = 0
 _intersection_check_task_owner: RealmLifecycleKernel.TaskOwner = .{ .realm_id = 0, .epoch = 0, .document_id = null },
 _intersection_delivery_task_owner: RealmLifecycleKernel.TaskOwner = .{ .realm_id = 0, .epoch = 0, .document_id = null },
 _slotchange_delivery_task_owner: RealmLifecycleKernel.TaskOwner = .{ .realm_id = 0, .epoch = 0, .document_id = null },
-
+/// Captured at each `navigate()`; document HTTP terminal callbacks drop if stale.
+_nav_task_owner: RealmLifecycleKernel.TaskOwner = .{ .realm_id = 0, .epoch = 0, .document_id = null },
 /// List of active PerformanceObservers.
 /// Contrary to MutationObserver and IntersectionObserver, these are regular tasks.
 _performance_observers: std.ArrayList(*PerformanceObserver) = .{},
@@ -612,6 +619,8 @@ pub fn bumpRealmNavigationEpoch(self: *Frame) void {
     self._realm_epoch +%= 1;
     self._realm_state = .initializing;
     self._sync_iframe_flush_scheduled = false;
+    self._document_parse_scheduled = false;
+    self._cdp_poll_counter = 0;
     // New navigation installs a new execution world; suppression belongs to
     // the discarded realm and must not poison the replacement realm.
     self._scheduler_suppressed = false;
@@ -715,7 +724,12 @@ pub fn deinit(self: *Frame) void {
     // Pending root navigation transfers carry `protect_from_abort = true` and
     // are excluded by the .normal scope, so they continue uninterrupted.
     self._script_manager.base.shutdown = true;
-    browser.http_client.abortFrame(self._frame_id, .{});
+    browser.http_client.abortTransfersAttributedTo(self, .{});
+    // Drain mid-perform transfers so Noop callbacks finish before Script
+    // arenas are released by script_manager.deinit (nytimes.com SPA teardown).
+    if (!browser.http_client.performing) {
+        _ = browser.http_client.tick(0) catch {};
+    }
 
     browser.env.destroyContext(self.js);
 
@@ -1137,6 +1151,7 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
     self._load_state = .parsing;
     self.terminateAllWorkers();
     self.bumpRealmNavigationEpoch();
+    self._nav_task_owner = self.js.execution.captureTaskOwner();
     self.window._performance.recordNavigationStart();
     self.window._performance.setIntegerNowMs(std.mem.indexOf(u8, request_url, "accounts.google.") != null);
     if (!self.loadedProfile().isFirefox()) {
@@ -1153,12 +1168,19 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
     @import("../../runtime/profile/AutomationScrub.zig").applyOnce(self);
 
     const req_id = self._session.browser.http_client.nextReqId();
+    const nav_id = log.bumpNavId() orelse 0;
+    log.setContext(.{
+        .nav_id = if (nav_id > 0) nav_id else null,
+        .frame_id = self._frame_id,
+        .url = request_url,
+    });
     log.info(.frame, "navigate", .{
         .url = request_url,
         .method = opts.method,
         .reason = opts.reason,
         .body = opts.body != null,
         .req_id = req_id,
+        .nav_id = nav_id,
         .type = self._type,
     });
 
@@ -1358,6 +1380,7 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
             .params = .{
                 .url = self.url,
                 .frame_id = self._frame_id,
+                .attribution_frame = self,
                 .loader_id = self._loader_id,
                 .method = opts.method,
                 .headers = headers,
@@ -1387,6 +1410,7 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
         .params = .{
             .url = self.url,
             .frame_id = self._frame_id,
+            .attribution_frame = self,
             .loader_id = self._loader_id,
             .method = opts.method,
             .headers = headers,
@@ -1404,6 +1428,7 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
             .browser_session = session,
             .protect_from_abort = is_pending_root,
             .skip_cache = opts.force,
+            .force_fresh_connection = opts.is_document_retry,
         },
         .header_callback = frameHeaderDoneCallback,
         .data_callback = frameDataCallback,
@@ -1527,10 +1552,6 @@ fn scheduleNavigationWithArena(originator: *Frame, arena: Allocator, request_url
     }
 
     target._queued_navigation = qn;
-    // A committed queued navigation makes the current realm stale. Suppress
-    // its scheduler before the next checkpoint so recursive Promise chains in
-    // the departing realm cannot monopolize the event loop and block teardown.
-    target.suppressScheduler();
     return session.scheduleNavigation(target);
 }
 
@@ -1683,6 +1704,102 @@ pub fn scheduleDeferredSyncIframeFlush(self: *Frame) !void {
         .low_priority = false,
     });
 }
+
+/// Defer HTML parse and parser-inserted scripts off the document HTTP
+/// done_callback. frameDoneCallback runs inside HttpClient.processMessages;
+/// synchronous parse + staticScriptsDone starves CDP polling (ebay.com hang).
+pub fn hasDeferredDocumentParsePending(self: *const Frame) bool {
+    return self._document_parse_scheduled;
+}
+
+/// Poll the CDP socket during long synchronous work (HTML parse, script eval).
+pub fn pollCdpDuringLongWork(self: *Frame) void {
+    self._cdp_poll_counter +%= 1;
+    if (self._cdp_poll_counter & 0x3F != 0) return;
+    self._session.browser.http_client.serviceInboundCdpIfReadable();
+}
+
+pub fn scheduleDeferredStaticScriptsDone(self: *Frame) !void {
+    const callback = try self.arena.create(DeferStaticScriptsDoneCallback);
+    callback.* = .{ .frame = self };
+    try self.js.scheduler.add(callback, DeferStaticScriptsDoneCallback.run, 0, .{
+        .name = "Frame.deferStaticScriptsDone",
+        .low_priority = false,
+    });
+}
+
+const DeferStaticScriptsDoneCallback = struct {
+    frame: *Frame,
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *DeferStaticScriptsDoneCallback = @ptrCast(@alignCast(ctx));
+        self.frame._script_manager.staticScriptsDone();
+        return null;
+    }
+};
+
+pub fn scheduleDeferredDocumentParse(self: *Frame, raw_html: []const u8, as_xml: bool, html_arena: Allocator) !void {
+    if (self._document_parse_scheduled) return;
+    self._document_parse_scheduled = true;
+
+    const callback = try self.arena.create(DeferDocumentParseCallback);
+    callback.* = .{
+        .frame = self,
+        .raw_html = raw_html,
+        .as_xml = as_xml,
+        .html_arena = html_arena,
+    };
+
+    try self.js.scheduler.add(callback, DeferDocumentParseCallback.run, 0, .{
+        .name = "Frame.deferDocumentParse",
+        .low_priority = false,
+    });
+}
+
+const DeferDocumentParseCallback = struct {
+    frame: *Frame,
+    raw_html: []const u8,
+    as_xml: bool,
+    html_arena: Allocator,
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *DeferDocumentParseCallback = @ptrCast(@alignCast(ctx));
+        self.frame._document_parse_scheduled = false;
+        defer self.frame.releaseArena(self.html_arena);
+        if (!navDeliverable(self.frame)) return null;
+
+        const parse_arena = try self.frame.getArena(.medium, "Frame.parse");
+        defer self.frame.releaseArena(parse_arena);
+
+        var parser = Parser.init(parse_arena, self.frame.document.asNode(), self.frame);
+        log.debug(.frame, "parse html start", .{
+            .type = self.frame._type,
+            .url = self.frame.url,
+            .len = self.raw_html.len,
+            .charset = self.frame.charset,
+        });
+        if (self.as_xml) {
+            parser.parseXML(self.raw_html);
+        } else if (std.mem.eql(u8, self.frame.charset, "UTF-8")) {
+            parser.parse(self.raw_html);
+        } else {
+            parser.parseWithEncoding(self.raw_html, self.frame.charset);
+        }
+        log.debug(.frame, "parse html done", .{ .type = self.frame._type, .url = self.frame.url, .len = self.raw_html.len });
+        self.frame.reconcileParserIframeSrc();
+        self.frame.drainQueuedNavigationsAfterParse();
+        self.frame._parse_state = .{ .complete = {} };
+
+        self.frame.pollCdpDuringLongWork();
+        try self.frame.scheduleDeferredStaticScriptsDone();
+        self.frame.pollCdpDuringLongWork();
+        self.frame.pumpPostParseTasks();
+        self.frame.scheduleDeferredSyncIframeFlush() catch |err| {
+            log.warn(.frame, "defer sync iframe flush", .{ .err = err, .url = self.frame.url });
+        };
+        return null;
+    }
+};
 
 const DeferSyncIframeFlushCallback = struct {
     frame: *Frame,
@@ -2172,10 +2289,31 @@ fn frameHeaderDoneCallback(response: HttpClient.Response) !bool {
     self.window._location = try Location.init(self.url, self);
     self.document._location = self.window._location;
 
+    const status = response.status() orelse {
+        log.warn(.frame, "navigate header missing status", .{ .url = self.url, .type = self._type });
+        return false;
+    };
+    // Reject failed document responses before commitPendingPage. Without this,
+    // a zero-byte / aborted transfer still runs frameDoneCallback in the .pre
+    // state and installs the empty stub document (ebay.com hang).
+    if (status < 200 or status > 299) {
+        const protocol: ?[]const u8 = switch (response.inner) {
+            .transfer => |t| if (t.response_header) |rh| rh.protocol() else null,
+            else => null,
+        };
+        log.warn(.frame, "navigate header bad status", .{
+            .url = self.url,
+            .status = status,
+            .type = self._type,
+            .protocol = protocol,
+        });
+        return false;
+    }
+
     if (comptime IS_DEBUG) {
         log.debug(.frame, "navigate header", .{
             .url = self.url,
-            .status = response.status(),
+            .status = status,
             .content_type = response.contentType(),
             .type = self._type,
         });
@@ -2242,9 +2380,7 @@ fn frameHeaderDoneCallback(response: HttpClient.Response) !bool {
             // would kill the in-flight JS-initiated transfer. Defer commit
             // (and the protect_from_abort flip + frame_navigated dispatch)
             // until Session.drainDeferredCommit runs at a safe point.
-            if (session.activeIsEvaluating() or
-                session.browser.http_client.hasProtectedTransfersForFrame(self._frame_id))
-            {
+            if (!session.canDestructivelyTeardown(self._frame_id)) {
                 session._deferred_commit_pending = true;
                 return true;
             }
@@ -2253,9 +2389,8 @@ fn frameHeaderDoneCallback(response: HttpClient.Response) !bool {
             // the abortFrame inside old Frame.deinit (sharing frame_id with
             // pending) would kill us mid-flight. Flip the flag AFTER commit.
             try session.commitPendingPage();
-            switch (response.inner) {
-                .transfer => |t| t.req.params.protect_from_abort = false,
-                .fulfilled, .cached => {},
+            if (self.queueFrameNavigatedObserversAfterBody()) {
+                return true;
             }
             self.scheduleDeferredFrameNavigated() catch |err| {
                 log.warn(.frame, "defer frame_navigated after pending commit", .{ .err = err });
@@ -2265,6 +2400,7 @@ fn frameHeaderDoneCallback(response: HttpClient.Response) !bool {
 
         // Non-pending-root path: the page is already active, no commit needed,
         // just notify observers.
+        if (self.queueFrameNavigatedObserversAfterBody()) return true;
         self.scheduleDeferredFrameNavigated() catch |err| {
             log.warn(.frame, "defer frame_navigated", .{ .err = err });
         };
@@ -2288,9 +2424,42 @@ pub fn finalizePendingRootCommit(self: *Frame) !void {
     // cleared the flag before calling us).
     session.browser.http_client.clearProtectForFrame(self._frame_id);
     if (self._navigated_options != null) {
-        self.scheduleDeferredFrameNavigated() catch |err| {
-            log.warn(.frame, "defer frame_navigated after finalize commit", .{ .err = err });
-        };
+        if (!self.queueFrameNavigatedObserversAfterBody()) {
+            self.scheduleDeferredFrameNavigated() catch |err| {
+                log.warn(.frame, "defer frame_navigated after finalize commit", .{ .err = err });
+            };
+        }
+    }
+}
+
+/// CDP Page.navigate: ack at header time, contextCreated after body completes.
+fn queueFrameNavigatedObserversAfterBody(self: *Frame) bool {
+    const had_cdp = if (self._navigated_options) |no| no.cdp_id != null else false;
+    if (!had_cdp) return false;
+    self.sendCdpNavigateAckIfPending();
+    self._pending_frame_navigated_observers = true;
+    return true;
+}
+
+fn flushPendingFrameNavigatedObservers(self: *Frame) void {
+    if (!self._pending_frame_navigated_observers) return;
+    self._pending_frame_navigated_observers = false;
+    self.dispatchFrameNavigated();
+    self._session.browser.http_client.serviceInboundCdpIfReadable();
+}
+
+/// Page.navigate clients block on the command result. Emit it from the header
+/// callback; defer contextCreated / frameNavigated observer work.
+fn sendCdpNavigateAckIfPending(self: *Frame) void {
+    const cdp_id = if (self._navigated_options) |no| no.cdp_id else null;
+    if (cdp_id) |id| {
+        self._session.notification.dispatch(.frame_navigate_ack, &.{
+            .cdp_id = id,
+            .frame_id = self._frame_id,
+            .loader_id = self._loader_id,
+        });
+        if (self._navigated_options) |*no| no.cdp_id = null;
+        self._session.browser.http_client.serviceInboundCdpIfReadable();
     }
 }
 
@@ -2435,11 +2604,35 @@ fn frameDataCallback(response: HttpClient.Response, data: []const u8) !void {
     }
 }
 
+fn navDeliverable(self: *const Frame) bool {
+    if (self._detach_pending) return false;
+    if (self._realm_state == .dead or self._realm_state == .draining) return false;
+    if (self.isGoingAway()) return false;
+    const current: RealmLifecycleKernel.TaskOwner = .{
+        .realm_id = self._frame_id,
+        .epoch = self._realm_epoch,
+        .document_id = self._loader_id,
+    };
+    return !RealmLifecycleKernel.taskOwnerIsStale(self._nav_task_owner, current);
+}
+
 fn frameDoneCallback(ctx: *anyopaque) !void {
     var self: *Frame = @ptrCast(@alignCast(ctx));
-    if (self._detach_pending) return;
+    if (!navDeliverable(self)) return;
+
+    // Body has fully arrived (or the transfer ended). Safe to drop the pending-
+    // root abort shield that protected this document hop through commitPendingPage.
+    self._session.browser.http_client.clearProtectForFrame(self._frame_id);
 
     log.debug(.frame, "navigate done", .{ .type = self._type, .url = self.url, .state = std.meta.activeTag(self._parse_state) });
+
+    if (self._parse_state == .pre) {
+        log.warn(.frame, "navigate empty document body", .{ .url = self.url, .type = self._type });
+        if (self._page._state == .pending and retryPendingRootNavigation(self)) return;
+        completePendingCdpNavigateFailure(self, error.EmptyDocumentBody);
+        frameErrorCallback(ctx, error.EmptyDocumentBody);
+        return;
+    }
 
     // Session Navigation is per browsing context (root only). Iframe loads must
     // not push child URLs into the top-level navigation stack — Cloudflare
@@ -2458,49 +2651,41 @@ fn frameDoneCallback(ctx: *anyopaque) !void {
         });
     };
 
+    if (self._parse_state == .html) {
+        var html = self._parse_state.html;
+        const raw_html = html.buffer.items;
+        const as_xml = html.as_xml;
+        const html_arena = html.arena;
+        html.buffer = .empty;
+        self._parse_state = .{ .html = html };
+        self._session.browser.http_client.serviceInboundCdpIfReadable();
+        log.debug(.frame, "defer document parse", .{ .type = self._type, .url = self.url, .len = raw_html.len });
+        self.flushPendingFrameNavigatedObservers();
+
+        self.scheduleDeferredDocumentParse(raw_html, as_xml, html_arena) catch |err| {
+            log.warn(.frame, "defer document parse", .{ .err = err, .url = self.url });
+            const parse_arena = self.getArena(.medium, "Frame.parse") catch return;
+            defer self.releaseArena(parse_arena);
+            var parser = Parser.init(parse_arena, self.document.asNode(), self);
+            if (as_xml) parser.parseXML(raw_html) else if (std.mem.eql(u8, self.charset, "UTF-8")) parser.parse(raw_html) else parser.parseWithEncoding(raw_html, self.charset);
+            self.releaseArena(html_arena);
+            self.reconcileParserIframeSrc();
+            self.drainQueuedNavigationsAfterParse();
+            self._parse_state = .{ .complete = {} };
+            self._script_manager.staticScriptsDone();
+            self.pumpPostParseTasks();
+            self.scheduleDeferredSyncIframeFlush() catch {};
+        };
+        return;
+    }
+
     const parse_arena = try self.getArena(.medium, "Frame.parse");
     defer self.releaseArena(parse_arena);
 
     var parser = Parser.init(parse_arena, self.document.asNode(), self);
 
     switch (self._parse_state) {
-        .html => |*html| {
-            {
-                defer {
-                    self.releaseArena(html.arena);
-                    self._parse_state = .complete;
-                }
-
-                const raw_html = html.buffer.items;
-                log.debug(.frame, "parse html start", .{
-                    .type = self._type,
-                    .url = self.url,
-                    .len = raw_html.len,
-                    .charset = self.charset,
-                });
-
-                if (html.as_xml) {
-                    parser.parseXML(raw_html);
-                } else if (std.mem.eql(u8, self.charset, "UTF-8")) {
-                    parser.parse(raw_html);
-                } else {
-                    parser.parseWithEncoding(raw_html, self.charset);
-                }
-                log.debug(.frame, "parse html done", .{ .type = self._type, .url = self.url, .len = raw_html.len });
-                self.reconcileParserIframeSrc();
-                self.drainQueuedNavigationsAfterParse();
-            }
-            log.debug(.frame, "static scripts done start", .{ .type = self._type, .url = self.url });
-            self._script_manager.staticScriptsDone();
-            self.pumpPostParseTasks();
-            // Parser-inserted iframes queue sync onload during parse (appendChild flush
-            // never runs). Defer flush to the next macrotask — frameDoneCallback runs
-            // inside HTTP callbacks where cross-frame onload crashes V8.
-            self.scheduleDeferredSyncIframeFlush() catch |err| {
-                log.warn(.frame, "defer sync iframe flush", .{ .err = err, .url = self.url });
-            };
-            log.debug(.frame, "static scripts done complete", .{ .type = self._type, .url = self.url });
-        },
+        .html => unreachable,
         .text => |*buf| {
             try buf.appendSlice(self.arena, "</pre></body></html>");
             parser.parse(buf.items);
@@ -2551,8 +2736,78 @@ fn frameDoneCallback(ctx: *anyopaque) !void {
     }
 }
 
+fn completePendingCdpNavigateFailure(self: *Frame, err: anyerror) void {
+    const cdp_id = if (self._navigated_options) |no| no.cdp_id else null;
+    if (cdp_id) |id| {
+        self._session.notification.dispatch(.frame_navigation_failed, &.{
+            .cdp_id = id,
+            .message = @errorName(err),
+        });
+        if (self._navigated_options) |*no| no.cdp_id = null;
+    }
+}
+
+fn retryPendingRootNavigation(self: *Frame) bool {
+    if (self.parent != null) return false;
+    const session = self._session;
+    if (session._pending_root_nav_retries >= 2) return false;
+    const no = self._navigated_options orelse return false;
+
+    const frame_id = self._frame_id;
+    const cdp_id = no.cdp_id;
+    const reason = no.reason;
+    const method = no.method;
+    const kind: NavigationKind = session.navigation._current_navigation_kind orelse .{ .push = null };
+
+    // Snapshot inputs before discardPendingPage frees the pending frame arena.
+    const url_copy = session.arena.dupeZ(u8, self.url) catch |err| {
+        log.warn(.frame, "navigate retry url dup", .{ .err = err, .url = self.url });
+        return false;
+    };
+    const body_copy: ?[]const u8 = if (no.body) |b| session.arena.dupe(u8, b) catch |err| {
+        log.warn(.frame, "navigate retry body dup", .{ .err = err });
+        return false;
+    } else null;
+    const header_copy: ?[:0]const u8 = if (no.header) |h| blk: {
+        const dup = session.arena.dupeZ(u8, h) catch |err| {
+            log.warn(.frame, "navigate retry header dup", .{ .err = err });
+            return false;
+        };
+        break :blk dup;
+    } else null;
+
+    session._pending_root_nav_retries += 1;
+    const attempt = session._pending_root_nav_retries;
+    session.discardPendingPage();
+
+    const nav_opts = NavigateOpts{
+        .cdp_id = cdp_id,
+        .reason = reason,
+        .method = method,
+        .body = body_copy,
+        .header = header_copy,
+        .kind = kind,
+        .is_document_retry = true,
+    };
+    session.initiateRootNavigation(frame_id, url_copy, nav_opts) catch |retry_err| {
+        log.warn(.frame, "navigate retry", .{ .err = retry_err, .url = url_copy, .attempt = attempt });
+        return false;
+    };
+    return true;
+}
+
 fn frameErrorCallback(ctx: *anyopaque, err: anyerror) void {
     var self: *Frame = @ptrCast(@alignCast(ctx));
+    if (!navDeliverable(self)) return;
+    if (err == error.Abort) {
+        if (self._page._state == .pending) {
+            if (!retryPendingRootNavigation(self)) {
+                completePendingCdpNavigateFailure(self, err);
+                self._session.discardPendingPage();
+            }
+        }
+        return;
+    }
 
     log.err(.frame, "navigate failed", .{ .err = err, .type = self._type, .url = self.url });
 
@@ -4743,13 +4998,22 @@ pub fn _insertNodeRelative(self: *Frame, comptime from_parser: bool, parent: *No
     // now fire connectedCallback against the new tree.
     const should_invoke_connected = parent_is_connected and (!opts.child_already_connected or opts.adopting_to_new_document);
 
+    // nodeIsReady / mutation observers / connectedCallback can reparent or
+    // detach nodes in this subtree before or during the walk (nytimes.com
+    // SPA inserts via setTimeout during script doneCallback). Never unwrap
+    // _parent with `?` — skip detached nodes for id registration.
     var tw = @import("../dom/TreeWalker.zig").Full.Elements.init(child, .{});
     while (tw.next()) |el| {
         if (el.getAttributeSafe(comptime .wrap("id"))) |id| {
-            try self.addElementId(el.asNode()._parent.?, el, id);
+            const n = el.asNode();
+            if (n._parent == null) continue;
+            try self.addElementId(n, el, id);
         }
 
         if (should_invoke_connected) {
+            // Element may have been detached by a prior connectedCallback in
+            // this walk; only invoke when still connected / in a shadow tree.
+            if (!el.asNode().isConnected() and !el.asNode().isInShadowTree()) continue;
             try Element.Html.Custom.invokeConnectedCallbackOnElement(false, el, self);
         }
     }
@@ -4774,7 +5038,7 @@ pub fn attributeChange(self: *Frame, element: *Element, name: String, value: Str
     var it: ?*std.DoublyLinkedList.Node = self._mutation_observers.first;
     while (it) |node| : (it = node.next) {
         const observer: *MutationObserver = @fieldParentPtr("node", node);
-        observer.notifyAttributeChange(element, name, old_value, self) catch |err| {
+        observer.notifyAttributeChange(element, name, old_value, null, self) catch |err| {
             log.err(.frame, "attributeChange.notifyObserver", .{ .err = err, .type = self._type, .url = self.url });
         };
     }
@@ -4800,7 +5064,7 @@ pub fn attributeRemove(self: *Frame, element: *Element, name: String, old_value:
     var it: ?*std.DoublyLinkedList.Node = self._mutation_observers.first;
     while (it) |node| : (it = node.next) {
         const observer: *MutationObserver = @fieldParentPtr("node", node);
-        observer.notifyAttributeChange(element, name, old_value, self) catch |err| {
+        observer.notifyAttributeChange(element, name, old_value, null, self) catch |err| {
             log.err(.frame, "attributeRemove.notifyObserver", .{ .err = err, .type = self._type, .url = self.url });
         };
     }
@@ -5272,6 +5536,8 @@ pub const NavigateOpts = struct {
     method: HttpClient.Method = .GET,
     body: ?[]const u8 = null,
     header: ?[:0]const u8 = null,
+    /// Set when retryPendingRootNavigation re-issues a failed pending document hop.
+    is_document_retry: bool = false,
     // Set by scheduleNavigationWithArena from the originating frame's URL so
     // anchor click / form submit / location.href navigations carry a Referer.
     // null on CDP Page.navigate (address-bar) and Page.reload — matches Chrome.

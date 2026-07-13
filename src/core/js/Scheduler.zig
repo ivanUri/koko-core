@@ -54,6 +54,36 @@ pub fn reset(self: *Scheduler) void {
     self.high_priority.clearRetainingCapacity();
 }
 
+/// Remove matching tasks and invoke their finalizers. Used when tearing down a
+/// Worker while deferred script tasks may still be queued on the parent frame.
+pub fn cancelTasks(self: *Scheduler, matcher: *const fn (ctx: *anyopaque, callback: Callback) bool) void {
+    cancelTasksInQueue(&self.high_priority, matcher);
+    cancelTasksInQueue(&self.low_priority, matcher);
+}
+
+fn cancelTasksInQueue(queue: *Queue, matcher: *const fn (ctx: *anyopaque, callback: Callback) bool) void {
+    if (queue.count() == 0) return;
+    const allocator = queue.allocator;
+    var kept: std.ArrayList(Task) = .empty;
+    defer kept.deinit(allocator);
+
+    while (queue.removeOrNull()) |task| {
+        if (matcher(task.ctx, task.callback)) {
+            if (task.finalizer) |func| func(task.ctx);
+        } else {
+            kept.append(allocator, task) catch {
+                if (task.finalizer) |func| func(task.ctx);
+            };
+        }
+    }
+
+    for (kept.items) |task| {
+        queue.add(task) catch {
+            if (task.finalizer) |func| func(task.ctx);
+        };
+    }
+}
+
 const AddOpts = struct {
     name: []const u8 = "",
     low_priority: bool = false,
@@ -176,5 +206,5 @@ const Task = struct {
     finalizer: ?Finalizer,
 };
 
-const Callback = *const fn (ctx: *anyopaque) anyerror!?u32;
+pub const Callback = *const fn (ctx: *anyopaque) anyerror!?u32;
 const Finalizer = *const fn (ctx: *anyopaque) void;

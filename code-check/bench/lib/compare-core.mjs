@@ -15,6 +15,68 @@ const benchDir = resolve(fileURLToPath(import.meta.url), "..");
 export const repoRoot = resolve(benchDir, "../../..");
 export const testRoot = resolve(repoRoot, "velora-test");
 export const veloraBin = resolve(repoRoot, "zig-out/bin/velora");
+export const veloraBuildMetaPath = resolve(repoRoot, "zig-out/bin/velora.build.json");
+
+export function readVeloraBuildMeta() {
+    if (!existsSync(veloraBuildMetaPath)) return null;
+    try {
+        return JSON.parse(readFileSync(veloraBuildMetaPath, "utf8"));
+    } catch (_) {
+        return null;
+    }
+}
+
+export function assertReleaseFastBinary() {
+    if (!existsSync(veloraBin)) {
+        throw new Error(`Velora binary not found: ${veloraBin}. Run: npm run bench:preflight`);
+    }
+    const meta = readVeloraBuildMeta();
+    if (!meta?.optimize) {
+        throw new Error(
+            `Missing ${veloraBuildMetaPath}. Run: npm run bench:preflight (zig build -Doptimize=ReleaseFast)`,
+        );
+    }
+    if (meta.optimize !== "ReleaseFast") {
+        throw new Error(
+            `Velora optimize mode is "${meta.optimize}", expected ReleaseFast. Run: npm run bench:preflight`,
+        );
+    }
+    return meta;
+}
+
+export function veloraBuildMetaForReport() {
+    const meta = readVeloraBuildMeta();
+    return {
+        veloraOptimizeMode: meta?.optimize ?? "unknown",
+        veloraBuildBuiltAt: meta?.builtAt ?? null,
+    };
+}
+
+export const BENCHMARK_ASSUMPTIONS = {
+    compare: {
+        veloraPageReuse: true,
+        chromiumFreshPagePerIteration: true,
+        navigationWaitUntil: "domcontentloaded",
+        requiresReleaseFast: true,
+    },
+    crawlDensity: {
+        veloraMultiProcess: true,
+        veloraMeasurementStack: "cdp-fetchPage",
+        chromiumMeasurementStack: "cdp-fetchPage",
+    },
+    crawlFair: {
+        veloraMultiProcess: false,
+        veloraHttpCache: true,
+        warmup: true,
+        veloraMeasurementStack: "cdp-fetchPage",
+        chromiumMeasurementStack: "cdp-fetchPage",
+    },
+    googleAgent: {
+        veloraWarmedCookies: true,
+        chromiumColdSession: true,
+        note: "Antibot session state mixed with extract latency — not a pure perf compare.",
+    },
+};
 
 export const contentTypes = {
     ".css": "text/css; charset=utf-8",
@@ -183,16 +245,27 @@ export async function connectCDP(cdpEndpoint, options) {
         }
     }
 
+    const eventListeners = new Map();
+
     ws.addEventListener("message", (event) => {
         const message = JSON.parse(event.data);
-        if (message.id == null || !callbacks.has(message.id)) return;
-        const callback = callbacks.get(message.id);
-        callbacks.delete(message.id);
-        clearTimeout(callback.timer);
-        if (message.error) {
-            callback.reject(new Error(`${callback.method}: ${message.error.message} (${message.error.code})`));
-        } else {
-            callback.resolve(message.result || {});
+        if (message.id != null && callbacks.has(message.id)) {
+            const callback = callbacks.get(message.id);
+            callbacks.delete(message.id);
+            clearTimeout(callback.timer);
+            if (message.error) {
+                callback.reject(new Error(`${callback.method}: ${message.error.message} (${message.error.code})`));
+            } else {
+                callback.resolve(message.result || {});
+            }
+            return;
+        }
+        if (message.method) {
+            const key = `${message.method}|${message.sessionId || ""}`;
+            const subs = eventListeners.get(key);
+            if (subs) {
+                for (const cb of subs) cb(message.params || {});
+            }
         }
     });
     await new Promise((resolvePromise, reject) => {
@@ -205,6 +278,31 @@ export async function connectCDP(cdpEndpoint, options) {
     });
 
     return {
+        onEvent(method, sessionId, cb) {
+            const key = `${method}|${sessionId || ""}`;
+            let list = eventListeners.get(key);
+            if (!list) {
+                list = [];
+                eventListeners.set(key, list);
+            }
+            list.push(cb);
+            return () => {
+                const index = list.indexOf(cb);
+                if (index >= 0) list.splice(index, 1);
+            };
+        },
+        waitForEvent(method, sessionId, timeoutMs, label = method) {
+            return withTimeout(
+                new Promise((resolvePromise) => {
+                    const off = this.onEvent(method, sessionId, () => {
+                        off();
+                        resolvePromise();
+                    });
+                }),
+                timeoutMs,
+                label,
+            );
+        },
         send(method, params = {}, sessionId, timeoutMs = options.commandTimeoutMs) {
             if (closed || ws.readyState !== WebSocket.OPEN) {
                 return Promise.reject(new Error(`Cannot send ${method}: CDP websocket is not open`));
@@ -241,6 +339,7 @@ export async function runVeloraNavigate(cdp, page, url, options) {
     const started = nowMs();
     try {
         await cdp.send("Page.navigate", { url }, page.sessionId, options.timeoutMs);
+        await cdp.waitForEvent("Page.domContentEventFired", page.sessionId, options.timeoutMs, "velora domcontentloaded");
         if (options.settleMs) await delay(options.settleMs);
         await cdp.send(
             "Runtime.evaluate",
@@ -276,6 +375,7 @@ export async function runVeloraJs(cdp, page, url, expression, options) {
     const started = nowMs();
     try {
         await cdp.send("Page.navigate", { url }, page.sessionId, options.timeoutMs);
+        await cdp.waitForEvent("Page.domContentEventFired", page.sessionId, options.timeoutMs, "velora domcontentloaded");
         const result = await cdp.send(
             "Runtime.evaluate",
             { expression, returnByValue: true, awaitPromise: true },
@@ -385,6 +485,12 @@ export function collectMeta(options) {
         startupRepeats: options.startupRepeats,
         startupWarmup: options.startupWarmup,
         timeoutMs: options.timeoutMs,
+        navMode: options.navMode ?? "reuse",
+        benchmarkAssumptions: {
+            ...BENCHMARK_ASSUMPTIONS.compare,
+            navMode: options.navMode ?? "reuse",
+        },
+        ...veloraBuildMetaForReport(),
     };
 }
 

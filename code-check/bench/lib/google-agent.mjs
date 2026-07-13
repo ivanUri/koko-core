@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { arch, cpus, hostname, platform, release } from "node:os";
 
+import { BENCHMARK_ASSUMPTIONS, veloraBuildMetaForReport } from "./compare-core.mjs";
 import { repoRoot } from "./crawl-wikipedia.mjs";
 
 export const DEFAULT_QUERIES = [
@@ -124,7 +125,9 @@ export function collectGoogleMeta(opts) {
         chromiumTarget: "playwright-chromium-headless",
         benchmarkClass: "agent-search",
         interItemDelayMs: opts.interItemDelayMs,
-        note: "Velora uses warmed profile cookies; Chromium runs without Google session jar.",
+        veloraMeasurementStack: "cdp-fetchPage",
+        benchmarkAssumptions: BENCHMARK_ASSUMPTIONS.googleAgent,
+        ...veloraBuildMetaForReport(),
     };
 }
 

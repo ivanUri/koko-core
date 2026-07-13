@@ -53,6 +53,10 @@ pub fn acquireRef(self: *NodeList) void {
     self._rc.acquire();
 }
 
+pub fn isLive(self: *const NodeList) bool {
+    return self._rc.count > 0;
+}
+
 pub fn length(self: *NodeList, frame: *Frame) !u32 {
     return switch (self._data) {
         .child_nodes => |impl| impl.length(frame),
@@ -112,7 +116,7 @@ const Iterator = struct {
     const Entry = struct { u32, *Node };
 
     pub fn deinit(self: *Iterator, page: *Page) void {
-        self.list.deinit(page);
+        self.list.releaseRef(page);
     }
 
     pub fn releaseRef(self: *Iterator, page: *Page) void {
@@ -121,6 +125,10 @@ const Iterator = struct {
 
     pub fn acquireRef(self: *Iterator) void {
         self.list.acquireRef();
+    }
+
+    pub fn isLive(self: *const Iterator) bool {
+        return self.list.isLive();
     }
 
     pub fn next(self: *Iterator, frame: *Frame) !?Entry {

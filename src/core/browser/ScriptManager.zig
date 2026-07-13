@@ -20,6 +20,7 @@ const js = @import("../js/js.zig");
 const URL = @import("URL.zig");
 const Frame = @import("Frame.zig");
 const ScriptManagerBase = @import("ScriptManagerBase.zig");
+const LoadGuard = @import("LoadGuard.zig");
 
 const Element = @import("../dom/Element.zig");
 
@@ -205,6 +206,7 @@ pub fn addFromElement(self: *ScriptManager, comptime _: bool, script_element: *E
             .script_element = script_element,
             .frame = frame,
         } },
+        .guard = LoadGuard.Guard.init(&frame.js.execution),
     };
 
     const is_blocking = mode == .normal;
@@ -255,12 +257,14 @@ pub fn addFromElement(self: *ScriptManager, comptime _: bool, script_element: *E
                 // Let the outer errdefer handle releasing the arena if client.request fails
             }
 
-            try self.base.client.request(.{
-                .ctx = script,
+            const http_ctx = try self.base.attachHttpCtx(script);
+            self.base.client.request(.{
+                .ctx = http_ctx,
                 .params = .{
                     .url = url,
                     .method = .GET,
                     .frame_id = frame._frame_id,
+                    .attribution_frame = frame,
                     .loader_id = frame._loader_id,
                     .headers = headers,
                     .cookie_jar = &frame._session.cookie_jar,
@@ -269,12 +273,17 @@ pub fn addFromElement(self: *ScriptManager, comptime _: bool, script_element: *E
                     .resource_type = .script,
                     .notification = frame._session.notification,
                 },
-                .start_callback = if (log.enabled(.http, .debug)) Script.startCallback else null,
-                .header_callback = Script.headerCallback,
-                .data_callback = Script.dataCallback,
-                .done_callback = Script.doneCallback,
-                .error_callback = Script.errorCallback,
-            });
+                .start_callback = if (log.enabled(.http, .debug)) Script.HttpCtx.startCallback else null,
+                .header_callback = Script.HttpCtx.headerCallback,
+                .data_callback = Script.HttpCtx.dataCallback,
+                .done_callback = Script.HttpCtx.doneCallback,
+                .error_callback = Script.HttpCtx.errorCallback,
+                .shutdown_callback = Script.HttpCtx.shutdownCallback,
+            }) catch |err| {
+                script.http_ctx = null;
+                self.base.retireHttpCtx(http_ctx);
+                return err;
+            };
         }
 
         handover = true;
@@ -298,6 +307,7 @@ pub fn addFromElement(self: *ScriptManager, comptime _: bool, script_element: *E
     }
 
     script.eval();
+    self.base.client.serviceInboundCdpIfReadable();
 }
 
 pub fn parseImportmap(self: *ScriptManager, script: *const Script) !void {

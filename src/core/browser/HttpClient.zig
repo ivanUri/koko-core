@@ -46,6 +46,7 @@ pub const InterceptionLayer = @import("../../runtime/network/layer/InterceptionL
 const GoogleChromeTransport = @import("GoogleChromeTransport.zig");
 const CurlCliTransport = @import("CurlCliTransport.zig");
 const Session = @import("Session.zig");
+
 const WebSocket = @import("../webapi/net/WebSocket.zig");
 
 // This is loosely tied to a browser Page. Loading all the <scripts>, doing
@@ -366,6 +367,84 @@ pub fn abortFrame(self: *Client, frame_id: u32, opts: AbortOpts) void {
     self._abort(false, frame_id, opts);
 }
 
+/// Abort in-flight transfers owned by `frame` (pointer identity), not every
+/// transfer sharing `frame_id`. Required when pending/active pages reuse ids.
+pub fn abortTransfersAttributedTo(self: *Client, frame: *anyopaque, opts: AbortOpts) void {
+    abortChromeJobsAttributed(self, frame, opts);
+    abortNativeWebSocketsAttributed(self, frame);
+    abortConnectionsAttributed(self.in_use, frame, opts);
+    abortConnectionsAttributed(self.ready_queue, frame, opts);
+    abortTransferQueueAttributed(&self.queue, frame, opts);
+    abortTransferQueueAttributed(&self.sync_easy_queue, frame, opts);
+}
+
+fn requestAttributedTo(req: *const Request, frame: *anyopaque) bool {
+    if (req.params.attribution_frame) |owner| return owner == frame;
+    return req.ctx == frame;
+}
+
+fn transferAttributedTo(transfer: *const Transfer, frame: *anyopaque) bool {
+    return requestAttributedTo(&transfer.req, frame);
+}
+
+fn abortTransferQueueAttributed(q: *std.DoublyLinkedList, frame: *anyopaque, opts: AbortOpts) void {
+    var n = q.first;
+    while (n) |node| {
+        n = node.next;
+        const transfer: *Transfer = @fieldParentPtr("_node", node);
+        if (transferAttributedTo(transfer, frame) and shouldAbortTransfer(&transfer.req.params, opts)) {
+            q.remove(node);
+            transfer.kill();
+        }
+    }
+}
+
+fn abortConnectionsAttributed(list: std.DoublyLinkedList, frame: *anyopaque, opts: AbortOpts) void {
+    var n = list.first;
+    while (n) |node| {
+        n = node.next;
+        const conn: *http.Connection = @fieldParentPtr("node", node);
+        switch (conn.transport) {
+            .http => |transfer| {
+                if (transferAttributedTo(transfer, frame) and shouldAbortTransfer(&transfer.req.params, opts)) {
+                    transfer.kill();
+                }
+            },
+            .websocket, .none => {},
+        }
+    }
+}
+
+fn abortNativeWebSocketsAttributed(self: *Client, frame: *anyopaque) void {
+    var node = self.native_ws.first;
+    while (node) |n| {
+        const next = n.next;
+        const ws: *WebSocket = @fieldParentPtr("_poll_node", n);
+        if (@as(?*anyopaque, @ptrCast(ws._frame)) == frame) ws.kill();
+        node = next;
+    }
+}
+
+fn abortChromeJobsAttributed(self: *Client, frame: *anyopaque, opts: AbortOpts) void {
+    var n = self.chrome_jobs.first;
+    while (n) |node| {
+        const next = node.next;
+        const job: *ChromeJob = @fieldParentPtr("node", node);
+        if (requestAttributedTo(&job.req, frame) and shouldAbortTransfer(&job.req.params, opts)) {
+            self.chrome_jobs.remove(node);
+            self.http_active -= 1;
+            job.async_job.aborted = true;
+            if (job.req.shutdown_callback) |cb| {
+                cb(job.req.ctx);
+            } else {
+                job.req.error_callback(job.req.ctx, error.Abort);
+            }
+            job.deinit(self);
+        }
+        n = next;
+    }
+}
+
 // Clear `protect_from_abort` on every in-flight transfer for `frame_id`.
 // Used by the deferred commit path (Frame.finalizePendingRootCommit): once
 // the pending page has been committed, its in-flight navigation transfer no
@@ -388,6 +467,88 @@ pub fn hasProtectedTransfersForFrame(self: *Client, frame_id: u32) bool {
         protectedXhrInConnList(self.ready_queue, frame_id) or
         protectedXhrInQueue(self.queue, frame_id) or
         protectedXhrInQueue(self.sync_easy_queue, frame_id);
+}
+
+/// True while any transfer still stores `ctx` (including aborted mid-perform).
+pub fn hasLiveTransferWithCtx(self: *const Client, ctx: *const anyopaque) bool {
+    return transferWithCtxInConnList(self.in_use, ctx) or
+        transferWithCtxInConnList(self.ready_queue, ctx) or
+        transferWithCtxInQueue(self.queue, ctx) or
+        transferWithCtxInQueue(self.sync_easy_queue, ctx);
+}
+
+fn transferWithCtxInQueue(list: std.DoublyLinkedList, ctx: *const anyopaque) bool {
+    var n = list.first;
+    while (n) |node| : (n = node.next) {
+        const transfer: *Transfer = @fieldParentPtr("_node", node);
+        if (transfer.req.ctx == ctx) return true;
+    }
+    return false;
+}
+
+fn transferWithCtxInConnList(list: std.DoublyLinkedList, ctx: *const anyopaque) bool {
+    var n = list.first;
+    while (n) |node| : (n = node.next) {
+        const conn: *http.Connection = @fieldParentPtr("node", node);
+        switch (conn.transport) {
+            .http => |transfer| {
+                if (transfer.req.ctx == ctx) return true;
+            },
+            .websocket, .none => {},
+        }
+    }
+    return false;
+}
+
+/// True while any HTTP transfer or chrome job is still registered for `frame_id`.
+pub fn hasInFlightTransfersForFrame(self: *const Client, frame_id: u32) bool {
+    return transferInConnList(self.in_use, frame_id) or
+        transferInConnList(self.ready_queue, frame_id) or
+        transferInQueue(self.queue, frame_id) or
+        transferInQueue(self.sync_easy_queue, frame_id) or
+        chromeJobForFrame(self, frame_id);
+}
+
+/// After `abortFrame`, pump curl until `frame_id` has no lingering transfers.
+/// No-op while `performing` — the outer perform loop must finish first.
+pub fn drainTransfersForFrame(self: *Client, frame_id: u32, max_passes: u32) void {
+    var pass: u32 = 0;
+    while (pass < max_passes and self.hasInFlightTransfersForFrame(frame_id)) : (pass += 1) {
+        if (self.performing) return;
+        _ = self.perform(0) catch break;
+    }
+}
+
+fn transferInQueue(list: std.DoublyLinkedList, frame_id: u32) bool {
+    var n = list.first;
+    while (n) |node| : (n = node.next) {
+        const transfer: *Transfer = @fieldParentPtr("_node", node);
+        if (transfer.req.params.frame_id == frame_id) return true;
+    }
+    return false;
+}
+
+fn transferInConnList(list: std.DoublyLinkedList, frame_id: u32) bool {
+    var n = list.first;
+    while (n) |node| : (n = node.next) {
+        const conn: *http.Connection = @fieldParentPtr("node", node);
+        switch (conn.transport) {
+            .http => |transfer| {
+                if (transfer.req.params.frame_id == frame_id) return true;
+            },
+            .websocket, .none => {},
+        }
+    }
+    return false;
+}
+
+fn chromeJobForFrame(self: *const Client, frame_id: u32) bool {
+    var n = self.chrome_jobs.first;
+    while (n) |node| : (n = node.next) {
+        const job: *ChromeJob = @fieldParentPtr("node", node);
+        if (job.req.params.frame_id == frame_id) return true;
+    }
+    return false;
 }
 
 fn protectedXhrInQueue(list: std.DoublyLinkedList, frame_id: u32) bool {
@@ -812,13 +973,21 @@ fn abortChromeJobs(self: *Client, comptime abort_all: bool, frame_id: u32, opts:
             self.chrome_jobs.remove(node);
             self.http_active -= 1;
             job.async_job.aborted = true;
-            job.req.error_callback(job.req.ctx, error.Abort);
+            if (job.req.shutdown_callback) |cb| {
+                cb(job.req.ctx);
+            } else {
+                job.req.error_callback(job.req.ctx, error.Abort);
+            }
             job.deinit(self);
         } else if (params.frame_id == frame_id and shouldAbortTransfer(params, opts)) {
             self.chrome_jobs.remove(node);
             self.http_active -= 1;
             job.async_job.aborted = true;
-            job.req.error_callback(job.req.ctx, error.Abort);
+            if (job.req.shutdown_callback) |cb| {
+                cb(job.req.ctx);
+            } else {
+                job.req.error_callback(job.req.ctx, error.Abort);
+            }
             job.deinit(self);
         }
         n = next;
@@ -1341,6 +1510,12 @@ fn abortNativeWebSockets(self: *Client, comptime abort_all: bool, frame_id: u32)
 }
 
 fn processOneMessage(self: *Client, msg: http.Handles.MultiMessage, transfer: *Transfer) !bool {
+    // kill() / abort mid-perform: terminal notification already done (or
+    // callbacks nooped). Do not re-enter header/done/error user paths.
+    if (transfer.aborted and transfer._notified_fail) {
+        return true;
+    }
+
     if (msg.err == null or msg.err.? == error.RecvError) {
         transfer.detectAuthChallenge(msg.conn);
     }
@@ -1466,6 +1641,52 @@ fn processOneMessage(self: *Client, msg: http.Handles.MultiMessage, transfer: *T
     return true;
 }
 
+/// Run scheduler work between curl completions so deferred parse / navigation
+/// observers are not starved while perform() is on the stack (ebay.com).
+/// Uses the active frame scheduler directly: `runMacrotasksCdpSlice` is a no-op
+/// here because `MAX_MACROTASK_RUN_DEPTH` is already 1 on the outer CDP tick.
+fn pumpCdpMacrotasks(self: *Client, session: *Session) void {
+    if (self.cdp_client == null) return;
+    const frame = session.pendingOrCurrentFrame() orelse return;
+    const env = &session.browser.env;
+    const exec = &frame.js.execution;
+    if (exec.realmState() == .dead) return;
+    if (!exec.canEnterJs(.strict_active)) return;
+
+    var slices: u8 = 0;
+    while (slices < 48) : (slices += 1) {
+        env.runMicrotasks(.macrotask_loop);
+        if (!frame.js.scheduler.hasReadyTasks()) break;
+
+        var hs: js.HandleScope = undefined;
+        const entered = frame.js.enter(&hs) orelse break;
+        _ = frame.js.scheduler.runOne() catch {
+            entered.exit();
+            break;
+        };
+        entered.exit();
+        env.runMicrotasks(.macrotask_loop);
+    }
+    self.serviceInboundCdpIfReadable();
+}
+
+/// Drain one inbound CDP command while nested inside curl perform / HTTP callbacks.
+pub fn serviceInboundCdpIfReadable(self: *Client) void {
+    const cdp = self.cdp_client orelse return;
+    if (self.env) |env| {
+        if (env.blocksInboundCdp()) return;
+    }
+    var wait_fds = [_]http.WaitFd{.{
+        .fd = cdp.socket,
+        .events = .{ .pollin = true },
+        .revents = .{},
+    }};
+    self.handles.poll(&wait_fds, 0) catch return;
+    if (wait_fds[0].revents.pollin or wait_fds[0].revents.pollpri) {
+        _ = cdp.blocking_read(cdp.ctx);
+    }
+}
+
 fn processMessages(self: *Client) !bool {
     var processed = false;
     while (try self.handles.readMessage()) |msg| {
@@ -1485,8 +1706,14 @@ fn processMessages(self: *Client) !bool {
                     break :blk true;
                 };
                 if (done) {
+                    const browser_session = transfer.req.params.browser_session;
                     transfer.deinit();
-                    processed = true;
+                    if (browser_session) |session| {
+                        session.reapZombiePendingPages();
+                        self.pumpCdpMacrotasks(session);
+                    } else {
+                        self.serviceInboundCdpIfReadable();
+                    }
                 }
             },
             .websocket => |ws| {
@@ -1594,6 +1821,9 @@ pub const RequestParams = struct {
     request_id: u32 = undefined,
 
     frame_id: u32,
+    /// Frame that initiated this transfer. Used on teardown to abort only this
+    /// frame's loads (active/pending pages reuse `frame_id` across commit).
+    attribution_frame: ?*anyopaque = null,
     loader_id: u32,
     method: Method,
     /// When set, overrides `method` for the on-the-wire request line (e.g. "Chicken").
@@ -1646,6 +1876,8 @@ pub const RequestParams = struct {
     /// HTTP cache revalidation validators (injected in configureConn).
     revalidate_etag: ?[]const u8 = null,
     revalidate_last_modified: ?[]const u8 = null,
+    /// Root document retry after transient curl status=0 — new TCP/TLS hop.
+    force_fresh_connection: bool = false,
 
     pub const ResourceType = enum {
         document,
@@ -1926,34 +2158,41 @@ pub const Transfer = struct {
 
     pub fn terminate(self: *Transfer) void {
         self.requestFailed(error.Shutdown, false);
+        const browser_session = self.req.params.browser_session;
         self.deinit();
+        if (browser_session) |session| session.reapZombiePendingPages();
     }
 
     // internal, when the frame is shutting down. Doesn't have the same ceremony
     // as abort (doesn't send a notification, doesn't invoke an error callback)
     fn kill(self: *Transfer) void {
-        if (self.req.shutdown_callback) |cb| {
-            cb(self.req.ctx);
+        // Always detach user callbacks *first*. Even when we deinit immediately
+        // below, a concurrent/deferred curl path must never invoke Script/XHR
+        // ctx after script_manager.reset frees those arenas (nytimes.com UAF).
+        self.aborted = true;
+        self._notified_fail = true;
+        const shutdown_cb = self.req.shutdown_callback;
+        const shutdown_ctx = self.req.ctx;
+        self.req.start_callback = null;
+        self.req.shutdown_callback = null;
+        self.req.header_callback = Noop.headerCallback;
+        self.req.data_callback = Noop.dataCallback;
+        self.req.done_callback = Noop.doneCallback;
+        self.req.error_callback = Noop.errorCallback;
+
+        if (shutdown_cb) |cb| {
+            cb(shutdown_ctx);
         }
 
         if (self._performing or self.client.performing) {
-            // We're currently inside of a callback. This client, and libcurl
-            // generally don't expect a transfer to become deinitialized during
-            // a callback. We can flag the transfer as aborted (which is what
-            // we do when transfer.abort() is called in this condition) AND,
-            // since this "kill()"should prevent any future callbacks, the best
-            // we can do is null/noop them.
-            self.aborted = true;
-            self.req.start_callback = null;
-            self.req.shutdown_callback = null;
-            self.req.header_callback = Noop.headerCallback;
-            self.req.data_callback = Noop.dataCallback;
-            self.req.done_callback = Noop.doneCallback;
-            self.req.error_callback = Noop.errorCallback;
+            // Inside curl_multi_perform: cannot remove handle yet; callbacks
+            // are already noops so late notifications are safe.
             return;
         }
 
+        const browser_session = self.req.params.browser_session;
         self.deinit();
+        if (browser_session) |session| session.reapZombiePendingPages();
     }
 
     // We can force a failed request within a callback, which will eventually
@@ -2055,10 +2294,10 @@ pub const Transfer = struct {
             const curl_default_headers = req.params.curl_default_headers and
                 !(req.params.omit_sec_fetch_user and req.params.resource_type == .document);
             const sg_ss_hop = std.mem.indexOf(u8, req.params.url, "sg_ss=") != null;
-            // Never negotiate HTTP/3 for sg_ss=: multi-kB query stalls in curl-impersonate
-            // QUIC; guest Chrome uses h2 for sg_ss= hops.
-            const http_version: http.Connection.ProfileHttpVersion = if (sg_ss_hop) .h2 else .h3;
-            if (sg_ss_hop) try conn.forceFreshConnection();
+            // Guest Chrome uses h2 for document navigations (ebay.com HAR: http/2.0).
+            // curl-impersonate HTTP/3 intermittently completes with response_code=0.
+            const http_version: http.Connection.ProfileHttpVersion = if (sg_ss_hop or req.params.resource_type == .document) .h2 else .h3;
+            if (sg_ss_hop or req.params.force_fresh_connection) try conn.forceFreshConnection();
             try conn.applyProfileTransportVersion(client.network.config, curl_default_headers, http_version);
             if (sg_ss_hop) {
                 if (comptime IS_DEBUG) {
@@ -2116,7 +2355,15 @@ pub const Transfer = struct {
     pub fn reset(self: *Transfer) void {
         // Note: do NOT reset _auth_challenge here. It is needed by makeRequest
         // to determine whether to use setProxyCredentials vs setCredentials.
-        self._notified_fail = false;
+        //
+        // If the transfer was kill()'d (or otherwise aborted with terminal
+        // notification already sent), keep _notified_fail and the Noop
+        // callbacks. Clearing them here would let a later redirect/retry path
+        // re-invoke Script/XHR error_callback after arenas were freed
+        // (nytimes.com UAF).
+        if (!self.aborted) {
+            self._notified_fail = false;
+        }
         self.response_header = null;
         self.bytes_received = 0;
         self._tries += 1;

@@ -1,0 +1,55 @@
+{
+  "meta": {
+    "timestamp": "2026-07-10T04:14:07.553Z",
+    "veloraProfile": "chrome-macos-catalina",
+    "repeats": 1,
+    "maxSec": 30
+  },
+  "overall": {
+    "totalSites": 1,
+    "passedSites": 1,
+    "stableSites": 1,
+    "hungSites": 0,
+    "allPassed": true,
+    "allStable": true
+  },
+  "results": [
+    {
+      "id": "amazon",
+      "name": "Amazon",
+      "url": "https://www.amazon.com",
+      "runs": [
+        {
+          "run": 1,
+          "ok": true,
+          "ms": 3141.423041,
+          "extract": {
+            "title": "Amazon.com. Spend less. Smile more.",
+            "readyState": "complete",
+            "htmlBytes": 843399,
+            "bodyBytes": 0,
+            "linkCount": 232,
+            "hasBody": true,
+            "url": "https://www.amazon.com/"
+          }
+        }
+      ],
+      "summary": {
+        "attempts": 1,
+        "passed": 1,
+        "failed": 0,
+        "hung": false,
+        "stable": true,
+        "minMs": 3141.423041,
+        "medianMs": 3141.423041,
+        "maxMs": 3141.423041,
+        "htmlBytesRange": [
+          843399,
+          843399
+        ],
+        "errors": []
+      }
+    }
+  ],
+  "reportPath": "/Users/huydev/Desktop/velora/code-check/site-stability/results/latest.json"
+}

@@ -46,6 +46,14 @@ page_pool: std.heap.MemoryPool(Page),
 // run HttpClient.perform / V8 macrotasks concurrently on the same session.
 tick_mutex: std.Thread.Mutex = .{},
 
+// Inspector-driven Runtime.evaluate / callFunctionOn depth. Used to defer
+// commitPendingPage while CDP holds the active V8 context on the stack.
+cdp_eval_depth: u32 = 0,
+
+pub fn cdpInspectorBusy(self: *const Browser) bool {
+    return self.cdp_eval_depth > 0;
+}
+
 const InitOpts = struct {
     env: js.Env.InitOpts = .{},
     battery_config: BatteryManager.Config = .{},
@@ -110,6 +118,19 @@ pub fn runMacrotasks(self: *Browser) !void {
 
     // Timers / macrotask callbacks may queue more microtasks (promises, await).
     env.runMicrotasks(.macrotask_loop);
+}
+
+/// One macrotask turn for CDP interleaving — returns true if any task ran.
+pub fn runMacrotasksCdpSlice(self: *Browser) !bool {
+    const env = &self.env;
+    env.runMicrotasks(.macrotask_loop);
+    const ran = try env.runOneMacrotaskRound();
+    env.pumpMessageLoop();
+    env.runMicrotasks(.macrotask_loop);
+    if (self.http_client.cdp_client != null) {
+        self.http_client.serviceInboundCdpIfReadable();
+    }
+    return ran;
 }
 
 pub fn hasBackgroundTasks(self: *Browser) bool {

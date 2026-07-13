@@ -521,6 +521,32 @@ pub fn frameChildFrameRemoved(bc: *CDP.BrowserContext, event: *const Notificatio
     } }, .{ .session_id = session_id });
 }
 
+pub fn frameNavigateAck(bc: *CDP.BrowserContext, event: *const Notification.FrameNavigateAck) !void {
+    const session_id = bc.session_id orelse return;
+    const frame_id = &id.toFrameId(event.frame_id);
+    const loader_id = &id.toLoaderId(event.loader_id);
+    try bc.cdp.sendJSON(.{
+        .id = event.cdp_id,
+        .result = .{
+            .frameId = frame_id,
+            .loaderId = loader_id,
+        },
+        .sessionId = session_id,
+    });
+}
+
+pub fn frameNavigationFailed(bc: *CDP.BrowserContext, event: *const Notification.FrameNavigationFailed) !void {
+    const session_id = bc.session_id orelse return;
+    try bc.cdp.sendJSON(.{
+        .id = event.cdp_id,
+        .@"error" = .{
+            .code = -32000,
+            .message = event.message,
+        },
+        .sessionId = session_id,
+    });
+}
+
 pub fn frameNavigated(arena: Allocator, bc: *CDP.BrowserContext, event: *const Notification.FrameNavigated) !void {
     // detachTarget could be called, in which case, we still have a frame doing
     // things, but no session.

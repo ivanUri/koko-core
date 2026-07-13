@@ -75,6 +75,13 @@ _active: ?*Page = null,
 // In-flight root navigation
 _pending: ?*Page = null,
 
+/// Retries for transient root document HTTP failures (e.g. ebay.com status=0).
+_pending_root_nav_retries: u8 = 0,
+
+// Discarded pending pages waiting for in-flight document transfers whose
+// req.ctx still aliases the frame. Reaped from HttpClient after transfer.deinit.
+_zombie_pending_pages: std.ArrayList(*Page) = .{},
+
 // True when a pending root navigation's headers arrived inside a
 // reentrant HttpClient.perform (e.g. JS on the active page called fetch();
 // libcurl drained the pending navigation's response while we are still
@@ -142,6 +149,11 @@ pub fn clientHintsEnabledForUrl(self: *const Session, allocator: Allocator, url:
 }
 
 pub fn deinit(self: *Session) void {
+    for (self._zombie_pending_pages.items) |zombie| {
+        self.destroyPage(zombie);
+    }
+    self._zombie_pending_pages = .{};
+
     if (self._pending != null) {
         self.discardPendingPage();
     }
@@ -454,6 +466,8 @@ fn processFrameNavigation(self: *Session, frame: *Frame, qn: *QueuedNavigation) 
     const old_window_ptr: ?usize = if (iframe._window) |w| @intFromPtr(w) else null;
 
     frame._queued_navigation = null;
+    // Commit-time suppression — see processRootQueuedNavigation.
+    frame.suppressScheduler();
     defer self.releaseArena(qn.arena);
 
     errdefer iframe._window = null;
@@ -513,6 +527,7 @@ fn processFrameNavigation(self: *Session, frame: *Frame, qn: *QueuedNavigation) 
 // object inside is replaced, matching how iframes behave on navigation).
 fn processPopupNavigation(self: *Session, frame: *Frame, qn: *QueuedNavigation) !void {
     frame._queued_navigation = null;
+    frame.suppressScheduler();
     defer self.releaseArena(qn.arena);
 
     // Preserve popup identity fields. _name lives in the Page arena and
@@ -584,6 +599,7 @@ fn processRootQueuedNavigation(self: *Session) !void {
 fn replaceRootImmediate(self: *Session, frame_id: u32, qn: *QueuedNavigation) !void {
     defer self.arena_pool.release(qn.arena);
 
+    if (self._active) |active| active.frame.suppressScheduler();
     self.tearDownActivePage();
     const new_frame = try self.installNewActivePage(frame_id);
 
@@ -593,12 +609,31 @@ fn replaceRootImmediate(self: *Session, frame_id: u32, qn: *QueuedNavigation) !v
     };
 }
 
+fn abortOutgoingSubresources(frame: *Frame, http_client: *@import("HttpClient.zig").Client) void {
+    // Mark shutdown first so any late Script callbacks that still race bail out.
+    frame._script_manager.base.shutdown = true;
+    // Kill attributed transfers (noops mid-perform callbacks; frees idle ones).
+    http_client.abortTransfersAttributedTo(frame, .{ .skip_xhr = true });
+    // Drain libcurl messages so deferred abort notifications finish *before*
+    // reset() frees Script arenas. Otherwise errorCallback can UAF Script
+    // (LoadGuard.isFinished) on SPA navigations (nytimes.com).
+    _ = http_client.tick(0) catch {};
+    frame._script_manager.reset();
+    for (frame.child_frames.items) |child| {
+        abortOutgoingSubresources(child, http_client);
+    }
+}
+
 // Real HTTP root navigation: allocate a pending Page, leave the active Page
 // alive, and dispatch the navigation HTTP request against the pending frame.
 // The active Page (and its V8 context) stays addressable across the round-
 // trip — Runtime.evaluate, DOM.*, etc. continue to operate on the OLD page
 // until commitPendingPage swaps the pointer when response headers arrive.
 pub fn initiateRootNavigation(self: *Session, frame_id: u32, url: [:0]const u8, opts: Frame.NavigateOpts) !void {
+    if (!opts.is_document_retry) {
+        self._pending_root_nav_retries = 0;
+    }
+
     // If a previous pending page is sitting on a deferred commit, finish it
     // before discardPendingPage tears it down. drainDeferredCommit is a no-op
     // if the active page is still mid-evaluate, in which case discardPendingPage
@@ -606,6 +641,16 @@ pub fn initiateRootNavigation(self: *Session, frame_id: u32, url: [:0]const u8, 
     // supersedes it.
     self.drainDeferredCommit();
     self.discardPendingPage();
+
+    // Drop outgoing-document script fetches before the pending page loads.
+    // commitPendingPage destroys the old page later; without an early abort
+    // + script-manager reset, late HTTP callbacks (BBC Optimizely, etc.) can
+    // touch Script ctx after arenas are freed on commit.
+    if (self._active) |active| {
+        if (active.frame._frame_id == frame_id) {
+            abortOutgoingSubresources(&active.frame, &self.browser.http_client);
+        }
+    }
 
     const page = try self.allocatePage(frame_id);
     errdefer self.destroyPage(page);
@@ -697,6 +742,9 @@ pub fn commitPendingPage(self: *Session) !void {
     // shared with the pending page; the in-flight transfer survives via
     // protect_from_abort.
     //
+    // Suppress the departing realm before teardown so runaway microtasks in
+    // the old context cannot monopolize the event loop during destroyPage.
+    old_active.frame.suppressScheduler();
     // Drain V8 background tasks tied to the old context before freeing it.
     // Without this, platform worker threads can still be in Zig DOM hooks
     // (e.g. img.src → domChanged) after destroyContext → UAF / segfault.
@@ -714,13 +762,39 @@ pub fn discardPendingPage(self: *Session) void {
         log.debug(.browser, "discard pending page", .{});
     }
 
-    // Force abort all inflight queries.
-    self.browser.http_client.abortFrame(page.frame._frame_id, .{ .scope = .full });
+    const frame_ctx: *const anyopaque = &page.frame;
+
+    // Force abort all inflight queries attributed to this pending frame.
+    self.browser.http_client.abortTransfersAttributedTo(&page.frame, .{ .scope = .full });
 
     self._pending = null;
     // A discarded pending page invalidates any deferred commit targeting it.
     self._deferred_commit_pending = false;
+
+    // Transfers aborted mid-perform keep req.ctx until curl drains; do not free
+    // the frame while any transfer still aliases &page.frame.
+    if (self.browser.http_client.hasLiveTransferWithCtx(frame_ctx)) {
+        self._zombie_pending_pages.append(self.arena, page) catch {
+            self.destroyPage(page);
+        };
+        return;
+    }
     self.destroyPage(page);
+}
+
+// Free discarded pending pages once no HTTP transfer aliases their frame ctx.
+pub fn reapZombiePendingPages(self: *Session) void {
+    var i: usize = 0;
+    while (i < self._zombie_pending_pages.items.len) {
+        const zombie = self._zombie_pending_pages.items[i];
+        const frame_ctx: *const anyopaque = &zombie.frame;
+        if (self.browser.http_client.hasLiveTransferWithCtx(frame_ctx)) {
+            i += 1;
+            continue;
+        }
+        _ = self._zombie_pending_pages.swapRemove(i);
+        self.destroyPage(zombie);
+    }
 }
 
 // True iff the currently active Page has JS on the V8 stack (a script is
@@ -730,7 +804,17 @@ pub fn discardPendingPage(self: *Session) void {
 // V8 callers hold (Execution*, isolate context, frame_id-bound transfers).
 pub fn activeIsEvaluating(self: *const Session) bool {
     const active = self._active orelse return false;
-    return active.frame._script_manager.base.is_evaluating;
+    return active.frame._script_manager.base.is_evaluating or
+        self.browser.cdpInspectorBusy();
+}
+
+// True when it is safe to tear down the active Page (commit pending root nav,
+// discard stale pages). False while JS is on the V8 stack or protected HTTP
+// transfers for the frame are still in flight.
+pub fn canDestructivelyTeardown(self: *const Session, frame_id: u32) bool {
+    if (self.activeIsEvaluating()) return false;
+    if (self.browser.http_client.hasProtectedTransfersForFrame(frame_id)) return false;
+    return true;
 }
 
 // Commit any deferred pending root navigation when it is safe to do so.
@@ -739,12 +823,11 @@ pub fn activeIsEvaluating(self: *const Session) bool {
 // or if nothing was deferred. See `_deferred_commit_pending` for background.
 pub fn drainDeferredCommit(self: *Session) void {
     if (!self._deferred_commit_pending) return;
-    if (self.activeIsEvaluating()) return;
     const pending = self._pending orelse {
         self._deferred_commit_pending = false;
         return;
     };
-    if (self.browser.http_client.hasProtectedTransfersForFrame(pending.frame._frame_id)) return;
+    if (!self.canDestructivelyTeardown(pending.frame._frame_id)) return;
     self._deferred_commit_pending = false;
     pending.frame.finalizePendingRootCommit() catch |err| {
         log.err(.browser, "drain deferred commit", .{ .err = err });
@@ -835,10 +918,16 @@ pub const FinalizerCallback = struct {
     pub fn deinit(self: *FinalizerCallback, page: *Page) void {
         // Mark all identities as done so stale V8 weak callbacks
         // won't find the wrong FC if resolved_ptr_id is reused.
+        // Clear the list first — weak callbacks may destroy Identity nodes
+        // while this walk would otherwise still hold pointers.
         var id = self.identities;
+        self.identities = null;
+        self.identity_count = 0;
         while (id) |identity| {
+            const next = identity.next;
+            identity.next = null;
             identity.done = true;
-            id = identity.next;
+            id = next;
         }
         self.force_deinit(self.finalizer_ptr_id, page);
         page.releaseArena(self.arena);

@@ -214,6 +214,14 @@ pub fn getCharNumAtPosition(_: *Svg, _: f64, _: f64) i32 {
     return -1;
 }
 
+/// CSSOM `Element.style` — required for React/Next hydration of SVG icons
+/// (`host.style.fill = ...`). HTMLElement already exposes this; SVGElement
+/// must too because Element.prototype.style is not always visible on the
+/// SVG prototype chain in our bridge.
+pub fn getStyle(self: *Svg, frame: *Frame) !*@import("../css/CSSStyleProperties.zig") {
+    return self.asElement().getOrCreateStyle(frame);
+}
+
 pub const JsApi = struct {
     pub const bridge = js.Bridge(Svg);
 
@@ -223,6 +231,7 @@ pub const JsApi = struct {
         pub var class_id: bridge.ClassId = undefined;
     };
 
+    pub const style = bridge.accessor(Svg.getStyle, null, .{});
     pub const getBBox = bridge.function(Svg.getBBox, .{});
     pub const getComputedTextLength = bridge.function(Svg.getComputedTextLength, .{});
     pub const getSubStringLength = bridge.function(Svg.getSubStringLength, .{});

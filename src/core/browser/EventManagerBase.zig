@@ -420,7 +420,8 @@ pub fn dispatchDirect(
     var owned_scope: js.Local.Scope = undefined;
     const local: *const js.Local = blk: {
         if (ctx.local) |active| break :blk active;
-        ctx.localScope(&owned_scope);
+        // Page teardown may abort XHR after destroyContext; skip events if dead.
+        if (!ctx.tryLocalScope(&owned_scope)) return;
         break :blk &owned_scope.local;
     };
     defer if (!nested_in_api) {

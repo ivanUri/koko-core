@@ -145,6 +145,29 @@ pub fn tickCDP(self: *Runner, opts: TickOpts) !CDPTickResult {
     return self._tick(true, opts);
 }
 
+fn drainDeferredDocumentParse(self: *Runner, comptime is_cdp: bool) void {
+    if (comptime !is_cdp) return;
+    const frame = self.frame;
+    const http_client = self.http_client;
+    if (http_client.http_active != 0) return;
+    if (!frame.hasDeferredDocumentParsePending()) return;
+
+    const env = &self.session.browser.env;
+    var slices: u8 = 0;
+    while (slices < 48) : (slices += 1) {
+        env.runMicrotasks(.macrotask_loop);
+        if (!frame.js.scheduler.hasReadyTasks()) break;
+        var hs: js.HandleScope = undefined;
+        const entered = frame.js.enter(&hs) orelse break;
+        const ran = frame.js.scheduler.runOne() catch false;
+        entered.exit();
+        if (!ran) break;
+        env.runMicrotasks(.macrotask_loop);
+        http_client.serviceInboundCdpIfReadable();
+        if (!frame.hasDeferredDocumentParsePending()) break;
+    }
+}
+
 fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
     // Refresh self.frame from session. In case of pending page, we want to
     // take its state while loading. If we use only the current frame, we will
@@ -162,16 +185,37 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
                 return .done;
             }
 
+            if (comptime is_cdp) {
+                self.drainDeferredDocumentParse(is_cdp);
+                const early = try http_client.tick(0);
+                if (early == .cdp_socket) return .cdp_socket;
+                // scheduleDeferredFrameNavigated queues the CDP Page.navigate ack at
+                // header time. Waiting for http_active==0 delayed the response by
+                // the full document body transfer (ebay.com ~400KB).
+                var slices: u8 = 0;
+                while (slices < 8) : (slices += 1) {
+                    if (!try self.session.browser.runMacrotasksCdpSlice()) break;
+                }
+            }
+
             // Either we have active http connections, or we're in CDP
             // mode with an extra socket. Either way, we're waiting
             // for http traffic
             const http_result = try http_client.tick(@intCast(opts.ms));
+            self.drainDeferredDocumentParse(is_cdp);
             if ((comptime is_cdp) and http_result == .cdp_socket) {
                 return .cdp_socket;
             }
             return .{ .ok = 0 };
         },
         .complete => {
+            // Service inbound CDP commands before macrotasks / background-task pumps.
+            // ebay.com document load otherwise starves Runtime.evaluate for tens of seconds.
+            if (comptime is_cdp) {
+                const early = try http_client.tick(0);
+                if (early == .cdp_socket) return .cdp_socket;
+            }
+
             const session = self.session;
             if (session.currentPage()) |page| {
                 if (page.queued_navigation.items.len != 0) {
@@ -195,7 +239,16 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
             // scheduler.run could trigger new http transfers, so do not
             // store http_client.http_active BEFORE this call and then use
             // it AFTER.
-            try browser.runMacrotasks();
+            if (comptime is_cdp) {
+                var slices: u8 = 0;
+                while (slices < 64) : (slices += 1) {
+                    const early = try http_client.tick(0);
+                    if (early == .cdp_socket) return .cdp_socket;
+                    if (!try browser.runMacrotasksCdpSlice()) break;
+                }
+            } else {
+                try browser.runMacrotasks();
+            }
             frame.drainRtcEvents();
 
             const http_active = http_client.http_active;
@@ -248,7 +301,9 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
             // We should continue to run tasks, so we minimize how long
             // we'll poll for network I/O.
             var ms_to_wait = @min(opts.ms, browser.msToNextMacrotask() orelse 200);
-            if (ms_to_wait > 10 and browser.hasBackgroundTasks()) {
+            if (comptime is_cdp) {
+                ms_to_wait = @min(ms_to_wait, 5);
+            } else if (ms_to_wait > 10 and browser.hasBackgroundTasks()) {
                 // if we have background tasks, we don't want to wait too
                 // long for a message from the client. We want to go back
                 // to the top of the loop and run macrotasks.

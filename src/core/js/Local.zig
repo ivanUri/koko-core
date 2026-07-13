@@ -1344,6 +1344,29 @@ fn resolveT(comptime T: type, value: *T) Resolved {
                     if (identity_finalizer.done) {
                         var global = identity_finalizer.js_global;
                         v8.v8__Global__Reset(&global);
+                        // js_global is a copy of the identity_map Global (same V8 node).
+                        // Drop the map entry so Page.identity.deinit does not Reset again
+                        // (V8 fatal: GlobalHandles::Free IsInUse after double Reset).
+                        page.queueIdentityRemoval(resolved_ptr_id);
+                        // Page teardown may have marked done without unlinking. If the
+                        // FC is still registered and still points at this node, unlink
+                        // so detachFinalizer cannot walk a destroyed Identity.
+                        if (page.finalizer_callbacks.get(identity_finalizer.finalizer_ptr_id)) |fc| {
+                            if (fc.identities == identity_finalizer) {
+                                fc.identities = identity_finalizer.next;
+                            } else {
+                                var id = fc.identities;
+                                while (id) |node| {
+                                    if (node.next == identity_finalizer) {
+                                        node.next = identity_finalizer.next;
+                                        break;
+                                    }
+                                    id = node.next;
+                                }
+                            }
+                            if (fc.identity_count > 0) fc.identity_count -= 1;
+                        }
+                        identity_finalizer.next = null;
                         return;
                     }
 

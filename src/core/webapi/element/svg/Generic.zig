@@ -67,6 +67,10 @@ pub fn getCharNumAtPosition(self: *Generic, x: f64, y: f64) i32 {
     return Svg.getCharNumAtPosition(self._proto, x, y);
 }
 
+pub fn getStyle(self: *Generic, frame: *Frame) !*@import("../../css/CSSStyleProperties.zig") {
+    return Svg.getStyle(self._proto, frame);
+}
+
 pub const JsApi = struct {
     pub const bridge = js.Bridge(Generic);
 
@@ -76,6 +80,7 @@ pub const JsApi = struct {
         pub var class_id: bridge.ClassId = undefined;
     };
 
+    pub const style = bridge.accessor(Generic.getStyle, null, .{});
     pub const getBBox = bridge.function(Generic.getBBox, .{});
     pub const getComputedTextLength = bridge.function(Generic.getComputedTextLength, .{});
     pub const getSubStringLength = bridge.function(Generic.getSubStringLength, .{});

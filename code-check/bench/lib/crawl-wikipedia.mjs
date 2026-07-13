@@ -8,7 +8,7 @@ import { arch, cpus, hostname, platform, release } from "node:os";
 import { execSync } from "node:child_process";
 import { WebSocket } from "ws";
 
-import { Browser } from "../../../sdk/dist/index.js";
+import { assertReleaseFastBinary, BENCHMARK_ASSUMPTIONS, veloraBuildMetaForReport } from "./compare-core.mjs";
 import { ProcessMonitor } from "./process-monitor.mjs";
 
 const require = createRequire(import.meta.url);
@@ -307,7 +307,12 @@ export async function fetchPage(client, sessionId, url, timeoutMs, mode, expr = 
     });
     const nav = await client.send("Page.navigate", { url }, sessionId, timeoutMs);
     if (nav.errorText) throw new Error(`navigate: ${nav.errorText}`);
-    await Promise.race([readyOnce, delay(Math.min(timeoutMs, 12000))]);
+    const readyEvent = pageWaitFor === "load" ? "Page.loadEventFired" : "Page.domContentEventFired";
+    const readyTimeoutMs = Math.min(timeoutMs, 12000);
+    await Promise.race([
+        readyOnce,
+        delay(readyTimeoutMs).then(() => Promise.reject(new Error(`${readyEvent} not fired within ${readyTimeoutMs}ms`))),
+    ]);
     const domReadyMs = Date.now() - t0;
 
     let ttfexMs = domReadyMs;
@@ -454,9 +459,7 @@ async function runPool(items, parallelism, workerFn, interItemDelayMs = 0) {
 }
 
 export async function crawlVelora(queue, opts) {
-    if (!existsSync(veloraBin)) {
-        throw new Error(`velora binary not found: ${veloraBin}`);
-    }
+    assertReleaseFastBinary();
 
     const parallelism = Math.max(1, Math.min(opts.concurrency, queue.length));
     const multiProcess = opts.veloraMultiProcess === true;
@@ -476,54 +479,25 @@ export async function crawlVelora(queue, opts) {
             }
             const endpoint = `http://127.0.0.1:${port}`;
             await waitFor(`${endpoint}/json/version`, 15_000);
-            const browser = await Browser.connect(endpoint);
-            const page = await browser.newPage();
-            const waitUntil = opts.pageWaitFor === "load" ? "load" : "domcontentloaded";
-            const ttfx = opts.expressions?.ttfx ?? TTFX_EXPR;
-            const extractExpr = opts.expressions?.extract ?? EXTRACT_EXPR;
+            const client = await connectCdp(endpoint, 8000);
+            const { targetId } = await client.send("Target.createTarget", { url: "about:blank" });
+            const { sessionId } = await client.send("Target.attachToTarget", { targetId, flatten: true });
+            await client.send("Page.enable", {}, sessionId);
+            await client.send("Runtime.enable", {}, sessionId);
 
             return {
                 pid: proc.pid,
-                fetch: async (item) => {
-                    const t0 = Date.now();
-                    await page.goto(item.url, { waitUntil, timeout: opts.timeoutMs });
-                    const domReadyMs = Date.now() - t0;
-                    if (opts.mode === "html") {
-                        const html = await page.content();
-                        const totalMs = Date.now() - t0;
-                        if (html.length < 500) throw new Error(`empty html (len=${html.length})`);
-                        return {
-                            htmlBytes: html.length,
-                            domReadyMs,
-                            ttfexMs: domReadyMs,
-                            extractMs: 0,
-                            totalMs,
-                        };
-                    }
-                    const ttf0 = Date.now();
-                    const data = await page.extract({
-                        ttfx,
-                        expression: extractExpr,
-                        timeout: opts.timeoutMs,
-                    });
-                    const ttfexMs = Date.now() - t0;
-                    const extractMs = Date.now() - ttf0;
-                    const totalMs = Date.now() - t0;
-                    if (opts.expressions?.validate) {
-                        opts.expressions.validate(data);
-                    } else if (!data.title || (data.linkCount ?? 0) < 1) {
-                        throw new Error(`weak page data: title=${data.title} links=${data.linkCount}`);
-                    }
-                    return {
-                        ...data,
-                        domReadyMs,
-                        ttfexMs,
-                        extractMs,
-                        totalMs,
-                    };
-                },
+                fetch: (item) => fetchPage(
+                    client,
+                    sessionId,
+                    item.url,
+                    opts.timeoutMs,
+                    opts.mode,
+                    opts.expressions,
+                    opts.pageWaitFor,
+                ),
                 close: async () => {
-                    await browser.close().catch(() => undefined);
+                    client.close();
                     if (proc.exitCode == null) {
                         proc.kill("SIGTERM");
                         await new Promise((r) => proc.once("exit", r));
@@ -536,7 +510,8 @@ export async function crawlVelora(queue, opts) {
             engine: "velora",
             resources,
             parallelismModel: "multi-process",
-            architectureNote: "Velora: N isolated velora serve processes (1 tab each). RSS sums worker trees.",
+            architectureNote: "Velora: N isolated velora serve processes (1 CDP tab each, fetchPage timing). RSS sums worker trees.",
+            veloraMeasurementStack: "cdp-fetchPage",
         }, opts.benchmarkClass);
     }
 
@@ -580,6 +555,7 @@ export async function crawlVelora(queue, opts) {
             httpCacheDir,
             parallelismModel: "multi-session-single-process",
             architectureNote: "Velora: 1 velora serve process; N CDP connections (1 browser context each); shared Network, HttpClient, and optional HTTP cache.",
+            veloraMeasurementStack: "cdp-fetchPage",
         }, opts.benchmarkClass);
     } finally {
         if (proc.exitCode == null) {
@@ -643,6 +619,7 @@ export async function crawlChromium(queue, opts) {
             resources,
             parallelismModel: "multi-tab-single-process",
             architectureNote: "Chromium: N tabs in one browser; OS sees browser + renderer + GPU + network + utility processes.",
+            chromiumMeasurementStack: "cdp-fetchPage",
         }, opts.benchmarkClass);
     } finally {
         if (proc.exitCode == null) {
@@ -665,6 +642,7 @@ export function collectMeta(opts) {
 
     const cpu = cpus()[0];
     const httpCacheDir = profileHttpCacheDir(opts);
+    const lane = opts.benchmarkLane ?? (opts.veloraMultiProcess === false ? "fair" : "density");
     return {
         timestamp: new Date().toISOString(),
         hostname: hostname(),
@@ -681,13 +659,19 @@ export function collectMeta(opts) {
         veloraProfile: opts.browserProfile,
         chromiumTarget: "playwright-chromium-headless",
         benchmarkClass: "crawler-runtime",
-        benchmarkLane: opts.benchmarkLane ?? (opts.veloraMultiProcess === false ? "fair" : "density"),
+        benchmarkLane: lane,
         benchmarkName: opts.benchmarkName ?? "Real-world crawl benchmark",
         veloraMultiProcess: opts.veloraMultiProcess !== false,
         warmup: opts.warmup === true,
         warmupUrl: opts.warmup ? (opts.warmupUrl ?? warmupUrlFor(opts.lang)) : null,
         httpCacheDir,
         httpCacheEnabled: httpCacheDir != null,
+        veloraMeasurementStack: "cdp-fetchPage",
+        chromiumMeasurementStack: "cdp-fetchPage",
+        benchmarkAssumptions: lane === "fair"
+            ? BENCHMARK_ASSUMPTIONS.crawlFair
+            : BENCHMARK_ASSUMPTIONS.crawlDensity,
+        ...veloraBuildMetaForReport(),
     };
 }
 

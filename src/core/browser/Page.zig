@@ -197,23 +197,34 @@ pub fn deinit(self: *Page) void {
     }
     self.popups = .empty;
 
-    self.frame.deinit();
-
     const session = self.session;
     defer session.browser.env.memoryPressureNotification(.moderate);
 
-    // Invalidate outstanding V8 weak callbacks before releasing identity-map
-    // storage in frame_arena.
+    // Invalidate outstanding V8 weak callbacks BEFORE destroyContext pumps them
+    // during frame.deinit. Otherwise weak finalizers can releaseRef NodeList /
+    // iterators while force_deinit still owns the same instances.
+    //
+    // Also clear each FC's identity linked list after marking done. Weak
+    // callbacks with `done == true` destroy Identity nodes without unlinking
+    // (Local.zig). If those fire (background GC / child-context teardown)
+    // before MutationObserver release walks the list, detachFinalizer would
+    // UAF (SIGSEGV 0xaaa… on nytimes.com SPA navigations).
     {
         var fc_it = self.finalizer_callbacks.valueIterator();
         while (fc_it.next()) |fc_ptr| {
             var id = fc_ptr.*.identities;
+            fc_ptr.*.identities = null;
+            fc_ptr.*.identity_count = 0;
             while (id) |identity| {
+                const next = identity.next;
+                identity.next = null;
                 identity.done = true;
-                id = identity.next;
+                id = next;
             }
         }
     }
+
+    self.frame.deinit();
 
     self.flushPendingIdentityRemovals();
     self.identity.deinit();
@@ -294,10 +305,16 @@ pub fn detachFinalizer(self: *Page, finalizer_ptr_id: usize) void {
     // Mark every outstanding identity as `done` so any subsequent V8
     // weak-callback for those identities short-circuits before deref'ing
     // the (potentially recycled) FC or its target object.
+    // Detach list first so re-entrant paths and concurrent weak callbacks
+    // cannot observe a half-walked chain.
     var id = fc.identities;
+    fc.identities = null;
+    fc.identity_count = 0;
     while (id) |identity| {
+        const next = identity.next;
+        identity.next = null;
         identity.done = true;
-        id = identity.next;
+        id = next;
     }
     self.releaseArena(fc.arena);
 }

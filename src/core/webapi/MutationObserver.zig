@@ -223,6 +223,7 @@ pub fn notifyAttributeChange(
     target: *Element,
     attribute_name: String,
     old_value: ?String,
+    attribute_namespace: ?[]const u8,
     frame: *Frame,
 ) !void {
     const target_node = target.asNode();
@@ -256,6 +257,7 @@ pub fn notifyAttributeChange(
             ._type = .attributes,
             ._target = target_node,
             ._attribute_name = try arena.dupe(u8, attribute_name.str()),
+            ._attribute_namespace = if (attribute_namespace) |ns| try arena.dupe(u8, ns) else null,
             ._old_value = if (obs.options.attributeOldValue and old_value != null)
                 try arena.dupe(u8, old_value.?.str())
             else
@@ -381,7 +383,7 @@ pub fn deliverRecords(self: *MutationObserver, frame: *Frame) !void {
     defer ls.deinit();
 
     var caught: js.TryCatch.Caught = undefined;
-    ls.toLocal(self._callback).tryCall(void, .{ records, self }, &caught) catch |err| {
+    ls.toLocal(self._callback).tryCallWithThis(void, self, .{ records, self }, &caught) catch |err| {
         log.err(.frame, "MutObserver.deliverRecords", .{ .err = err, .caught = caught });
         return err;
     };
@@ -393,6 +395,7 @@ pub const MutationRecord = struct {
     _target: *Node,
     _arena: Allocator,
     _attribute_name: ?[]const u8,
+    _attribute_namespace: ?[]const u8 = null,
     _old_value: ?[]const u8,
     _added_nodes: []const *Node,
     _removed_nodes: []const *Node,
@@ -430,10 +433,7 @@ pub const MutationRecord = struct {
     }
 
     pub fn getAttributeNamespace(self: *const MutationRecord) ?[]const u8 {
-        _ = self;
-        // Non-namespaced attribute mutations return null. Full namespace tracking
-        // for setAttributeNS mutations is not yet implemented.
-        return null;
+        return self._attribute_namespace;
     }
 
     pub fn getAttributeName(self: *const MutationRecord) ?[]const u8 {

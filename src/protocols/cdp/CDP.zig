@@ -165,6 +165,13 @@ pub fn readSocket(self: *CDP) bool {
 }
 
 pub fn sendJSON(self: *CDP, message: anytype) !void {
+    if (log.cdp_trace_enabled) {
+        var buf: [4096]u8 = undefined;
+        var fba = std.heap.FixedBufferAllocator.init(&buf);
+        var aw = std.Io.Writer.Allocating.init(fba.allocator());
+        std.json.Stringify.value(message, .{ .emit_null_optional_fields = false }, &aw.writer) catch {};
+        log.debug(.cdp, "cdp-wire-out", .{ .payload = truncateCdpPayload(aw.written()) });
+    }
     try self.ws.sendJSON(message, .{ .emit_null_optional_fields = false });
 }
 
@@ -174,7 +181,18 @@ pub fn handleMessage(self: *CDP, msg: []const u8) bool {
     return true;
 }
 
+fn truncateCdpPayload(payload: []const u8) []const u8 {
+    const max = 2048;
+    if (payload.len <= max) return payload;
+    return payload[0..max];
+}
+
 pub fn processMessage(self: *CDP, msg: []const u8) !void {
+    if (log.cdp_trace_enabled) {
+        log.debug(.cdp, "cdp-wire-in", .{ .bytes = msg.len });
+    } else if (log.logRunDir() != null) {
+        log.debug(.cdp, "cdp-msg", .{ .bytes = msg.len });
+    }
     const arena = &self.message_arena;
     defer _ = arena.reset(.{ .retain_with_limit = 1024 * 16 });
     return self.dispatch(arena.allocator(), .{ .cdp = self }, msg);
@@ -395,8 +413,8 @@ pub fn disposeBrowserContext(self: *CDP, browser_context_id: []const u8) bool {
     // that the unwinding script-eval frame above us is about to dereference
     // (see Session.removePage's matching guard). Defer cleanup to
     // CDP.deinit at connection close, by which time eval has unwound.
-    if (bc.session.currentPage()) |page| {
-        if (page.frame._script_manager.base.is_evaluating) {
+    if (bc.session.currentPage() != null) {
+        if (bc.session.activeIsEvaluating()) {
             return true;
         }
     }
@@ -578,6 +596,8 @@ pub const BrowserContext = struct {
         try notification.register(.frame_created, self, onFrameCreated);
         try notification.register(.frame_navigate, self, onFrameNavigate);
         try notification.register(.frame_navigated, self, onFrameNavigated);
+        try notification.register(.frame_navigate_ack, self, onFrameNavigateAck);
+        try notification.register(.frame_navigation_failed, self, onFrameNavigationFailed);
         try notification.register(.frame_child_frame_created, self, onFrameChildFrameCreated);
         try notification.register(.frame_child_frame_removed, self, onFrameChildFrameRemoved);
         try notification.register(.frame_dom_content_loaded, self, onFrameDOMContentLoaded);
@@ -808,6 +828,16 @@ pub const BrowserContext = struct {
         return @import("domains/page.zig").frameNavigated(self.notification_arena, self, msg);
     }
 
+    pub fn onFrameNavigateAck(ctx: *anyopaque, msg: *const Notification.FrameNavigateAck) !void {
+        const self: *BrowserContext = @ptrCast(@alignCast(ctx));
+        return @import("domains/page.zig").frameNavigateAck(self, msg);
+    }
+
+    pub fn onFrameNavigationFailed(ctx: *anyopaque, msg: *const Notification.FrameNavigationFailed) !void {
+        const self: *BrowserContext = @ptrCast(@alignCast(ctx));
+        return @import("domains/page.zig").frameNavigationFailed(self, msg);
+    }
+
     pub fn onFrameChildFrameCreated(ctx: *anyopaque, msg: *const Notification.FrameChildFrameCreated) !void {
         const self: *BrowserContext = @ptrCast(@alignCast(ctx));
         return @import("domains/page.zig").frameChildFrameCreated(self, msg);
@@ -932,8 +962,12 @@ pub const BrowserContext = struct {
     }
 
     pub fn callInspector(self: *const BrowserContext, msg: []const u8) void {
+        const browser = self.session.browser;
+        browser.cdp_eval_depth += 1;
+        defer browser.cdp_eval_depth -= 1;
         self.inspector_session.send(msg);
-        self.session.browser.env.runMicrotasks(.unknown);
+        browser.env.runMicrotasks(.unknown);
+        browser.env.pumpMessageLoop();
     }
 
     pub fn onInspectorResponse(ctx: *anyopaque, _: u32, msg: []const u8) void {

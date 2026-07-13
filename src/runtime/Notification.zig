@@ -67,6 +67,8 @@ const EventListeners = struct {
     frame_created: List = .{},
     frame_navigate: List = .{},
     frame_navigated: List = .{},
+    frame_navigate_ack: List = .{},
+    frame_navigation_failed: List = .{},
     frame_network_idle: List = .{},
     frame_network_almost_idle: List = .{},
     frame_child_frame_created: List = .{},
@@ -88,6 +90,8 @@ const Events = union(enum) {
     frame_created: *Frame,
     frame_navigate: *const FrameNavigate,
     frame_navigated: *const FrameNavigated,
+    frame_navigate_ack: *const FrameNavigateAck,
+    frame_navigation_failed: *const FrameNavigationFailed,
     frame_network_idle: *const FrameNetworkIdle,
     frame_network_almost_idle: *const FrameNetworkAlmostIdle,
     frame_child_frame_created: *const FrameChildFrameCreated,
@@ -128,6 +132,17 @@ pub const FrameNavigated = struct {
     timestamp: u64,
     url: [:0]const u8,
     opts: Frame.NavigatedOpts,
+};
+
+pub const FrameNavigateAck = struct {
+    cdp_id: i64,
+    frame_id: u32,
+    loader_id: u32,
+};
+
+pub const FrameNavigationFailed = struct {
+    cdp_id: i64,
+    message: []const u8,
 };
 
 pub const FrameNetworkIdle = struct {

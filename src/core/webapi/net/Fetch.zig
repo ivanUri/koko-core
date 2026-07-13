@@ -212,13 +212,25 @@ fn httpStartCallback(response: HttpClient.Response) !void {
     self._response._http_response = response;
 }
 
+/// Safe AbortSignal probe. After navigation the signal object may already be
+/// freed with the old document; only dereference when the fetch's task owner
+/// epoch is still current (nytimes.com UAF at signal._aborted).
+fn fetchSignalAborted(self: *Fetch) bool {
+    if (self._exec.isTaskOwnerStale(self._task_owner)) {
+        self._signal = null;
+        return true;
+    }
+    if (self._signal) |signal| {
+        return signal._aborted;
+    }
+    return false;
+}
+
 fn httpHeaderDoneCallback(response: HttpClient.Response) !bool {
     const self: *Fetch = @ptrCast(@alignCast(response.ctx));
 
-    if (self._signal) |signal| {
-        if (signal._aborted) {
-            return false;
-        }
+    if (fetchSignalAborted(self)) {
+        return false;
     }
 
     const arena = self._response._arena;
@@ -307,14 +319,34 @@ fn responseHasNullBody(status: u16, method: []const u8) bool {
     return status == 204 or status == 205 or status == 304;
 }
 
-/// Keepalive fetches may outlive the initiating realm (iframe unload, worker close).
-/// After teardown, complete the HTTP transfer but do not touch V8.
+/// Keepalive (and any in-flight) fetches may outlive the initiating realm after
+/// navigation / destroyContext. Complete the HTTP transfer but do not touch V8.
 fn fetchJsUnavailable(self: *Fetch) bool {
-    return self._keepalive and self._exec.realmState() == .dead;
+    const exec = self._exec;
+    if (exec.realmState() == .dead) return true;
+    if (exec.isTaskOwnerStale(self._task_owner)) return true;
+    if (!exec.canEnterJs(.allow_draining)) return true;
+    return false;
+}
+
+/// Install a local scope for promise resolve/reject; no-op if context is gone.
+fn fetchLocalScope(self: *Fetch, ls: *js.Local.Scope) bool {
+    if (fetchJsUnavailable(self)) return false;
+    return self._exec.context.tryLocalScope(ls);
 }
 
 fn releaseFetchResponse(self: *Fetch) void {
     if (!self._owns_response) return;
+    // If the initiating realm navigated away or is dead, Page.deinit has
+    // already released arenas (response._arena owns this Fetch). Drop
+    // ownership only — response.deinit would double-free / UAF (nytimes.com).
+    // Prefer task-owner stale over realmState: frame_id is reused across
+    // pending→active commit, so realmState can look "active" while this
+    // Fetch still points at torn-down memory.
+    if (self._exec.isTaskOwnerStale(self._task_owner) or self._exec.realmState() == .dead) {
+        self._owns_response = false;
+        return;
+    }
     self._response.deinit(self._exec.context.page);
     self._owns_response = false;
 }
@@ -328,7 +360,13 @@ fn rejectFetchIntegrity(self: *Fetch) !void {
         };
     }
     var ls: js.Local.Scope = undefined;
-    exec.context.localScope(&ls);
+    if (!self._exec.context.tryLocalScope(&ls)) {
+        if (self._owns_response) {
+            self._response.deinit(self._exec.context.page);
+            self._owns_response = false;
+        }
+        return;
+    }
     defer ls.deinit();
 
     if (blocked) {
@@ -354,7 +392,13 @@ fn resolveFetchAfterBody(self: *Fetch) !void {
         const cur = exec.captureTaskOwner();
         RealmLifecycleKernel.tracePromiseDropStale(exec.frameId(), self._task_owner.epoch, cur.epoch, .fetch_completion);
         var ls: js.Local.Scope = undefined;
-        exec.context.localScope(&ls);
+        if (!self._exec.context.tryLocalScope(&ls)) {
+            if (self._owns_response) {
+                self._response.deinit(self._exec.context.page);
+                self._owns_response = false;
+            }
+            return;
+        }
         defer ls.deinit();
         ls.toLocal(self._resolver).rejectError("fetch stale", .{ .type_error = "realm navigated" });
         if (self._owns_response) {
@@ -366,7 +410,13 @@ fn resolveFetchAfterBody(self: *Fetch) !void {
 
     if (self._mode == .@"same-origin" and !isSameOriginResolved(exec, self._response._url)) {
         var ls: js.Local.Scope = undefined;
-        exec.context.localScope(&ls);
+        if (!self._exec.context.tryLocalScope(&ls)) {
+            if (self._owns_response) {
+                self._response.deinit(self._exec.context.page);
+                self._owns_response = false;
+            }
+            return;
+        }
         defer ls.deinit();
         defer if (self._owns_response) {
             self._response.deinit(exec.context.page);
@@ -376,7 +426,13 @@ fn resolveFetchAfterBody(self: *Fetch) !void {
     }
 
     var ls: js.Local.Scope = undefined;
-    exec.context.localScope(&ls);
+    if (!self._exec.context.tryLocalScope(&ls)) {
+        if (self._owns_response) {
+            self._response.deinit(self._exec.context.page);
+            self._owns_response = false;
+        }
+        return;
+    }
     defer ls.deinit();
 
     const js_val = try ls.local.zigValueToJs(self._response, .{});
@@ -394,7 +450,13 @@ fn rejectFetchNetworkError(self: *Fetch) !void {
         };
     }
     var ls: js.Local.Scope = undefined;
-    exec.context.localScope(&ls);
+    if (!self._exec.context.tryLocalScope(&ls)) {
+        if (self._owns_response) {
+            self._response.deinit(self._exec.context.page);
+            self._owns_response = false;
+        }
+        return;
+    }
     defer ls.deinit();
 
     if (blocked) {
@@ -428,7 +490,13 @@ fn resolveFetchOnHeaders(self: *Fetch) !void {
         const cur = exec.captureTaskOwner();
         RealmLifecycleKernel.tracePromiseDropStale(exec.frameId(), self._task_owner.epoch, cur.epoch, .fetch_completion);
         var ls: js.Local.Scope = undefined;
-        exec.context.localScope(&ls);
+        if (!self._exec.context.tryLocalScope(&ls)) {
+            if (self._owns_response) {
+                self._response.deinit(self._exec.context.page);
+                self._owns_response = false;
+            }
+            return;
+        }
         defer ls.deinit();
         ls.toLocal(self._resolver).rejectError("fetch stale", .{ .type_error = "realm navigated" });
         if (self._owns_response) {
@@ -440,7 +508,13 @@ fn resolveFetchOnHeaders(self: *Fetch) !void {
 
     if (self._mode == .@"same-origin" and !isSameOriginResolved(exec, self._response._url)) {
         var ls: js.Local.Scope = undefined;
-        exec.context.localScope(&ls);
+        if (!self._exec.context.tryLocalScope(&ls)) {
+            if (self._owns_response) {
+                self._response.deinit(self._exec.context.page);
+                self._owns_response = false;
+            }
+            return;
+        }
         defer ls.deinit();
         defer if (self._owns_response) {
             self._response.deinit(exec.context.page);
@@ -450,7 +524,13 @@ fn resolveFetchOnHeaders(self: *Fetch) !void {
     }
 
     var ls: js.Local.Scope = undefined;
-    exec.context.localScope(&ls);
+    if (!self._exec.context.tryLocalScope(&ls)) {
+        if (self._owns_response) {
+            self._response.deinit(self._exec.context.page);
+            self._owns_response = false;
+        }
+        return;
+    }
     defer ls.deinit();
 
     const js_val = try ls.local.zigValueToJs(self._response, .{});
@@ -470,11 +550,9 @@ fn applyOpaqueFilter(res: *Response) void {
 fn httpDataCallback(response: HttpClient.Response, data: []const u8) !void {
     const self: *Fetch = @ptrCast(@alignCast(response.ctx));
 
-    // Check if aborted
-    if (self._signal) |signal| {
-        if (signal._aborted) {
-            return error.Abort;
-        }
+    // Check if aborted (epoch-gated; signal may be freed after navigation)
+    if (fetchSignalAborted(self)) {
+        return error.Abort;
     }
 
     try self._buf.appendSlice(self._response._arena, data);
@@ -557,7 +635,13 @@ fn httpDoneCallback(ctx: *anyopaque) !void {
         const cur = exec.captureTaskOwner();
         RealmLifecycleKernel.tracePromiseDropStale(exec.frameId(), self._task_owner.epoch, cur.epoch, .fetch_completion);
         var ls: js.Local.Scope = undefined;
-        exec.context.localScope(&ls);
+        if (!self._exec.context.tryLocalScope(&ls)) {
+            if (self._owns_response) {
+                self._response.deinit(self._exec.context.page);
+                self._owns_response = false;
+            }
+            return;
+        }
         defer ls.deinit();
         ls.toLocal(self._resolver).rejectError("fetch stale", .{ .type_error = "realm navigated" });
         if (self._owns_response) {
@@ -568,7 +652,13 @@ fn httpDoneCallback(ctx: *anyopaque) !void {
     }
 
     var ls: js.Local.Scope = undefined;
-    exec.context.localScope(&ls);
+    if (!self._exec.context.tryLocalScope(&ls)) {
+        if (self._owns_response) {
+            self._response.deinit(self._exec.context.page);
+            self._owns_response = false;
+        }
+        return;
+    }
     defer ls.deinit();
 
     // Capture resolver before response.deinit: Fetch lives in response._arena.
@@ -613,8 +703,13 @@ fn httpErrorCallback(ctx: *anyopaque, err: anyerror) void {
     response._http_response = null;
 
     if (self._fetch_resolved) {
-        if (self._stream) |stream| {
-            stream._controller.doError("fetch error") catch {};
+        // Body stream error path: only touch V8 if the initiating realm is
+        // still enterable. After destroyContext (SPA nav / page teardown),
+        // doError → localScope panics (nytimes.com mid-load aborts).
+        if (!fetchJsUnavailable(self)) {
+            if (self._stream) |stream| {
+                stream._controller.doError("fetch error") catch {};
+            }
         }
         return;
     }
@@ -625,10 +720,16 @@ fn httpErrorCallback(ctx: *anyopaque, err: anyerror) void {
     }
 
     // the response is only passed on v8 on success, if we're here, it's safe to
-    // clear this. (defer since `self is in the response's arena).
-    defer if (self._owns_response) {
-        response.deinit(self._exec.context.page);
-    };
+    // clear this. (defer since `self is in the response's arena). Never deinit
+    // when the realm is already dead — Page owns/released the arena.
+    defer {
+        if (self._owns_response and self._exec.realmState() != .dead) {
+            self._owns_response = false;
+            response.deinit(self._exec.context.page);
+        } else {
+            self._owns_response = false;
+        }
+    }
 
     const exec = self._exec;
     var blocked = exec.isTaskOwnerStale(self._task_owner);
@@ -639,7 +740,9 @@ fn httpErrorCallback(ctx: *anyopaque, err: anyerror) void {
     }
 
     var ls: js.Local.Scope = undefined;
-    exec.context.localScope(&ls);
+    if (!fetchLocalScope(self, &ls)) {
+        return;
+    }
     defer ls.deinit();
 
     if (blocked) {

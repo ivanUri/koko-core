@@ -88,6 +88,70 @@ pub fn init(
     return local.resolvePromise(crypto_key);
 }
 
+/// Import a raw HMAC key (Web Crypto `importKey("raw", …, {name:"HMAC", hash})`).
+/// Used by AWS WAF challenge.js token signing (Amazon.com Bot Control).
+pub fn importKey(
+    params: algorithm.Init.HmacKeyGen,
+    key_data: []const u8,
+    extractable: bool,
+    key_usages: []const []const u8,
+    exec: *const Execution,
+) !js.Promise {
+    const local = exec.context.local orelse return error.JsEntryIllegal;
+
+    if (!std.ascii.eqlIgnoreCase(params.name, "HMAC")) {
+        return local.rejectPromise(.{ .dom_exception = .{ .err = error.NotSupported } });
+    }
+
+    const digest = crypto.findDigest(switch (params.hash) {
+        .string => |str| str,
+        .object => |obj| obj.name,
+    }) catch return local.rejectPromise(.{
+        .dom_exception = .{ .err = error.NotSupported },
+    });
+
+    var mask: u8 = 0;
+    for (key_usages) |usage| {
+        if (std.mem.eql(u8, usage, "sign")) {
+            mask |= CryptoKey.Usages.sign;
+        } else if (std.mem.eql(u8, usage, "verify")) {
+            mask |= CryptoKey.Usages.verify;
+        } else {
+            return local.rejectPromise(.{
+                .dom_exception = .{ .err = error.SyntaxError },
+            });
+        }
+    }
+    if (key_usages.len == 0) {
+        return local.rejectPromise(.{
+            .dom_exception = .{ .err = error.SyntaxError },
+        });
+    }
+
+    if (key_data.len == 0) {
+        return local.rejectPromise(.{ .dom_exception = .{ .err = error.OperationError } });
+    }
+
+    // Optional length (bits) must match raw key material size when provided.
+    if (params.length) |length_bits| {
+        if (length_bits == 0 or length_bits % 8 != 0 or length_bits / 8 != key_data.len) {
+            return local.rejectPromise(.{ .dom_exception = .{ .err = error.OperationError } });
+        }
+    }
+
+    const key = try exec.arena.dupe(u8, key_data);
+
+    const crypto_key = try exec._factory.create(CryptoKey{
+        ._type = .hmac,
+        ._extractable = extractable,
+        ._usages = mask,
+        ._key = key,
+        ._vary = .{ .digest = digest },
+    });
+
+    return local.resolvePromise(crypto_key);
+}
+
 pub fn sign(
     algo: algorithm.Sign,
     crypto_key: *const CryptoKey,

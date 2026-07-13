@@ -15,6 +15,7 @@
 const std = @import("std");
 
 const js = @import("../js/js.zig");
+const Scheduler = @import("../js/Scheduler.zig");
 
 const URL = @import("../browser/URL.zig");
 const Frame = @import("../browser/Frame.zig");
@@ -302,11 +303,27 @@ pub fn init(url: []const u8, options: ?WorkerOptions, exec: *Execution) !*Worker
     return self;
 }
 
+fn cancelDeferredScriptTasks(scheduler: *Scheduler, worker: *Worker) void {
+    const Matcher = struct {
+        var target: *Worker = undefined;
+        fn match(ctx: *anyopaque, callback: Scheduler.Callback) bool {
+            if (callback != DeferBlobScriptCallback.run and callback != DeferFetchedScriptCallback.run) {
+                return false;
+            }
+            const entry: *DeferBlobScriptCallback = @ptrCast(@alignCast(ctx));
+            return entry.worker == target;
+        }
+    };
+    Matcher.target = worker;
+    scheduler.cancelTasks(Matcher.match);
+}
+
 /// Abort the worker, drop parent-frame references, and release resources.
 pub fn destroy(self: *Worker) void {
     if (self._terminated) return;
     // Shared worker script hosts are not tracked on frame.workers.
     if (!self._shared_mode) {
+        cancelDeferredScriptTasks(&self._frame.js.scheduler, self);
         self._frame.removeWorker(self);
     }
     self.deinitForSession(self._frame._session);
@@ -405,13 +422,9 @@ fn scheduleDeferredFetchedScript(self: *Worker, script: []const u8) !void {
     const callback = try arena.create(DeferFetchedScriptCallback);
     callback.* = .{ .worker = self, .script = script, .arena = arena };
 
-    // Shared worker script eval touches V8 (handler sync + onconnect dispatch).
-    // Run on the worker scheduler so it is not nested inside a frame microtask
-    // checkpoint (DisallowJavascriptExecution / SIGSEGV on getFunction).
-    const scheduler = if (self._shared_mode)
-        &self._worker_scope.js.scheduler
-    else
-        &frame.js.scheduler;
+    // Worker script eval must run on the worker scheduler, never nested inside a
+    // frame microtask checkpoint (DisallowJavascriptExecution / SIGSEGV).
+    const scheduler = &self._worker_scope.js.scheduler;
 
     try scheduler.add(callback, DeferFetchedScriptCallback.run, 0, .{
         .name = "Worker.deferFetchedScript",
@@ -689,10 +702,7 @@ fn scheduleDeferredBlobScript(self: *Worker, script: []const u8) !void {
     const callback = try arena.create(DeferBlobScriptCallback);
     callback.* = .{ .worker = self, .script = script, .arena = arena };
 
-    const scheduler = if (self._shared_mode)
-        &self._worker_scope.js.scheduler
-    else
-        &frame.js.scheduler;
+    const scheduler = &self._worker_scope.js.scheduler;
 
     try scheduler.add(callback, DeferBlobScriptCallback.run, 0, .{
         .name = "Worker.deferBlobScript",

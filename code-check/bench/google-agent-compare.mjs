@@ -33,7 +33,7 @@ const defaults = {
     queriesFile: defaultQueries,
     report: defaultReport,
     logLevel: "warn",
-    browserProfile: "chrome-local-huys-macbook-pro",
+    browserProfile: "chrome-macos-catalina",
     chromePath: null,
     sampleIntervalMs: 100,
     interItemDelayMs: 0,

@@ -152,8 +152,17 @@ pub fn doError(self: *ReadableStreamDefaultController, err: []const u8) !void {
     self._stream._stored_error = try self._arena.dupe(u8, err);
 
     const exec = self._execution;
+    // Context may already be destroyed during navigation abort of in-flight
+    // fetch streams. Mark errored in Zig state; skip V8 reject if unenterable.
+    if (!exec.canEnterJs(.allow_draining)) {
+        self._pending_reads.clearRetainingCapacity();
+        return;
+    }
     var ls: js.Local.Scope = undefined;
-    exec.context.localScope(&ls);
+    if (!exec.context.tryLocalScope(&ls)) {
+        self._pending_reads.clearRetainingCapacity();
+        return;
+    }
     defer ls.deinit();
 
     for (self._pending_reads.items) |resolver| {

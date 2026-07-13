@@ -44,7 +44,9 @@ pub fn Entry(comptime Inner: type, comptime field: ?[]const u8) type {
 
         pub fn deinit(self: *Self, page: *Page) void {
             if (@hasDecl(Inner, "releaseRef")) {
-                self._inner.releaseRef(page);
+                if (!@hasDecl(Inner, "isLive") or self._inner.isLive()) {
+                    self._inner.releaseRef(page);
+                }
             }
             page.factory.destroy(self);
         }
