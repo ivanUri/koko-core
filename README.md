@@ -144,7 +144,7 @@ console.log(await page.content());
 await browser.close();
 ```
 
-See `velora-connect/README.md` for launch profiles, semantic tree, NodeHandle, and CLI `velora-connect-fetch`.
+See `velora-connect/sdk/README.md` for launch profiles, semantic tree, NodeHandle, and CLI `velora-connect-fetch`.
 
 ### Fingerprint probes
 
