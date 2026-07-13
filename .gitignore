@@ -16,6 +16,7 @@ code-check/tmp
 code-check/wpt-fetch/results/
 logs-demo/
 logs-test/
+wpt/
 google-search-debug/tmp/
 Kameleo-decode/
 wpt-lightpanda-fork-backup/

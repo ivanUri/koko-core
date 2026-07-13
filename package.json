@@ -41,7 +41,7 @@
     "bench:google:agent:report": "node code-check/bench/render-google-agent-report.mjs",
     "bench:google:agent:publish": "npm run bench:google:agent && npm run bench:google:agent:report",
     "site:stability": "node code-check/site-stability/run.mjs",
-    "site:stability:quick": "node code-check/site-stability/run.mjs --site example,httpbin,wikipedia,github,hn --repeats 2",
+    "site:stability:quick": "node code-check/site-stability/run.mjs --site example,wikipedia,github,hn --repeats 2",
     "site:stability:stress": "node code-check/site-stability/stress-renavigate.mjs",
     "bench:live-sites": "node code-check/bench/live-sites-perf.mjs",
     "prebench:live-sites": "npm run bench:preflight"
