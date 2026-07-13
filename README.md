@@ -125,35 +125,26 @@ zig build
 zig build run -- serve --host 127.0.0.1 --port 9222
 ```
 
-### Connect with the Velora SDK
+### Connect with Velora Connect (separate repo)
 
-Velora provides a TypeScript SDK that talks directly to the browser runtime over CDP, without relying on third-party browser automation framework internals.
+CDP client and agent APIs live in **[velora-connect](https://github.com/ivanUri/velora-connect)** (`@velora/connect`), not in this engine repo. Typical layout:
+
+```text
+Desktop/velora/          # this repo — zig build
+Desktop/velora-connect/  # npm install && npm run build
+```
 
 ```ts
-import { Browser } from "@velora/sdk";
+import { Browser } from "@velora/connect";
 
 const browser = await Browser.connect("http://127.0.0.1:9222");
 const page = await browser.newPage();
-
 await page.goto("https://example.com", { waitUntil: "load" });
-
-const html = await page.content();
-console.log(html);
-
+console.log(await page.content());
 await browser.close();
 ```
 
-### Fetch a Page from the CLI
-
-```bash
-VELORA_CDP=http://127.0.0.1:9222 npx velora-fetch https://example.com
-```
-
-### Search (SDK)
-
-```ts
-await page.search("https://www.bing.com/", "velora browser", { waitUntil: "domcontentloaded" });
-```
+See `velora-connect/README.md` for launch profiles, semantic tree, NodeHandle, and CLI `velora-connect-fetch`.
 
 ### Fingerprint probes
 
@@ -200,9 +191,6 @@ src/
   support/      # Shared utilities
   testing/      # Isolated test infrastructure
 
-sdk/
-  src/          # TypeScript CDP SDK and CLI helpers
-
 code-check/
   lifecycle/    # Browser lifecycle and realm correctness tests
   suite/        # Fingerprint / bot-detection regression suite
@@ -212,20 +200,6 @@ code-check/
 ```
 
 This structure keeps engine internals isolated, runtime services explicit, automation protocols modular, public APIs stable, and browser execution embeddable.
-
-## SDK
-
-The Velora SDK is a lightweight TypeScript layer for working with the runtime over CDP. It provides:
-
-- WebSocket CDP transport
-- Browser, context, and page helpers
-- Wait strategies for navigation and network activity
-- Network tracking
-- Session state capture and restore
-- Robust HTML extraction
-- `page.type()`, `page.press()`, `page.search()` for form-based search flows
-
-See `sdk/README.md` for SDK-specific usage.
 
 ## Development Focus
 

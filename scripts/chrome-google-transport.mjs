@@ -4,13 +4,16 @@
  *
  * Prerequisite:
  *   CHROME_CDP=http://127.0.0.1:9222  (Chrome started with --remote-debugging-port=9222)
+ *   velora-connect: cd ../velora-connect && npm install && npm run build
  *
  * stdin:  {"url":"https://...","headers":[["Name","value"],...]}
  * stdout: {"status":200,"finalUrl":"...","protocol":"h3","contentType":"...","bodyBase64":"..."}
  */
 import { readFileSync } from "node:fs";
 
-import { connectChrome, pageUrl } from "./lib/chrome-cdp.mjs";
+import { importChromeCdp } from "./lib/velora-connect-root.mjs";
+
+const { connectChrome, pageUrl } = await importChromeCdp();
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 

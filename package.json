@@ -1,21 +1,12 @@
 {
   "name": "velora",
   "private": true,
-  "workspaces": [
-    "sdk"
-  ],
   "dependencies": {
-    "@velora/sdk": "workspace:*",
     "playwright": "^1.60.0",
     "ws": "^8.21.0"
   },
   "scripts": {
-    "build:sdk": "npm run build --workspace=@velora/sdk",
     "test:profile": "node scripts/cdp-profile-probe.mjs",
-    "preexample:crawl": "npm run build:sdk",
-    "example:crawl": "node sdk/examples/crawl-wikipedia.mjs --launch --limit 8 --concurrency 2",
-    "preexample:agent": "npm run build:sdk",
-    "example:agent": "node sdk/examples/agent-semantic.mjs --launch",
     "bench:preflight": "node scripts/bench-preflight.mjs",
     "prebench:compare": "npm run bench:preflight",
     "bench:compare": "node code-check/bench/compare-runner.mjs",
