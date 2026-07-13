@@ -4,7 +4,7 @@
  *
  * Prerequisite:
  *   CHROME_CDP=http://127.0.0.1:9222  (Chrome started with --remote-debugging-port=9222)
- *   velora-connect: cd ../velora-connect && npm install && npm run build
+ *   velora-connect: cd ../velora-connect/sdk && npm install && npm run build
  *
  * stdin:  {"url":"https://...","headers":[["Name","value"],...]}
  * stdout: {"status":200,"finalUrl":"...","protocol":"h3","contentType":"...","bodyBase64":"..."}
