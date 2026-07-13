@@ -60,7 +60,7 @@ Google document hops with `sg_ss=` use the `google-search` profile policy and
 `scripts/chrome-google-transport.mjs` (real Chrome CDP network via **velora-connect**). Build connect first:
 
 ```bash
-cd ../velora-connect && npm install && npm run build
+cd ../velora-connect/sdk && npm install && npm run build
 ```
 
 Prerequisite: Chrome with `--remote-debugging-port=9222`, or set `VELORA_CHROME_SPAWN=1`.

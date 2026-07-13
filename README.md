@@ -131,7 +131,7 @@ CDP client and agent APIs live in **[velora-connect](https://github.com/ivanUri/
 
 ```text
 Desktop/velora/          # this repo — zig build
-Desktop/velora-connect/  # npm install && npm run build
+Desktop/velora-connect/sdk/  # npm install && npm run build
 ```
 
 ```ts
