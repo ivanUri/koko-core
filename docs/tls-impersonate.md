@@ -49,18 +49,18 @@ vendor/curl-impersonate/curl_chrome146 -sI "https://www.google.com/search?q=test
 
 ## Complementary work (not sufficient alone)
 
-- Session/cookie persist (velora-connect `session-state.ts`)
-- Consent dismiss + `page.search()` type+Enter (velora-connect `page.ts`)
+- Session/cookie persist (velora-sdk `session-state.ts`)
+- Consent dismiss + `page.search()` type+Enter (velora-sdk `page.ts`)
 - Residential proxy for production scale
 - reCAPTCHA solver (fallback only)
 
 ## Runtime (no code-check harness)
 
 Google document hops with `sg_ss=` use the `google-search` profile policy and
-`scripts/chrome-google-transport.mjs` (real Chrome CDP network via **velora-connect**). Build connect first:
+`scripts/chrome-google-transport.mjs` (real Chrome CDP network via **velora-sdk**). Build SDK first:
 
 ```bash
-cd ../velora-connect/sdk && npm install && npm run build
+cd ../velora-sdk && npm install && npm run build
 ```
 
 Prerequisite: Chrome with `--remote-debugging-port=9222`, or set `VELORA_CHROME_SPAWN=1`.

@@ -125,17 +125,17 @@ zig build
 zig build run -- serve --host 127.0.0.1 --port 9222
 ```
 
-### Connect with Velora Connect (separate repo)
+### Connect with Velora SDK (separate repo)
 
-CDP client and agent APIs live in **[velora-connect](https://github.com/ivanUri/velora-connect)** (`@velora/connect`), not in this engine repo. Typical layout:
+CDP client and agent APIs live in **[velora-sdk](https://github.com/ivanUri/velora-sdk)** (`@velora/sdk`), not in this engine repo. Typical layout:
 
 ```text
-Desktop/velora/          # this repo — zig build
-Desktop/velora-connect/sdk/  # npm install && npm run build
+Desktop/velora/      # this repo — zig build
+Desktop/velora-sdk/  # npm install && npm run build
 ```
 
 ```ts
-import { Browser } from "@velora/connect";
+import { Browser } from "@velora/sdk";
 
 const browser = await Browser.connect("http://127.0.0.1:9222");
 const page = await browser.newPage();
@@ -144,7 +144,7 @@ console.log(await page.content());
 await browser.close();
 ```
 
-See `velora-connect/sdk/README.md` for launch profiles, semantic tree, NodeHandle, and CLI `velora-connect-fetch`.
+See `velora-sdk/README.md` for launch profiles, semantic tree, NodeHandle, and CLI `velora-fetch`.
 
 ### Fingerprint probes
 
