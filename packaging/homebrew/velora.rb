@@ -6,12 +6,12 @@ class Velora < Formula
   desc "AI-first headless browser runtime for automation and agents"
   homepage "https://github.com/ivanUri/velora"
   license "AGPL-3.0-only"
-  version "1.0.1"
+  version "1.0.2"
 
   on_macos do
     on_arm do
-      url "https://github.com/ivanUri/velora/releases/download/v1.0.1/velora-1.0.1-darwin-arm64.tar.gz"
-      sha256 "eae175f28ce80f932d5b33197518890c56b6e81eddebf06e97f9f19de167beca"
+      url "https://github.com/ivanUri/velora/releases/download/v1.0.2/velora-1.0.2-darwin-arm64.tar.gz"
+      sha256 "a24e00dae2db1371f0a4715bd5865979f5bebaa692781c0f28ddb1faff41ded0"
     end
   end
 
