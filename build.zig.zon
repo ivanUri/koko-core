@@ -1,6 +1,6 @@
 .{
     .name = .velora,
-    .version = "1.0.0-dev",
+    .version = "1.0.1-dev",
     .fingerprint = 0x28ac395eb86b6c16, // Changing this has security and trust implications.
     .minimum_zig_version = "0.15.2",
     .dependencies = .{

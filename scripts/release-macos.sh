@@ -22,7 +22,8 @@ echo "==> Building V8 snapshot..."
 zig build -Doptimize=ReleaseFast snapshot_creator -- src/snapshot.bin
 
 echo "==> Building velora (ReleaseFast + embedded snapshot)..."
-zig build -Doptimize=ReleaseFast -Dsnapshot_path=src/snapshot.bin
+# @embedFile in Snapshot.zig is relative to src/core/js/
+zig build -Doptimize=ReleaseFast -Dsnapshot_path=../../snapshot.bin
 
 BIN="$ROOT/zig-out/bin/velora"
 DYLIB_DIR="$ROOT/vendor/curl-impersonate"
@@ -54,6 +55,9 @@ cp "$DYLIB_DIR/libcurl-impersonate.4.8.0.dylib" "$OUT_DIR/lib/"
 mkdir -p "$OUT_DIR/share/velora/browser"
 cp browser/velora.json "$OUT_DIR/share/velora/browser/"
 cp -R browser/templates "$OUT_DIR/share/velora/browser/"
+if [[ -d browser/catalog ]]; then
+  cp -R browser/catalog "$OUT_DIR/share/velora/browser/"
+fi
 cp -R browser/policies "$OUT_DIR/share/velora/browser/"
 
 # Homebrew installs to <prefix>/bin and <prefix>/lib — point velora at ../lib
