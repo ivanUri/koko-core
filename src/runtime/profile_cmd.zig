@@ -129,7 +129,6 @@ pub fn run(allocator: Allocator, opts: Options) !void {
 
 fn runBundleScript(allocator: Allocator, args: []const []const u8, out_path: ?[]const u8) !void {
     const root = try BrowserRoot.get(allocator);
-    defer allocator.free(root);
     const script = try BrowserRoot.joinPath(allocator, root, "scripts/profile-bundle.mjs");
     defer allocator.free(script);
 

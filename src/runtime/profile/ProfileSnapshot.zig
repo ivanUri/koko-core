@@ -37,8 +37,8 @@ pub fn profileFingerprintPath(profile_dir: []const u8, buf: []u8) ?[]const u8 {
 }
 
 pub fn catalogFingerprintPath(allocator: Allocator, template_id: []const u8, version: u32) ![]const u8 {
+    // BrowserRoot.get caches the install root — do not free it here.
     const root = try BrowserRoot.get(allocator);
-    defer allocator.free(root);
     return std.fmt.allocPrint(allocator, "{s}/browser/catalog/{s}/{d}/fingerprint.json", .{
         root, template_id, version,
     });

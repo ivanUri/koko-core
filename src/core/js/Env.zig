@@ -774,6 +774,11 @@ pub fn runMicrotasks(self: *Env, source: TaskSource) void {
 
             if (contextIsUnpublishedPendingRoot(ctx)) continue;
 
+            if (switch (ctx.global) {
+                .frame => |frame| frame._session.navigationCritical(),
+                .worker => false,
+            }) continue;
+
             if (st == .dead) {
                 if (comptime IS_DEBUG) std.debug.assert(st == .dead);
                 RealmLifecycleKernel.traceMicrotaskCheckpointDeadRealm(frame_id, epoch, st);
@@ -1003,6 +1008,7 @@ pub fn blocksInboundCdp(self: *const Env) bool {
         switch (ctx.global) {
             .frame => |frame| {
                 if (frame._script_manager.base.is_evaluating) return true;
+                if (frame._session.navigationCritical()) return true;
             },
             .worker => {},
         }

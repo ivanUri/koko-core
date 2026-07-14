@@ -113,12 +113,15 @@ pub fn schedule(
 
     // Fingerprint yb() I() polls with setTimeout(10) after appendChild returns
     // from the Promise executor; run same-turn when nested (see effective_delay).
+    // Other sites must defer — timer callbacks require V8's central stack and
+    // crash with IsOnCentralStack when pumped from nested HTML parse / HTTP callbacks.
     if (effective_delay <= 10 and exec.context.call_depth > 0) {
         switch (exec.context.global) {
             .frame => |frame| {
-                frame.pumpDueTimersNow(0);
+                const is_fp = std.mem.indexOf(u8, frame.url, "fingerprint.com") != null;
                 const env = &frame._session.browser.env;
-                if (std.mem.indexOf(u8, frame.url, "fingerprint.com") != null) {
+                if (is_fp) {
+                    frame.pumpDueTimersNow(0);
                     env.drainFingerprintYbMicrotasks(frame.js);
                 } else {
                     var mt: u8 = 0;

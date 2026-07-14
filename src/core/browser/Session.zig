@@ -96,6 +96,11 @@ _zombie_pending_pages: std.ArrayList(*Page) = .{},
 // tick or before a new root navigation discards the pending page).
 _deferred_commit_pending: bool = false,
 
+/// Depth of `initiateRootNavigation` / `commitPendingPage`. Gates reentrant
+/// `HttpClient.serviceInboundCdpIfReadable` (Page.navigate during commitPendingPage
+/// or post-commit HTTP callbacks) to avoid tearing down pages concurrently.
+_navigation_critical_depth: u32 = 0,
+
 // When set during CDP dispatch, `currentFrame()` resolves to this child frame
 // (iframe target session). Cleared after each command.
 cdp_frame_override: ?u32 = null,
@@ -630,6 +635,9 @@ fn abortOutgoingSubresources(frame: *Frame, http_client: *@import("HttpClient.zi
 // trip — Runtime.evaluate, DOM.*, etc. continue to operate on the OLD page
 // until commitPendingPage swaps the pointer when response headers arrive.
 pub fn initiateRootNavigation(self: *Session, frame_id: u32, url: [:0]const u8, opts: Frame.NavigateOpts) !void {
+    self.enterNavigationCritical();
+    defer self.leaveNavigationCritical();
+
     if (!opts.is_document_retry) {
         self._pending_root_nav_retries = 0;
     }
@@ -700,6 +708,9 @@ pub fn initiateRootNavigation(self: *Session, frame_id: u32, url: [:0]const u8, 
 //      by protect_from_abort, which abortFrame's default .normal scope
 //      honors. The caller clears the flag AFTER we return.
 pub fn commitPendingPage(self: *Session) !void {
+    self.enterNavigationCritical();
+    defer self.leaveNavigationCritical();
+
     const pending = self._pending orelse {
         assert(false, "Session.commitPendingPage - no pending page", .{});
         unreachable;
@@ -815,6 +826,18 @@ pub fn canDestructivelyTeardown(self: *const Session, frame_id: u32) bool {
     if (self.activeIsEvaluating()) return false;
     if (self.browser.http_client.hasProtectedTransfersForFrame(frame_id)) return false;
     return true;
+}
+
+pub fn navigationCritical(self: *const Session) bool {
+    return self._navigation_critical_depth > 0;
+}
+
+pub fn enterNavigationCritical(self: *Session) void {
+    self._navigation_critical_depth += 1;
+}
+
+pub fn leaveNavigationCritical(self: *Session) void {
+    if (self._navigation_critical_depth > 0) self._navigation_critical_depth -= 1;
 }
 
 // Commit any deferred pending root navigation when it is safe to do so.

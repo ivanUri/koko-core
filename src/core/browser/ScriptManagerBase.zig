@@ -868,6 +868,7 @@ pub fn drainOrderedAsyncScripts(self: *ScriptManagerBase) void {
             .frame => |fe| {
                 if (fe.mode != .async) break :drain_async;
                 if (!script.complete) break :drain_async;
+                if (!script.deliverable()) break :drain_async;
                 _ = self.async_scripts.popFirst();
                 defer script.deinit();
                 script.eval();
@@ -887,6 +888,7 @@ pub fn evaluate(self: *ScriptManagerBase) void {
         // Async chunks still drain from doneCallback via drainOrderedAsyncScripts.
         return;
     }
+    if (self.owner.parentFrame()._session.navigationCritical()) return;
 
     self.is_evaluating = true;
     defer self.is_evaluating = false;
@@ -1047,6 +1049,7 @@ pub const Script = struct {
         const owner = self.manager.owner;
         const frame = owner.parentFrame();
         if (@intFromPtr(frame) == 0) return false;
+        if (frame._session.navigationCritical()) return false;
         return self.guard.isDeliverableForRealm(owner.captureTaskOwner(), .{
             .manager_shutdown = false,
             .realm_dead_or_draining = frame._realm_state == .dead or frame._realm_state == .draining,
@@ -1248,6 +1251,7 @@ pub const Script = struct {
         }
 
         const manager = self.manager;
+        if (manager.owner.parentFrame()._session.navigationCritical()) return;
         switch (self.extra) {
             .frame => |fe| switch (fe.mode) {
                 .async => manager.drainOrderedAsyncScripts(),

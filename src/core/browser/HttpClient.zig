@@ -86,6 +86,10 @@ dirty: std.DoublyLinkedList = .{},
 // Whether we're currently inside a curl_multi_perform call.
 performing: bool = false,
 
+// Depth of user HTTP callbacks (header/data/done). Inbound CDP must not run
+// reentrantly while a callback is on the stack.
+_transfer_callback_depth: u32 = 0,
+
 // Use to generate the next request ID
 next_request_id: u32 = 0,
 
@@ -143,6 +147,10 @@ cdp_client: ?CDPClient = null,
 
 // Optional env for pumping schedulers during blocking syncRequest waits.
 env: ?*js.Env = null,
+
+/// Active browsing session (set by Browser.newSession). Used to gate reentrant CDP
+/// while navigation teardown runs and V8 contexts are temporarily absent.
+session: ?*Session = null,
 
 max_response_size: usize,
 
@@ -843,6 +851,8 @@ fn deliverChunkToUser(transfer: *Transfer, chunk: []const u8) void {
         transfer._callback_error = err;
         return;
     };
+    transfer.client.enterTransferCallback();
+    defer transfer.client.leaveTransferCallback();
     transfer.req.data_callback(Response.fromTransfer(transfer), boosted) catch |err| {
         transfer._callback_error = err;
         return;
@@ -1020,7 +1030,7 @@ fn processChromeJobs(self: *Client) void {
             .document => |doc| {
                 self.chrome_jobs.remove(node);
                 self.http_active -= 1;
-                completeChromeJob(job, doc) catch |err| {
+                completeChromeJob(self, job, doc) catch |err| {
                     job.req.params.notification.dispatch(.http_request_fail, &.{
                         .request = &job.req,
                         .err = err,
@@ -1034,7 +1044,7 @@ fn processChromeJobs(self: *Client) void {
     }
 }
 
-fn completeChromeJob(job: *ChromeJob, doc: GoogleChromeTransport.Document) !void {
+fn completeChromeJob(client: *Client, job: *ChromeJob, doc: GoogleChromeTransport.Document) !void {
     const arena = job.req.params.arena;
     const body = try arena.dupe(u8, doc.body);
     const content_type = try arena.dupe(u8, doc.content_type);
@@ -1062,6 +1072,9 @@ fn completeChromeJob(job: *ChromeJob, doc: GoogleChromeTransport.Document) !void
         .data = body,
         .request = &job.req,
     });
+    client.enterTransferCallback();
+    defer client.leaveTransferCallback();
+
     try job.req.data_callback(response, body);
 
     const proceed = try job.req.header_callback(response);
@@ -1317,6 +1330,8 @@ fn completeCliDocument(transfer: *Transfer, doc: CurlCliTransport.Document) !voi
 
     transfer._performing = true;
     defer transfer._performing = false;
+    transfer.client.enterTransferCallback();
+    defer transfer.client.leaveTransferCallback();
 
     const proceed = transfer.req.header_callback(Response.fromTransfer(transfer)) catch |err| {
         log.err(.http, "header_callback", .{ .err = err, .req = transfer });
@@ -1597,6 +1612,8 @@ fn processOneMessage(self: *Client, msg: http.Handles.MultiMessage, transfer: *T
     // since we still need it here.
     transfer._performing = true;
     defer transfer._performing = false;
+    transfer.client.enterTransferCallback();
+    defer transfer.client.leaveTransferCallback();
 
     if (msg.err != null and !is_conn_close_recv) {
         transfer.requestFailed(transfer._callback_error orelse msg.err.?, true);
@@ -1670,11 +1687,27 @@ fn pumpCdpMacrotasks(self: *Client, session: *Session) void {
     self.serviceInboundCdpIfReadable();
 }
 
+pub fn enterTransferCallback(self: *Client) void {
+    self._transfer_callback_depth += 1;
+}
+
+pub fn leaveTransferCallback(self: *Client) void {
+    if (self._transfer_callback_depth > 0) self._transfer_callback_depth -= 1;
+}
+
+pub fn inTransferCallback(self: *const Client) bool {
+    return self._transfer_callback_depth > 0;
+}
+
 /// Drain one inbound CDP command while nested inside curl perform / HTTP callbacks.
 pub fn serviceInboundCdpIfReadable(self: *Client) void {
     const cdp = self.cdp_client orelse return;
+    if (self.performing or self.inTransferCallback()) return;
     if (self.env) |env| {
         if (env.blocksInboundCdp()) return;
+    }
+    if (self.session) |session| {
+        if (session.navigationCritical()) return;
     }
     var wait_fds = [_]http.WaitFd{.{
         .fd = cdp.socket,
@@ -2601,6 +2634,9 @@ pub const Transfer = struct {
                 return error.ResponseTooLarge;
             }
         }
+
+        transfer.client.enterTransferCallback();
+        defer transfer.client.leaveTransferCallback();
 
         const proceed = transfer.req.header_callback(Response.fromTransfer(transfer)) catch |err| {
             log.err(.http, "header_callback", .{ .err = err, .req = transfer });

@@ -91,10 +91,12 @@ pub fn newSession(self: *Browser, notification: *Notification) !*Session {
     self.session = @as(Session, undefined);
     const session = &self.session.?;
     try Session.init(session, self, notification);
+    self.http_client.session = session;
     return session;
 }
 
 pub fn closeSession(self: *Browser) void {
+    self.http_client.session = null;
     if (self.session) |*session| {
         session.deinit();
         self.session = null;

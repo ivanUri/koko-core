@@ -1047,6 +1047,14 @@ pub fn drainMicrotasksAfterDomInsertion(self: *Frame) void {
 
 /// Run overdue scheduler tasks up to `max_delay_ms` without a full macrotask pump.
 pub fn pumpDueTimersNow(self: *Frame, max_delay_ms: u32) void {
+    // Timer callbacks must run on V8's central stack. Nested DOM / script paths
+    // (HTML parse, appendChild, HTTP doneCallback) are not safe — defer instead.
+    if (self.js.call_depth > 0 and std.mem.indexOf(u8, self.url, "fingerprint.com") == null) {
+        self.scheduleDeferredMacrotaskPump(0) catch |err| {
+            log.warn(.frame, "defer timer pump nested", .{ .err = err });
+        };
+        return;
+    }
     const env = &self._session.browser.env;
     var pass: u8 = 0;
     while (pass < 32) : (pass += 1) {
