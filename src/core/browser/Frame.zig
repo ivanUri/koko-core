@@ -211,6 +211,10 @@ _document_parse_scheduled: bool = false,
 _document_parse_active: bool = false,
 /// Throttle inbound CDP socket polls during long sync parse / script eval.
 _cdp_poll_counter: u16 = 0,
+/// Heap capacity for text nodes grown by the HTML parser (`appendParserAdjacentText`).
+/// Avoids O(n²) arena blow-up when html5ever emits large style/script bodies as
+/// many small AppendText chunks (bitbucket.org ~591KB CSS → multi-GB RSS).
+_parser_text_cap: std.AutoHashMapUnmanaged(*CData, usize) = .empty,
 
 _style_manager: StyleManager,
 _script_manager: ScriptManager,
@@ -635,6 +639,8 @@ pub fn bumpRealmNavigationEpoch(self: *Frame) void {
     self._document_parse_scheduled = false;
     self._document_parse_active = false;
     self._cdp_poll_counter = 0;
+    // Capacities are only valid for the parse that created them.
+    self._parser_text_cap = .empty;
     // New navigation installs a new execution world; suppression belongs to
     // the discarded realm and must not poison the replacement realm.
     self._scheduler_suppressed = false;
@@ -668,6 +674,7 @@ pub fn prepareForOutgoingAbort(self: *Frame) void {
     self._script_manager.base.shutdown = true;
     self.document.cancelStreamingParser();
     self._document_parse_active = false;
+    self._parser_text_cap = .empty;
     // Knitsail lifecycle timers must not fire on a departing Google SERP realm
     // after root re-nav (poisoned scheduler / heap pressure into next parse).
     self._knitsail_lifecycle_pumped = false;
@@ -2011,6 +2018,7 @@ const DeferDocumentParseCallback = struct {
         } else {
             parser.parseWithEncoding(self.raw_html, self.frame.charset);
         }
+        self.frame.clearParserTextCaps();
         // Re-nav may have marked draining mid-parse via a nested path; do not
         // run scripts / load events on a departing realm.
         if (!navDeliverable(self.frame)) return null;
@@ -2988,6 +2996,7 @@ fn frameDoneCallback(ctx: *anyopaque) !void {
                 parser.parseWithEncoding(raw_html, self.charset);
             }
             self.releaseArena(html_arena);
+            self.clearParserTextCaps();
             if (!navDeliverable(self)) return;
             self.reconcileParserIframeSrc();
             self.drainQueuedNavigationsAfterParse();
@@ -3938,9 +3947,7 @@ pub fn appendNew(self: *Frame, parent: *Node, child: Node.NodeOrText) !void {
             // If we're appending this adjacently to a text node, we should merge
             if (parent.lastChild()) |sibling| {
                 if (sibling.is(CData.Text)) |tn| {
-                    const cdata = tn._proto;
-                    const existing = cdata.getData().str();
-                    cdata._data = try String.concat(self.arena, &.{ existing, txt });
+                    try self.appendParserAdjacentText(tn._proto, txt);
                     return;
                 }
             }
@@ -3955,6 +3962,62 @@ pub fn appendNew(self: *Frame, parent: *Node, child: Node.NodeOrText) !void {
         // own special processing. Still, set it to be clear.
         .child_already_connected = false,
     });
+}
+
+/// Merge parser `AppendText` into an adjacent CharacterData with geometric growth.
+///
+/// `String.concat` re-allocates `existing+txt` on every call (arena never frees),
+/// so large RAWTEXT bodies (style/script) emitted as many small tendrils become
+/// O(n²) time and memory. Own a growable heap buffer while parsing instead.
+fn appendParserAdjacentText(self: *Frame, cdata: *CData, txt: []const u8) !void {
+    if (txt.len == 0) return;
+    const existing = cdata._data.str();
+    const need = existing.len + txt.len;
+
+    if (need <= 12) {
+        cdata._data = try String.concat(self.arena, &.{ existing, txt });
+        _ = self._parser_text_cap.remove(cdata);
+        return;
+    }
+
+    if (self._parser_text_cap.getPtr(cdata)) |cap| {
+        if (need <= cap.*) {
+            // Buffer is owned by this parse (never interned); extend in place.
+            const dest: []u8 = @constCast(existing.ptr)[0..cap.*];
+            @memcpy(dest[existing.len..][0..txt.len], txt);
+            cdata._data = String.wrap(dest[0..need]);
+            return;
+        }
+        var new_cap = cap.*;
+        while (new_cap < need) {
+            const doubled = new_cap *% 2;
+            if (doubled <= new_cap) {
+                new_cap = need;
+                break;
+            }
+            new_cap = doubled;
+        }
+        const new_buf = try self.arena.alloc(u8, new_cap);
+        @memcpy(new_buf[0..existing.len], existing);
+        @memcpy(new_buf[existing.len..][0..txt.len], txt);
+        cdata._data = String.wrap(new_buf[0..need]);
+        cap.* = new_cap;
+        return;
+    }
+
+    // First growth past SSO (or first merge of a createTextNode heap string).
+    // Do not mutate `existing` — it may be interned or a one-shot dupe.
+    var new_cap: usize = @max(need * 2, 64);
+    if (new_cap < need) new_cap = need;
+    const new_buf = try self.arena.alloc(u8, new_cap);
+    @memcpy(new_buf[0..existing.len], existing);
+    @memcpy(new_buf[existing.len..][0..txt.len], txt);
+    cdata._data = String.wrap(new_buf[0..need]);
+    try self._parser_text_cap.put(self.arena, cdata, new_cap);
+}
+
+fn clearParserTextCaps(self: *Frame) void {
+    self._parser_text_cap = .empty;
 }
 
 // called from the parser when the node and all its children have been added
