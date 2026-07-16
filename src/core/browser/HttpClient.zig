@@ -2576,10 +2576,16 @@ pub const Transfer = struct {
 
         const url = try conn.getEffectiveUrl();
 
-        const status: u16 = if (self._auth_challenge != null)
-            407
-        else
-            try conn.getResponseCode();
+        // Report real wire status for server 401; only proxy challenges are 407.
+        // (Previously any _auth_challenge was reported as 407, which also
+        // mislabeled DataDome bot 401s when a dummy challenge was stored.)
+        const status: u16 = blk: {
+            if (self._auth_challenge) |ac| {
+                if (ac.source == .proxy) break :blk 407;
+                if (ac.status != 0) break :blk ac.status;
+            }
+            break :blk try conn.getResponseCode();
+        };
 
         const proto = conn.httpProtocolLabel();
         self.response_header = .{
@@ -2702,6 +2708,25 @@ pub const Transfer = struct {
         }
     }
 
+    /// True when the response carries a Basic/Digest WWW-/Proxy-Authenticate
+    /// challenge that curl/CDP Fetch can retry. DataDome and similar bot walls
+    /// return 401/407 **without** those headers (HTML interstitial only).
+    fn hasParseableAuthChallengeHeaders(conn: *const http.Connection, status: u16) bool {
+        if (conn.getResponseHeader("WWW-Authenticate", 0)) |hdr| {
+            if (http.AuthChallenge.parse(status, .server, hdr.value)) |_| return true else |_| {}
+        }
+        if (conn.getConnectHeader("WWW-Authenticate", 0)) |hdr| {
+            if (http.AuthChallenge.parse(status, .server, hdr.value)) |_| return true else |_| {}
+        }
+        if (conn.getResponseHeader("Proxy-Authenticate", 0)) |hdr| {
+            if (http.AuthChallenge.parse(status, .proxy, hdr.value)) |_| return true else |_| {}
+        }
+        if (conn.getConnectHeader("Proxy-Authenticate", 0)) |hdr| {
+            if (http.AuthChallenge.parse(status, .proxy, hdr.value)) |_| return true else |_| {}
+        }
+        return false;
+    }
+
     fn detectAuthChallenge(transfer: *Transfer, conn: *const http.Connection) void {
         const status = conn.getResponseCode() catch return;
         const connect_status = conn.getConnectCode() catch return;
@@ -2711,17 +2736,28 @@ pub const Transfer = struct {
             return;
         }
 
+        // Prefer the status that matched (CONNECT tunnel proxy-auth uses connect_status).
+        const challenge_status: u16 = if (status == 401 or status == 407) status else connect_status;
+
         if (conn.getResponseHeader("WWW-Authenticate", 0)) |hdr| {
-            transfer._auth_challenge = http.AuthChallenge.parse(status, .server, hdr.value) catch null;
-        } else if (conn.getConnectHeader("WWW-Authenticate", 0)) |hdr| {
-            transfer._auth_challenge = http.AuthChallenge.parse(status, .server, hdr.value) catch null;
-        } else if (conn.getResponseHeader("Proxy-Authenticate", 0)) |hdr| {
-            transfer._auth_challenge = http.AuthChallenge.parse(status, .proxy, hdr.value) catch null;
-        } else if (conn.getConnectHeader("Proxy-Authenticate", 0)) |hdr| {
-            transfer._auth_challenge = http.AuthChallenge.parse(status, .proxy, hdr.value) catch null;
-        } else {
-            transfer._auth_challenge = .{ .status = status, .source = null, .scheme = null, .realm = null };
+            transfer._auth_challenge = http.AuthChallenge.parse(challenge_status, .server, hdr.value) catch null;
+            if (transfer._auth_challenge != null) return;
         }
+        if (conn.getConnectHeader("WWW-Authenticate", 0)) |hdr| {
+            transfer._auth_challenge = http.AuthChallenge.parse(challenge_status, .server, hdr.value) catch null;
+            if (transfer._auth_challenge != null) return;
+        }
+        if (conn.getResponseHeader("Proxy-Authenticate", 0)) |hdr| {
+            transfer._auth_challenge = http.AuthChallenge.parse(challenge_status, .proxy, hdr.value) catch null;
+            if (transfer._auth_challenge != null) return;
+        }
+        if (conn.getConnectHeader("Proxy-Authenticate", 0)) |hdr| {
+            transfer._auth_challenge = http.AuthChallenge.parse(challenge_status, .proxy, hdr.value) catch null;
+            if (transfer._auth_challenge != null) return;
+        }
+        // No parseable Basic/Digest challenge (e.g. DataDome 401 HTML interstitial).
+        // Do not invent a dummy challenge — that skipped the body and stranded navigation.
+        transfer._auth_challenge = null;
     }
 
     pub fn updateCredentials(self: *Transfer, userpwd: [:0]const u8) void {
@@ -2819,12 +2855,17 @@ pub const Transfer = struct {
         if (!transfer._first_data_received) {
             transfer._first_data_received = true;
 
-            // Skip body for responses that will be retried (redirects, auth challenges).
+            // Skip body only for responses that will be retried without delivering
+            // HTML: redirects, real Basic/Digest auth challenges, misdirected once.
+            // DataDome/bot 401s ship an HTML interstitial (no WWW-Authenticate) that
+            // must be parsed — skipping it caused EmptyDocumentBody on wsj.com.
             const status = conn.getResponseCode() catch |err| {
                 log.err(.http, "getResponseCode", .{ .err = err, .source = "body callback" });
                 return http.writefunc_error;
             };
-            if ((status >= 300 and status <= 399) or status == 401 or status == 407 or
+            const skip_auth_body = (status == 401 or status == 407) and
+                Transfer.hasParseableAuthChallengeHeaders(conn, status);
+            if ((status >= 300 and status <= 399) or skip_auth_body or
                 (status == 421 and transfer._misdirected_retries == 0))
             {
                 transfer._skip_body = true;
