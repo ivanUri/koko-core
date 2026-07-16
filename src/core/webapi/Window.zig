@@ -1247,10 +1247,10 @@ pub const JsApi = struct {
     pub const frameElement = bridge.accessor(Window.getFrameElement, null, .{});
     pub const onerror = bridge.accessor(Window.getOnError, Window.setOnError, .{});
     pub const onmessage = bridge.accessor(Window.getOnMessage, Window.setOnMessage, .{});
-    pub const ontouchstart = bridge.accessor(Window.getOnTouchStart, Window.setOnTouchStart, .{});
-    pub const ontouchend = bridge.accessor(Window.getOnTouchEnd, Window.setOnTouchEnd, .{});
-    pub const ontouchmove = bridge.accessor(Window.getOnTouchMove, Window.setOnTouchMove, .{});
-    pub const ontouchcancel = bridge.accessor(Window.getOnTouchCancel, Window.setOnTouchCancel, .{});
+    // Desktop Chrome omits Window ontouch* handlers (`'ontouchstart' in window` → false).
+    // Touch profiles reinstall them via WindowKeysIntelligent (on* → null data props)
+    // when listed in profile window_keys. Always exposing them breaks FPJS touchSupport
+    // consistency with maxTouchPoints === 0.
     pub const onrejectionhandled = bridge.accessor(Window.getOnRejectionHandled, Window.setOnRejectionHandled, .{});
     pub const onunhandledrejection = bridge.accessor(Window.getOnUnhandledRejection, Window.setOnUnhandledRejection, .{});
     pub const event = bridge.accessor(Window.getEvent, null, .{ .null_as_undefined = true });
@@ -1365,7 +1365,9 @@ pub const JsApi = struct {
         }
     }.prompt, .{});
 
-    pub const webdriver = bridge.accessor(Window.getWebDriver, null, .{});
+    // WPT testdriver only. Production/antidetect snapshots omit this — BotD
+    // flags `'webdriver' in window` as WebDriver automation (distinctiveProps).
+    pub const webdriver = bridge.accessor(Window.getWebDriver, null, .{ .wpt_only = true });
 };
 
 const CrossOriginWindow = struct {

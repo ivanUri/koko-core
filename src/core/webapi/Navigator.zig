@@ -139,6 +139,14 @@ pub fn getProduct(_: *const Navigator, _: *Frame) []const u8 {
     return "Gecko";
 }
 
+pub fn getProductSub(_: *const Navigator, frame: *Frame) []const u8 {
+    return frame.navigatorState().productSub();
+}
+
+pub fn getVendorSub(_: *const Navigator, frame: *Frame) []const u8 {
+    return frame.navigatorState().vendorSub();
+}
+
 pub fn getWebdriver(_: *const Navigator, _: *Frame) bool {
     return false;
 }
@@ -428,6 +436,8 @@ pub const JsApi = struct {
     pub const maxTouchPoints = bridge.accessor(Navigator.getMaxTouchPoints, null, .{});
     pub const vendor = bridge.accessor(Navigator.getVendor, null, .{});
     pub const product = bridge.accessor(Navigator.getProduct, null, .{});
+    pub const productSub = bridge.accessor(Navigator.getProductSub, null, .{});
+    pub const vendorSub = bridge.accessor(Navigator.getVendorSub, null, .{});
     pub const webdriver = bridge.accessor(Navigator.getWebdriver, null, .{});
     pub const plugins = bridge.accessor(Navigator.getPlugins, null, .{});
     pub const mimeTypes = bridge.accessor(Navigator.getMimeTypes, null, .{});

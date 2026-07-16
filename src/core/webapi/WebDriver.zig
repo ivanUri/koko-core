@@ -17,7 +17,8 @@ const std = @import("std");
 const js = @import("../js/js.zig");
 const Page = @import("../browser/Page.zig");
 
-// This type is only included when the binary is built with the -Dwpt_extensions flag
+// Testdriver helper for WPT. Window.webdriver accessor is wpt_only so production
+// antidetect snapshots do not expose `'webdriver' in window` (BotD WebDriver signal).
 const WebDriver = @This();
 
 _pad: bool = false,

@@ -504,6 +504,18 @@ fn parseJson(bytes: []const u8) !LoadedProfile {
         if (!Spoofing.uaPlatformMatchesNavigator(doc.navigator.userAgent, doc.navigator.platform)) {
             return error.InvalidProfile;
         }
+        if (!Spoofing.uaChPlatformMatchesNavigator(doc.navigator.platform, doc.userAgentData.platform)) {
+            return error.InvalidProfile;
+        }
+        if (!Spoofing.uaChArchitectureMatchesPlatform(doc.navigator.platform, doc.userAgentData.architecture)) {
+            return error.InvalidProfile;
+        }
+        if (!Spoofing.touchMatchesUserAgent(doc.navigator.userAgent, doc.navigator.maxTouchPoints)) {
+            return error.InvalidProfile;
+        }
+        if (!Spoofing.pdfViewerMatchesPlugins(doc.navigator.pdfViewerEnabled, doc.plugins.len)) {
+            return error.InvalidProfile;
+        }
     }
 
     var profile: LoadedProfile = .{

@@ -1,6 +1,6 @@
 const std = @import("std");
 
-/// Cross-layer fingerprint consistency: UA version ↔ UA-CH brands ↔ TLS target.
+/// Cross-layer fingerprint consistency: UA version ↔ UA-CH brands ↔ platform/arch/touch.
 pub const ChromeVersion = struct {
     major: u32,
     full: []const u8,
@@ -55,8 +55,62 @@ pub fn uaPlatformMatchesNavigator(user_agent: []const u8, navigator_platform: []
     if (std.mem.eql(u8, navigator_platform, "Win32")) {
         return std.mem.indexOf(u8, user_agent, "Windows") != null;
     }
-    if (std.mem.eql(u8, navigator_platform, "Linux x86_64")) {
+    if (std.mem.eql(u8, navigator_platform, "Linux x86_64") or std.mem.eql(u8, navigator_platform, "Linux armv8l")) {
         return std.mem.indexOf(u8, user_agent, "Linux") != null;
+    }
+    return true;
+}
+
+/// UA-CH `architecture` vs navigator.platform pairs that real Chrome reports.
+pub fn uaChArchitectureMatchesPlatform(navigator_platform: []const u8, architecture: []const u8) bool {
+    if (architecture.len == 0) return true;
+    if (std.mem.eql(u8, navigator_platform, "MacIntel")) {
+        // Apple Silicon still reports MacIntel + architecture "arm"; Intel Mac uses "x86".
+        return std.mem.eql(u8, architecture, "arm") or std.mem.eql(u8, architecture, "x86");
+    }
+    if (std.mem.eql(u8, navigator_platform, "Win32")) {
+        return std.mem.eql(u8, architecture, "x86");
+    }
+    if (std.mem.startsWith(u8, navigator_platform, "Linux")) {
+        return std.mem.eql(u8, architecture, "x86") or std.mem.eql(u8, architecture, "arm");
+    }
+    return true;
+}
+
+/// Mobile UA must expose touch points; pure desktop UA with maxTouchPoints 0 is OK.
+/// Desktop UA with high touch counts is allowed (touch-screen laptops).
+pub fn touchMatchesUserAgent(user_agent: []const u8, max_touch_points: u32) bool {
+    const mobile = isMobileUserAgent(user_agent);
+    if (mobile and max_touch_points == 0) return false;
+    return true;
+}
+
+pub fn isMobileUserAgent(user_agent: []const u8) bool {
+    if (std.mem.indexOf(u8, user_agent, "Mobile") != null) return true;
+    if (std.mem.indexOf(u8, user_agent, "Android") != null) return true;
+    if (std.mem.indexOf(u8, user_agent, "iPhone") != null) return true;
+    if (std.mem.indexOf(u8, user_agent, "iPad") != null) return true;
+    return false;
+}
+
+/// Chrome desktop PDF stack: pdfViewerEnabled true ⇔ at least one plugin present.
+pub fn pdfViewerMatchesPlugins(pdf_viewer_enabled: bool, plugin_count: usize) bool {
+    if (pdf_viewer_enabled and plugin_count == 0) return false;
+    if (!pdf_viewer_enabled and plugin_count > 0) return false;
+    return true;
+}
+
+/// UA-CH platform string vs navigator.platform (high-level OS family).
+pub fn uaChPlatformMatchesNavigator(navigator_platform: []const u8, ua_ch_platform: []const u8) bool {
+    if (ua_ch_platform.len == 0) return true;
+    if (std.mem.eql(u8, navigator_platform, "MacIntel")) {
+        return std.mem.eql(u8, ua_ch_platform, "macOS");
+    }
+    if (std.mem.eql(u8, navigator_platform, "Win32")) {
+        return std.mem.eql(u8, ua_ch_platform, "Windows");
+    }
+    if (std.mem.startsWith(u8, navigator_platform, "Linux")) {
+        return std.mem.eql(u8, ua_ch_platform, "Linux") or std.mem.eql(u8, ua_ch_platform, "Chrome OS");
     }
     return true;
 }
@@ -77,4 +131,28 @@ test "Spoofing: validate brand/UA consistency" {
         .{ .brand = "Google Chrome", .version = "131" },
     };
     try validateAntidetectConsistency(ua, &brands, "131.0.6778.86");
+}
+
+test "Spoofing: MacIntel accepts arm and x86 UA-CH arch" {
+    try testing.expect(uaChArchitectureMatchesPlatform("MacIntel", "arm"));
+    try testing.expect(uaChArchitectureMatchesPlatform("MacIntel", "x86"));
+    try testing.expect(!uaChArchitectureMatchesPlatform("MacIntel", "arm64"));
+    try testing.expect(uaChArchitectureMatchesPlatform("Win32", "x86"));
+    try testing.expect(!uaChArchitectureMatchesPlatform("Win32", "arm"));
+}
+
+test "Spoofing: mobile UA requires touch points" {
+    const mobile = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/131.0.0.0 Mobile Safari/537.36";
+    try testing.expect(!touchMatchesUserAgent(mobile, 0));
+    try testing.expect(touchMatchesUserAgent(mobile, 5));
+    const desktop = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36";
+    try testing.expect(touchMatchesUserAgent(desktop, 0));
+    try testing.expect(touchMatchesUserAgent(desktop, 1));
+}
+
+test "Spoofing: pdf viewer vs plugins" {
+    try testing.expect(pdfViewerMatchesPlugins(true, 5));
+    try testing.expect(pdfViewerMatchesPlugins(false, 0));
+    try testing.expect(!pdfViewerMatchesPlugins(true, 0));
+    try testing.expect(!pdfViewerMatchesPlugins(false, 3));
 }

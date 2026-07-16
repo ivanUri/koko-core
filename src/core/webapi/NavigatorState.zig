@@ -96,6 +96,16 @@ pub fn product(_: *const NavigatorState) []const u8 {
     return "Gecko";
 }
 
+/// Chrome/Safari/Opera report a fixed productSub (BotD product_sub detector).
+pub fn productSub(_: *const NavigatorState) []const u8 {
+    return "20030107";
+}
+
+/// Chrome reports empty vendorSub.
+pub fn vendorSub(_: *const NavigatorState) []const u8 {
+    return "";
+}
+
 pub fn webdriver(_: *const NavigatorState) bool {
     return false;
 }

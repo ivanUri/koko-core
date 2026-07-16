@@ -1,4 +1,7 @@
-// Blink-like window.chrome stub. Omits chrome.runtime (hasBadChromeRuntime signal).
+// Blink-like window.chrome stub.
+// Intentionally omits chrome.runtime: a naive JS function stub for sendMessage/connect
+// has `.prototype` and is constructable, which CreepJS flags as hasBadChromeRuntime.
+// Missing runtime is safer than a lying runtime (see stealth hasBadChromeRuntime).
 
 const std = @import("std");
 const js = @import("../js/js.zig");

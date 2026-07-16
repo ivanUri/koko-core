@@ -86,6 +86,10 @@ pub fn getProduct(_: *const WorkerNavigator, _: *Page) []const u8 {
     return "Gecko";
 }
 
+pub fn getProductSub(_: *const WorkerNavigator, page: *Page) []const u8 {
+    return page.navigatorState().productSub();
+}
+
 pub fn getWebdriver(_: *const WorkerNavigator, _: *Page) bool {
     return false;
 }
@@ -144,6 +148,7 @@ pub const JsApi = struct {
     pub const maxTouchPoints = bridge.accessor(WorkerNavigator.getMaxTouchPoints, null, .{});
     pub const vendor = bridge.accessor(WorkerNavigator.getVendor, null, .{});
     pub const product = bridge.accessor(WorkerNavigator.getProduct, null, .{});
+    pub const productSub = bridge.accessor(WorkerNavigator.getProductSub, null, .{});
     pub const webdriver = bridge.accessor(WorkerNavigator.getWebdriver, null, .{});
     pub const doNotTrack = bridge.accessor(WorkerNavigator.getDoNotTrack, null, .{});
     pub const userAgentData = bridge.accessor(WorkerNavigator.getUserAgentData, null, .{});
