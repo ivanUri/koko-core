@@ -1,8 +1,27 @@
 //! Realm lifecycle + navigation epoch — foundation for deterministic teardown
-//! and stale async cancellation (Velora / Velora).
+//! and stale async cancellation (Velora).
 //!
 //! Phase 1: state enum, optional structured trace, navigation epoch bumps.
 //! Phase 1.5: `TaskOwner`, centralized stale detection, extended trace hooks.
+//!
+//! ## Cancel-on-nav contract (document-bound work)
+//!
+//! When a browsing context navigates away, outgoing work must not touch freed
+//! memory. The intended stack is:
+//!
+//! 1. **Realm** — `Frame.prepareForOutgoingAbort` → `.draining`, script shutdown,
+//!    cancel streaming parser, `cancelOwnedSchedulerWork()`.
+//! 2. **Network** — every document-bound HTTP transfer sets
+//!    `RequestParams.attribution_frame` (see `Execution.attributionFrame`).
+//!    `HttpClient.abortTransfersAttributedTo` kills those transfers; missing
+//!    attribution is logged (and panics in Debug).
+//! 3. **Scheduler** — run only via `Frame.runOwnedScheduler*` / Env macrotask
+//!    pumps that gate on `canRunOwnedScheduler`; draining/dead flushes the queue.
+//! 4. **Parser** — cooperative cancel: after any CDP poll, re-check
+//!    `_realm_state == .active` before DOM mutations (`appendNew`, create).
+//!
+//! Keepalive/beacon may outlive the document only with `params.keepalive=true`
+//! and must not hold page-arena pointers after destroy.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -199,8 +218,10 @@ pub fn traceMicrotaskRunawayDetected(frame_id: u32, epoch: Epoch, state: State, 
 }
 
 /// Emitted when a nested checkpoint request is deferred until the active pass ends.
+/// Hot path on heavy sites (ads/analytics) — only when lifecycle tracing is on.
 pub fn traceMicrotaskCheckpointReentryDeferred(frame_id: u32, epoch: Epoch, state: State, queue_size: usize, checkpoint_active: bool, checkpoint_pending: bool) void {
-    log.info(.frame, "microtask.checkpoint.reentry_deferred", .{
+    if (!trace_enabled) return;
+    log.debug(.frame, "microtask.checkpoint.reentry_deferred", .{
         .frame_id = frame_id,
         .current_epoch = epoch,
         .realm_state = @tagName(state),
@@ -212,7 +233,8 @@ pub fn traceMicrotaskCheckpointReentryDeferred(frame_id: u32, epoch: Epoch, stat
 
 /// Emitted when checkpoint execution skips a dead realm.
 pub fn traceMicrotaskCheckpointDeadRealm(frame_id: u32, epoch: Epoch, state: State) void {
-    log.err(.frame, "microtask.checkpoint.dead_realm", .{
+    if (!trace_enabled) return;
+    log.debug(.frame, "microtask.checkpoint.dead_realm", .{
         .frame_id = frame_id,
         .current_epoch = epoch,
         .realm_state = @tagName(state),
@@ -221,7 +243,8 @@ pub fn traceMicrotaskCheckpointDeadRealm(frame_id: u32, epoch: Epoch, state: Sta
 
 /// Emitted when checkpoint execution skips a suppressed realm.
 pub fn traceMicrotaskCheckpointSuppressed(frame_id: u32, epoch: Epoch, state: State) void {
-    log.err(.frame, "microtask.checkpoint.suppressed", .{
+    if (!trace_enabled) return;
+    log.debug(.frame, "microtask.checkpoint.suppressed", .{
         .frame_id = frame_id,
         .current_epoch = epoch,
         .realm_state = @tagName(state),
@@ -231,7 +254,8 @@ pub fn traceMicrotaskCheckpointSuppressed(frame_id: u32, epoch: Epoch, state: St
 /// Emitted when checkpoint execution is intentionally aborted by scheduler
 /// semantics rather than by asynchronous isolate termination.
 pub fn traceMicrotaskCheckpointAborted(frame_id: u32, epoch: Epoch, state: State) void {
-    log.err(.frame, "microtask.checkpoint_aborted", .{
+    if (!trace_enabled) return;
+    log.debug(.frame, "microtask.checkpoint_aborted", .{
         .frame_id = frame_id,
         .current_epoch = epoch,
         .realm_state = @tagName(state),

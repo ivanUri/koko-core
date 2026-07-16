@@ -19,6 +19,7 @@ const Page = @import("../browser/Page.zig");
 
 const Node = @import("../dom/Node.zig");
 const Range = @import("Range.zig");
+const StaticRange = @import("StaticRange.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -36,15 +37,19 @@ _end_container: *Node,
 _start_container: *Node,
 
 // Intrusive linked list node for tracking live ranges on the Page.
+// StaticRange is not linked (boundaries do not track DOM mutations).
 _range_link: std.DoublyLinkedList.Node = .{},
+_tracks_live: bool = true,
 
 pub fn acquireRef(self: *AbstractRange) void {
     self._rc.acquire();
 }
 
 pub fn deinit(self: *AbstractRange, page: *Page) void {
-    if (page.findFrameByLoaderId(self._frame_loader_id)) |frame| {
-        frame._live_ranges.remove(&self._range_link);
+    if (self._tracks_live) {
+        if (page.findFrameByLoaderId(self._frame_loader_id)) |frame| {
+            frame._live_ranges.remove(&self._range_link);
+        }
     }
     page.releaseArena(self._arena);
 }
@@ -55,7 +60,7 @@ pub fn releaseRef(self: *AbstractRange, page: *Page) void {
 
 pub const Type = union(enum) {
     range: *Range,
-    // TODO: static_range: *StaticRange,
+    static_range: *StaticRange,
 };
 
 pub fn as(self: *AbstractRange, comptime T: type) *T {
@@ -65,6 +70,7 @@ pub fn as(self: *AbstractRange, comptime T: type) *T {
 pub fn is(self: *AbstractRange, comptime T: type) ?*T {
     switch (self._type) {
         .range => |r| return if (T == Range) r else null,
+        .static_range => |s| return if (T == StaticRange) s else null,
     }
 }
 

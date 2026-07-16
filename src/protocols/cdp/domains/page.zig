@@ -435,9 +435,22 @@ pub fn frameRemove(bc: *CDP.BrowserContext) void {
     // test in code-check/repro-fetch-frame-race.js.
     bc.intercept_state.clear();
 
-    // Clear all remote object mappings to prevent stale objectIds from being used
-    // after the context is destroy
-    bc.inspector_session.inspector.resetContextGroup();
+    // Pending-root commit (Session.commitPendingPage step 1): the replacement
+    // Page already has a live main-world V8 context in the same inspector
+    // context group (scripts run while the document body downloads). Nuclear
+    // resetContextGroup() would discard in-flight inspector promises on that
+    // live context ("Promise was collected"). Surgically tear down only the
+    // outgoing page's inspector mappings; frame_created publishes the new
+    // contexts immediately after the pointer flip.
+    const pending_root_swap = bc.session.pendingPage() != null;
+    if (pending_root_swap) {
+        if (bc.session.currentPage()) |outgoing| {
+            bc.session.browser.env.notifyInspectorContextDestroyed(outgoing.frame.js);
+        }
+    } else {
+        // Full session teardown / synthetic nav: no live replacement context.
+        bc.inspector_session.inspector.resetContextGroup();
+    }
 
     // The main frame is going to be removed, we need to remove contexts from other worlds first.
     for (bc.isolated_worlds.items) |isolated_world| {
@@ -454,6 +467,48 @@ pub fn frameRemove(bc: *CDP.BrowserContext) void {
     bc.reset();
 }
 
+fn publishInspectorExecutionContexts(
+    arena: Allocator,
+    bc: *CDP.BrowserContext,
+    frame: *Frame,
+    frame_id: []const u8,
+    loader_id: []const u8,
+) !void {
+    const main_frame = bc.session.currentFrame() orelse return error.FrameNotLoaded;
+    const is_main_frame = frame._frame_id == main_frame._frame_id;
+
+    {
+        const aux_data = try std.fmt.allocPrint(arena, "{{\"isDefault\":true,\"type\":\"default\",\"frameId\":\"{s}\",\"loaderId\":\"{s}\"}}", .{ frame_id, loader_id });
+
+        var ls: js.Local.Scope = undefined;
+        frame.js.localScope(&ls);
+        defer ls.deinit();
+
+        bc.inspector_session.inspector.contextCreated(
+            &ls.local,
+            "",
+            frame.origin orelse "",
+            aux_data,
+            is_main_frame,
+        );
+    }
+    for (bc.isolated_worlds.items) |isolated_world| {
+        const aux_json = try std.fmt.allocPrint(arena, "{{\"isDefault\":false,\"type\":\"isolated\",\"frameId\":\"{s}\",\"loaderId\":\"{s}\"}}", .{ frame_id, loader_id });
+
+        var ls: js.Local.Scope = undefined;
+        (isolated_world.context orelse continue).localScope(&ls);
+        defer ls.deinit();
+
+        bc.inspector_session.inspector.contextCreated(
+            &ls.local,
+            isolated_world.name,
+            "://",
+            aux_json,
+            false,
+        );
+    }
+}
+
 pub fn frameCreated(bc: *CDP.BrowserContext, frame: *Frame) !void {
     // Detect "in commit" mode: Session.commitPendingPage dispatches frame_
     // created BEFORE clearing pending_page (deliberate ordering — see
@@ -468,6 +523,13 @@ pub fn frameCreated(bc: *CDP.BrowserContext, frame: *Frame) !void {
 
     for (bc.isolated_worlds.items) |isolated_world| {
         _ = try isolated_world.createContext(frame);
+    }
+
+    if (in_commit and frame.realmReadyForExternalObservers()) {
+        const frame_id = id.toFrameId(frame._frame_id);
+        const loader_id = id.toLoaderId(frame._loader_id);
+        try publishInspectorExecutionContexts(bc.notification_arena, bc, frame, &frame_id, &loader_id);
+        frame._inspector_context_published = true;
     }
 
     if (!in_commit) {
@@ -600,7 +662,6 @@ pub fn frameNavigated(arena: Allocator, bc: *CDP.BrowserContext, event: *const N
         }, .{ .session_id = session_id });
     }
 
-    const main_frame = bc.session.currentFrame() orelse return error.FrameNotLoaded;
     const frame = bc.session.findFrameByFrameId(event.frame_id) orelse return error.FrameNotLoaded;
 
     if (!frame.realmReadyForExternalObservers()) {
@@ -611,43 +672,13 @@ pub fn frameNavigated(arena: Allocator, bc: *CDP.BrowserContext, event: *const N
         return error.FrameNotLoaded;
     }
 
-    const is_main_frame = event.frame_id == main_frame._frame_id;
-
-    // Main-frame teardown goes through resetContextGroup(), which already emits
-    // Runtime.executionContextsCleared via V8 inspector. Child-frame commits must
-    // not emit it because other frame contexts remain valid.
-
-    {
-        const aux_data = try std.fmt.allocPrint(arena, "{{\"isDefault\":true,\"type\":\"default\",\"frameId\":\"{s}\",\"loaderId\":\"{s}\"}}", .{ frame_id, loader_id });
-
-        var ls: js.Local.Scope = undefined;
-        frame.js.localScope(&ls);
-        defer ls.deinit();
-
-        bc.inspector_session.inspector.contextCreated(
-            &ls.local,
-            "",
-            frame.origin orelse "",
-            aux_data,
-            is_main_frame,
-        );
-    }
-    for (bc.isolated_worlds.items) |isolated_world| {
-        const aux_json = try std.fmt.allocPrint(arena, "{{\"isDefault\":false,\"type\":\"isolated\",\"frameId\":\"{s}\",\"loaderId\":\"{s}\"}}", .{ frame_id, loader_id });
-
-        // Calling contextCreated will assign a new Id to the context and send the contextCreated event
-
-        var ls: js.Local.Scope = undefined;
-        (isolated_world.context orelse continue).localScope(&ls);
-        defer ls.deinit();
-
-        bc.inspector_session.inspector.contextCreated(
-            &ls.local,
-            isolated_world.name,
-            "://",
-            aux_json,
-            false,
-        );
+    // Pending-root commit publishes execution contexts at frame_created (header
+    // time) so CDP clients can drive the live document while the body downloads.
+    // frameNavigated still emits Page.frameNavigated / DOM.documentUpdated and
+    // runs scripts-on-new-document.
+    if (!frame._inspector_context_published) {
+        try publishInspectorExecutionContexts(arena, bc, frame, frame_id, loader_id);
+        frame._inspector_context_published = true;
     }
 
     // Evaluate scripts registered via Page.addScriptToEvaluateOnNewDocument.

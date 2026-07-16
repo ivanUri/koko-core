@@ -92,6 +92,7 @@ pub const Title = @import("html/Title.zig");
 pub const Track = @import("html/Track.zig");
 pub const UL = @import("html/UL.zig");
 pub const Unknown = @import("html/Unknown.zig");
+pub const Marquee = @import("html/Marquee.zig");
 
 const log = @import("../../../support/log.zig");
 const IS_DEBUG = @import("builtin").mode == .Debug;
@@ -148,6 +149,7 @@ pub const Type = union(enum) {
     li: *LI,
     link: *Link,
     map: *Map,
+    marquee: *Marquee,
     media: *Media,
     meta: *Meta,
     meter: *Meter,
@@ -378,6 +380,25 @@ fn parseHTMLInteger(attr: []const u8) ?i32 {
     const signed = value * @as(i64, sign);
     if (signed < std.math.minInt(i32) or signed > std.math.maxInt(i32)) return null;
     return @intCast(signed);
+}
+
+/// HTML "rules for parsing integers" (public for specialized elements).
+pub fn parseInteger(input: []const u8) ?i32 {
+    return parseHTMLInteger(input);
+}
+
+/// Reflect an enumerated content attribute (case-insensitive keyword match).
+pub fn reflectEnumerated(
+    value: ?[]const u8,
+    keywords: []const []const u8,
+    missing: ?[]const u8,
+    invalid: ?[]const u8,
+) ?[]const u8 {
+    const v = value orelse return missing;
+    for (keywords) |keyword| {
+        if (std.ascii.eqlIgnoreCase(v, keyword)) return keyword;
+    }
+    return invalid;
 }
 
 pub fn getTabIndex(self: *HtmlElement) i32 {

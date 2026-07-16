@@ -975,6 +975,7 @@ fn importScriptBody(self: *WorkerGlobalScope, arena: Allocator, resolved_url: [:
         .url = resolved_url,
         .method = .GET,
         .frame_id = self._frame_id,
+        .attribution_frame = self._worker._frame,
         .loader_id = self._loader_id,
         .headers = headers,
         .cookie_jar = &session.cookie_jar,

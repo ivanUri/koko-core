@@ -87,8 +87,12 @@ dirty: std.DoublyLinkedList = .{},
 performing: bool = false,
 
 // Depth of user HTTP callbacks (header/data/done). Inbound CDP must not run
-// reentrantly while a callback is on the stack.
+// reentrantly while a callback is on the stack. Also blocks starting new
+// transfers (libcurl forbids multi_add from message/callback paths).
 _transfer_callback_depth: u32 = 0,
+
+// Guards tryStartQueuedTransfers against re-entry from makeRequest→perform→processMessages.
+_starting_queued: bool = false,
 
 // Use to generate the next request ID
 next_request_id: u32 = 0,
@@ -431,6 +435,16 @@ fn abortNativeWebSocketsAttributed(self: *Client, frame: *anyopaque) void {
         if (@as(?*anyopaque, @ptrCast(ws._frame)) == frame) ws.kill();
         node = next;
     }
+}
+
+pub fn frameHasWebSocketPollInFlight(self: *const Client, frame: *anyopaque) bool {
+    var node = self.native_ws.first;
+    while (node) |n| {
+        const ws: *WebSocket = @fieldParentPtr("_poll_node", n);
+        if (@as(?*anyopaque, @ptrCast(ws._frame)) == frame and ws.pollDepth() > 0) return true;
+        node = n.next;
+    }
+    return false;
 }
 
 fn abortChromeJobsAttributed(self: *Client, frame: *anyopaque, opts: AbortOpts) void {
@@ -903,15 +917,7 @@ pub fn tick(self: *Client, timeout_ms: u32) !PerformStatus {
     processChromeJobs(self);
     drainSyncEasyQueue(self);
     try pollNativeWebSockets(self);
-    while (self.queue.popFirst()) |queue_node| {
-        const conn = self.network.getConnection() orelse {
-            self.queue.prepend(queue_node);
-            break;
-        };
-
-        try self.makeRequest(conn, @fieldParentPtr("_node", queue_node));
-    }
-
+    tryStartQueuedTransfers(self);
     return self.perform(@intCast(timeout_ms));
 }
 
@@ -921,10 +927,38 @@ pub fn _request(ptr: *anyopaque, _: *Client, req: Request) !void {
     return self.process(transfer);
 }
 
+/// Subresources bound to a document must set `attribution_frame` so
+/// `abortTransfersAttributedTo` can cancel them on re-nav. Document navigations
+/// pass the Frame as `ctx` and may omit the field (filled here).
+fn ensureRequestAttribution(params: *RequestParams, ctx: *anyopaque) void {
+    if (params.attribution_frame != null) return;
+    if (params.resource_type == .document) {
+        // Document loads always use the Frame as request ctx.
+        params.attribution_frame = ctx;
+        return;
+    }
+    // Keepalive/beacon may intentionally outlive the document only when
+    // `keepalive` is set; they still need attribution while the document is
+    // alive so normal abort can drop non-keepalive work.
+    log.err(.http, "request missing attribution_frame", .{
+        .resource = @tagName(params.resource_type),
+        .url = params.url,
+        .keepalive = params.keepalive,
+    });
+    if (comptime IS_DEBUG) {
+        // Fail fast in Debug so new call sites cannot reintroduce tinhte-class UAF.
+        std.debug.panic("HttpClient.request missing attribution_frame for {s} {s}", .{
+            @tagName(params.resource_type),
+            params.url,
+        });
+    }
+}
+
 pub fn request(self: *Client, req: Request) !void {
     // Assign Request Id.
     var our_req = req;
     our_req.params.request_id = self.incrReqId();
+    ensureRequestAttribution(&our_req.params, our_req.ctx);
 
     const arena = try self.network.app.arena_pool.acquire(.small, "Request.arena");
     our_req.params.arena = arena;
@@ -940,6 +974,7 @@ pub fn request(self: *Client, req: Request) !void {
 pub fn requestChromeTransport(self: *Client, req: Request) !void {
     var our_req = req;
     our_req.params.request_id = self.incrReqId();
+    ensureRequestAttribution(&our_req.params, our_req.ctx);
 
     const arena = try self.network.app.arena_pool.acquire(.small, "ChromeTransport.arena");
     our_req.params.arena = arena;
@@ -1161,6 +1196,11 @@ pub fn syncRequest(self: *Client, allocator: Allocator, params: RequestParams) !
         }
         switch (status) {
             .cdp_socket => {
+                // Never dispatch Page.navigate (etc.) from nested script/syncRequest
+                // stacks — Frame.init / V8 context creation requires central stack.
+                if (self.env) |env| {
+                    if (env.blocksInboundCdp()) continue;
+                }
                 const cdp = self.cdp_client.?;
                 _ = cdp.blocking_read(cdp.ctx);
             },
@@ -1184,8 +1224,14 @@ pub fn syncRequest(self: *Client, allocator: Allocator, params: RequestParams) !
 // cases, the interceptor is expected to call resume to continue the transfer
 // or transfer.abort() to abort it.
 fn process(self: *Client, transfer: *Transfer) !void {
+    // libcurl forbids multi_add / multi_perform from inside multi_info_read
+    // message handling and from transfer user callbacks. SPA/Next injects
+    // <script> during script doneCallback → must queue, not start now
+    // (else CURLM_RECURSIVE_API_CALL / CURLE_RECURSIVE_API_CALL).
+    const reentrant = self.performing or self.inTransferCallback();
+
     if (shouldSyncEasyPerform(transfer)) {
-        if (self.performing) {
+        if (reentrant) {
             self.sync_easy_queue.append(&transfer._node);
             return;
         }
@@ -1196,15 +1242,45 @@ fn process(self: *Client, transfer: *Transfer) !void {
         return;
     }
 
-    // libcurl doesn't allow recursive calls, if we're in a `perform()` operation
-    // then we _have_ to queue this.
-    if (self.performing == false) {
+    if (!reentrant) {
         if (self.network.getConnection()) |conn| {
             return self.makeRequest(conn, transfer);
         }
     }
 
     self.queue.append(&transfer._node);
+}
+
+/// Start transfers deferred because they were requested mid-callback/perform.
+/// Safe only when not inside curl multi perform or a user transfer callback.
+fn tryStartQueuedTransfers(self: *Client) void {
+    if (self.performing or self.inTransferCallback() or self._starting_queued) return;
+    self._starting_queued = true;
+    defer self._starting_queued = false;
+
+    while (self.sync_easy_queue.popFirst()) |node| {
+        const transfer: *Transfer = @fieldParentPtr("_node", node);
+        const conn = self.network.getConnection() orelse {
+            self.sync_easy_queue.prepend(node);
+            break;
+        };
+        self.makeSyncEasyRequest(conn, transfer) catch |err| {
+            transfer.req.error_callback(transfer.req.ctx, err);
+            transfer.deinit();
+        };
+    }
+
+    while (self.queue.popFirst()) |queue_node| {
+        const conn = self.network.getConnection() orelse {
+            self.queue.prepend(queue_node);
+            break;
+        };
+        const transfer: *Transfer = @fieldParentPtr("_node", queue_node);
+        // makeRequest owns cleanup on most failure paths (and drives perform).
+        self.makeRequest(conn, transfer) catch |err| {
+            log.warn(.http, "queued transfer start", .{ .err = err, .url = transfer.url });
+        };
+    }
 }
 
 pub fn nextReqId(self: *Client) u32 {
@@ -1508,6 +1584,11 @@ fn pollNativeWebSockets(self: *Client) !void {
         _ = try ws.pollNative();
         node = next;
     }
+    // destroyPage defers while pollNative is on-stack; reap after each poll round.
+    if (self.session) |session| {
+        session.reapZombiePages();
+        session.reapZombiePendingPages();
+    }
 }
 
 fn abortNativeWebSockets(self: *Client, comptime abort_all: bool, frame_id: u32) void {
@@ -1662,22 +1743,68 @@ fn processOneMessage(self: *Client, msg: http.Handles.MultiMessage, transfer: *T
 /// observers are not starved while perform() is on the stack (ebay.com).
 /// Uses the active frame scheduler directly: `runMacrotasksCdpSlice` is a no-op
 /// here because `MAX_MACROTASK_RUN_DEPTH` is already 1 on the outer CDP tick.
-fn pumpCdpMacrotasks(self: *Client, session: *Session) void {
-    if (self.cdp_client == null) return;
+/// Run deferred document parse tasks scheduled from frameDoneCallback (delay=0).
+///
+/// Architecture: must only run when **not** nested in an HTTP transfer callback.
+/// frameDoneCallback schedules parse; leaveTransferCallback / Runner drain it.
+/// Parsing mid-done_callback after knitsail re-nav crashed in StyleSheetList
+/// (Google Search → Bing SIGSEGV).
+pub fn pumpDeferredDocumentParse(self: *Client, session: *Session) void {
+    // Still inside a user transfer callback (done/header/data) — caller is
+    // frameDoneCallback. leaveTransferCallback pumps once depth returns to 0.
+    if (self.inTransferCallback()) return;
+
     const frame = session.pendingOrCurrentFrame() orelse return;
+    if (!frame.hasDeferredDocumentParsePending()) return;
+    if (!frame.canRunOwnedScheduler()) {
+        frame.cancelOwnedSchedulerWork();
+        return;
+    }
     const env = &session.browser.env;
-    const exec = &frame.js.execution;
-    if (exec.realmState() == .dead) return;
-    if (!exec.canEnterJs(.strict_active)) return;
+    // Never re-enter document parse: nested pump from pollCdpDuringLongWork
+    // corrupted the DOM tree (double html5ever parse → UAF on _parent).
+    if (frame._document_parse_active) return;
 
     var slices: u8 = 0;
     while (slices < 48) : (slices += 1) {
+        if (frame._document_parse_active) break;
+        if (!frame.canRunOwnedScheduler()) {
+            frame.cancelOwnedSchedulerWork();
+            break;
+        }
+        env.runMicrotasks(.macrotask_loop);
+        if (!frame.js.scheduler.hasReadyTasks()) break;
+        var hs: js.HandleScope = undefined;
+        const entered = frame.js.enter(&hs) orelse break;
+        const ran = frame.runOwnedSchedulerOne() catch false;
+        entered.exit();
+        if (!ran) break;
+        env.runMicrotasks(.macrotask_loop);
+        self.serviceInboundCdpIfReadable();
+        if (!frame.hasDeferredDocumentParsePending() and !frame._document_parse_active) break;
+    }
+}
+
+pub fn pumpCdpMacrotasks(self: *Client, session: *Session) void {
+    if (self.cdp_client == null) return;
+    const frame = session.pendingOrCurrentFrame() orelse return;
+    const env = &session.browser.env;
+    if (!frame.canRunOwnedScheduler()) {
+        if (frame._realm_state == .draining or frame._realm_state == .dead) {
+            frame.cancelOwnedSchedulerWork();
+        }
+        return;
+    }
+
+    var slices: u8 = 0;
+    while (slices < 48) : (slices += 1) {
+        if (!frame.canRunOwnedScheduler()) break;
         env.runMicrotasks(.macrotask_loop);
         if (!frame.js.scheduler.hasReadyTasks()) break;
 
         var hs: js.HandleScope = undefined;
         const entered = frame.js.enter(&hs) orelse break;
-        _ = frame.js.scheduler.runOne() catch {
+        _ = frame.runOwnedSchedulerOne() catch {
             entered.exit();
             break;
         };
@@ -1693,6 +1820,17 @@ pub fn enterTransferCallback(self: *Client) void {
 
 pub fn leaveTransferCallback(self: *Client) void {
     if (self._transfer_callback_depth > 0) self._transfer_callback_depth -= 1;
+    if (self._transfer_callback_depth != 0) return;
+    // Outermost HTTP callback returned — defer/script fetches can run again.
+    // Inline parse path only: staticScriptsDone after curl callback unwinds.
+    // Large-document deferred parse is intentionally NOT pumped here — still on
+    // curl processMessages stack. Runner.drainDeferredDocumentParse runs it after
+    // tick() returns (Google Search → Bing StyleSheetList SIGSEGV if parsed here).
+    const session = self.session orelse return;
+    const frame = session.pendingOrCurrentFrame() orelse return;
+    if (!frame._pending_post_parse_lifecycle) return;
+    frame._pending_post_parse_lifecycle = false;
+    frame.runPostParseScriptLifecycle();
 }
 
 pub fn inTransferCallback(self: *const Client) bool {
@@ -1700,10 +1838,19 @@ pub fn inTransferCallback(self: *const Client) bool {
 }
 
 /// Drain one inbound CDP command while nested inside curl perform / HTTP callbacks.
+///
+/// Architecture: curl sets `performing=true` for the whole multi_perform +
+/// processMessages window. Transfer callbacks (frameDoneCallback, script done)
+/// run with performing still true. Blocking CDP solely on `performing` starved
+/// Page.navigate / Runtime.evaluate for the entire document+script drain
+/// (P0: "CDP command timed out: Page.navigate", DCL wait). Allow CDP when we
+/// are in a user transfer callback (or not performing) and V8 is idle.
 pub fn serviceInboundCdpIfReadable(self: *Client) void {
     const cdp = self.cdp_client orelse return;
-    if (self.performing or self.inTransferCallback()) return;
+    // Mid multi_perform outside Zig callbacks — do not re-enter curl/CDP.
+    if (self.performing and !self.inTransferCallback()) return;
     if (self.env) |env| {
+        if (env.anyContextOnV8Stack()) return;
         if (env.blocksInboundCdp()) return;
     }
     if (self.session) |session| {
@@ -1741,12 +1888,16 @@ fn processMessages(self: *Client) !bool {
                 if (done) {
                     const browser_session = transfer.req.params.browser_session;
                     transfer.deinit();
+                    // Start SPA scripts queued during doneCallback before macrotasks.
+                    tryStartQueuedTransfers(self);
                     if (browser_session) |session| {
+                        session.reapZombiePages();
                         session.reapZombiePendingPages();
                         self.pumpCdpMacrotasks(session);
                     } else {
                         self.serviceInboundCdpIfReadable();
                     }
+                    processed = true;
                 }
             },
             .websocket => |ws| {
@@ -1764,11 +1915,15 @@ fn processMessages(self: *Client) !bool {
             .none => unreachable,
         }
     }
+    // Messages may have nested-queued more work after the last completion.
+    tryStartQueuedTransfers(self);
     return processed;
 }
 
 pub fn trackConn(self: *Client, conn: *http.Connection) !void {
-    if (self.performing) {
+    // Same reentrancy rule as process(): never multi_add while performing
+    // *or* while a transfer user callback is on the stack.
+    if (self.performing or self.inTransferCallback()) {
         conn.in_use = false;
         self.ready_queue.append(&conn.node);
         return;
@@ -2193,7 +2348,10 @@ pub const Transfer = struct {
         self.requestFailed(error.Shutdown, false);
         const browser_session = self.req.params.browser_session;
         self.deinit();
-        if (browser_session) |session| session.reapZombiePendingPages();
+        if (browser_session) |session| {
+            session.reapZombiePages();
+            session.reapZombiePendingPages();
+        }
     }
 
     // internal, when the frame is shutting down. Doesn't have the same ceremony
@@ -2225,7 +2383,10 @@ pub const Transfer = struct {
 
         const browser_session = self.req.params.browser_session;
         self.deinit();
-        if (browser_session) |session| session.reapZombiePendingPages();
+        if (browser_session) |session| {
+            session.reapZombiePages();
+            session.reapZombiePendingPages();
+        }
     }
 
     // We can force a failed request within a callback, which will eventually

@@ -39,6 +39,7 @@ const WebSocket = @This();
 
 _rc: RC(u8) = .{},
 _frame: *Frame,
+_page: *Page,
 _proto: *EventTarget,
 _arena: Allocator,
 
@@ -50,6 +51,9 @@ _binary_type: BinaryType = .blob,
 _client: ?WebSocketClient,
 _http_client: *HttpClient,
 _poll_node: std.DoublyLinkedList.Node = .{},
+/// `pollNative` may reenter navigation teardown; defer `cleanup` until poll ends.
+_poll_depth: u32 = 0,
+_kill_pending: bool = false,
 
 // buffered outgoing messages
 _send_queue: std.ArrayList(Message) = .empty,
@@ -130,6 +134,7 @@ pub fn init(url: []const u8, protocols: [][]const u8, frame: *Frame) !*WebSocket
 
     const self = try frame._factory.eventTargetWithAllocator(arena, WebSocket{
         ._frame = frame,
+        ._page = frame._page,
         ._client = client,
         ._arena = arena,
         ._proto = undefined,
@@ -182,7 +187,21 @@ fn asEventTarget(self: *WebSocket) *EventTarget {
     return self._proto;
 }
 
+pub fn pollDepth(self: *const WebSocket) u32 {
+    return self._poll_depth;
+}
+
 pub fn kill(self: *WebSocket) void {
+    self._ready_state = .closed;
+    self.finishDeferredCleanup();
+}
+
+fn finishDeferredCleanup(self: *WebSocket) void {
+    if (self._poll_depth > 0) {
+        self._kill_pending = true;
+        return;
+    }
+    if (self._kill_pending) self._kill_pending = false;
     self.cleanup();
 }
 
@@ -198,7 +217,10 @@ pub fn disconnected(self: *WebSocket, err_: ?anyerror) void {
         log.info(.websocket, "disconnected", .{ .url = self._url, .reason = "closed" });
     }
 
-    defer self.cleanup();
+    defer self.finishDeferredCleanup();
+
+    // Teardown / navigated-away: update state only — no DOM events (XHR pattern).
+    if (!self._frame.js.execution.canEnterJs(.allow_draining)) return;
 
     const code = if (was_clean) self._close_code else 1006;
     const reason = if (was_clean) self._close_reason else "";
@@ -219,7 +241,7 @@ fn cleanup(self: *WebSocket) void {
         self._http_client.untrackNativeWebSocket(self);
         client.deinit();
         self._client = null;
-        self.releaseRef(self._frame._page);
+        self.releaseRef(self._page);
         self._send_queue.clearRetainingCapacity();
     }
 }
@@ -261,15 +283,30 @@ fn dispatchOpenIfReady(
     self._ready_state = .open;
     self._protocol = protocol orelse client.negotiated_protocol;
     log.info(.websocket, "connected", .{ .url = self._url });
-    self.dispatchOpenEvent() catch |err| {
-        log.err(.websocket, "open event fail", .{ .err = err });
-    };
+    if (self._frame.js.execution.canEnterJs(.allow_draining)) {
+        self.dispatchOpenEvent() catch |err| {
+            log.err(.websocket, "open event fail", .{ .err = err });
+        };
+    }
     try self.flushSendQueue();
     return true;
 }
 
 /// Called from HttpClient.tick to drive the native socket.
 pub fn pollNative(self: *WebSocket) !bool {
+    // Bump before any frame deref so `destroyPage` defers while this poll is on-stack.
+    self._poll_depth += 1;
+    defer {
+        self._poll_depth -= 1;
+        if (self._poll_depth == 0 and self._kill_pending) self.finishDeferredCleanup();
+    }
+
+    if (self._frame._realm_state == .dead or self._frame._realm_state == .draining or self._frame.isGoingAway()) {
+        self.kill();
+        return true;
+    }
+    if (self._ready_state == .closed) return false;
+
     const client = &(self._client orelse return false);
 
     if (client.state == .connecting) {
@@ -285,6 +322,7 @@ pub fn pollNative(self: *WebSocket) !bool {
         }
         if (client.state == .open and self._ready_state == .connecting) {
             if (try self.dispatchOpenIfReady(client, null, client.takeSetCookies())) return true;
+            if (self._client == null or self._kill_pending) return true;
         }
         return false;
     }
@@ -292,6 +330,7 @@ pub fn pollNative(self: *WebSocket) !bool {
     // start() may have completed synchronously (h2/wss) before this poll tick.
     if (client.state == .open and self._ready_state == .connecting) {
         if (try self.dispatchOpenIfReady(client, null, client.takeSetCookies())) return true;
+        if (self._client == null or self._kill_pending) return true;
     }
 
     const result = client.poll() catch |err| {
@@ -307,6 +346,7 @@ pub fn pollNative(self: *WebSocket) !bool {
         .open => |info| {
             if (self._ready_state == .connecting) {
                 if (try self.dispatchOpenIfReady(client, info.protocol, client.takeSetCookies())) return true;
+                if (self._client == null or self._kill_pending) return true;
             }
             try self.flushSendQueue();
             return true;
@@ -314,6 +354,7 @@ pub fn pollNative(self: *WebSocket) !bool {
         .message => |msg| {
             defer if (msg.owned) self._arena.free(msg.data);
             try self.handleIncomingFrame(msg.frame_type, msg.data);
+            if (self._client == null or self._kill_pending) return true;
             try self.flushSendQueue();
             return true;
         },
@@ -516,7 +557,9 @@ pub fn close(self: *WebSocket, code_: ?u16, reason_: ?[]const u8) !void {
     if (self._ready_state == .connecting) {
         self._ready_state = .closed;
         self.cleanup();
-        try self.dispatchCloseEvent(code, reason, false);
+        if (self._frame.js.execution.canEnterJs(.allow_draining)) {
+            try self.dispatchCloseEvent(code, reason, false);
+        }
         return;
     }
 
@@ -623,6 +666,8 @@ fn dispatchOpenEvent(self: *WebSocket) !void {
 
 fn dispatchMessageEvent(self: *WebSocket, data: []const u8, frame_type: http.WsFrameType) !void {
     const frame = self._frame;
+    if (!frame.js.execution.canEnterJs(.allow_draining)) return;
+
     const target = self.asEventTarget();
 
     if (frame._event_manager.hasDirectListeners(target, "message", self._on_message)) {

@@ -410,6 +410,8 @@ const CacheContext = struct {
 
     fn doneCallback(ctx: *anyopaque) anyerror!void {
         const self: *CacheContext = @ptrCast(@alignCast(ctx));
+        // Stale-while-revalidate already delivered the cached body via
+        // forwardDone() on the 304 branch. Do not complete the consumer again.
         if (self.served_stale) {
             return;
         }
@@ -433,11 +435,24 @@ const CacheContext = struct {
 
     fn shutdownCallback(ctx: *anyopaque) void {
         const self: *CacheContext = @ptrCast(@alignCast(ctx));
+        // Same as error: after stale was served, the consumer is finished.
+        // Forwarding Abort/Shutdown here double-completes and UAF's Script/Image
+        // arenas (SIGSEGV @ 0x8fc on rust-lang.org / x.com / twitter.com).
+        if (self.served_stale) return;
         self.forward.forwardShutdown();
     }
 
     fn errorCallback(ctx: *anyopaque, e: anyerror) void {
         const self: *CacheContext = @ptrCast(@alignCast(ctx));
+        if (self.served_stale) {
+            // Revalidation aborted after stale body was already delivered —
+            // swallow (e.g. nav abort, connection drop). Consumer already got done.
+            log.debug(.http, "cache revalidate err after stale serve", .{
+                .url = self.req_url,
+                .err = e,
+            });
+            return;
+        }
         self.forward.forwardErr(e);
     }
 };

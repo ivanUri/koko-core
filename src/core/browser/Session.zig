@@ -82,6 +82,9 @@ _pending_root_nav_retries: u8 = 0,
 // req.ctx still aliases the frame. Reaped from HttpClient after transfer.deinit.
 _zombie_pending_pages: std.ArrayList(*Page) = .{},
 
+/// Active/pending pages deferred until native WebSocket `pollNative` unwinds.
+_zombie_pages: std.ArrayList(*Page) = .{},
+
 // True when a pending root navigation's headers arrived inside a
 // reentrant HttpClient.perform (e.g. JS on the active page called fetch();
 // libcurl drained the pending navigation's response while we are still
@@ -154,8 +157,13 @@ pub fn clientHintsEnabledForUrl(self: *const Session, allocator: Allocator, url:
 }
 
 pub fn deinit(self: *Session) void {
+    for (self._zombie_pages.items) |zombie| {
+        self.finishDestroyPage(zombie);
+    }
+    self._zombie_pages = .{};
+
     for (self._zombie_pending_pages.items) |zombie| {
-        self.destroyPage(zombie);
+        self.finishDestroyPage(zombie);
     }
     self._zombie_pending_pages = .{};
 
@@ -210,10 +218,20 @@ fn allocatePage(self: *Session, frame_id: u32) !*Page {
     return page;
 }
 
-// Tear down and free a Page allocated via allocatePage.
-fn destroyPage(self: *Session, page: *Page) void {
+fn finishDestroyPage(self: *Session, page: *Page) void {
     page.deinit();
     self.browser.page_pool.destroy(page);
+}
+
+// Tear down and free a Page allocated via allocatePage.
+fn destroyPage(self: *Session, page: *Page) void {
+    if (self.browser.http_client.frameHasWebSocketPollInFlight(&page.frame)) {
+        self._zombie_pages.append(self.arena, page) catch {
+            self.finishDestroyPage(page);
+        };
+        return;
+    }
+    self.finishDestroyPage(page);
 }
 
 // Tear down the currently-active Page. Dispatches `frame_remove` first
@@ -614,14 +632,16 @@ fn replaceRootImmediate(self: *Session, frame_id: u32, qn: *QueuedNavigation) !v
     };
 }
 
+/// Cancel document-owned work on `frame` then abort attributed HTTP/WS.
+/// Order: realm drain + scheduler cancel → kill transfers → curl drain → script arenas.
 fn abortOutgoingSubresources(frame: *Frame, http_client: *@import("HttpClient.zig").Client) void {
-    // Mark shutdown first so any late Script callbacks that still race bail out.
-    frame._script_manager.base.shutdown = true;
-    // Kill attributed transfers (noops mid-perform callbacks; frees idle ones).
-    http_client.abortTransfersAttributedTo(frame, .{ .skip_xhr = true });
+    frame.prepareForOutgoingAbort();
+    // Kill transfers attributed to this frame (requires attribution_frame on
+    // Fetch/XHR/beacon/worker/script/image). protect_from_abort / keepalive
+    // still survive via shouldAbortTransfer unless scope=.full.
+    http_client.abortTransfersAttributedTo(frame, .{});
     // Drain libcurl messages so deferred abort notifications finish *before*
-    // reset() frees Script arenas. Otherwise errorCallback can UAF Script
-    // (LoadGuard.isFinished) on SPA navigations (nytimes.com).
+    // script_manager.reset frees Script arenas (nytimes.com UAF).
     _ = http_client.tick(0) catch {};
     frame._script_manager.reset();
     for (frame.child_frames.items) |child| {
@@ -651,13 +671,36 @@ pub fn initiateRootNavigation(self: *Session, frame_id: u32, url: [:0]const u8, 
     self.discardPendingPage();
 
     // Drop outgoing-document script fetches before the pending page loads.
-    // commitPendingPage destroys the old page later; without an early abort
-    // + script-manager reset, late HTTP callbacks (BBC Optimizely, etc.) can
-    // touch Script ctx after arenas are freed on commit.
+    // Heavy sites (Google knitsail, Bing) poison the next document parse if
+    // their V8 context stays live through dual-page pending until headers
+    // (incorrect alignment / SIGBUS mid-parse). Address-bar / form root
+    // navigations use clean-slate: tear down the old page *before* the new
+    // document transfer, then install the new page as active immediately.
+    // Dual-page pending is kept only for in-page script navigations that may
+    // still need the old realm during the hop.
+    const clean_slate = opts.reason == .address_bar or opts.reason == .form;
     if (self._active) |active| {
         if (active.frame._frame_id == frame_id) {
             abortOutgoingSubresources(&active.frame, &self.browser.http_client);
+            if (clean_slate) {
+                active.frame.suppressScheduler();
+                self.browser.env.waitForBackgroundTasks();
+                self.tearDownActivePage();
+                self.reapZombiePages();
+            }
         }
+    }
+
+    if (clean_slate) {
+        const frame = try self.installNewActivePage(frame_id);
+        if (comptime IS_DEBUG) {
+            log.debug(.browser, "clean-slate navigate", .{ .url = url, .reason = opts.reason });
+        }
+        frame.navigate(url, opts) catch |err| {
+            log.err(.browser, "clean-slate navigation start", .{ .err = err, .url = url });
+            return err;
+        };
+        return;
     }
 
     const page = try self.allocatePage(frame_id);
@@ -672,9 +715,10 @@ pub fn initiateRootNavigation(self: *Session, frame_id: u32, url: [:0]const u8, 
     }
 
     // No frame_created notification yet — CDP must not see the pending page
-    // (no isolated worlds, no Target.* visibility). Both the pending main
-    // world and the isolated worlds get registered with the V8 inspector at
-    // commit, after frame_remove tears down the OLD page's context group.
+    // (no isolated worlds, no Target.* visibility). Inspector execution
+    // contexts for the pending page are published at commit (frame_created
+    // in_commit), after frame_remove surgically tears down the OLD page's
+    // inspector mappings without resetting the live replacement context.
 
     page.frame.navigate(url, opts) catch |err| {
         log.err(.browser, "pending navigation start", .{ .err = err, .url = url });
@@ -687,11 +731,12 @@ pub fn initiateRootNavigation(self: *Session, frame_id: u32, url: [:0]const u8, 
 // response headers arrive.
 //
 // Order matters here:
-//   1. frame_remove dispatch — CDP's frameRemove resets the V8 inspector
-//      context group (emits Runtime.executionContextsCleared) and clears
-//      isolated world contexts plus the node_registry. The OLD page's
-//      memory is still alive at this point (intentional: CDP teardown can
-//      walk old-page state without UAF).
+//   1. frame_remove dispatch — CDP's frameRemove tears down the OUTGOING
+//      page's inspector mappings. For pending-root swap it uses surgical
+//      contextDestroyed (the replacement context is already live in the
+//      same group); otherwise resetContextGroup(). Isolated worlds and
+//      node_registry are cleared. The OLD page's memory is still alive
+//      (intentional: CDP teardown can walk old-page state without UAF).
 //   2. Pointer flip and _state = .active. session.page now points at the
 //      pending page.
 //   3. frame_created dispatch — CDP creates fresh isolated world contexts
@@ -761,6 +806,8 @@ pub fn commitPendingPage(self: *Session) !void {
     // (e.g. img.src → domChanged) after destroyContext → UAF / segfault.
     self.browser.env.waitForBackgroundTasks();
     self.destroyPage(old_active);
+    self.reapZombiePages();
+    self.reapZombiePendingPages();
 }
 
 // Discard a pending Page without committing. Used for failure paths
@@ -791,6 +838,20 @@ pub fn discardPendingPage(self: *Session) void {
         return;
     }
     self.destroyPage(page);
+}
+
+// Free pages deferred while native WebSocket pollNative was still on the stack.
+pub fn reapZombiePages(self: *Session) void {
+    var i: usize = 0;
+    while (i < self._zombie_pages.items.len) {
+        const zombie = self._zombie_pages.items[i];
+        if (self.browser.http_client.frameHasWebSocketPollInFlight(&zombie.frame)) {
+            i += 1;
+            continue;
+        }
+        _ = self._zombie_pages.swapRemove(i);
+        self.finishDestroyPage(zombie);
+    }
 }
 
 // Free discarded pending pages once no HTTP transfer aliases their frame ctx.

@@ -60,13 +60,20 @@ fn keysToJson(allocator: std.mem.Allocator, keys: []const []const u8) ![]const u
     return json.toOwnedSlice(allocator);
 }
 
+/// Globals written by real site runtimes (Next/Turbopack/React/etc.). Antidetect
+/// prune must not delete these — SPA bootstrap (window.next, TURBOPACK) is wiped
+/// ~100ms after install and soft-nav /login never completes (dovihome-sale).
+const runtime_assigned_json =
+    \\["Fingerprint","Creep","knitsail","td","next","TURBOPACK","TURBOPACK_NEXT_CHUNK_URLS","React","ReactDOM","ReactDOMClient","__VUE__","__NUXT__","ng","angular","Vue","VueRouter","webpackChunk_N_E"]
+;
+
 fn buildPruneScript(allocator: std.mem.Allocator, keys: []const []const u8) ![]const u8 {
     const keys_json = try keysToJson(allocator, keys);
     return std.fmt.allocPrint(
         allocator,
-        \\(function(){{const allowed=new Set({s});const runtimeAssigned=new Set(["Fingerprint","Creep","knitsail","td"]);const prune=[];for(const k of Object.getOwnPropertyNames(globalThis)){{if(/_|\\d{{3,}}/.test(k))continue;if(allowed.has(k)||runtimeAssigned.has(k))continue;prune.push(k)}}for(const k of prune){{try{{delete globalThis[k]}}catch(e){{}}}}}})();
+        \\(function(){{const allowed=new Set({s});const runtimeAssigned=new Set({s});const prune=[];for(const k of Object.getOwnPropertyNames(globalThis)){{if(/_|\\d{{3,}}/.test(k))continue;if(allowed.has(k)||runtimeAssigned.has(k))continue;prune.push(k)}}for(const k of prune){{try{{delete globalThis[k]}}catch(e){{}}}}}})();
     ,
-        .{keys_json},
+        .{ keys_json, runtime_assigned_json },
     );
 }
 
@@ -84,8 +91,8 @@ fn buildBatchScript(allocator: std.mem.Allocator, keys: []const []const u8) ![]c
     const keys_json = try keysToJson(allocator, keys);
     return std.fmt.allocPrint(
         allocator,
-        \\(function(){{const keys={s};const own=new Set(Object.getOwnPropertyNames(globalThis));const runtimeAssigned=new Set(["Fingerprint","Creep","knitsail","td"]);for(const k of keys){{if(own.has(k))continue;if(runtimeAssigned.has(k))continue;if(k.startsWith("on")&&k.length>2){{Object.defineProperty(globalThis,k,{{value:null,enumerable:true,configurable:true,writable:true}});own.add(k);continue;}}if(k in globalThis){{const cur=globalThis[k];Object.defineProperty(globalThis,k,{{value:cur,enumerable:true,configurable:true,writable:true}});own.add(k);continue;}}Object.defineProperty(globalThis,k,{{value:undefined,enumerable:true,configurable:true,writable:true}});own.add(k);}}}})();
+        \\(function(){{const keys={s};const own=new Set(Object.getOwnPropertyNames(globalThis));const runtimeAssigned=new Set({s});for(const k of keys){{if(own.has(k))continue;if(runtimeAssigned.has(k))continue;if(k.startsWith("on")&&k.length>2){{Object.defineProperty(globalThis,k,{{value:null,enumerable:true,configurable:true,writable:true}});own.add(k);continue;}}if(k in globalThis){{const cur=globalThis[k];Object.defineProperty(globalThis,k,{{value:cur,enumerable:true,configurable:true,writable:true}});own.add(k);continue;}}Object.defineProperty(globalThis,k,{{value:undefined,enumerable:true,configurable:true,writable:true}});own.add(k);}}}})();
     ,
-        .{keys_json},
+        .{ keys_json, runtime_assigned_json },
     );
 }

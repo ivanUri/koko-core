@@ -101,7 +101,10 @@
         def(Document.prototype, "links", { get: function () { return null; }, configurable: true, enumerable: true });
         def(Document.prototype, "forms", { get: function () { return null; }, configurable: true, enumerable: true });
         def(Document.prototype, "scripts", { get: function () { return null; }, configurable: true, enumerable: true });
-        def(Document.prototype, "currentScript", { get: function () { return null; }, configurable: true, enumerable: true });
+        // Do NOT stub currentScript. HTML puts it on Document; Next/Turbopack
+        // getAssetPrefix requires a live HTMLScriptElement during classic script
+        // evaluation. A null placeholder here breaks SPA bootstrap when the
+        // real accessor was only on HTMLDocument.prototype.
         def(Document.prototype, "designMode", { get: function () { return null; }, configurable: true, enumerable: true });
         def(Document.prototype, "onreadystatechange", { value: null, writable: true, configurable: true, enumerable: true });
         def(Document.prototype, "anchors", { get: function () { return null; }, configurable: true, enumerable: true });

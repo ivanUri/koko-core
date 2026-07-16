@@ -241,6 +241,17 @@ fn dispatchMessageNow(
 ) !bool {
     if (self._closed) return false;
 
+    // Nested on V8 / lifecycle evaluate: sync message handlers re-enter V8 and
+    // V8_Fatal before DOMContentLoaded (stripe.com MessagePort chains during
+    // Next defer chunks). Enqueue as a separate task instead (HTML task queue).
+    const host_frame: *Frame = switch (exec.context.global) {
+        .frame => |f| f,
+        .worker => |wgs| wgs._worker._frame,
+    };
+    if (host_frame._script_manager.base.is_evaluating) return false;
+    if (exec.context.call_depth > 0) return false;
+    if (host_frame._session.browser.env.anyContextOnV8Stack()) return false;
+
     const target = self.asEventTarget();
     if (!exec.hasDirectListeners(target, "message", self._on_message)) {
         return false;

@@ -306,6 +306,10 @@ pub fn sendBeacon(_: *const Navigator, url_val: js.Value, data_val: ?js.Value, f
             .cookie_origin = frame.url,
             .top_level_cookie_url = frame.topLevelUrl(),
             .resource_type = .beacon,
+            // Chrome sendBeacon is keepalive: may finish after unload. Attribute
+            // while the frame is alive; keepalive skips normal re-nav abort.
+            .attribution_frame = frame,
+            .keepalive = true,
             .notification = session.notification,
         },
         .header_callback = BeaconSink.headerCallback,

@@ -146,25 +146,37 @@ pub fn tickCDP(self: *Runner, opts: TickOpts) !CDPTickResult {
 }
 
 fn drainDeferredDocumentParse(self: *Runner, comptime is_cdp: bool) void {
-    if (comptime !is_cdp) return;
+    _ = is_cdp;
     const frame = self.frame;
     const http_client = self.http_client;
-    if (http_client.http_active != 0) return;
     if (!frame.hasDeferredDocumentParsePending()) return;
+    // Do not gate on http_active: the document transfer is already done when
+    // frameDoneCallback schedules parse. Waiting for all subresource fetches
+    // (x.com module bundles, fonts) left HTML unparseable and DCL never fired.
+    // Departing realm: cancelOwnedSchedulerWork instead of running parse on dead DOM.
+    if (!frame.canRunOwnedScheduler()) {
+        frame.cancelOwnedSchedulerWork();
+        return;
+    }
 
     const env = &self.session.browser.env;
     var slices: u8 = 0;
     while (slices < 48) : (slices += 1) {
+        if (!frame.canRunOwnedScheduler()) {
+            frame.cancelOwnedSchedulerWork();
+            break;
+        }
         env.runMicrotasks(.macrotask_loop);
         if (!frame.js.scheduler.hasReadyTasks()) break;
         var hs: js.HandleScope = undefined;
         const entered = frame.js.enter(&hs) orelse break;
-        const ran = frame.js.scheduler.runOne() catch false;
+        const ran = frame.runOwnedSchedulerOne() catch false;
         entered.exit();
         if (!ran) break;
         env.runMicrotasks(.macrotask_loop);
+        // CDP may start re-nav; next loop iteration cancels if realm left active.
         http_client.serviceInboundCdpIfReadable();
-        if (!frame.hasDeferredDocumentParsePending()) break;
+        if (!frame.hasDeferredDocumentParsePending() and !frame._document_parse_active) break;
     }
 }
 
@@ -181,8 +193,13 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
             // The main frame hasn't started/finished navigating.
             // There's no JS to run, and no reason to run the scheduler.
             if (http_client.http_active == 0 and (comptime is_cdp) == false) {
-                // haven't started navigating, I guess.
-                return .done;
+                // Deferred HTML parse is scheduled from the HTTP callback; without
+                // draining it here MCP runner.wait() returned .done while the URL
+                // was set but the document was still empty (github.com).
+                self.drainDeferredDocumentParse(is_cdp);
+                if (frame._parse_state == .pre and !frame.hasDeferredDocumentParsePending() and !frame._document_parse_active) {
+                    return .done;
+                }
             }
 
             if (comptime is_cdp) {
@@ -196,6 +213,7 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
                 while (slices < 8) : (slices += 1) {
                     if (!try self.session.browser.runMacrotasksCdpSlice()) break;
                 }
+                frame._script_manager.base.pumpDocumentLifecycle(frame);
             }
 
             // Either we have active http connections, or we're in CDP
@@ -249,26 +267,31 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
             } else {
                 try browser.runMacrotasks();
             }
-            frame.drainRtcEvents();
+            // commitPendingPage may have swapped active/pending during tick/macrotasks;
+            // do not drain RTC (or read load/idle state) through a stale Frame ptr.
+            self.frame = session.pendingOrCurrentFrame() orelse return .done;
+            const live_frame = self.frame;
+            live_frame._script_manager.base.pumpDocumentLifecycle(live_frame);
+            live_frame.drainRtcEvents();
 
             const http_active = http_client.http_active;
             const total_network_activity = http_active + http_client.interception_layer.intercepted;
-            if (frame._notified_network_almost_idle.check(total_network_activity <= 2)) {
-                frame.notifyNetworkAlmostIdle();
+            if (live_frame._notified_network_almost_idle.check(total_network_activity <= 2)) {
+                live_frame.notifyNetworkAlmostIdle();
             }
-            if (frame._notified_network_idle.check(total_network_activity == 0)) {
-                frame.notifyNetworkIdle();
+            if (live_frame._notified_network_idle.check(total_network_activity == 0)) {
+                live_frame.notifyNetworkIdle();
             }
 
             switch (opts.until) {
                 .done => {},
-                .domcontentloaded => if (frame._load_state == .load or frame._load_state == .complete) {
+                .domcontentloaded => if (live_frame._load_state == .load or live_frame._load_state == .complete) {
                     return .done;
                 },
-                .load => if (frame._load_state == .complete) {
+                .load => if (live_frame._load_state == .complete) {
                     return .done;
                 },
-                .networkidle => if (frame._notified_network_idle == .done) {
+                .networkidle => if (live_frame._notified_network_idle == .done) {
                     return .done;
                 },
             }

@@ -239,6 +239,7 @@ pub fn getTagNameLower(self: *const Element) []const u8 {
                 .li => "li",
                 .link => "link",
                 .map => "map",
+                .marquee => "marquee",
                 .media => |m| switch (m._type) {
                     .audio => "audio",
                     .video => "video",
@@ -319,6 +320,7 @@ pub fn getTagNameSpec(self: *const Element, buf: []u8) []const u8 {
             .li => "LI",
             .link => "LINK",
             .map => "MAP",
+            .marquee => "MARQUEE",
             .meta => "META",
             .media => |m| switch (m._type) {
                 .audio => "AUDIO",
@@ -2560,6 +2562,7 @@ pub fn getTag(self: *const Element) Tag {
             .legend => .legend,
             .li => .li,
             .map => .map,
+            .marquee => .marquee,
             .ul => .ul,
             .ol => .ol,
             .object => .object,

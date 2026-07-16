@@ -238,10 +238,6 @@ pub fn getApplets(_: *const HTMLDocument) collections.HTMLCollection {
     return .{ ._data = .empty };
 }
 
-pub fn getCurrentScript(self: *const HTMLDocument) ?*Element.Html.Script {
-    return self._proto._current_script;
-}
-
 pub fn getLocation(self: *const HTMLDocument) ?*@import("Location.zig") {
     const frame = self._proto._frame orelse return null;
     return frame.window._location;
@@ -367,7 +363,7 @@ pub const JsApi = struct {
     pub const embeds = bridge.accessor(HTMLDocument.getEmbeds, null, .{});
     pub const applets = bridge.accessor(HTMLDocument.getApplets, null, .{});
     pub const plugins = bridge.accessor(HTMLDocument.getEmbeds, null, .{});
-    pub const currentScript = bridge.accessor(HTMLDocument.getCurrentScript, null, .{});
+    // currentScript is on Document (HTML IDL) — see Document.JsApi.currentScript.
     pub const location = bridge.accessor(HTMLDocument.getLocation, HTMLDocument.setLocation, .{});
     pub const all = bridge.accessor(HTMLDocument.getAll, null, .{});
     // `cookie` is defined on Document (HTML spec).

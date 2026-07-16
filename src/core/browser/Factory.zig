@@ -263,6 +263,15 @@ pub fn blob(_: *const Factory, arena: Allocator, child: anytype) !*@TypeOf(child
 }
 
 pub fn abstractRange(_: *const Factory, arena: Allocator, child: anytype, frame: *Frame) !*@TypeOf(child) {
+    return abstractRangeInner(arena, child, frame, true);
+}
+
+/// StaticRange: same prototype chain as Range but not tracked in live ranges.
+pub fn abstractRangeStatic(_: *const Factory, arena: Allocator, child: anytype, frame: *Frame) !*@TypeOf(child) {
+    return abstractRangeInner(arena, child, frame, false);
+}
+
+fn abstractRangeInner(arena: Allocator, child: anytype, frame: *Frame, track_live: bool) !*@TypeOf(child) {
     const chain = try PrototypeChain(&.{ AbstractRange, @TypeOf(child) }).allocate(arena);
 
     const doc = frame.document.asNode();
@@ -276,9 +285,10 @@ pub fn abstractRange(_: *const Factory, arena: Allocator, child: anytype, frame:
         ._start_container = doc,
         ._frame_loader_id = frame._loader_id,
         ._type = unionInit(AbstractRange.Type, chain.get(1)),
+        ._tracks_live = track_live,
     };
     chain.setLeaf(1, child);
-    frame._live_ranges.append(&abstract_range._range_link);
+    if (track_live) frame._live_ranges.append(&abstract_range._range_link);
     return chain.get(1);
 }
 

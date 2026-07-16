@@ -195,6 +195,8 @@ pub fn initSharedHost(
             .cookie_origin = frame.url,
             .top_level_cookie_url = frame.topLevelUrl(),
             .omit_cookies = !self.shouldSendCookies(resolved_url),
+            // Abort with the document frame on root re-nav (not worker frame_id alone).
+            .attribution_frame = frame,
             .notification = session.notification,
         },
         .header_callback = httpHeaderCallback,
@@ -289,6 +291,7 @@ pub fn init(url: []const u8, options: ?WorkerOptions, exec: *Execution) !*Worker
             .cookie_origin = frame.url,
             .top_level_cookie_url = frame.topLevelUrl(),
             .omit_cookies = !self.shouldSendCookies(resolved_url),
+            .attribution_frame = frame,
             .notification = session.notification,
         },
         .header_callback = httpHeaderCallback,
@@ -447,6 +450,7 @@ pub fn pumpBootstrapContext(ctx: *js.Context, env: *js.Env) void {
     const exec = &ctx.execution;
     if (exec.realmState() == .dead) return;
     if (!exec.canEnterJs(.strict_active)) return;
+    if (env.anyContextOnV8Stack()) return;
 
     var hs: js.HandleScope = undefined;
     const entered = ctx.enter(&hs) orelse return;
@@ -1046,9 +1050,12 @@ pub fn bootstrapMessagingActive(exec: *const Execution) bool {
     };
 }
 
-/// Pump worker↔page scheduler queues via `runOne()` (safe inside macrotask callbacks).
+/// Pump worker↔page scheduler queues via `runOne()` (safe on the V8 central stack
+/// only — not nested inside Script.eval / DOM API / HTTP doneCallback).
 pub fn pumpMessageDelivery(frame: *Frame) void {
     const env = &frame._session.browser.env;
+    // Nested V8 entry throws with IsOnCentralStack (tinhte ads + worker postMessage).
+    if (env.anyContextOnV8Stack()) return;
     var pass: u32 = 0;
     while (pass < bootstrap_drain_max_passes) : (pass += 1) {
         var any_ready = false;

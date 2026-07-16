@@ -32,7 +32,7 @@ _on_timeout: ?js.Function.Temp = null,
 
 pub const Type = union(enum) {
     request: *@import("XMLHttpRequest.zig"),
-    // TODO: xml_http_request_upload
+    upload: *@import("XMLHttpRequestUpload.zig"),
 };
 
 pub fn asEventTarget(self: *XMLHttpRequestEventTarget) *EventTarget {

@@ -26,8 +26,10 @@ const Script = @This();
 _proto: *HtmlElement,
 _src: []const u8 = "",
 _executed: bool = false,
-// Dynamic scripts without the async attribute block like Chrome (boq sets async=false).
-_force_async: bool = false,
+// HTML: force-async is true for createElement/script; parser-inserted scripts
+// clear it in Frame.scriptAddedCallback. Wrong default caused SPA injects to
+// syncRequest during another script's doneCallback → curl RecursiveApiCall.
+_force_async: bool = true,
 
 pub fn asElement(self: *Script) *Element {
     return self._proto._proto;

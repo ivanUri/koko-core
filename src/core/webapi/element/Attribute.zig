@@ -176,6 +176,12 @@ pub const List = struct {
 
     pub fn getAttribute(self: *const List, name: String, element: ?*Element, frame: *Frame) !?*Attribute {
         const entry = (try self.getEntry(name, frame)) orelse return null;
+        return try self.getOrCreateAttribute(entry, element, frame);
+    }
+
+    /// Memoized Attribute view for a list Entry (XPath attribute axis, NamedNodeMap).
+    pub fn getOrCreateAttribute(self: *const List, entry: *const Entry, element: ?*Element, frame: *Frame) !*Attribute {
+        _ = self;
         const gop = try frame._attribute_lookup.getOrPut(frame.arena, @intFromPtr(entry));
         if (gop.found_existing) {
             return gop.value_ptr.*;

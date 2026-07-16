@@ -21,6 +21,9 @@ pub fn item(self: *const StyleSheetList, index: usize) ?*CSSStyleSheet {
 }
 
 pub fn add(self: *StyleSheetList, sheet: *CSSStyleSheet, frame: *Frame) !void {
+    // StyleSheetList and CSSStyleSheet live on the page factory (frame_arena).
+    // Always grow the list with the same arena so re-nav / recycled arenas cannot
+    // leave an ArrayList buffer allocated under a freed allocator.
     try self._sheets.append(frame.arena, sheet);
 }
 

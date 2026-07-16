@@ -195,6 +195,17 @@ pub fn topLevelCookieUrl(self: *const Execution) [:0]const u8 {
     };
 }
 
+/// Browsing-context pointer for `HttpClient.RequestParams.attribution_frame`.
+/// Root re-nav aborts by frame identity; subresources whose `ctx` is not the
+/// Frame (Fetch, XHR, Worker) must set this or late HTTP callbacks UAF after teardown.
+pub fn attributionFrame(self: *const Execution) ?*anyopaque {
+    return switch (self.context.global) {
+        .frame => |f| f,
+        // Dedicated/shared workers are torn down with their parent document.
+        .worker => |w| w._worker._frame,
+    };
+}
+
 pub fn canEnterJs(self: *const Execution, mode: JsEntryMode) bool {
     // scheduler_suppressed only gates microtask checkpoints (see Env.runMicrotasks).
     // Macrotasks (setTimeout, rAF, etc.) must keep firing so CreepJS queueEvent

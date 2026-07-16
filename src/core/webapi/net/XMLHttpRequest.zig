@@ -28,6 +28,7 @@ const Event = @import("../Event.zig");
 const Headers = @import("Headers.zig");
 const EventTarget = @import("../EventTarget.zig");
 const XMLHttpRequestEventTarget = @import("XMLHttpRequestEventTarget.zig");
+const XMLHttpRequestUpload = @import("XMLHttpRequestUpload.zig");
 
 const log = @import("../../../support/log.zig");
 const Execution = js.Execution;
@@ -38,6 +39,7 @@ const XMLHttpRequest = @This();
 _rc: RC(u8) = .{},
 _exec: *const Execution,
 _proto: *XMLHttpRequestEventTarget,
+_upload: ?*XMLHttpRequestUpload = null,
 _arena: Allocator,
 _http_response: ?HttpClient.Response = null,
 _active_request: bool = false,
@@ -95,6 +97,18 @@ pub fn init(exec: *const Execution) !*XMLHttpRequest {
         ._request_headers = try Headers.init(null, exec),
     });
     return self;
+}
+
+// https://xhr.spec.whatwg.org/#the-upload-attribute
+// Lazy + cached so listeners attached to xhr.upload stick across accesses.
+pub fn getUpload(self: *XMLHttpRequest) !*XMLHttpRequestUpload {
+    if (self._upload) |upload| return upload;
+    const upload = try self._exec._factory.xhrEventTarget(
+        self._arena,
+        XMLHttpRequestUpload{ ._proto = undefined, ._xhr = self },
+    );
+    self._upload = upload;
+    return upload;
 }
 
 pub fn deinit(self: *XMLHttpRequest, page: *Page) void {
@@ -287,6 +301,8 @@ pub fn send(self: *XMLHttpRequest, body_: ?[]const u8) !void {
             .timeout_ms = self._timeout,
             .notification = session.notification,
             .protect_from_abort = batchexecuteProtectFromAbort(self._url),
+            // protect_from_abort still survives .normal scope aborts (batchexecute).
+            .attribution_frame = exec.attributionFrame(),
         },
         .start_callback = httpStartCallback,
         .header_callback = httpHeaderDoneCallback,
@@ -490,8 +506,13 @@ fn httpHeaderDoneCallback(response: HttpClient.Response) !bool {
     self._response_url = try self._arena.dupeZ(u8, response.url());
 
     const exec = self._exec;
-    const ctx = exec.context;
+    if (!canDispatchXhrEvents(self, exec)) {
+        if (self._ready_state != .headers_received) self._ready_state = .headers_received;
+        self._ready_state = .loading;
+        return true;
+    }
 
+    const ctx = exec.context;
     const nested_in_api = ctx.local != null;
     var owned_scope: js.Local.Scope = undefined;
     if (!nested_in_api) ctx.localScope(&owned_scope);
@@ -509,6 +530,8 @@ fn httpDataCallback(response: HttpClient.Response, data: []const u8) !void {
     try self._response_data.appendSlice(self._arena, data);
 
     const exec = self._exec;
+    if (!canDispatchXhrEvents(self, exec)) return;
+
     try self._proto.dispatch(.progress, .{
         .total = self._response_len orelse 0,
         .loaded = self._response_data.items.len,
@@ -537,19 +560,23 @@ fn httpDoneCallback(ctx: *anyopaque) !void {
 
     const exec = self._exec;
 
-    try self.stateChanged(.done, exec);
+    if (canDispatchXhrEvents(self, exec)) {
+        try self.stateChanged(.done, exec);
 
-    const loaded = self._response_data.items.len;
-    try self._proto.dispatch(.load, .{
-        .total = loaded,
-        .loaded = loaded,
-    }, exec);
-    try self._proto.dispatch(.load_end, .{
-        .total = loaded,
-        .loaded = loaded,
-    }, exec);
+        const loaded = self._response_data.items.len;
+        try self._proto.dispatch(.load, .{
+            .total = loaded,
+            .loaded = loaded,
+        }, exec);
+        try self._proto.dispatch(.load_end, .{
+            .total = loaded,
+            .loaded = loaded,
+        }, exec);
 
-    exec.context.page.session.drainDeferredCommit();
+        exec.context.page.session.drainDeferredCommit();
+    } else {
+        self._ready_state = .done;
+    }
     self.releaseSelfRef();
 }
 
@@ -598,9 +625,8 @@ fn _handleError(self: *XMLHttpRequest, err: anyerror) !void {
     const new_state: ReadyState = if (is_abort) .unsent else .done;
     if (new_state != self._ready_state) {
         const exec = self._exec;
-        // Teardown / navigated-away: update readyState only — no DOM events.
-        // Event dispatch needs a live V8 context (localScope).
-        if (!self._active_request or !exec.canEnterJs(.allow_draining)) {
+        // Teardown / navigated-away / nested HTTP: readyState only — no DOM events.
+        if (!canDispatchXhrEvents(self, exec)) {
             self._ready_state = new_state;
         } else {
             try self.stateChanged(new_state, exec);
@@ -624,7 +650,17 @@ fn _handleError(self: *XMLHttpRequest, err: anyerror) !void {
     });
 }
 
+/// XHR progress events from curl callbacks must not enter JS while another call
+/// is on the V8 stack (HTML parse / script eval) — crashes with IsOnCentralStack.
+fn canDispatchXhrEvents(self: *const XMLHttpRequest, exec: *const Execution) bool {
+    return self._active_request and
+        exec.canEnterJs(.strict_active) and
+        exec.context.call_depth == 0;
+}
+
 fn dispatchReadyStateChange(self: *XMLHttpRequest, exec: *const Execution) !void {
+    if (!canDispatchXhrEvents(self, exec)) return;
+
     const target = self.asEventTarget();
     if (exec.hasDirectListeners(target, "readystatechange", self._on_ready_state_change)) {
         const event = try Event.initTrusted(.wrap("readystatechange"), .{}, exec.context.page);
@@ -682,6 +718,7 @@ pub const JsApi = struct {
     pub const LOADING = bridge.property(@intFromEnum(XMLHttpRequest.ReadyState.loading), .{ .template = true });
     pub const DONE = bridge.property(@intFromEnum(XMLHttpRequest.ReadyState.done), .{ .template = true });
 
+    pub const upload = bridge.accessor(XMLHttpRequest.getUpload, null, .{});
     pub const onreadystatechange = bridge.accessor(XMLHttpRequest.getOnReadyStateChange, XMLHttpRequest.setOnReadyStateChange, .{});
     pub const timeout = bridge.accessor(XMLHttpRequest.getTimeout, XMLHttpRequest.setTimeout, .{});
     pub const withCredentials = bridge.accessor(XMLHttpRequest.getWithCredentials, XMLHttpRequest.setWithCredentials, .{ .dom_exception = true });

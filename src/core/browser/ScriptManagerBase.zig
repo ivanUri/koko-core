@@ -247,8 +247,23 @@ owner: Owner,
 // used to prevent recursive evaluation
 is_evaluating: bool,
 
+// evaluate() arrived while is_evaluating (or while unsafe for V8/curl). Retry
+// when the outer window ends or via scheduleDeferredEvaluate — never drop SPA
+// async chunks (Lightpanda evaluate_pending pattern; dovihome /login soft-nav).
+evaluate_pending: bool = false,
+
+// True while a DeferEvaluateCallback is scheduled (debounce; avoid 0-delay
+// reschedule storms inside runOwnedScheduler when canEval is still false).
+deferred_evaluate_queued: bool = false,
+
+// Set when script-eval watchdog terminates a hung V8 module/script (infinite
+// loop). evaluate() drops remaining incomplete defer heads so DCL can fire.
+watchdog_terminated: bool = false,
+
 // Only once this is true can deferred scripts be run
 static_scripts_done: bool,
+/// Wall ms when staticScriptsDone ran (diagnostics / optional metrics).
+static_scripts_done_at_ms: u64 = 0,
 
 // Async scripts and dynamic import() fetches. Frame .async classic scripts
 // execute in insertion order once each predecessor has finished loading
@@ -294,10 +309,14 @@ pub fn init(allocator: Allocator, http_client: *HttpClient, owner: Owner) Script
         .ready_scripts = .{},
         .importmap = .empty,
         .is_evaluating = false,
+        .evaluate_pending = false,
+        .deferred_evaluate_queued = false,
+        .watchdog_terminated = false,
         .allocator = allocator,
         .imported_modules = .empty,
         .client = http_client,
         .static_scripts_done = false,
+        .static_scripts_done_at_ms = 0,
         .tail_hook = null,
     };
 }
@@ -345,6 +364,10 @@ pub fn reset(self: *ScriptManagerBase) void {
     clearList(&self.async_scripts);
     clearList(&self.ready_scripts);
     self.static_scripts_done = false;
+    self.static_scripts_done_at_ms = 0;
+    self.evaluate_pending = false;
+    self.deferred_evaluate_queued = false;
+    self.watchdog_terminated = false;
     // Script.deinit nulls HttpCtx.script; free the ctx shells after lists clear.
     self.reapOrphanedHttpCtxs();
 }
@@ -594,27 +617,54 @@ pub fn preloadImport(self: *ScriptManagerBase, url: [:0]const u8, referrer: []co
 }
 
 pub fn waitForImport(self: *ScriptManagerBase, url: [:0]const u8) !ModuleSource {
-    const entry = self.imported_modules.getEntry(url) orelse {
-        // It shouldn't be possible for v8 to ask for a module that we didn't
-        // `preloadImport` above.
-        return error.UnknownModule;
-    };
-
     const was_evaluating = self.is_evaluating;
     self.is_evaluating = true;
-    defer self.is_evaluating = was_evaluating;
+    defer self.endEvaluationWindow(was_evaluating);
 
     var client = self.client;
+    // Lightpanda re-looks up the map entry every iteration: client.tick can
+    // mutate imported_modules (grow/rehash), invalidating a cached Entry pointer
+    // and stranding the wait on a stale `.loading` view (ebay.com module hang).
+    // Cap total wait so a stuck fetch cannot freeze the isolate (and CDP) forever.
+    const deadline_ms: u64 = 3_000;
+    const started = @import("../../support/datetime.zig").milliTimestamp(.monotonic);
     while (true) {
+        const entry = self.imported_modules.getEntry(url) orelse {
+            // Should not happen unless preload was skipped / map cleared mid-nav.
+            return error.UnknownModule;
+        };
         switch (entry.value_ptr.state) {
             .loading => {
-                _ = try client.tick(200);
+                const now = @import("../../support/datetime.zig").milliTimestamp(.monotonic);
+                if (now -% started >= deadline_ms) {
+                    // Re-lookup after possible map growth from prior ticks.
+                    if (self.imported_modules.getPtr(url)) |ptr| ptr.state = .err;
+                    log.warn(.js, "waitForImport timeout", .{ .url = url, .ms = deadline_ms });
+                    return error.Failed;
+                }
+                _ = try client.tick(25);
+                // is_evaluating blocks blocksInboundCdp — briefly release so CDP
+                // (and other transfer completions) can progress while we wait.
+                const hold = self.is_evaluating;
+                self.is_evaluating = false;
+                client.serviceInboundCdpIfReadable();
+                self.is_evaluating = hold;
                 continue;
             },
             .done => |script| {
-                log.debug(.js, "module cache hit", .{ .url = url, .state = @tagName(entry.value_ptr.state), .ptr = @intFromPtr(entry.value_ptr) });
+                // Re-fetch buffer after tick may have rehashed; use fresh getPtr.
+                const ptr = self.imported_modules.getPtr(url) orelse return error.UnknownModule;
+                const buf = switch (ptr.state) {
+                    .done => ptr.buffer,
+                    else => return error.Failed,
+                };
+                log.debug(.js, "module cache hit", .{
+                    .url = url,
+                    .state = @tagName(ptr.state),
+                    .ptr = @intFromPtr(ptr),
+                });
                 return .{
-                    .buffer = entry.value_ptr.buffer,
+                    .buffer = buf,
                     .shared = true,
                     .script = script,
                 };
@@ -697,10 +747,10 @@ pub fn getAsyncImport(self: *ScriptManagerBase, url: [:0]const u8, cb: ImportAsy
     // a request, thus calling our callback. We generally don't want a call
     // from v8 (which is why we're here), to result in a new script evaluation.
     // So we block even the slightest change that `client.request` immediately
-    // executes a callback.
+    // executes a callback — endEvaluationWindow retries evaluate_pending after.
     const was_evaluating = self.is_evaluating;
     self.is_evaluating = true;
-    defer self.is_evaluating = was_evaluating;
+    defer self.endEvaluationWindow(was_evaluating);
 
     const session = self.owner.session();
     self.async_scripts.append(&script.node);
@@ -737,216 +787,358 @@ pub fn getAsyncImport(self: *ScriptManagerBase, url: [:0]const u8, cb: ImportAsy
 
 // Called from the Page / Frame to signal it's done parsing the HTML, so
 // deferred scripts can start evaluating. Workers never call this.
+//
+// Mark done and schedule evaluate on a **fresh task** (delay 0). Callers are
+// frameDoneCallback / DeferDocumentParse / leaveTransferCallback — already deep
+// Zig+curl+parser stacks. Inline evaluate() there nests module graphs / SPA
+// scripts until V8_Fatal (netlify/stripe/nytimes). HTML still runs scripts
+// before DCL; we only move the first body to the next macrotask, same as a
+// browser task boundary. Subsequent scripts hop one-per-task; incomplete
+// heads resume from doneCallback → evaluate().
 pub fn staticScriptsDone(self: *ScriptManagerBase) void {
     assert(self.static_scripts_done == false, "ScriptManagerBase.staticScriptsDone", .{});
     self.static_scripts_done = true;
-    if (!self.evaluateOneScript()) {
-        if (self.tail_hook) |hook| hook(self);
-        return;
-    }
-    self.scheduleEvaluateSlice() catch {
-        self.evaluate();
-    };
+    self.static_scripts_done_at_ms = @intCast(@max(std.time.milliTimestamp(), 0));
+    self.queueDeferredEvaluateOnly(0);
 }
 
-const EvaluateSliceCallback = struct {
-    manager: *ScriptManagerBase,
-
-    fn run(ctx: *anyopaque) !?u32 {
-        const self: *EvaluateSliceCallback = @ptrCast(@alignCast(ctx));
-        if (!self.manager.evaluateOneScript()) {
-            if (self.manager.tail_hook) |hook| hook(self.manager);
-            return null;
-        }
-        self.manager.scheduleEvaluateSlice() catch {
-            self.manager.evaluate();
-        };
-        return null;
+/// Incomplete classic frame scripts (async/defer) that still block document lifecycle.
+fn hasIncompleteLifecycleScripts(self: *const ScriptManagerBase) bool {
+    var n = self.defer_scripts.first;
+    while (n) |node| {
+        const script: *const Script = @fieldParentPtr("node", node);
+        if (!script.complete) return true;
+        n = node.next;
     }
-};
-
-fn scheduleEvaluateSlice(self: *ScriptManagerBase) !void {
-    const frame = self.owner.parentFrame();
-    const callback = try frame.arena.create(EvaluateSliceCallback);
-    callback.* = .{ .manager = self };
-    try frame.js.scheduler.add(callback, EvaluateSliceCallback.run, 0, .{
-        .name = "ScriptManager.evaluateSlice",
-        .low_priority = false,
-    });
+    // Classic async: only frame-async incomplete entries block ordered drain;
+    // module imports do not block DCL.
+    n = self.async_scripts.first;
+    while (n) |node| {
+        const script: *const Script = @fieldParentPtr("node", node);
+        switch (script.extra) {
+            .frame => |fe| {
+                if (fe.mode == .async and !script.complete) return true;
+            },
+            else => {},
+        }
+        n = node.next;
+    }
+    return false;
 }
 
 fn hasPendingEvaluateWork(self: *ScriptManagerBase) bool {
-    if (self.async_scripts.first) |n| {
-        const script: *Script = @fieldParentPtr("node", n);
+    if (self.ready_scripts.first != null) return true;
+    var n = self.async_scripts.first;
+    while (n) |node| {
+        const script: *Script = @fieldParentPtr("node", node);
         switch (script.extra) {
             .frame => |fe| {
                 if (fe.mode == .async and script.complete) return true;
             },
             else => {},
         }
+        n = node.next;
     }
-    if (self.ready_scripts.first != null) return true;
     if (!self.static_scripts_done) return false;
-    if (self.defer_scripts.first) |n| {
-        const script: *Script = @fieldParentPtr("node", n);
+    if (self.defer_scripts.first) |dn| {
+        const script: *Script = @fieldParentPtr("node", dn);
         if (script.complete) return true;
     }
     return false;
 }
 
-/// Run at most one ready/defer/async script. CDP interleaving: each slice ends
-/// on a scheduler turn so inbound Runtime.evaluate is not starved (ebay.com).
-fn evaluateOneScript(self: *ScriptManagerBase) bool {
-    if (self.is_evaluating) return self.hasPendingEvaluateWork();
-    self.is_evaluating = true;
-    defer self.is_evaluating = false;
-
-    if (self.async_scripts.first) |n| {
-        var script: *Script = @fieldParentPtr("node", n);
-        switch (script.extra) {
-            .frame => |fe| {
-                if (fe.mode != .async or !script.complete) return false;
-                _ = self.async_scripts.popFirst();
-                defer script.deinit();
-                script.eval();
-                self.serviceCdpInbound();
-                return self.hasPendingEvaluateWork();
-            },
-            else => return false,
-        }
-    }
-
-    if (self.ready_scripts.popFirst()) |n| {
-        var script: *Script = @fieldParentPtr("node", n);
-        switch (script.extra) {
-            .frame => {
-                defer script.deinit();
-                script.eval();
-                self.serviceCdpInbound();
-                return self.hasPendingEvaluateWork();
-            },
-            .import_async => |ia| {
-                if (script.status < 200 or script.status > 299) {
-                    script.deinit();
-                    ia.callback(ia.data, error.FailedToLoad);
-                } else {
-                    ia.callback(ia.data, .{
-                        .shared = false,
-                        .script = script,
-                        .buffer = script.source.remote,
-                    });
-                }
-                self.serviceCdpInbound();
-                return self.hasPendingEvaluateWork();
-            },
-            .import => unreachable,
-        }
-    }
-
-    if (!self.static_scripts_done) return false;
-
-    if (self.defer_scripts.first) |n| {
-        var script: *Script = @fieldParentPtr("node", n);
-        if (!script.complete) return false;
-        _ = self.defer_scripts.popFirst();
-        defer script.deinit();
-        script.eval();
-        self.serviceCdpInbound();
-        return self.hasPendingEvaluateWork();
-    }
-
-    return false;
+/// True when it is safe to run Script.eval (V8 central stack).
+/// Must NOT gate DCL/tailHook — only individual script bodies.
+///
+/// Lightpanda has no transfer-callback gate; defer lifecycle runs from HTTP
+/// doneCallback → evaluate() in processMessages. Blocking inTransferCallback
+/// left parsed DOM without DCL (go.dev/netlify). Nested curl uses HttpClient
+/// ready_queue; only block when V8 is on-stack.
+fn canEvalScriptsFromHttpCallback(self: *const ScriptManagerBase) bool {
+    const env = &self.owner.parentFrame()._page.session.browser.env;
+    if (env.anyContextOnV8Stack()) return false;
+    return true;
 }
 
-/// Run downloaded frame `.async` scripts in insertion order. Callable while a
-/// sync parent script is still evaluating — boq injects dependency chunks
-/// during bootstrap and expects them to run before the parent continues.
-pub fn drainOrderedAsyncScripts(self: *ScriptManagerBase) void {
-    drain_async: while (self.async_scripts.first) |n| {
-        var script: *Script = @fieldParentPtr("node", n);
-        switch (script.extra) {
-            .frame => |fe| {
-                if (fe.mode != .async) break :drain_async;
-                if (!script.complete) break :drain_async;
-                if (!script.deliverable()) break :drain_async;
-                _ = self.async_scripts.popFirst();
-                defer script.deinit();
-                script.eval();
-            },
-            else => break :drain_async,
+/// Runner tick: ensure post-parse lifecycle started and resume evaluate when
+/// work is pending (scheduler suppressed / missed hop). Incomplete defer heads
+/// resume from HTTP doneCallback — no wall-clock script drops.
+pub fn pumpDocumentLifecycle(self: *ScriptManagerBase, frame: *Frame) void {
+    if (self.shutdown) return;
+
+    // Parse finished but post-parse lifecycle never ran (missed leaveTransferCallback).
+    if (!self.static_scripts_done and frame._parse_state == .complete and !frame._document_parse_active) {
+        if (!self.client.inTransferCallback()) {
+            frame._pending_post_parse_lifecycle = false;
+            frame.runPostParseScriptLifecycle();
         }
     }
-}
 
-fn serviceCdpInbound(self: *ScriptManagerBase) void {
+    if (!self.static_scripts_done or !frame.isDocumentParsing()) return;
+    // Always try to make progress; also service CDP between hops (P0 navigate).
     self.client.serviceInboundCdpIfReadable();
+    self.evaluatePendingWhenCentral();
 }
 
-pub fn evaluate(self: *ScriptManagerBase) void {
+/// Resume after nested/unsafe; never silent-drop.
+pub fn evaluatePendingWhenCentral(self: *ScriptManagerBase) void {
+    if (self.shutdown) return;
+    // Owe DCL when parse+static done, defer heads not incomplete, and load
+    // state still parsing (tailHook not applied yet).
+    const owe_dcl =
+        self.static_scripts_done and
+        self.tail_hook != null and
+        !self.hasIncompleteLifecycleScripts() and
+        self.owner.parentFrame().isDocumentParsing();
+    const need =
+        self.evaluate_pending or
+        self.hasPendingEvaluateWork() or
+        owe_dcl;
+    if (!need) return;
     if (self.is_evaluating) {
-        // Defer/defer_scripts/tail_hook must not run during sync script eval.
-        // Async chunks still drain from doneCallback via drainOrderedAsyncScripts.
+        self.evaluate_pending = true;
         return;
     }
-    if (self.owner.parentFrame()._session.navigationCritical()) return;
+    self.evaluate();
+}
+
+pub fn scheduleDeferredEvaluate(self: *ScriptManagerBase) void {
+    if (self.shutdown) return;
+    if (!self.static_scripts_done) return;
+    if (!self.is_evaluating) {
+        self.evaluate();
+        return;
+    }
+    self.evaluate_pending = true;
+    self.queueDeferredEvaluateOnly(0);
+}
+
+fn queueDeferredEvaluateOnly(self: *ScriptManagerBase, delay_ms: u32) void {
+    if (self.shutdown) return;
+    if (self.deferred_evaluate_queued) return;
+    self.deferred_evaluate_queued = true;
+    const frame = self.owner.parentFrame();
+    const callback = frame.arena.create(DeferEvaluateCallback) catch {
+        self.deferred_evaluate_queued = false;
+        return;
+    };
+    callback.* = .{ .manager = self };
+    frame.js.scheduler.add(callback, DeferEvaluateCallback.run, delay_ms, .{
+        .name = "ScriptManager.deferEvaluate",
+        .low_priority = false,
+    }) catch {
+        self.deferred_evaluate_queued = false;
+    };
+}
+
+const DeferEvaluateCallback = struct {
+    manager: *ScriptManagerBase,
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *DeferEvaluateCallback = @ptrCast(@alignCast(ctx));
+        self.manager.deferred_evaluate_queued = false;
+        self.manager.evaluatePendingWhenCentral();
+        return null;
+    }
+};
+
+/// Close an `is_evaluating` window.
+///
+/// Always hop via delay-0 scheduler for evaluate_pending — never recurse
+/// evaluate() here. Recursive re-entry + post-eval runMacrotasks stacked
+/// Script.eval frames → V8_Fatal before DCL. Incomplete defer heads must not
+/// set evaluate_pending (doneCallback re-enters instead).
+pub fn endEvaluationWindow(self: *ScriptManagerBase, was_evaluating: bool) void {
+    self.is_evaluating = was_evaluating;
+    if (was_evaluating != false or !self.evaluate_pending) return;
+    self.evaluate_pending = false;
+    self.queueDeferredEvaluateOnly(0);
+}
+
+/// Drain completed classic frame `.async` scripts in document order.
+/// Incomplete frame-async blocks subsequent frame-async (intentional).
+/// Module imports sitting in the same list do not participate — scan past them.
+pub fn drainOrderedAsyncScripts(self: *ScriptManagerBase) void {
+    var guard: u32 = 0;
+    while (guard < 256) : (guard += 1) {
+        var n = self.async_scripts.first;
+        var ran_one = false;
+        while (n) |node| {
+            var script: *Script = @fieldParentPtr("node", node);
+            const next = node.next;
+            switch (script.extra) {
+                .frame => |fe| {
+                    if (fe.mode != .async) {
+                        n = next;
+                        continue;
+                    }
+                    if (!script.complete) return; // ordered wait
+                    if (!script.deliverable()) return;
+                    if (!self.canEvalScriptsFromHttpCallback()) return;
+                    self.async_scripts.remove(node);
+                    defer script.deinit();
+                    script.eval();
+                    ran_one = true;
+                    break; // restart from head after mutation
+                },
+                else => {
+                    n = next;
+                },
+            }
+        }
+        if (!ran_one) return;
+    }
+}
+
+/// Script evaluation + DOMContentLoaded (tailHook).
+///
+/// Architecture (HTML task queue + Lightpanda doneCallback re-entry):
+/// - Run **at most one** script body per evaluate() invoke, then hop via
+///   delay-0 scheduler / Runner. That matches browsers treating each script
+///   as a separate task and keeps Zig+V8 stack shallow (prevents V8_Fatal
+///   Maximum call stack on module graphs / SPA injectors). Not a wall-clock wait.
+/// - Incomplete defer head → return; HTTP doneCallback calls evaluate() again.
+/// - Never set evaluate_pending while waiting on incomplete defer (SIGILL recursion).
+/// - canEval false → delay-0 hop (V8 already on stack).
+pub fn evaluate(self: *ScriptManagerBase) void {
+    if (self.shutdown) return;
+    if (!self.static_scripts_done) return;
+    if (self.is_evaluating) {
+        self.evaluate_pending = true;
+        return;
+    }
 
     self.is_evaluating = true;
-    defer self.is_evaluating = false;
+    defer self.endEvaluationWindow(false);
 
-    self.drainOrderedAsyncScripts();
+    var ran_one = false;
+    while (true) {
+        self.evaluate_pending = false;
 
-    while (self.ready_scripts.popFirst()) |n| {
-        var script: *Script = @fieldParentPtr("node", n);
-        switch (script.extra) {
-            .frame => {
-                // Only .async mode reaches ready_scripts (defer stays in
-                // defer_scripts, normal is sync and never queued).
-                defer script.deinit();
-                script.eval();
-                self.serviceCdpInbound();
-            },
-            .import_async => |ia| {
-                if (script.status < 200 or script.status > 299) {
-                    script.deinit();
-                    ia.callback(ia.data, error.FailedToLoad);
-                } else {
-                    ia.callback(ia.data, .{
-                        .shared = false,
-                        .script = script,
-                        .buffer = script.source.remote,
-                    });
-                }
-            },
-            .import => unreachable, // .import doesn't go through ready_scripts
+        // Drop ghost incomplete defer heads (aborted / non-deliverable).
+        while (self.defer_scripts.first) |dn| {
+            var s: *Script = @fieldParentPtr("node", dn);
+            if (s.complete) break;
+            if (s.guard.isFinished() or !s.deliverable()) {
+                _ = self.defer_scripts.popFirst();
+                s.deinit();
+                continue;
+            }
+            break;
         }
-    }
 
-    if (self.static_scripts_done == false) {
-        // We can only execute deferred scripts if
-        // 1 - all the normal scripts are done
-        // 2 - we've finished parsing the HTML and at least queued all the scripts
-        // The last one isn't obvious, but it's possible for self.scripts to
-        // be empty not because we're done executing all the normal scripts
-        // but because we're done executing some (or maybe none), but we're still
-        // parsing the HTML.
-        return;
-    }
+        if (self.watchdog_terminated) {
+            while (self.defer_scripts.first) |dn| {
+                var s: *Script = @fieldParentPtr("node", dn);
+                if (s.complete) break;
+                _ = self.defer_scripts.popFirst();
+                s.deinit();
+            }
+            self.watchdog_terminated = false;
+        }
 
-    while (self.defer_scripts.first) |n| {
-        var script: *Script = @fieldParentPtr("node", n);
-        if (script.complete == false) return;
-        defer {
+        if (!self.canEvalScriptsFromHttpCallback()) {
+            if (self.hasPendingEvaluateWork() or self.hasIncompleteLifecycleScripts()) {
+                self.queueDeferredEvaluateOnly(0);
+            }
+            return;
+        }
+
+        // HTML: deferred/module scripts block DOMContentLoaded; classic async does
+        // not. Prefer one complete **defer** head first so GTM/async ready work
+        // cannot starve DCL forever (previous ready-first ordering never reached
+        // empty defer while trackers kept completing).
+        if (self.defer_scripts.first) |n| {
+            var script: *Script = @fieldParentPtr("node", n);
+            if (!script.complete) {
+                // In flight — doneCallback re-enters. Do not set evaluate_pending.
+                // Still schedule hop so stall recovery / runner can poll.
+                return;
+            }
             _ = self.defer_scripts.popFirst();
-            script.deinit();
+            if (script.activeFrame() == null) {
+                script.deinit();
+                continue;
+            }
+            defer script.deinit();
+            script.eval();
+            self.client.serviceInboundCdpIfReadable();
+            ran_one = true;
+        } else if (self.ready_scripts.first) |n| {
+            var script: *Script = @fieldParentPtr("node", n);
+            _ = self.ready_scripts.popFirst();
+            switch (script.extra) {
+                .frame => {
+                    defer script.deinit();
+                    script.eval();
+                    self.client.serviceInboundCdpIfReadable();
+                    ran_one = true;
+                },
+                .import_async => |ia| {
+                    if (script.status < 200 or script.status > 299) {
+                        script.deinit();
+                        ia.callback(ia.data, error.FailedToLoad);
+                    } else {
+                        ia.callback(ia.data, .{
+                            .shared = false,
+                            .script = script,
+                            .buffer = script.source.remote,
+                        });
+                    }
+                    self.client.serviceInboundCdpIfReadable();
+                    ran_one = true;
+                },
+                .import => unreachable,
+            }
+        } else if (self.async_scripts.first) |_| {
+            var n = self.async_scripts.first;
+            while (n) |node| {
+                var script: *Script = @fieldParentPtr("node", node);
+                const next = node.next;
+                switch (script.extra) {
+                    .frame => |fe| {
+                        if (fe.mode != .async) {
+                            n = next;
+                            continue;
+                        }
+                        if (!script.complete or !script.deliverable()) break;
+                        self.async_scripts.remove(node);
+                        defer script.deinit();
+                        script.eval();
+                        self.client.serviceInboundCdpIfReadable();
+                        ran_one = true;
+                        break;
+                    },
+                    else => {
+                        n = next;
+                    },
+                }
+            }
         }
-        // Only frame scripts populate defer_scripts.
-        script.eval();
-        self.serviceCdpInbound();
+
+        if (self.evaluate_pending and !ran_one) continue;
+
+        // More complete defer? Hop (one-script-per-task). Delay 0 only.
+        if (self.defer_scripts.first) |hn| {
+            const head: *Script = @fieldParentPtr("node", hn);
+            if (head.complete) {
+                self.queueDeferredEvaluateOnly(0);
+                return;
+            }
+            // Incomplete head — wait for HTTP doneCallback.
+            return;
+        }
+
+        // Defer empty → DCL. Async/ready may remain; schedule optional drain.
+        if (self.hasPendingEvaluateWork()) {
+            self.queueDeferredEvaluateOnly(0);
+        }
+        break;
     }
 
-    // Frame wrapper uses this to fire documentIsLoaded and
-    // scriptsCompletedLoading. Null for workers.
-    if (self.tail_hook) |hook| hook(self);
+    if (self.tail_hook) |hook| {
+        hook(self);
+    }
 }
 
 pub const Script = struct {
@@ -1049,7 +1241,10 @@ pub const Script = struct {
         const owner = self.manager.owner;
         const frame = owner.parentFrame();
         if (@intFromPtr(frame) == 0) return false;
-        if (frame._session.navigationCritical()) return false;
+        // Do NOT gate on navigationCritical here. Script HTTP can finish while
+        // initiateRootNavigation/commitPendingPage holds the critical section
+        // (tick/processMessages). Gating dropped doneCallback before complete=true
+        // and left defer scripts incomplete forever (no DCL).
         return self.guard.isDeliverableForRealm(owner.captureTaskOwner(), .{
             .manager_shutdown = false,
             .realm_dead_or_draining = frame._realm_state == .dead or frame._realm_state == .draining,
@@ -1244,23 +1439,36 @@ pub const Script = struct {
 
     pub fn doneCallback(self: *Script) !void {
         if (self.guard.isFinished() or self.manager.shutdown) return;
-        if (!self.deliverable()) return;
+
+        // Always mark complete first (Lightpanda does). Previously `deliverable()`
+        // false (navigationCritical / draining) returned BEFORE complete=true, so
+        // defer heads stayed incomplete forever → readyState stuck `loading`, no DCL.
         self.complete = true;
         if (comptime IS_DEBUG) {
             log.debug(.http, "script fetch complete", .{ .req = self.url });
         }
 
         const manager = self.manager;
-        if (manager.owner.parentFrame()._session.navigationCritical()) return;
+        const can_deliver = self.deliverable();
+
         switch (self.extra) {
             .frame => |fe| switch (fe.mode) {
-                .async => manager.drainOrderedAsyncScripts(),
+                .async => {
+                    // Move to ready_scripts so completion is not blocked by an
+                    // incomplete import head on async_scripts.
+                    if (can_deliver) {
+                        manager.async_scripts.remove(&self.node);
+                        manager.ready_scripts.append(&self.node);
+                    }
+                },
                 .@"defer" => {}, // stays in defer_scripts; drained in order
                 .normal => unreachable, // syncRequest path doesn't go through callbacks
             },
             .import_async => {
-                manager.async_scripts.remove(&self.node);
-                manager.ready_scripts.append(&self.node);
+                if (can_deliver) {
+                    manager.async_scripts.remove(&self.node);
+                    manager.ready_scripts.append(&self.node);
+                }
             },
             .import => {
                 manager.async_scripts.remove(&self.node);
@@ -1274,7 +1482,13 @@ pub const Script = struct {
                 entry.buffer = self.source.remote;
             },
         }
-        if (!manager.shutdown) manager.evaluate();
+        if (manager.shutdown) return;
+        // While HTML parse / frameDoneCallback is still unwinding, queue
+        // completions only — staticScriptsDone will drain ready/defer/async.
+        if (!manager.static_scripts_done) return;
+        // Lightpanda: evaluate() directly from HTTP doneCallback so defer heads
+        // resume in the same processMessages chain (go.dev / netlify DCL).
+        manager.evaluate();
     }
 
     pub fn errorCallback(self: *Script, err: anyerror) void {
@@ -1287,8 +1501,18 @@ pub const Script = struct {
             self.deinit();
             return;
         }
-        if (!self.deliverable()) return;
         const manager = self.manager;
+        if (!self.deliverable()) {
+            // Abort during navigation/teardown: drop incomplete defer/async heads so
+            // DCL is not blocked forever (BBC guardian-class ghost heads).
+            if (self.extra == .frame) {
+                self.complete = true;
+                manager.scriptList(self).remove(&self.node);
+                self.deinit();
+                if (!manager.shutdown) manager.scheduleDeferredEvaluate();
+            }
+            return;
+        }
         if (self.status == 404) {
             log.info(.http, "script 404", .{
                 .req = self.url,
@@ -1322,18 +1546,20 @@ pub const Script = struct {
                     entry.state = .err;
                 }
             },
-            // Frame <script> fetch failures must not re-enter evaluate() from the
-            // HTTP tick. defer_scripts are drained from doneCallback /
-            // staticScriptsDone; calling evaluate here raced aborted transfers
-            // (e.g. BBC Optimizely) into V8 entry while the realm was still
-            // initializing and segfaulted in compile.
+            // Frame <script> fetch failures: remove from defer/async list (already
+            // done above) and resume evaluate so DCL is not stuck forever waiting
+            // on a head that will never complete. Use scheduleDeferredEvaluate
+            // (not immediate evaluate) to avoid re-entering V8 from the HTTP tick
+            // when unsafe — same safety goal as the old early-return, without
+            // dropping the lifecycle. Lightpanda calls evaluate() here directly.
             .frame => {
                 self.deinit();
+                if (!manager.shutdown) manager.scheduleDeferredEvaluate();
                 return;
             },
         }
         self.deinit();
-        if (!manager.shutdown) manager.evaluate();
+        if (!manager.shutdown) manager.scheduleDeferredEvaluate();
     }
 
     fn pumpScriptScheduler(frame: *Frame, local: *const js.Local) void {
@@ -1350,6 +1576,69 @@ pub const Script = struct {
             if (!frame.js.scheduler.hasReadyTasks()) break;
         }
     }
+
+    /// Wall-clock watchdog: terminate isolate if a single script eval runs too long.
+    /// eBay discoveryplatform modules have been observed to spin forever in V8,
+    /// freezing CDP. Thread-safe terminate matches Lightpanda's multi-thread
+    /// TerminateExecution usage.
+    const ScriptEvalWatchdog = struct {
+        thread: ?std.Thread = null,
+        state: ?*State = null,
+
+        const State = struct {
+            env: *js.Env,
+            deadline_ms: u64,
+            cancel: std.atomic.Value(bool) = .init(false),
+            fired: std.atomic.Value(bool) = .init(false),
+        };
+
+        fn start(env: *js.Env, timeout_ms: u64) !ScriptEvalWatchdog {
+            const state = try std.heap.c_allocator.create(State);
+            state.* = .{
+                .env = env,
+                .deadline_ms = timeout_ms,
+            };
+            const thread = std.Thread.spawn(.{}, run, .{state}) catch |err| {
+                std.heap.c_allocator.destroy(state);
+                return err;
+            };
+            return .{ .thread = thread, .state = state };
+        }
+
+        fn run(state: *State) void {
+            const step_ns: u64 = 50 * std.time.ns_per_ms;
+            var waited: u64 = 0;
+            while (waited < state.deadline_ms * std.time.ns_per_ms) {
+                if (state.cancel.load(.acquire)) return;
+                std.Thread.sleep(step_ns);
+                waited += step_ns;
+            }
+            if (state.cancel.load(.acquire)) return;
+            state.fired.store(true, .release);
+            log.warn(.js, "script eval watchdog terminate", .{ .ms = state.deadline_ms });
+            state.env.terminate();
+        }
+
+        /// Returns true if the watchdog terminated execution.
+        fn stop(self: *ScriptEvalWatchdog) bool {
+            var fired = false;
+            if (self.state) |state| {
+                state.cancel.store(true, .release);
+                fired = state.fired.load(.acquire);
+            }
+            if (self.thread) |t| {
+                t.join();
+            }
+            if (self.state) |state| {
+                fired = fired or state.fired.load(.acquire);
+                state.env.cancelTerminate();
+                std.heap.c_allocator.destroy(state);
+            }
+            self.thread = null;
+            self.state = null;
+            return fired;
+        }
+    };
 
     // Frame-only. Asserts extra == .frame; callers from the worker path never
     // reach here (workers only produce .import / .import_async).
@@ -1402,6 +1691,33 @@ pub const Script = struct {
 
         defer frame._event_manager.clearIgnoreList();
 
+        // Remote modules (e.g. ebay.com discoveryplatform bundles) can infinite-
+        // loop in V8 and freeze CDP. Arm a wall-clock watchdog that terminates
+        // isolate execution; cancel after eval returns.
+        const lifecycle_eval = self.manager.static_scripts_done;
+        const remote_classic = fe.kind == .javascript and self.source != .@"inline";
+        const inline_len: usize = switch (self.source) {
+            .@"inline" => |c| c.len,
+            .remote => 0,
+        };
+        // Watchdog only for runaway V8 (infinite loops). Short enough that
+        // TerminateExecution fires before pure-JS recursion climbs into
+        // V8_Fatal on a depleted C stack (stripe Next chunks). Not a DCL timer.
+        const watchdog_ms: u64 = if (fe.kind == .module) 8_000 else if (lifecycle_eval and remote_classic) 3_000 else if (lifecycle_eval and fe.kind == .javascript) 2_500 else if (fe.mode == .async and cacheable) 4_000 else if (cacheable) 8_000 else if (!lifecycle_eval and inline_len > 96 * 1024) 5_000 else 0;
+        var watchdog: ScriptEvalWatchdog = .{};
+        if (watchdog_ms > 0) {
+            if (ScriptEvalWatchdog.start(&frame._page.session.browser.env, watchdog_ms)) |w| {
+                watchdog = w;
+            } else |_| {}
+        }
+        defer {
+            if (watchdog.stop()) {
+                self.manager.watchdog_terminated = true;
+                // Ensure isolate accepts subsequent lifecycle / CDP eval.
+                frame._page.session.browser.env.cancelTerminate();
+            }
+        }
+
         const success = blk: {
             const content = self.source.content();
             if (jsCallLogEnabled()) {
@@ -1422,15 +1738,21 @@ pub const Script = struct {
                         log.warn(.js, "eval script", .{ .url = url, .err = err, .cacheable = cacheable });
                         break :blk false;
                     };
-                    frame.drainMicrotasksAfterDomInsertion();
+                    // Same-turn promise reactions only. Full 48-pass drain is for
+                    // non-lifecycle paths; during evaluate() keep shallow.
+                    frame.drainClassicScriptMicrotasks();
                 },
                 .module => {
-                    // We don't care about waiting for the evaluation here.
+                    // Module scripts: document.currentScript is always null.
                     const module_url = if (cacheable)
                         URL.resolve(frame.js.arena, frame.base(), url, .{ .always_dupe = true }) catch break :blk false
                     else
                         url;
-                    frame.js.module(false, local, content, module_url, cacheable) catch break :blk false;
+                    frame.js.module(false, local, content, module_url, cacheable) catch |err| {
+                        log.warn(.js, "eval module", .{ .url = url, .err = err, .cacheable = cacheable });
+                        break :blk false;
+                    };
+                    frame.drainMicrotasksAfterDomInsertion();
                 },
                 .importmap => unreachable, // handled before the try/catch.
             }
@@ -1442,21 +1764,23 @@ pub const Script = struct {
         }
 
         defer {
-            // Parser-inserted scripts: defer microtasks + timers until the HTML
-            // parser finishes (Blink/Chromium). knitsail reads readyState at nav.
-            const env = local.ctx.env;
-            const should_pump = !frame.isDocumentParsing() or !Frame.isGoogleKnitsailHost(frame.url);
+            // After a script body: microtasks only while the lifecycle evaluate()
+            // window is open. Running the full scheduler here re-enters
+            // DeferEvaluateCallback → nested evaluate → stacked Script.eval and
+            // V8_Fatal. Runner macrotask loop drains timers after the hop.
+            const should_pump = frame.realmParseComplete() or Frame.isGoogleKnitsailHost(frame.url);
             if (should_pump) {
-                pumpScriptScheduler(frame, local);
-                if (!frame.isDocumentParsing()) {
-                    local.runMacrotasks();
+                if (frame.isDocumentParsing() and Frame.isGoogleKnitsailHost(frame.url)) {
+                    frame.noteKnitsailParserScript();
+                    frame.tryPumpKnitsailDocumentLifecycle();
                 }
-                // Fingerprint yb() resolves its iframe Promise after appendChild
-                // returns; await continuations need multiple checkpoint passes.
-                var pass: u8 = 0;
-                while (pass < 8) : (pass += 1) {
-                    env.runMicrotasks(.after_evaluate);
-                    if (!env.checkpoint_pending) break;
+                if (self.manager.is_evaluating) {
+                    local.ctx.env.runMicrotasks(.after_evaluate);
+                } else {
+                    local.runMacrotasks();
+                    _ = frame.js.scheduler.run() catch |err| {
+                        log.warn(.frame, "scheduler after script", .{ .err = err, .url = self.url });
+                    };
                 }
             }
         }
@@ -1475,6 +1799,13 @@ pub const Script = struct {
     fn executeCallback(self: *const Script, typ: String) void {
         const fe = self.extra.frame;
         const frame = self.activeFrame() orelse return;
+        // Do not nest load/error listeners while evaluate() is draining the
+        // lifecycle queue: tracker listeners re-enter V8 on the same Zig stack
+        // and V8_Fatal (stack) before tailHook. Load events are not required for
+        // DOMContentLoaded; the element still ran. Remaining work continues via
+        // timers/macrotasks after the drain.
+        if (self.manager.is_evaluating) return;
+
         const Event = @import("../webapi/Event.zig");
         const event = Event.initTrusted(typ, .{}, frame._page) catch |err| {
             log.warn(.js, "script internal callback", .{

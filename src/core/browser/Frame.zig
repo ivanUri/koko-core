@@ -119,6 +119,9 @@ _scheduler_suppressed: bool = false,
 _deferred_frame_navigated_scheduled: bool = false,
 /// CDP Page.navigate ack is sent at header time; observer work runs after body.
 _pending_frame_navigated_observers: bool = false,
+/// Runtime.executionContextCreated already sent for this navigation (pending-
+/// root commit publishes at frame_created; frameNavigated must not duplicate).
+_inspector_context_published: bool = false,
 
 _page: *Page,
 
@@ -202,6 +205,10 @@ _sync_iframe_pending: *std.ArrayList(*IFrame) = undefined,
 _sync_iframe_flush_scheduled: bool = false,
 /// HTML parse + static scripts deferred off the document HTTP done_callback (CDP poll).
 _document_parse_scheduled: bool = false,
+/// True while `DeferDocumentParseCallback` is on the stack (html5ever walking DOM).
+/// Parser callbacks re-check realm after CDP poll; this flag is for diagnostics
+/// and for call sites that must not assume parse is idle.
+_document_parse_active: bool = false,
 /// Throttle inbound CDP socket polls during long sync parse / script eval.
 _cdp_poll_counter: u16 = 0,
 
@@ -270,8 +277,14 @@ _factory: *Factory,
 _load_state: LoadState = .waiting,
 /// Google sei: defer knitsail sg_ss microtasks until post-parse pump.
 _defer_knitsail_post_parse: bool = false,
-/// Google knitsail: DCL after pageT freeze in pumpPostParseTasks (not in tailHook).
-_defer_knitsail_dcl: bool = false,
+/// Knitsail timer milestones + pageT freeze + DCL fired for this navigation.
+_knitsail_lifecycle_pumped: bool = false,
+/// Parser-inserted script ran (bootstrap registered setTimeout probes).
+_knitsail_parser_script_seen: bool = false,
+_knitsail_lifecycle_fallback_scheduled: bool = false,
+_static_scripts_done_scheduled: bool = false,
+/// Inline parse finished inside frameDoneCallback; lifecycle starts at leaveTransferCallback.
+_pending_post_parse_lifecycle: bool = false,
 
 _parse_state: ParseState = .pre,
 
@@ -620,6 +633,7 @@ pub fn bumpRealmNavigationEpoch(self: *Frame) void {
     self._realm_state = .initializing;
     self._sync_iframe_flush_scheduled = false;
     self._document_parse_scheduled = false;
+    self._document_parse_active = false;
     self._cdp_poll_counter = 0;
     // New navigation installs a new execution world; suppression belongs to
     // the discarded realm and must not poison the replacement realm.
@@ -638,6 +652,86 @@ fn enterRealmDraining(self: *Frame) void {
     }
 }
 
+/// Single cancel-on-nav entry for document-owned async work.
+///
+/// Call when this frame is departing (root re-nav abort, or frame teardown).
+/// Network abort is the caller's job (`abortTransfersAttributedTo`) so pending
+/// root document transfers can keep `protect_from_abort` / scope options.
+///
+/// Contract after return:
+/// - realm is `.draining` (no new JS entry with `.strict_active`)
+/// - scheduler queue is empty (deferred parse / script slices / timer pumps)
+/// - streaming `document.write` parser is cancelled
+/// - script manager rejects late HTTP script callbacks
+pub fn prepareForOutgoingAbort(self: *Frame) void {
+    self.enterRealmDraining();
+    self._script_manager.base.shutdown = true;
+    self.document.cancelStreamingParser();
+    self._document_parse_active = false;
+    // Knitsail lifecycle timers must not fire on a departing Google SERP realm
+    // after root re-nav (poisoned scheduler / heap pressure into next parse).
+    self._knitsail_lifecycle_pumped = false;
+    self._knitsail_parser_script_seen = false;
+    self._knitsail_lifecycle_fallback_scheduled = false;
+    self._defer_knitsail_post_parse = false;
+    self._pending_post_parse_lifecycle = false;
+    self._static_scripts_done_scheduled = false;
+    // Drop deferred HTML parse / script-slice / timer pumps still on this
+    // frame's scheduler. Otherwise DeferDocumentParseCallback can run after
+    // the page arena is freed (tinhte re-nav → Frame.appendNew UAF 0xaaaa…).
+    self.cancelOwnedSchedulerWork();
+    self.closeRtcPeerConnections();
+    self.disconnectAllIntersectionObservers();
+    self._intersection_delivery_scheduled = false;
+    self._intersection_check_scheduled = false;
+}
+
+/// True while this realm may run document-owned scheduler tasks / parser work.
+pub fn canRunOwnedScheduler(self: *const Frame) bool {
+    if (self._detach_pending) return false;
+    if (self._realm_state != .active) return false;
+    if (self.isGoingAway()) return false;
+    return true;
+}
+
+/// Drop all tasks on this frame's scheduler (and clear deferred-parse bookkeeping).
+pub fn cancelOwnedSchedulerWork(self: *Frame) void {
+    self.js.scheduler.reset();
+    self._document_parse_scheduled = false;
+    // scheduler.reset() drops DeferEvaluateCallback without running it.
+    self._script_manager.base.deferred_evaluate_queued = false;
+}
+
+/// Run at most one owned scheduler task if the realm is still active.
+/// On draining/dead, cancels leftover work instead of leaving dangling callbacks.
+pub fn runOwnedSchedulerOne(self: *Frame) !bool {
+    if (!self.canRunOwnedScheduler()) {
+        if (self._realm_state == .draining or self._realm_state == .dead) {
+            self.cancelOwnedSchedulerWork();
+        }
+        return false;
+    }
+    return try self.js.scheduler.runOne();
+}
+
+/// Drain ready owned scheduler tasks while the realm stays active.
+pub fn runOwnedScheduler(self: *Frame) !void {
+    if (!self.canRunOwnedScheduler()) {
+        if (self._realm_state == .draining or self._realm_state == .dead) {
+            self.cancelOwnedSchedulerWork();
+        }
+        return;
+    }
+    try self.js.scheduler.run();
+}
+
+fn disconnectAllIntersectionObservers(self: *Frame) void {
+    while (self._intersection_observers.items.len > 0) {
+        const observer = self._intersection_observers.items[self._intersection_observers.items.len - 1];
+        observer.disconnect(self);
+    }
+}
+
 fn enterRealmDead(self: *Frame) void {
     if (self._realm_state != .dead) {
         self._realm_state = .dead;
@@ -652,6 +746,7 @@ pub fn deinit(self: *Frame) void {
 
     self.enterRealmDraining();
     self.closeRtcPeerConnections();
+    self.document.cancelStreamingParser();
 
     if (comptime IS_DEBUG) {
         log.debug(.frame, "frame.deinit", .{ .url = self.url, .type = self._type });
@@ -1015,13 +1110,46 @@ pub fn releaseArena(self: *Frame, allocator: Allocator) void {
 pub fn pumpSameTurnPromiseContinuations(self: *Frame) void {
     const env = &self._session.browser.env;
     const is_fp = std.mem.indexOf(u8, self.url, "fingerprint.com") != null;
+    // call_depth: Zig DOM API nesting. is_evaluating: mid Script.eval (still on V8
+    // stack even when call_depth==0). Running worker-flush macrotasks from there
+    // hits V8 IsOnCentralStack.
+    const nested = self.js.call_depth > 0 or self._script_manager.base.is_evaluating or env.anyContextOnV8Stack();
     var pass: u8 = 0;
     while (pass < 48) : (pass += 1) {
         if (is_fp) env.performMicrotaskCheckpointFp(self.js) else env.performMicrotaskCheckpoint(self.js);
         if (@mod(pass, 4) == 3) {
-            _ = self.js.scheduler.runOne() catch {};
-            self.pumpDueTimersNow(10);
+            // Timer / worker-flush callbacks require V8's central stack; defer when nested.
+            if (nested and !is_fp) {
+                self.scheduleDeferredMacrotaskPump(0) catch |err| {
+                    log.warn(.frame, "defer nested dom timer pump", .{ .err = err });
+                };
+            } else {
+                _ = self.runOwnedSchedulerOne() catch {};
+                self.pumpDueTimersNow(10);
+            }
         }
+    }
+}
+
+/// Drain promise reactions while a classic `<script>` is still
+/// `document.currentScript`. Isolate uses kExplicit microtasks, so without an
+/// explicit checkpoint Next/Turbopack's `async registerChunk` → `getAssetPrefix`
+/// sees `currentScript === null` and throws InvariantError (SPA bootstrap).
+///
+/// Uses the Fp checkpoint path so realm `.initializing` (before parse complete)
+/// does not drop same-turn reactions the way `performMicrotaskCheckpoint` does.
+/// Does not run the frame scheduler — nested script eval / parse callbacks
+/// mid-classic-script re-enter dangerously; only V8 microtasks belong here.
+pub fn drainClassicScriptMicrotasks(self: *Frame) void {
+    const env = &self._session.browser.env;
+    // During lifecycle evaluate() drain: skip microtask storm entirely.
+    // Promise reactions still flush on the next hop (delay-0 evaluate /
+    // Runner macrotasks). 48 nested checkpoints re-entered MessagePort +
+    // iframe Frame.init → V8_Fatal (P1 Transport closed / P0 no DCL).
+    if (self._script_manager.base.is_evaluating) return;
+    var pass: u8 = 0;
+    while (pass < 48) : (pass += 1) {
+        env.performMicrotaskCheckpointFp(self.js);
     }
 }
 
@@ -1032,14 +1160,21 @@ pub fn drainMicrotasksAfterDomInsertion(self: *Frame) void {
     self.pumpSameTurnPromiseContinuations();
 
     var owned_scope: JS.Local.Scope = undefined;
-    const nested = self.js.local != null;
-    if (!nested) self.js.localScope(&owned_scope);
-    defer if (!nested) owned_scope.deinit();
+    const has_local = self.js.local != null;
+    if (!has_local) self.js.localScope(&owned_scope);
+    defer if (!has_local) owned_scope.deinit();
 
     const env = &self._session.browser.env;
+    // Do not drain macrotasks while nested in Script.eval / DOM APIs — worker
+    // flushes and timers need the V8 central stack (IsOnCentralStack).
+    const on_v8_stack = self.js.call_depth > 0 or self._script_manager.base.is_evaluating or env.anyContextOnV8Stack();
+    if (on_v8_stack and std.mem.indexOf(u8, self.url, "fingerprint.com") == null) {
+        self.scheduleDeferredMacrotaskPump(0) catch {};
+        return;
+    }
     var sched_pass: u8 = 0;
     while (sched_pass < 8) : (sched_pass += 1) {
-        _ = self.js.scheduler.run() catch break;
+        self.runOwnedScheduler() catch break;
         env.performMicrotaskCheckpoint(self.js);
         if (!self.js.scheduler.hasReadyTasks()) break;
     }
@@ -1157,6 +1292,12 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
     try self.swapActiveDocument();
     session.cookie_jar.beginDocumentNavigation();
     self._load_state = .parsing;
+    self._knitsail_lifecycle_pumped = false;
+    self._knitsail_parser_script_seen = false;
+    self._knitsail_lifecycle_fallback_scheduled = false;
+    self._defer_knitsail_post_parse = false;
+    self._static_scripts_done_scheduled = false;
+    self._pending_post_parse_lifecycle = false;
     self.terminateAllWorkers();
     self.bumpRealmNavigationEpoch();
     self._nav_task_owner = self.js.execution.captureTaskOwner();
@@ -1168,6 +1309,11 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
     }
     if (isGoogleKnitsailHost(request_url) or std.mem.indexOf(u8, request_url, "accounts.google.") != null) {
         self.window._google.ensureBootstrapDefaults(self);
+    }
+    if (isGoogleKnitsailHost(request_url)) {
+        self.scheduleKnitsailLifecycleFallback() catch |err| {
+            log.warn(.frame, "knitsail lifecycle fallback", .{ .err = err, .url = request_url });
+        };
     }
     if (GoogleSigninDebug.isAccountsGoogleUrl(request_url)) {
         injectGoogleSigninClosureBusLog(self, request_url);
@@ -1608,9 +1754,20 @@ pub fn documentIsLoaded(self: *Frame) void {
     self._load_state = .load;
     self.document._ready_state = .interactive;
     self.window._performance.recordDomInteractive();
-    self._documentIsLoaded() catch |err| switch (err) {
-        error.JsException => {}, // already logged
-        else => log.err(.frame, "document is loaded2", .{ .err = err, .type = self._type, .url = self.url }),
+
+    // Emit Page.domContentEventFired *before* running page DOMContentLoaded
+    // handlers. Ad/GTM listeners regularly V8_Fatal (stack overflow) and would
+    // otherwise kill the process with CDP clients still waiting forever on
+    // "Waiting for Page.domContentEventFired".
+    self._session.notification.dispatch(.frame_dom_content_loaded, &.{
+        .req_id = self._req_id,
+        .frame_id = self._frame_id,
+        .loader_id = self._loader_id,
+        .timestamp = timestamp(.monotonic),
+    });
+
+    self._documentIsLoaded() catch |err| {
+        log.err(.frame, "document is loaded2", .{ .err = err, .type = self._type, .url = self.url });
     };
 }
 
@@ -1624,18 +1781,15 @@ pub fn _documentIsLoaded(self: *Frame) !void {
     const NavigatorKeysIntelligent = @import("../../runtime/profile/NavigatorKeysIntelligent.zig");
     NavigatorKeysIntelligent.installOnDocument(self, self.js);
 
+    // Page DOMContentLoaded (after CDP). Failures here must not un-fire DCL.
     const event = try Event.initTrusted(.wrap("DOMContentLoaded"), .{ .bubbles = true }, self._page);
-    try self._event_manager.dispatch(
+    self._event_manager.dispatch(
         self.document.asEventTarget(),
         event,
-    );
-
-    self._session.notification.dispatch(.frame_dom_content_loaded, &.{
-        .req_id = self._req_id,
-        .frame_id = self._frame_id,
-        .loader_id = self._loader_id,
-        .timestamp = timestamp(.monotonic),
-    });
+    ) catch |err| switch (err) {
+        error.JsException => {},
+        else => log.warn(.frame, "DOMContentLoaded dispatch", .{ .err = err, .url = self.url }),
+    };
 }
 
 pub fn scriptsCompletedLoading(self: *Frame) void {
@@ -1718,16 +1872,67 @@ pub fn hasDeferredDocumentParsePending(self: *const Frame) bool {
 }
 
 /// Poll the CDP socket during long synchronous work (HTML parse, script eval).
+///
+/// While deferred document parse is on the stack, do **not** service CDP:
+/// `Page.navigate` would drain this realm mid-html5ever and createElement
+/// returning null corrupts the tree builder (getDataCallback UAF). Finish the
+/// parse, then let the runner poll CDP; cancel-on-nav clears the old realm.
 pub fn pollCdpDuringLongWork(self: *Frame) void {
+    if (self._document_parse_active) return;
     self._cdp_poll_counter +%= 1;
-    if (self._cdp_poll_counter & 0x3F != 0) return;
+    if (self._cdp_poll_counter & 0x0F != 0) return;
     self._session.browser.http_client.serviceInboundCdpIfReadable();
 }
 
+/// Start classic script drain + DCL after HTML parse. Must not run inside an
+/// HTTP transfer callback (defer head fetches deadlock until curl unwinds).
+pub fn runPostParseScriptLifecycle(self: *Frame) void {
+    if (self._script_manager.base.static_scripts_done) return;
+    self._static_scripts_done_scheduled = false;
+    // Activate style/link/img that were skipped mid-document-parse.
+    self.activateDeferredParserResources();
+    // Queues evaluate on delay-0 (shallow stack). Do not scheduler.run() here
+    // for normal sites: pumpPostParseTasks would drain 70+ Next defer chunks
+    // (stripe.com) on the frameDone/parse stack → MessagePort/V8_Fatal before DCL.
+    self._script_manager.staticScriptsDone();
+    self.pollCdpDuringLongWork();
+    if (!navDeliverable(self)) return;
+    // Knitsail still needs post-parse microtask/sg_ss pump on this path.
+    if (isGoogleKnitsailHost(self.url)) self.pumpPostParseTasks();
+    self.scheduleDeferredSyncIframeFlush() catch |err| {
+        log.warn(.frame, "defer sync iframe flush", .{ .err = err, .url = self.url });
+    };
+}
+
+/// Walk document after HTML parse and fire nodeIsReady for style/link/img
+/// that were intentionally skipped during html5ever (parser-stability).
+fn activateDeferredParserResources(self: *Frame) void {
+    if (!navDeliverable(self)) return;
+    const root = self.document.asNode();
+    var tw = @import("../dom/TreeWalker.zig").Full.Elements.init(root, .{});
+    while (tw.next()) |el| {
+        if (!navDeliverable(self)) return;
+        // Scripts/iframes already ran at parser insertion points.
+        if (el.is(Element.Html.Script) != null or el.is(IFrame) != null) continue;
+        if (el.is(Element.Html.Style) == null and el.is(Element.Html.Link) == null and el.is(Element.Html.Image) == null) {
+            continue;
+        }
+        self.nodeIsReady(false, el.asNode()) catch |err| {
+            log.warn(.frame, "post-parse resource activate", .{ .err = err, .url = self.url });
+        };
+    }
+}
+
 pub fn scheduleDeferredStaticScriptsDone(self: *Frame) !void {
+    if (self._script_manager.base.static_scripts_done) return;
+    if (self._static_scripts_done_scheduled) return;
+    self._static_scripts_done_scheduled = true;
+
     const callback = try self.arena.create(DeferStaticScriptsDoneCallback);
     callback.* = .{ .frame = self };
-    try self.js.scheduler.add(callback, DeferStaticScriptsDoneCallback.run, 0, .{
+    // Fallback when leaveTransferCallback did not run lifecycle (scheduler path).
+    const delay_ms: u32 = if (self._session.browser.http_client.inTransferCallback()) 1 else 0;
+    try self.js.scheduler.add(callback, DeferStaticScriptsDoneCallback.run, delay_ms, .{
         .name = "Frame.deferStaticScriptsDone",
         .low_priority = false,
     });
@@ -1738,13 +1943,17 @@ const DeferStaticScriptsDoneCallback = struct {
 
     fn run(ctx: *anyopaque) !?u32 {
         const self: *DeferStaticScriptsDoneCallback = @ptrCast(@alignCast(ctx));
-        self.frame._script_manager.staticScriptsDone();
+        self.frame._static_scripts_done_scheduled = false;
+        if (!navDeliverable(self.frame)) return null;
+        self.frame.runPostParseScriptLifecycle();
         return null;
     }
 };
 
 pub fn scheduleDeferredDocumentParse(self: *Frame, raw_html: []const u8, as_xml: bool, html_arena: Allocator) !void {
-    if (self._document_parse_scheduled) return;
+    // Refuse while a parse is in flight — mid-parse reschedule + pump re-entered
+    // html5ever and corrupted the tree (Google → Bing SIGABRT).
+    if (self._document_parse_scheduled or self._document_parse_active) return;
     self._document_parse_scheduled = true;
 
     const callback = try self.arena.create(DeferDocumentParseCallback);
@@ -1769,9 +1978,21 @@ const DeferDocumentParseCallback = struct {
 
     fn run(ctx: *anyopaque) !?u32 {
         const self: *DeferDocumentParseCallback = @ptrCast(@alignCast(ctx));
+        // Re-entrancy guard: pollCdpDuringLongWork → pumpDeferredDocumentParse can
+        // re-enter this callback mid-parse (Google re-nav → Bing double parse →
+        // corrupt _parent / SIGABRT). Never parse the same document twice.
+        if (self.frame._document_parse_active) {
+            return null;
+        }
         self.frame._document_parse_scheduled = false;
         defer self.frame.releaseArena(self.html_arena);
+        // Do not block all inbound CDP (Runtime.evaluate) with navigationCritical.
+        // Cancel-on-nav is cooperative: poll may start re-nav → prepareForOutgoingAbort
+        // marks draining + resets scheduler; parser callbacks re-check realm.
         if (!navDeliverable(self.frame)) return null;
+
+        self.frame._document_parse_active = true;
+        defer self.frame._document_parse_active = false;
 
         const parse_arena = try self.frame.getArena(.medium, "Frame.parse");
         defer self.frame.releaseArena(parse_arena);
@@ -1790,18 +2011,27 @@ const DeferDocumentParseCallback = struct {
         } else {
             parser.parseWithEncoding(self.raw_html, self.frame.charset);
         }
+        // Re-nav may have marked draining mid-parse via a nested path; do not
+        // run scripts / load events on a departing realm.
+        if (!navDeliverable(self.frame)) return null;
         log.debug(.frame, "parse html done", .{ .type = self.frame._type, .url = self.frame.url, .len = self.raw_html.len });
         self.frame.reconcileParserIframeSrc();
         self.frame.drainQueuedNavigationsAfterParse();
         self.frame._parse_state = .{ .complete = {} };
 
         self.frame.pollCdpDuringLongWork();
-        try self.frame.scheduleDeferredStaticScriptsDone();
+        if (!navDeliverable(self.frame)) return null;
+        // Knitsail /search: pump DCL (pageT freeze) before staticScriptsDone.
+        // evaluate() can stall on incomplete defer heads; waiting for it blocked
+        // pumpPostParseTasks and CDP never saw Page.domContentEventFired.
+        const knitsail = isGoogleKnitsailHost(self.frame.url);
+        if (knitsail) {
+            self.frame.pumpPostParseTasks();
+        }
         self.frame.pollCdpDuringLongWork();
-        self.frame.pumpPostParseTasks();
-        self.frame.scheduleDeferredSyncIframeFlush() catch |err| {
-            log.warn(.frame, "defer sync iframe flush", .{ .err = err, .url = self.frame.url });
-        };
+        if (!navDeliverable(self.frame)) return null;
+        self.frame.runPostParseScriptLifecycle();
+        self.frame._session.browser.http_client.serviceInboundCdpIfReadable();
         return null;
     }
 };
@@ -2002,8 +2232,9 @@ const knitsail_timer_milestones_ms = [_]f64{ 22.600000001490116, 82.399999998509
 
 pub fn isGoogleKnitsailHost(url: []const u8) bool {
     if (std.mem.indexOf(u8, url, "google.") == null) return false;
-    // Knitsail pageT freeze is Search sg_ss bootstrap only. Accounts Identity reads
-    // performance.now() as int32 ms — frozen 192.599… triggers protobuf "int32" reject.
+    // Knitsail sg_ss bootstrap is Google Search SERP only — not homepage, not Identity.
+    if (std.mem.indexOf(u8, url, "/search") == null) return false;
+    // Accounts Identity reads performance.now() as int32 ms — frozen 192.599… rejects.
     if (std.mem.indexOf(u8, url, "accounts.google.") != null) return false;
     if (std.mem.indexOf(u8, url, "myaccount.google.") != null) return false;
     return true;
@@ -2012,6 +2243,59 @@ pub fn isGoogleKnitsailHost(url: []const u8) bool {
 pub fn holdsKnitsailMicrotasks(self: *const Frame) bool {
     return self._defer_knitsail_post_parse;
 }
+
+/// Parser-inserted script on a knitsail host (bootstrap setTimeout probes).
+pub fn noteKnitsailParserScript(self: *Frame) void {
+    if (!isGoogleKnitsailHost(self.url)) return;
+    self._knitsail_parser_script_seen = true;
+}
+
+/// SerpBase / Knitsail VM reads pageT (~192ms), readyState, timing during bootstrap.
+/// Fire DCL during HTML parse — do not wait for full 91KB parse + defer drain.
+pub fn tryPumpKnitsailDocumentLifecycle(self: *Frame) void {
+    if (self._knitsail_lifecycle_pumped) return;
+    if (!isGoogleKnitsailHost(self.url)) return;
+    if (self._load_state != .parsing) return;
+    if (!self._knitsail_parser_script_seen) return;
+
+    var ls: JS.Local.Scope = undefined;
+    self.js.localScope(&ls);
+    defer ls.deinit();
+    self.pumpKnitsailDocumentLifecycleWithScope(&ls);
+}
+
+fn pumpKnitsailDocumentLifecycleWithScope(self: *Frame, ls: *JS.Local.Scope) void {
+    self._knitsail_lifecycle_pumped = true;
+    // Hold sg_ss microtasks until post-parse pump; timer milestones use scheduler.runOne.
+    self._defer_knitsail_post_parse = true;
+    injectGoogleKnitsailBootstrapGlobals(self, ls);
+    pumpKnitsailTimerMilestones(self);
+    self.window._performance.freezeNow(knitsail_post_parse_target_page_t_ms);
+    self.documentIsLoaded();
+}
+
+fn scheduleKnitsailLifecycleFallback(self: *Frame) !void {
+    if (self._knitsail_lifecycle_fallback_scheduled) return;
+    self._knitsail_lifecycle_fallback_scheduled = true;
+    const callback = try self.arena.create(KnitsailLifecycleFallbackCallback);
+    callback.* = .{ .frame = self };
+    try self.js.scheduler.add(callback, KnitsailLifecycleFallbackCallback.run, 250, .{
+        .name = "Frame.knitsailLifecycleFallback",
+        .low_priority = false,
+    });
+}
+
+const KnitsailLifecycleFallbackCallback = struct {
+    frame: *Frame,
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *KnitsailLifecycleFallbackCallback = @ptrCast(@alignCast(ctx));
+        if (!navDeliverable(self.frame)) return null;
+        self.frame._knitsail_parser_script_seen = true;
+        self.frame.tryPumpKnitsailDocumentLifecycle();
+        return null;
+    }
+};
 
 /// Run timer/macrotask work deferred while the HTML parser was active.
 pub fn pumpPostParseTasks(self: *Frame) void {
@@ -2068,11 +2352,11 @@ fn pumpPostParseTasksNow(self: *Frame) void {
     defer ls.deinit();
 
     if (knitsail) {
-        injectGoogleKnitsailBootstrapGlobals(self, &ls);
-        pumpKnitsailTimerMilestones(self);
+        if (!self._knitsail_lifecycle_pumped) {
+            self._knitsail_parser_script_seen = true;
+            self.pumpKnitsailDocumentLifecycleWithScope(&ls);
+        }
         self._defer_knitsail_post_parse = false;
-        // Hold pageT through async knitsail.a (promise after DCL). recordNavigationStart clears freeze.
-        self.window._performance.freezeNow(knitsail_post_parse_target_page_t_ms);
     } else if (self._defer_knitsail_post_parse) {
         self._defer_knitsail_post_parse = false;
     }
@@ -2080,11 +2364,6 @@ fn pumpPostParseTasksNow(self: *Frame) void {
     if (GoogleSigninDebug.isAccountsGoogleUrl(self.url)) {
         injectGoogleSigninClosureBusLog(self, self.url);
         injectGoogleAccountsBioShim(self, self.url);
-    }
-
-    if (self._defer_knitsail_dcl) {
-        self._defer_knitsail_dcl = false;
-        self.documentIsLoaded();
     }
 
     ls.local.ctx.env.runMicrotasks(.after_evaluate);
@@ -2118,8 +2397,9 @@ pub fn documentIsComplete(self: *Frame) void {
     }
 
     // documentIsComplete could be called directly, without first calling
-    // documentIsLoaded, if there were _only_ async scripts
-    if (self._load_state == .parsing and !self._defer_knitsail_dcl) {
+    // documentIsLoaded, if there were _only_ async scripts.
+    // Knitsail /search: pumpPostParseTasks owns DCL (after pageT freeze).
+    if (self._load_state == .parsing and !isGoogleKnitsailHost(self.url)) {
         self.documentIsLoaded();
     }
 
@@ -2296,12 +2576,14 @@ fn frameHeaderDoneCallback(response: HttpClient.Response) !bool {
 
     const status = response.status() orelse {
         log.warn(.frame, "navigate header missing status", .{ .url = self.url, .type = self._type });
+        // Clients block on Page.navigate until ack or error — never leave cdp_id hanging.
+        self.completePendingCdpNavigateFailureMsg("net::ERR_EMPTY_RESPONSE");
         return false;
     };
-    // Reject failed document responses before commitPendingPage. Without this,
-    // a zero-byte / aborted transfer still runs frameDoneCallback in the .pre
-    // state and installs the empty stub document (ebay.com hang).
-    if (status < 200 or status > 299) {
+    // status==0 is a curl "no valid HTTP status" ghost (ebay hang class). Real
+    // 4xx/5xx document responses still carry HTML error/challenge pages and
+    // must proceed like Chrome — rejecting them stranded Page.navigate (SO 403).
+    if (status == 0) {
         const protocol: ?[]const u8 = switch (response.inner) {
             .transfer => |t| if (t.response_header) |rh| rh.protocol() else null,
             else => null,
@@ -2312,7 +2594,17 @@ fn frameHeaderDoneCallback(response: HttpClient.Response) !bool {
             .type = self._type,
             .protocol = protocol,
         });
+        self.completePendingCdpNavigateFailureMsg("net::ERR_EMPTY_RESPONSE");
         return false;
+    }
+    if (status < 200 or status > 299) {
+        // Navigable error document (403 challenge, 404, 5xx HTML, …).
+        log.info(.frame, "navigate non-2xx document", .{
+            .url = self.url,
+            .status = status,
+            .type = self._type,
+            .content_type = response.contentType(),
+        });
     }
 
     if (comptime IS_DEBUG) {
@@ -2664,23 +2956,64 @@ fn frameDoneCallback(ctx: *anyopaque) !void {
         html.buffer = .empty;
         self._parse_state = .{ .html = html };
         self._session.browser.http_client.serviceInboundCdpIfReadable();
-        log.debug(.frame, "defer document parse", .{ .type = self._type, .url = self.url, .len = raw_html.len });
         self.flushPendingFrameNavigatedObservers();
+        if (!navDeliverable(self)) return;
 
-        self.scheduleDeferredDocumentParse(raw_html, as_xml, html_arena) catch |err| {
-            log.warn(.frame, "defer document parse", .{ .err = err, .url = self.url });
-            const parse_arena = self.getArena(.medium, "Frame.parse") catch return;
+        // Small/medium documents: inline parse + staticScriptsDone (LP frameDoneCallback).
+        // Large bootstraps (x.com __INITIAL_STATE__) defer to scheduler to avoid stack overflow.
+        // x.com ~265KB wire HTML with 170KB+ inline bootstrap — still deferred.
+        // go.dev ~64KB must stay inline (deferred path regressed DCL/crash).
+        // Bing ~180–220KB after Google knitsail re-nav hit deferred-parse
+        // "incorrect alignment" / StyleSheetList SIGSEGV — keep ≤256KB inline so
+        // re-nav mid-size docs use the same leaveTransferCallback lifecycle as SERP.
+        const inline_parse_max_html_bytes: usize = 256 * 1024;
+        if (raw_html.len <= inline_parse_max_html_bytes) {
+            const parse_arena = self.getArena(.medium, "Frame.parse") catch |err| {
+                log.warn(.frame, "parse arena", .{ .err = err, .url = self.url });
+                self.releaseArena(html_arena);
+                return;
+            };
             defer self.releaseArena(parse_arena);
+
+            self._document_parse_active = true;
+            defer self._document_parse_active = false;
+
             var parser = Parser.init(parse_arena, self.document.asNode(), self);
-            if (as_xml) parser.parseXML(raw_html) else if (std.mem.eql(u8, self.charset, "UTF-8")) parser.parse(raw_html) else parser.parseWithEncoding(raw_html, self.charset);
+            log.debug(.frame, "parse html inline", .{ .type = self._type, .url = self.url, .len = raw_html.len });
+            if (as_xml) {
+                parser.parseXML(raw_html);
+            } else if (std.mem.eql(u8, self.charset, "UTF-8")) {
+                parser.parse(raw_html);
+            } else {
+                parser.parseWithEncoding(raw_html, self.charset);
+            }
             self.releaseArena(html_arena);
+            if (!navDeliverable(self)) return;
             self.reconcileParserIframeSrc();
             self.drainQueuedNavigationsAfterParse();
             self._parse_state = .{ .complete = {} };
-            self._script_manager.staticScriptsDone();
-            self.pumpPostParseTasks();
-            self.scheduleDeferredSyncIframeFlush() catch {};
+
+            const knitsail = isGoogleKnitsailHost(self.url);
+            if (knitsail) self.pumpPostParseTasks();
+            // staticScriptsDone runs from HttpClient.leaveTransferCallback once
+            // curl unwinds — evaluate() inside the callback deadlocks defer heads.
+            self._pending_post_parse_lifecycle = true;
+            self._session.browser.http_client.serviceInboundCdpIfReadable();
+            return;
+        }
+
+        log.debug(.frame, "parse html deferred", .{ .type = self._type, .url = self.url, .len = raw_html.len });
+        self.scheduleDeferredDocumentParse(raw_html, as_xml, html_arena) catch |err| {
+            log.warn(.frame, "defer document parse", .{ .err = err, .url = self.url });
+            self.releaseArena(html_arena);
+            return;
         };
+        // Do NOT pump here: frameDoneCallback runs inside HttpClient transfer
+        // callbacks (curl multi / processMessages). Large document parse + CSSOM
+        // registration (StyleSheetList) on that stack after Google knitsail re-nav
+        // SIGSEGV'd in ArrayList growth (Google Search → Bing). Schedule only;
+        // leaveTransferCallback / Runner.drainDeferredDocumentParse run parse once
+        // transfer callbacks fully unwind.
         return;
     }
 
@@ -2742,11 +3075,15 @@ fn frameDoneCallback(ctx: *anyopaque) !void {
 }
 
 fn completePendingCdpNavigateFailure(self: *Frame, err: anyerror) void {
+    self.completePendingCdpNavigateFailureMsg(@errorName(err));
+}
+
+fn completePendingCdpNavigateFailureMsg(self: *Frame, message: []const u8) void {
     const cdp_id = if (self._navigated_options) |no| no.cdp_id else null;
     if (cdp_id) |id| {
         self._session.notification.dispatch(.frame_navigation_failed, &.{
             .cdp_id = id,
-            .message = @errorName(err),
+            .message = message,
         });
         if (self._navigated_options) |*no| no.cdp_id = null;
     }
@@ -2807,10 +3144,14 @@ fn frameErrorCallback(ctx: *anyopaque, err: anyerror) void {
     if (err == error.Abort) {
         if (self._page._state == .pending) {
             if (!retryPendingRootNavigation(self)) {
-                completePendingCdpNavigateFailure(self, err);
+                // Retries exhausted (or non-retryable): always resolve Page.navigate.
+                self.completePendingCdpNavigateFailure(err);
                 self._session.discardPendingPage();
             }
+            return;
         }
+        // Active-page abort that still holds a CDP id (header never acked).
+        self.completePendingCdpNavigateFailure(err);
         return;
     }
 
@@ -2819,11 +3160,16 @@ fn frameErrorCallback(ctx: *anyopaque, err: anyerror) void {
     // A pending root navigation that failed before commit: discard the
     // pending Page; the OLD active Page (and its V8 context) is untouched.
     // We do NOT run frameDoneCallback against the pending frame — the frame
-    // is about to be freed.
+    // is about to be freed. Must still complete CDP or clients hang 12–45s
+    // (stackoverflow.com 403 → WriteError was this class).
     if (self._page._state == .pending) {
+        self.completePendingCdpNavigateFailure(err);
         self._session.discardPendingPage();
         return;
     }
+
+    // Active page: still free any stranded CDP navigate promise before error HTML.
+    self.completePendingCdpNavigateFailure(err);
 
     self._parse_state.deinit(self);
     self._parse_state = .{ .err = err };
@@ -3370,6 +3716,7 @@ pub fn unregisterIntersectionObserver(self: *Frame, observer: *IntersectionObser
 }
 
 pub fn checkIntersections(self: *Frame) !void {
+    if (self._realm_state != .active) return;
     for (self._intersection_observers.items) |observer| {
         try observer.checkIntersections(self);
     }
@@ -3450,13 +3797,22 @@ pub fn deliverIntersections(self: *Frame) void {
     if (!self._intersection_delivery_scheduled) {
         return;
     }
+    // Departing realm: IO callbacks must not run — reentrant navigation would
+    // disconnect observers while this loop is iterating (tinhte re-nav UAF).
+    if (self._realm_state != .active) {
+        self._intersection_delivery_scheduled = false;
+        return;
+    }
+    self.js.execution.validateJsEntry(.strict_active, .intersection_delivery) catch {
+        self._intersection_delivery_scheduled = false;
+        return;
+    };
     self._intersection_delivery_scheduled = false;
 
-    // Iterate backwards to handle observers that disconnect during their callback
-    var i = self._intersection_observers.items.len;
-    while (i > 0) {
-        i -= 1;
-        const observer = self._intersection_observers.items[i];
+    // Snapshot: navigation from an IO callback can disconnect observers mid-loop.
+    const snapshot = self._intersection_observers.items;
+    for (snapshot) |observer| {
+        if (self._realm_state != .active) break;
         observer.deliverEntries(self) catch |err| {
             log.err(.frame, "frame.deliverIntersections", .{ .err = err, .type = self._type, .url = self.url });
         };
@@ -3573,6 +3929,9 @@ pub fn notifyNetworkAlmostIdle(self: *Frame) void {
 
 // called from the parser
 pub fn appendNew(self: *Frame, parent: *Node, child: Node.NodeOrText) !void {
+    // Re-nav mid-parse (pollCdpDuringLongWork → Page.navigate) leaves the
+    // outgoing realm draining; do not touch DOM on a departing frame.
+    if (self._realm_state != .active) return;
     const node = switch (child) {
         .node => |n| n,
         .text => |txt| blk: {
@@ -4197,10 +4556,10 @@ pub fn createElementNS(self: *Frame, namespace: Element.Namespace, name: []const
                         .{ ._proto = undefined },
                     ),
                     asUint("marquee") => return self.createHtmlElementT(
-                        Element.Html.Generic,
+                        Element.Html.Marquee,
                         namespace,
                         attribute_iterator,
-                        .{ ._proto = undefined, ._tag_name = comptime .wrap("marquee"), ._tag = .marquee },
+                        .{ ._proto = undefined },
                     ),
                     asUint("address") => return self.createHtmlElementT(
                         Element.Html.Generic,
@@ -4638,6 +4997,7 @@ pub fn unregisterRtcPeerConnection(self: *Frame, pc: *@import("../webapi/rtc_bin
 }
 
 pub fn drainRtcEvents(self: *Frame) void {
+    if (self._realm_state == .dead or self._realm_state == .draining) return;
     for (self._rtc_peer_connections.items) |pc| {
         pc.drainEvents();
     }
@@ -4918,8 +5278,6 @@ pub fn _insertNodeRelative(self: *Frame, comptime from_parser: bool, parent: *No
         }
     }
 
-    const parent_is_connected = parent.isConnected();
-
     // Tri-state behavior for mutations:
     // 1. from_parser=true, parse_mode=document -> no mutations (initial document parse)
     // 2. from_parser=true, parse_mode=fragment -> mutations (innerHTML additions)
@@ -4930,7 +5288,12 @@ pub fn _insertNodeRelative(self: *Frame, comptime from_parser: bool, parent: *No
     else
         true;
 
+    // Never call isConnected() on the document-parse hot path: parent chains can
+    // be transiently inconsistent during foster-parenting / reparent, and after
+    // cross-document re-nav (Google knitsail → Bing) walking _parent UAF'd
+    // (SIGABRT in isConnected). Document parse always inserts into the live tree.
     if (should_notify) {
+        const parent_is_connected = parent.isConnected();
         if (comptime from_parser == false) {
             // When the parser adds the node, nodeIsReady is only called when the
             // nodeComplete() callback is executed.
@@ -4957,10 +5320,14 @@ pub fn _insertNodeRelative(self: *Frame, comptime from_parser: bool, parent: *No
 
     if (comptime from_parser) {
         if (child.is(Element)) |el| {
-            // Invoke connectedCallback for custom elements during parsing
-            // For main document parsing, we know nodes are connected (fast path)
-            // For fragment parsing (innerHTML), we need to check connectivity
-            if (child.isConnected() or child.isInShadowTree()) {
+            // Invoke connectedCallback for custom elements during parsing.
+            // Main document parse: always treat as connected (no isConnected walk).
+            // Fragment parse (innerHTML): must check connectivity.
+            const connected = if (self._parse_mode == .document)
+                true
+            else
+                (child.isConnected() or child.isInShadowTree());
+            if (connected) {
                 if (el.getAttributeSafe(comptime .wrap("id"))) |id| {
                     try self.addElementId(parent, el, id);
                 }
@@ -4984,6 +5351,7 @@ pub fn _insertNodeRelative(self: *Frame, comptime from_parser: bool, parent: *No
         return;
     }
 
+    const parent_is_connected = parent.isConnected();
     const parent_in_shadow = parent.is(ShadowRoot) != null or parent.isInShadowTree();
 
     if (!parent_in_shadow and !parent_is_connected) {
@@ -5374,6 +5742,20 @@ fn nodeIsReady(self: *Frame, comptime from_parser: bool, node: *Node) !void {
     if ((comptime from_parser) and self._parse_mode == .fragment) {
         // we don't execute scripts added via innerHTML = '<script...';
         return;
+    }
+    // Main document html5ever parse: style/link/img deferred (knitsail re-nav
+    // SIGBUS mid-parse on data:image / CSSOM). Scripts still call
+    // scriptAddedCallback but ScriptManager queues inline bodies for
+    // staticScriptsDone instead of eval on the parser stack.
+    if ((comptime from_parser) and self._parse_mode == .document and self._document_parse_active) {
+        if (node.is(Element.Html.Script) != null or node.is(IFrame) != null) {
+            // fall through
+        } else if (node.is(Element.Html.Style) != null) {
+            self._style_manager.sheetModified();
+            return;
+        } else {
+            return;
+        }
     }
     if (node.is(Element.Html.Script)) |script| {
         if (comptime from_parser == false) {
@@ -6133,9 +6515,9 @@ test "Page: isSameOrigin" {
     try testing.expectEqual(false, frame.isSameOrigin("//origin.com/foo"));
 }
 
-test "Frame.isGoogleKnitsailHost: search yes, accounts/myaccount no" {
+test "Frame.isGoogleKnitsailHost: search yes, homepage/accounts no" {
     try testing.expect(isGoogleKnitsailHost("https://www.google.com/search?q=test"));
     try testing.expect(!isGoogleKnitsailHost("https://accounts.google.com/v3/signin/identifier"));
     try testing.expect(!isGoogleKnitsailHost("https://myaccount.google.com/"));
-    try testing.expect(isGoogleKnitsailHost("https://www.google.com/"));
+    try testing.expect(!isGoogleKnitsailHost("https://www.google.com/"));
 }

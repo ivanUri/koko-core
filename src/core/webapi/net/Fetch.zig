@@ -165,6 +165,7 @@ pub fn init(input: Input, options: ?InitOpts, exec: *const Execution) !js.Promis
             .redirect_refresh_ctx = redirect_state,
             .redirect_header_rebuild = FetchRedirectState.rebuildHeaders,
             .keepalive = request._keepalive,
+            .attribution_frame = exec.attributionFrame(),
         },
         .start_callback = httpStartCallback,
         .header_callback = httpHeaderDoneCallback,
@@ -215,8 +216,11 @@ fn httpStartCallback(response: HttpClient.Response) !void {
 /// Safe AbortSignal probe. After navigation the signal object may already be
 /// freed with the old document; only dereference when the fetch's task owner
 /// epoch is still current (nytimes.com UAF at signal._aborted).
+/// Callers must only invoke this while the Fetch / Execution are still live
+/// (transfer aborted or callbacks noop'd before page destroy).
 fn fetchSignalAborted(self: *Fetch) bool {
-    if (self._exec.isTaskOwnerStale(self._task_owner)) {
+    // Prefer realm/task-owner gates before touching AbortSignal memory.
+    if (fetchJsUnavailable(self)) {
         self._signal = null;
         return true;
     }
@@ -228,6 +232,13 @@ fn fetchSignalAborted(self: *Fetch) bool {
 
 fn httpHeaderDoneCallback(response: HttpClient.Response) !bool {
     const self: *Fetch = @ptrCast(@alignCast(response.ctx));
+
+    // Outgoing re-nav aborts should have noop'd this callback; if a late header
+    // still arrives, refuse body delivery without walking V8.
+    if (fetchJsUnavailable(self)) {
+        self._signal = null;
+        return false;
+    }
 
     if (fetchSignalAborted(self)) {
         return false;

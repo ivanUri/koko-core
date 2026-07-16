@@ -59,7 +59,11 @@ pub fn reset(self: *ScriptManager) void {
     self.base.reset();
     self.frame_notified_of_completion = false;
     self.frame._defer_knitsail_post_parse = false;
-    self.frame._defer_knitsail_dcl = false;
+    self.frame._knitsail_lifecycle_pumped = false;
+    self.frame._knitsail_parser_script_seen = false;
+    self.frame._knitsail_lifecycle_fallback_scheduled = false;
+    self.frame._static_scripts_done_scheduled = false;
+    self.frame._pending_post_parse_lifecycle = false;
 }
 
 // Frame wrapper uses this to fire documentIsLoaded and scriptsCompletedLoading
@@ -68,13 +72,11 @@ pub fn tailHook(base: *ScriptManagerBase) void {
     const self: *ScriptManager = @fieldParentPtr("base", base);
     const frame = self.frame;
 
-    // Google knitsail: freeze pageT in pumpPostParseTasks before DCL so
-    // knitsail.a reads ≈192ms (Chroma). tailHook only defers; Frame fires DCL.
+    // Google knitsail: DCL fires from Frame.pumpPostParseTasks after pageT freeze.
+    // tailHook only marks post-parse microtask deferral; do not gate DCL on evaluate
+    // reaching tail_hook (defer scripts may still be in flight on /search bootstrap).
     if (Frame.isGoogleKnitsailHost(frame.url)) {
         frame._defer_knitsail_post_parse = true;
-        frame._defer_knitsail_dcl = true;
-        // scriptsCompletedLoading → documentIsComplete → documentIsLoaded must
-        // not run until Frame.pumpPostParseTasks freezes pageT and fires DCL.
         return;
     }
 
@@ -93,7 +95,7 @@ fn getHeaders(self: *ScriptManager, url: [:0]const u8, resource_type: HttpClient
     return self.base.getHeaders(url, resource_type, .none);
 }
 
-pub fn addFromElement(self: *ScriptManager, comptime _: bool, script_element: *Element.Html.Script, comptime ctx: []const u8) !void {
+pub fn addFromElement(self: *ScriptManager, comptime from_parser: bool, script_element: *Element.Html.Script, comptime ctx: []const u8) !void {
     if (script_element._executed) {
         // If a script tag gets dynamically created and added to the dom:
         //    document.getElementsByTagName('head')[0].appendChild(script)
@@ -173,18 +175,27 @@ pub fn addFromElement(self: *ScriptManager, comptime _: bool, script_element: *E
     script_element._executed = true;
     const is_inline = source == .@"inline";
 
+    // Mode selection matches Lightpanda ScriptManager.addFromElement / HTML:
+    // - module → defer
+    // - explicit defer / async attributes honored
+    // - dynamically inserted scripts default to async ("force async") until
+    //   the async attribute is set (createElement('script') + appendChild).
+    // Missing this default made SPA-injected classic scripts run as blocking
+    // nested Script.eval from appendChild → V8_Fatal (stack) mid-lifecycle.
     const mode: Script.Extra.FrameExtra.Mode = blk: {
         if (source == .@"inline") {
             break :blk if (kind == .module) .@"defer" else .normal;
         }
 
-        // Defer / module before async (IDL + attribute; parser scripts clear
-        // _force_async in Frame.scriptAddedCallback).
+        if (script_element.getAsync()) {
+            break :blk .async;
+        }
+
         if (kind == .module or script_element.getDefer()) {
             break :blk .@"defer";
         }
 
-        if (script_element.getAsync()) {
+        if (comptime !from_parser) {
             break :blk .async;
         }
 
@@ -210,7 +221,23 @@ pub fn addFromElement(self: *ScriptManager, comptime _: bool, script_element: *E
     };
 
     const is_blocking = mode == .normal;
-    if (is_blocking == false) {
+    // Mid main-document HTML parse after knitsail re-nav: never eval inline
+    // blocking scripts on the html5ever stack (data:image / CSSOM bus errors).
+    // Queue as deferred so staticScriptsDone drains them after parse.
+    const force_queue_during_document_parse =
+        (comptime from_parser) and
+        frame._document_parse_active and
+        frame._parse_mode == .document and
+        is_inline;
+    // Lightpanda: once staticScriptsDone drained defer, non-blocking scripts
+    // inserted later must still be queued (remote) or run immediately (inline).
+    const run_immediately = !force_queue_during_document_parse and
+        (is_blocking or (self.base.static_scripts_done and remote_url == null));
+    if (run_immediately == false) {
+        // Promote inline blocking → defer list for post-parse drain.
+        if (force_queue_during_document_parse and mode == .normal) {
+            script.extra.frame.mode = .@"defer";
+        }
         self.base.scriptList(script).append(&script.node);
     }
 
@@ -230,15 +257,22 @@ pub fn addFromElement(self: *ScriptManager, comptime _: bool, script_element: *E
 
         const was_evaluating = self.base.is_evaluating;
         self.base.is_evaluating = true;
-        defer self.base.is_evaluating = was_evaluating;
+        defer self.base.endEvaluationWindow(was_evaluating);
 
         const headers = try self.getHeaders(url, .script);
 
-        if (is_blocking) {
+        // libcurl cannot multi_add/perform from inside a transfer callback
+        // (SPA injects scripts during another script's doneCallback). Blocking
+        // syncRequest would raise RecursiveApiCall — demote to async fetch+eval.
+        const reentrant_http = self.base.client.performing or self.base.client.inTransferCallback();
+        const use_sync = is_blocking and !reentrant_http;
+
+        if (use_sync) {
             const response = try self.base.client.syncRequest(arena, .{
                 .url = url,
                 .method = .GET,
                 .frame_id = frame._frame_id,
+                .attribution_frame = frame,
                 .loader_id = frame._loader_id,
                 .headers = headers,
                 .cookie_jar = &frame._session.cookie_jar,
@@ -251,10 +285,15 @@ pub fn addFromElement(self: *ScriptManager, comptime _: bool, script_element: *E
             script.source = .{ .remote = response.body };
             script.status = response.status;
             script.complete = true;
+            handover = true;
         } else {
+            if (is_blocking and reentrant_http) {
+                // Demote: was going to sync-eval; instead async download + later eval.
+                script.extra.frame.mode = .async;
+                self.base.async_scripts.append(&script.node);
+            }
             errdefer {
                 self.base.scriptList(script).remove(&script.node);
-                // Let the outer errdefer handle releasing the arena if client.request fails
             }
 
             const http_ctx = try self.base.attachHttpCtx(script);
@@ -284,30 +323,31 @@ pub fn addFromElement(self: *ScriptManager, comptime _: bool, script_element: *E
                 self.base.retireHttpCtx(http_ctx);
                 return err;
             };
+            handover = true;
+            // Async/demoted: completion is Script.HttpCtx.doneCallback → evaluate.
+            return;
         }
-
-        handover = true;
     }
 
-    if (is_blocking == false) {
+    if (run_immediately == false) {
         return;
     }
 
-    if (script.status == 0) {
-        // an error (that we already logged)
+    if (script.status < 200 or script.status > 299) {
+        // an error (that we already logged) or failed sync fetch
         script.deinit();
         return;
     }
 
+    // Nested when dynamically added from another script (Lightpanda).
     const was_evaluating = self.base.is_evaluating;
     self.base.is_evaluating = true;
     defer {
-        self.base.is_evaluating = was_evaluating;
         script.deinit();
+        self.base.endEvaluationWindow(was_evaluating);
     }
 
     script.eval();
-    self.base.client.serviceInboundCdpIfReadable();
 }
 
 pub fn parseImportmap(self: *ScriptManager, script: *const Script) !void {

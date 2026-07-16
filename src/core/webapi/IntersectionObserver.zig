@@ -179,11 +179,8 @@ pub fn disconnect(self: *IntersectionObserver, frame: *Frame) void {
     }
     self._pending_entries.clearRetainingCapacity();
     self._previous_states.clearRetainingCapacity();
-
-    if (self._observing.items.len > 0) {
-        frame.unregisterIntersectionObserver(self);
-    }
     self._observing.clearRetainingCapacity();
+    frame.unregisterIntersectionObserver(self);
 }
 
 pub fn takeRecords(self: *IntersectionObserver, frame: *Frame) ![]*IntersectionObserverEntry {
@@ -299,6 +296,7 @@ pub fn checkIntersections(self: *IntersectionObserver, frame: *Frame) !void {
 }
 
 pub fn deliverEntries(self: *IntersectionObserver, frame: *Frame) !void {
+    if (frame._realm_state != .active) return;
     if (self._pending_entries.items.len == 0) {
         return;
     }
@@ -313,7 +311,6 @@ pub fn deliverEntries(self: *IntersectionObserver, frame: *Frame) !void {
     defer ls.deinit();
 
     ls.toLocal(self._callback).tryCall(void, .{ entries, self }, &caught) catch |err| {
-        for (entries) |entry| entry.deinit(frame._page);
         log.err(.frame, "IntsctObserver.deliverEntries", .{ .err = err, .caught = caught });
         return err;
     };

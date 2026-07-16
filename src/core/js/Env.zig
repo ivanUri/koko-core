@@ -152,6 +152,17 @@ pub fn init(app: *App, opts: InitOpts) !Env {
 
     params.external_references = &snapshot.external_references;
 
+    // Tell V8 where the stack ends (grows down). Default JS stack is small and
+    // Next/React deep recursion V8_Fatal's before RangeError. Leave ~1MB for
+    // native frames; give JS ~16MB so uncaught stack overflow becomes exception.
+    // stack_limit_ is *u32 — must be 4-byte aligned (ReleaseSafe alignment check).
+    var stack_marker: u32 align(16) = 0;
+    const sp = @intFromPtr(&stack_marker);
+    const native_reserve: usize = 1024 * 1024;
+    const js_stack: usize = 16 * 1024 * 1024;
+    const limit_addr = (sp -% (js_stack + native_reserve)) & ~@as(usize, @alignOf(u32) - 1);
+    params.constraints.stack_limit_ = @ptrFromInt(limit_addr);
+
     var isolate = js.Isolate.init(params);
     errdefer isolate.deinit();
     const isolate_handle = isolate.handle;
@@ -381,17 +392,27 @@ fn _createContext(self: *Env, global: anytype, params: ContextParams, kind: Cont
     self.contexts[count] = context;
     self.context_count = count + 1;
 
-    installTrustedTypesEvalShim(context);
-    installConstructThrowShim(context);
-    installDomTokenListArrayPrototypeShim(context);
-    installUrlHistoricalShim(context);
+    // Nested Frame.init from appendChild(iframe) mid-script already has V8 on
+    // stack. Compiling many shims via eval there → V8_Fatal (nytimes/stripe).
+    // Install only essential TrustedTypes shim when nested; full set on safe stacks.
+    const nested_v8 = self.anyContextOnV8Stack();
+    if (!nested_v8) {
+        installTrustedTypesEvalShim(context);
+        installConstructThrowShim(context);
+        installDomTokenListArrayPrototypeShim(context);
+        installUrlHistoricalShim(context);
+    } else {
+        installTrustedTypesEvalShim(context);
+    }
     if (comptime is_frame) {
-        installWorkerConstructDepth(context);
-        installWorkerConstructorShim(context);
-        installSharedWorkerConstructorShim(context);
-        installUrlSearchParamsConstructorShim(context);
-        installWebSocketConstructorShim(context);
-        installCreepJsCompatShim(context);
+        if (!nested_v8) {
+            installWorkerConstructDepth(context);
+            installWorkerConstructorShim(context);
+            installSharedWorkerConstructorShim(context);
+            installUrlSearchParamsConstructorShim(context);
+            installWebSocketConstructorShim(context);
+            installCreepJsCompatShim(context);
+        }
         MathsNative.installOnContext(context, global);
     } else {
         installWorkerIntlShim(context);
@@ -614,6 +635,22 @@ fn installCreepJsCompatShim(context: *Context) void {
     };
 }
 
+/// Notify the V8 inspector that a context is gone without freeing the V8
+/// context. Used during pending-root commit: the outgoing main context must
+/// leave the inspector context group before the replacement is published, but
+/// the V8 context stays alive until the old Page is destroyed.
+pub fn notifyInspectorContextDestroyed(self: *Env, context: *Context) void {
+    if (context._inspector_destroyed_notified) return;
+    context._inspector_destroyed_notified = true;
+
+    const inspector = self.inspector orelse return;
+    const isolate = self.isolate;
+    var hs: js.HandleScope = undefined;
+    hs.init(isolate);
+    defer hs.deinit();
+    inspector.contextDestroyed(@ptrCast(v8.v8__Global__Get(&context.handle, isolate.handle)));
+}
+
 pub fn destroyContext(self: *Env, context: *Context) void {
     for (self.contexts[0..self.context_count], 0..) |ctx, i| {
         if (ctx == context) {
@@ -628,13 +665,7 @@ pub fn destroyContext(self: *Env, context: *Context) void {
         }
     }
 
-    const isolate = self.isolate;
-    if (self.inspector) |inspector| {
-        var hs: js.HandleScope = undefined;
-        hs.init(isolate);
-        defer hs.deinit();
-        inspector.contextDestroyed(@ptrCast(v8.v8__Global__Get(&context.handle, isolate.handle)));
-    }
+    self.notifyInspectorContextDestroyed(context);
 
     context.deinit();
 }
@@ -876,6 +907,7 @@ fn flushPendingIdentityRemovals(self: *Env) void {
 
 pub fn pumpSchedulerTasks(self: *Env) void {
     if (self.scheduler_pump_depth >= MAX_SCHEDULER_PUMP_DEPTH) return;
+    if (self.anyContextOnV8Stack()) return;
     self.scheduler_pump_depth += 1;
     defer self.scheduler_pump_depth -= 1;
     // Circuit breaker only guards microtask checkpoints; timers must still run.
@@ -897,8 +929,24 @@ pub fn runMacrotasks(self: *Env) !void {
 
     for (self.contexts[0..self.context_count]) |ctx| {
         const exec = &ctx.execution;
-        if (exec.realmState() == .dead) continue;
-        if (!exec.canEnterJs(.strict_active)) continue;
+        if (exec.realmState() == .dead) {
+            // Drop tasks that can never run legally on a dead realm (cancel-on-nav).
+            switch (ctx.global) {
+                .frame => |frame| frame.cancelOwnedSchedulerWork(),
+                .worker => ctx.scheduler.reset(),
+            }
+            continue;
+        }
+        if (!exec.canEnterJs(.strict_active)) {
+            // Draining: flush owned queue so deferred parse cannot fire after free.
+            if (exec.realmState() == .draining) {
+                switch (ctx.global) {
+                    .frame => |frame| frame.cancelOwnedSchedulerWork(),
+                    .worker => ctx.scheduler.reset(),
+                }
+            }
+            continue;
+        }
         if (contextBlocksTimerPump(ctx)) continue;
 
         if (comptime builtin.is_test == false) {
@@ -914,7 +962,10 @@ pub fn runMacrotasks(self: *Env) !void {
         var hs: js.HandleScope = undefined;
         const entered = ctx.enter(&hs) orelse continue;
         defer entered.exit();
-        try ctx.scheduler.run();
+        switch (ctx.global) {
+            .frame => |frame| try frame.runOwnedScheduler(),
+            .worker => try ctx.scheduler.run(),
+        }
     }
 }
 
@@ -931,15 +982,33 @@ pub fn runOneMacrotaskRound(self: *Env) !bool {
 
     for (self.contexts[0..self.context_count]) |ctx| {
         const exec = &ctx.execution;
-        if (exec.realmState() == .dead) continue;
-        if (!exec.canEnterJs(.strict_active)) continue;
+        if (exec.realmState() == .dead) {
+            switch (ctx.global) {
+                .frame => |frame| frame.cancelOwnedSchedulerWork(),
+                .worker => ctx.scheduler.reset(),
+            }
+            continue;
+        }
+        if (!exec.canEnterJs(.strict_active)) {
+            if (exec.realmState() == .draining) {
+                switch (ctx.global) {
+                    .frame => |frame| frame.cancelOwnedSchedulerWork(),
+                    .worker => ctx.scheduler.reset(),
+                }
+            }
+            continue;
+        }
         if (contextBlocksTimerPump(ctx)) continue;
         if (!ctx.scheduler.hasReadyTasks()) continue;
 
         var hs: js.HandleScope = undefined;
         const entered = ctx.enter(&hs) orelse continue;
         defer entered.exit();
-        if (try ctx.scheduler.runOne()) return true;
+        const ran = switch (ctx.global) {
+            .frame => |frame| try frame.runOwnedSchedulerOne(),
+            .worker => try ctx.scheduler.runOne(),
+        };
+        if (ran) return true;
     }
     return false;
 }
@@ -971,14 +1040,25 @@ fn contextBlocksTimerPump(ctx: *Context) bool {
             if (!frame.isDocumentParsing()) break :blk false;
             // Fingerprint load() may run while _load_state is still .parsing but the
             // document is already interactive/complete; yb() polls with setTimeout(10).
-            const rs = frame.document.getReadyState();
-            if (std.mem.eql(u8, rs, "interactive") or std.mem.eql(u8, rs, "complete")) {
-                break :blk false;
+            if (std.mem.indexOf(u8, frame.url, "fingerprint.com") != null) {
+                const rs = frame.document.getReadyState();
+                if (std.mem.eql(u8, rs, "interactive") or std.mem.eql(u8, rs, "complete")) {
+                    break :blk false;
+                }
             }
             break :blk true;
         },
         .worker => false,
     };
+}
+
+/// True when any live context is mid-V8 callback (DOM API, script eval, etc.).
+/// Scheduler/timer pumps from nested stacks crash with V8 `IsOnCentralStack`.
+pub fn anyContextOnV8Stack(self: *const Env) bool {
+    for (self.contexts[0..self.context_count]) |ctx| {
+        if (ctx.call_depth > 0) return true;
+    }
+    return false;
 }
 
 fn anyContextHasReadyTimers(self: *const Env) bool {
@@ -1001,13 +1081,14 @@ fn anyFrameHoldsKnitsailMicrotasks(self: *const Env) bool {
     return false;
 }
 
-/// True while a parser-inserted or deferred script is mid-eval. Inbound CDP
-/// must not call the V8 inspector reentrantly (ebay Runtime.evaluate hang).
+/// True while inbound CDP must not run (nested V8, navigation commit).
+/// Do not gate on is_evaluating alone — between script bodies in evaluate()
+/// the main thread is idle and must service Runtime.evaluate / navigate ack.
 pub fn blocksInboundCdp(self: *const Env) bool {
+    if (self.anyContextOnV8Stack()) return true;
     for (self.contexts[0..self.context_count]) |ctx| {
         switch (ctx.global) {
             .frame => |frame| {
-                if (frame._script_manager.base.is_evaluating) return true;
                 if (frame._session.navigationCritical()) return true;
             },
             .worker => {},

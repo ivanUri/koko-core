@@ -30,6 +30,8 @@ const DOMImplementation = @import("DOMImplementation.zig");
 const StyleSheetList = @import("../webapi/css/StyleSheetList.zig");
 const FontFaceSet = @import("../webapi/css/FontFaceSet.zig");
 const Selection = @import("../webapi/Selection.zig");
+const XPathResult = @import("../webapi/XPathResult.zig");
+const XPathExpression = @import("../webapi/XPathExpression.zig");
 
 pub const XMLDocument = @import("../webapi/XMLDocument.zig");
 pub const HTMLDocument = @import("../webapi/HTMLDocument.zig");
@@ -163,6 +165,16 @@ pub fn asNode(self: *Document) *Node {
 
 pub fn asEventTarget(self: *Document) *@import("../webapi/EventTarget.zig") {
     return self._proto.asEventTarget();
+}
+
+/// HTML: Document.currentScript — the classic script element currently evaluating,
+/// or null. Must live on Document (not only HTMLDocument) so:
+/// 1) it matches the IDL / Chrome shape used by CreepJS feature order, and
+/// 2) creepjs_compat_shim does not install a permanent `return null` getter on
+///    Document.prototype (that shim only defines missing keys; SPA/Next
+///    getAssetPrefix does `document.currentScript instanceof HTMLScriptElement`).
+pub fn getCurrentScript(self: *const Document) ?*Element.Html.Script {
+    return self._current_script;
 }
 
 pub fn getURL(self: *const Document, frame: *const Frame) [:0]const u8 {
@@ -588,6 +600,40 @@ pub fn createNodeIterator(_: *const Document, root: *Node, what_to_show: ?js.Val
     return DOMNodeIterator.init(root, try whatToShow(what_to_show), filter, frame);
 }
 
+pub fn evaluate(
+    self: *Document,
+    expression: []const u8,
+    context_node: ?*Node,
+    resolver: ?js.Function,
+    result_type: ?u16,
+    result: ?*XPathResult,
+    frame: *Frame,
+) !*XPathResult {
+    // Namespace resolver / result reuse are no-ops in HTML mode (LP decision #2).
+    _ = resolver;
+    _ = result;
+    return XPathResult.fromExpression(
+        expression,
+        context_node orelse self.asNode(),
+        result_type orelse XPathResult.ANY_TYPE,
+        frame,
+    );
+}
+
+pub fn createExpression(
+    _: *const Document,
+    expression: []const u8,
+    resolver: ?js.Function,
+    frame: *Frame,
+) !*XPathExpression {
+    _ = resolver;
+    return XPathExpression.init(expression, frame);
+}
+
+pub fn createNSResolver(_: *const Document, node: *Node) ?*Node {
+    return node;
+}
+
 fn whatToShow(value_: ?js.Value) !u32 {
     const value = value_ orelse return 4294967295; // show all when undefined
     if (value.isUndefined()) {
@@ -849,6 +895,10 @@ fn writeInternal(self: *Document, text: []const []const u8, append_newline: bool
         return error.InvalidStateError;
     }
 
+    if (frame._realm_state != .active or frame.isGoingAway()) {
+        return;
+    }
+
     if (self._throw_on_dynamic_markup_insertion_counter > 0) {
         return error.InvalidStateError;
     }
@@ -988,6 +1038,18 @@ pub fn open(self: *Document, executing: *Frame) !*Document {
     frame._parse_mode = .document;
 
     return self;
+}
+
+/// Tear down an in-flight document.open/write parser without running completion.
+/// Used when the owning realm is draining so html5ever cannot call back into JS.
+pub fn cancelStreamingParser(self: *Document) void {
+    if (self._script_created_parser) |*parser| {
+        if (parser.handle != null) {
+            parser.deinit();
+            parser.handle = null;
+        }
+        self._script_created_parser = null;
+    }
 }
 
 pub fn close(self: *Document, executing: *Frame) !void {
@@ -1251,6 +1313,9 @@ pub const JsApi = struct {
     pub const fonts = bridge.accessor(Document.getFonts, null, .{});
     pub const contentType = bridge.accessor(Document.getContentType, null, .{});
     pub const domain = bridge.accessor(Document.getDomain, null, .{});
+    // Spec: Document.currentScript (HTML). Keep on Document.prototype so the
+    // creepjs_compat_shim never installs a null-returning placeholder.
+    pub const currentScript = bridge.accessor(Document.getCurrentScript, null, .{});
     pub const createElement = bridge.function(Document.createElement, .{ .dom_exception = true });
     pub const createElementNS = bridge.function(Document.createElementNS, .{ .dom_exception = true });
     pub const createDocumentFragment = bridge.function(Document.createDocumentFragment, .{});
@@ -1264,6 +1329,9 @@ pub const JsApi = struct {
     pub const createEvent = bridge.function(Document.createEvent, .{ .dom_exception = true });
     pub const createTreeWalker = bridge.function(Document.createTreeWalker, .{});
     pub const createNodeIterator = bridge.function(Document.createNodeIterator, .{});
+    pub const evaluate = bridge.function(Document.evaluate, .{ .dom_exception = true });
+    pub const createExpression = bridge.function(Document.createExpression, .{ .dom_exception = true });
+    pub const createNSResolver = bridge.function(Document.createNSResolver, .{});
     pub const getElementById = bridge.function(_getElementById, .{});
     fn _getElementById(self: *Document, value_: ?js.Value, frame: *Frame) !?*Element {
         const value = value_ orelse return null;

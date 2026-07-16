@@ -109,6 +109,7 @@ fn fetchRobotsThenRequest(
                 .method = .GET,
                 .headers = headers,
                 .frame_id = req.params.frame_id,
+                .attribution_frame = req.params.attribution_frame,
                 .loader_id = req.params.loader_id,
                 .cookie_jar = req.params.cookie_jar,
                 .cookie_origin = req.params.cookie_origin,

@@ -52,6 +52,7 @@ const CookieStore = @import("cookie_store.zig").CookieStore;
 const TaskScheduler = @import("scheduler_api.zig").Scheduler;
 const Chrome = @import("Chrome.zig");
 const GoogleCompat = @import("GoogleCompat.zig");
+const ModelContext = @import("ModelContext.zig");
 const global_event_handlers = @import("global_event_handlers.zig");
 
 const log = @import("../../support/log.zig");
@@ -72,6 +73,7 @@ _css: CSS = .init,
 _crypto: Crypto = .init,
 _console: Console = .init,
 _navigator: Navigator = .init,
+_model_context: ModelContext = .init,
 _screen: *Screen,
 _visual_viewport: *VisualViewport,
 _performance: Performance,
@@ -79,6 +81,7 @@ _storage_bucket: storage.Bucket = .{},
 _on_load: ?js.Function.Global = null,
 _on_pageshow: ?js.Function.Global = null,
 _on_popstate: ?js.Function.Global = null,
+_on_hashchange: ?js.Function.Global = null,
 _on_error: ?js.Function.Global = null,
 _on_message: ?js.Function.Global = null,
 _pending_post_messages: std.ArrayListUnmanaged(*PostMessageCallback) = .{},
@@ -328,6 +331,22 @@ pub fn getOnPopState(self: *const Window) ?js.Function.Global {
 
 pub fn setOnPopState(self: *Window, setter: ?FunctionSetter) void {
     self._on_popstate = getFunctionFromSetter(setter);
+}
+
+pub fn getOnHashChange(self: *const Window) ?js.Function.Global {
+    return self._on_hashchange;
+}
+
+pub fn setOnHashChange(self: *Window, setter: ?FunctionSetter) void {
+    self._on_hashchange = getFunctionFromSetter(setter);
+}
+
+pub fn getModelContext(self: *Window) *ModelContext {
+    return &self._model_context;
+}
+
+pub fn getFrameElement(self: *const Window) ?*Element.Html.IFrame {
+    return self._frame.iframe;
 }
 
 pub fn getOnError(self: *const Window) ?js.Function.Global {
@@ -1223,6 +1242,9 @@ pub const JsApi = struct {
     pub const onload = bridge.accessor(Window.getOnLoad, Window.setOnLoad, .{});
     pub const onpageshow = bridge.accessor(Window.getOnPageShow, Window.setOnPageShow, .{});
     pub const onpopstate = bridge.accessor(Window.getOnPopState, Window.setOnPopState, .{});
+    pub const onhashchange = bridge.accessor(Window.getOnHashChange, Window.setOnHashChange, .{});
+    pub const modelContext = bridge.accessor(Window.getModelContext, null, .{});
+    pub const frameElement = bridge.accessor(Window.getFrameElement, null, .{});
     pub const onerror = bridge.accessor(Window.getOnError, Window.setOnError, .{});
     pub const onmessage = bridge.accessor(Window.getOnMessage, Window.setOnMessage, .{});
     pub const ontouchstart = bridge.accessor(Window.getOnTouchStart, Window.setOnTouchStart, .{});

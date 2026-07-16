@@ -25,6 +25,17 @@ const SigHandler = @import("Sighandler.zig");
 pub const panic = lp.crash_handler.panic;
 
 pub fn main() !void {
+    // Raise soft stack limit toward hard (macOS default soft ~8MB). V8 module
+    // graphs (InnerModuleEvaluation) and SPA script eval need headroom beyond
+    // the default or they V8_Fatal before DOMContentLoaded.
+    if (std.posix.getrlimit(.STACK)) |lim| {
+        var raised = lim;
+        if (raised.cur < raised.max) {
+            raised.cur = raised.max;
+            _ = std.posix.setrlimit(.STACK, raised) catch {};
+        }
+    } else |_| {}
+
     // allocator
     // - in Debug mode we use the General Purpose Allocator to detect memory leaks
     // - in Release mode we use the c allocator

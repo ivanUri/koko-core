@@ -227,6 +227,30 @@ pub fn compileAndRun(self: *const Local, src: []const u8, name: ?[]const u8) !js
         return error.CompilationError;
     };
 
+    // Lifecycle script drain: wrap Run in TryCatch so RangeError (max call stack)
+    // from page JS becomes JsException instead of climbing into V8_Fatal when
+    // the embedder stack is already deep. Non-lifecycle keeps bare Run for WPT
+    // assert_throws_js (native throws must reach in-script try/catch).
+    const lifecycle = self.ctx.global == .frame and self.ctx.global.frame._script_manager.base.is_evaluating;
+    if (lifecycle) {
+        var run_try_catch: js.TryCatch = undefined;
+        run_try_catch.init(self);
+        defer run_try_catch.deinit();
+        const result = v8.v8__Script__Run(v8_script, self.handle) orelse {
+            if (run_try_catch.hasCaught()) {
+                if (run_try_catch.caught(self.ctx.call_arena)) |caught| {
+                    log.warn(.frame, "Script runtime error", .{
+                        .name = name orelse "anonymous",
+                        .exception = caught.exception,
+                        .line = caught.line,
+                    });
+                }
+            }
+            return error.JsException;
+        };
+        return .{ .local = self, .handle = result };
+    }
+
     // Run without TryCatch so native constructor throws reach in-script try/catch
     // (e.g. WPT assert_throws_js). Uncaught exceptions still abort via null result.
     const result = v8.v8__Script__Run(v8_script, self.handle) orelse {

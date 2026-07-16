@@ -434,7 +434,10 @@ pub fn isEqualChildren(self: *Node, other: *Node) bool {
 
 pub fn isInShadowTree(self: *Node) bool {
     var node = self._parent;
+    var depth: u32 = 0;
     while (node) |n| {
+        depth += 1;
+        if (depth > 4096) return false;
         if (n.is(ShadowRoot) != null) {
             return true;
         }
@@ -444,9 +447,16 @@ pub fn isInShadowTree(self: *Node) bool {
 }
 
 pub fn isConnected(self: *const Node) bool {
-    // Walk up to find the root node
+    // Walk up to find the root node. Cap depth so a corrupt/cyclic _parent
+    // chain (seen after re-nav while old document nodes are recycled) cannot
+    // infinite-loop or walk into freed memory forever.
     var root = self;
+    var depth: u32 = 0;
     while (root._parent) |parent| {
+        depth += 1;
+        if (depth > 4096) return false;
+        // Detect trivial cycles.
+        if (parent == self or parent == root) return false;
         root = parent;
     }
 
@@ -510,8 +520,13 @@ pub fn ownerDocument(self: *const Node, frame: *const Frame) ?*Document {
     }
 
     // The root of the tree that a node belongs to is its owner.
+    // Cap depth: corrupt/cyclic _parent after re-nav UAF'd here (style pop
+    // during Bing parse after Google knitsail).
     var current = self;
+    var depth: u32 = 0;
     while (current._parent) |parent| {
+        depth += 1;
+        if (depth > 4096 or parent == current or parent == self) break;
         current = parent;
     }
 
@@ -545,7 +560,9 @@ pub const ResolveURLOpts = struct {
 // Resolve a URL relative to this node's owning document.
 // Uses the document's charset for query string encoding (with NCR fallback for unmappable chars).
 pub fn resolveURL(self: *const Node, url: anytype, frame: *Frame, opts: ResolveURLOpts) ![:0]const u8 {
-    const owner_frame = self.ownerFrame(frame);
+    // Document parse already has the correct frame; avoid ownerFrame() parent walks
+    // (UAF after re-nav during style/link pop).
+    const owner_frame = if (frame._document_parse_active) frame else self.ownerFrame(frame);
     const allocator = opts.allocator orelse frame.call_arena;
     return URL.resolve(allocator, owner_frame.base(), url, .{ .encoding = owner_frame.charset });
 }

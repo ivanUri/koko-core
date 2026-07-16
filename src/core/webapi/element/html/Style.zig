@@ -14,6 +14,7 @@
 const std = @import("std");
 const js = @import("../../../js/js.zig");
 const Frame = @import("../../../browser/Frame.zig");
+const log = @import("../../../../support/log.zig");
 
 const Node = @import("../../../dom/Node.zig");
 const Element = @import("../../../dom/Element.zig");
@@ -73,14 +74,16 @@ pub fn setDisabled(self: *Style, disabled: bool, frame: *Frame) !void {
 
 const CSSStyleSheet = @import("../../css/CSSStyleSheet.zig");
 pub fn getSheet(self: *Style, frame: *Frame) !?*CSSStyleSheet {
-    const owner_frame = self.asNode().ownerFrame(frame);
-    // Per spec, sheet is null for disconnected elements or non-CSS types.
-    // Valid types: absent (defaults to "text/css"), empty string, or
-    // case-insensitive match for "text/css".
-    if (!self.asNode().isConnected()) {
+    // Prefer the frame argument over ownerFrame()/isConnected() parent walks.
+    // Document parse after re-nav (Google knitsail → Bing) UAF'd walking _parent.
+    const in_document_parse = frame._document_parse_active and frame._parse_mode == .document;
+    if (!in_document_parse and !self.asNode().isConnected()) {
         self._sheet = null;
         return null;
     }
+    // Per spec, sheet is null for non-CSS types.
+    // Valid types: absent (defaults to "text/css"), empty string, or
+    // case-insensitive match for "text/css".
     const t = self.getType();
     if (t.len != 0 and !std.ascii.eqlIgnoreCase(t, "text/css")) {
         self._sheet = null;
@@ -88,29 +91,42 @@ pub fn getSheet(self: *Style, frame: *Frame) !?*CSSStyleSheet {
     }
 
     if (self._sheet) |sheet| return sheet;
-    const sheet = try CSSStyleSheet.initWithOwner(self.asElement(), owner_frame);
+    const sheet = try CSSStyleSheet.initWithOwner(self.asElement(), frame);
     self._sheet = sheet;
 
-    const sheets = try owner_frame.document.getStyleSheets(owner_frame);
-    try sheets.add(sheet, owner_frame);
+    const sheets = try frame.document.getStyleSheets(frame);
+    try sheets.add(sheet, frame);
 
     return sheet;
 }
 
 pub fn styleAddedCallback(self: *Style, frame: *Frame) !void {
-    const owner_frame = self.asNode().ownerFrame(frame);
-    // Force stylesheet initialization so rules are parsed immediately
-    if (self.getSheet(frame) catch null) |_| {
-        // Notify StyleManager about the new stylesheet
-        owner_frame._style_manager.sheetModified();
-    }
-
-    // if we're planning on navigating to another frame, don't trigger load event.
-    if (owner_frame.isGoingAway()) {
+    // Main-document HTML parse: do not allocate StyleSheetList / CSSStyleSheet
+    // mid-html5ever. After Google knitsail re-nav, ArrayList growth there
+    // SIGSEGV'd (Google Search → Bing). Mark StyleManager dirty; sheet is
+    // created lazily on document.styleSheets / getSheet after parse.
+    const mid_document_parse = frame._document_parse_active and frame._parse_mode == .document;
+    if (mid_document_parse) {
+        frame._style_manager.sheetModified();
         return;
     }
 
-    try owner_frame.queueLoad(self._proto);
+    // Dynamic insert / fragment: register sheet now (spec + CSSOM probes).
+    const sheet = self.getSheet(frame) catch |err| blk: {
+        log.warn(.frame, "style sheet register", .{ .err = err, .url = frame.url });
+        break :blk null;
+    };
+    if (sheet != null) {
+        frame._style_manager.sheetModified();
+    }
+
+    if (frame.isGoingAway()) {
+        return;
+    }
+
+    frame.queueLoad(self._proto) catch |err| {
+        log.warn(.frame, "style queueLoad", .{ .err = err, .url = frame.url });
+    };
 }
 
 pub const JsApi = struct {

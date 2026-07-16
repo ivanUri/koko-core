@@ -253,6 +253,7 @@ fn popCallback(ctx: *anyopaque, node_ref: *anyopaque) callconv(.c) void {
 }
 
 fn _popCallback(self: *Parser, node: *Node) !void {
+    if (self.frame._realm_state != .active) return;
     try self.frame.nodeComplete(node);
 }
 
@@ -273,7 +274,10 @@ fn _createElementCallbackWithDefaultnamespace(ctx: *anyopaque, data: *anyopaque,
 }
 fn _createElementCallback(self: *Parser, data: *anyopaque, qname: h5e.QualName, attributes: h5e.AttributeIterator, default_namespace: Element.Namespace) !*anyopaque {
     const frame = self.frame;
+    if (frame._realm_state != .active) return error.ParserInactive;
     frame.pollCdpDuringLongWork();
+    // Page.navigate during poll can put this frame into draining before DOM work.
+    if (frame._realm_state != .active) return error.ParserInactive;
     const name = qname.local.slice();
     const namespace_string = qname.ns.slice();
     const namespace = if (namespace_string.len == 0) default_namespace else Element.Namespace.parse(namespace_string);
@@ -414,22 +418,24 @@ fn appendCallback(ctx: *anyopaque, parent_ref: *anyopaque, node_or_text: h5e.Nod
     };
 }
 fn _appendCallback(self: *Parser, parent: *Node, node_or_text: h5e.NodeOrText) !void {
+    if (self.frame._realm_state != .active) return;
     self.frame.pollCdpDuringLongWork();
+    // CDP may have started root re-nav while we polled — bail before appendNew.
+    if (self.frame._realm_state != .active) return;
     // child node is guaranteed not to belong to another parent
     switch (node_or_text.toUnion()) {
         .node => |cpn| {
             if (@intFromPtr(cpn) == 0) return;
             const child = getNode(cpn);
             if (child._parent) |previous_parent| {
-                // html5ever says this can't happen, but we might be screwing up
-                // the node on our side. We shouldn't be, but we're seeing this
-                // in the wild, and I'm not sure why. In debug, let's crash so
-                // we can try to figure it out. In release, let's disconnect
-                // the child first.
-                if (comptime IS_DEBUG) {
-                    unreachable;
-                }
-                self.frame.removeNode(previous_parent, child, .{ .will_be_reconnected = parent.isConnected() });
+                // html5ever says this can't happen, but foster-parenting / reparent
+                // and re-nav races do surface it. Always disconnect first — never
+                // unreachable in debug (that aborted the process as SIGABRT).
+                const reconnect = if (self.frame._parse_mode == .document)
+                    true
+                else
+                    parent.isConnected();
+                self.frame.removeNode(previous_parent, child, .{ .will_be_reconnected = reconnect });
             }
             try self.frame.appendNew(parent, .{ .node = child });
         },

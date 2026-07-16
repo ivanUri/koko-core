@@ -88,6 +88,10 @@ cpu_profiler: ?*v8.CpuProfiler = null,
 
 heap_profiler: ?*v8.HeapProfiler = null,
 
+/// Inspector `contextDestroyed` already sent for this V8 context (e.g. pending-
+/// root swap tears down CDP mappings before the V8 context is freed).
+_inspector_destroyed_notified: bool = false,
+
 // references Env.templates
 templates: []*const v8.FunctionTemplate,
 
