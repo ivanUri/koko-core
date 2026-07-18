@@ -1,0 +1,25 @@
+diff --git a/lib/vtls/openssl.c b/lib/vtls/openssl.c
+--- a/lib/vtls/openssl.c
++++ b/lib/vtls/openssl.c
+@@ -4179,14 +4179,20 @@
+                    SSL_MODE_CBC_RECORD_SPLITTING |
+                    SSL_MODE_ENABLE_FALSE_START);
+ 
+-  /* Enable TLS extension 18, signed_certificate_timestamp. */
+-  if(data->set.tls_signed_cert_timestamps)
++  /* Enable TLS extension 18, signed_certificate_timestamp.
++   * Chrome omits SCT + status_request on QUIC ClientHello (browserleaks
++   * 2026-07-17 Chrome 150: 11 ext, no 0005/0012). Keep them for TCP. */
++  if(data->set.tls_signed_cert_timestamps &&
++     peer->transport != TRNSPRT_QUIC)
+     SSL_CTX_enable_signed_cert_timestamps(octx->ssl_ctx);
+ 
+-  /* Enable TLS extension 5, status_request. */
+-  if(data->set.tls_status_request)
++  /* Enable TLS extension 5, status_request (OCSP stapling). */
++  if(data->set.tls_status_request &&
++     peer->transport != TRNSPRT_QUIC)
+     SSL_CTX_enable_ocsp_stapling(octx->ssl_ctx);
+ #endif
+ 
+   ciphers = conn_config->cipher_list;

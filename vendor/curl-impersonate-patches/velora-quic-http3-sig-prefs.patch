@@ -1,0 +1,25 @@
+diff --git a/lib/vtls/openssl.c b/lib/vtls/openssl.c
+--- a/lib/vtls/openssl.c
++++ b/lib/vtls/openssl.c
+@@ -4268,12 +4268,24 @@
+   {
+     uint16_t algs[MAX_SIG_ALGS];
+     size_t nalgs;
+-    /* curl-impersonate: Set the signature algorithms (TLS extension 13). */
+-    const char *signature_algorithms = conn_config->signature_algorithms;
++    /* curl-impersonate: Set the signature algorithms (TLS extension 13).
++     * Prefer HTTP3-specific list for QUIC even when TCP list is also set
++     * (CURLOPT_SSL_SIGNATURE_ALGORITHMS). Chrome 150: TCP has ML-DSA;
++     * QUIC does not (classic + rsa_pkcs1_sha1). ssl_easy_config_complete
++     * sometimes runs before transport_wanted=QUIC is known. */
++    const char *signature_algorithms = conn_config->signature_algorithms;
++    if(peer->transport == TRNSPRT_QUIC &&
++       data->set.str[STRING_HTTP3_SIG_HASH_ALGS]) {
++      signature_algorithms = data->set.str[STRING_HTTP3_SIG_HASH_ALGS];
++    }
+     if(signature_algorithms) {
+       CURLcode result = parse_sig_algs(data, signature_algorithms, algs,
+                                        &nalgs);
+       if(result)
+         return result;
+     }

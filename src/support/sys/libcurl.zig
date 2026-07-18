@@ -249,13 +249,44 @@ pub const CurlOption = enum(c.CURLoption) {
     stream_exclusive = 1013,
     tls_grease = 1011,
     tls_signed_cert_timestamps = 1015,
+    /// CURLOPT_TLS_STATUS_REQUEST (OCSP stapling / ext 0005). Off for QUIC to match Chrome.
+    tls_status_request = 1016,
+    /// CURLOPT_ECH (STRINGPOINT 325) — "true" | "grease" | "false" | "hard" | "ecl:…"
     ech = 10325,
+    /// DNS-over-HTTPS for HTTPS RR / ECH config (required for ech_success like Chrome).
+    doh_url = c.CURLOPT_DOH_URL,
+    /// curl-impersonate: CURLOPTTYPE_STRINGPOINT + 1001 → 11001 (sigalgs list).
+    ssl_sig_hash_algs = 11001,
     http3_pseudo_headers_order = c.CURLOPT_HTTP3_PSEUDO_HEADERS_ORDER,
     http3_settings = c.CURLOPT_HTTP3_SETTINGS,
     quic_transport_parameters = c.CURLOPT_QUIC_TRANSPORT_PARAMETERS,
     http3_sig_hash_algs = c.CURLOPT_HTTP3_SIG_HASH_ALGS,
     http3_tls_extension_order = c.CURLOPT_HTTP3_TLS_EXTENSION_ORDER,
 };
+
+/// Classic Chrome ≤149 / TCP signature_algorithms (no ML-DSA).
+pub const CHROME146_SSL_SIG_HASH_ALGS: [:0]const u8 =
+    "ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256:rsa_pkcs1_sha256:" ++
+    "ecdsa_secp384r1_sha384:rsa_pss_rsae_sha384:rsa_pkcs1_sha384:" ++
+    "rsa_pss_rsae_sha512:rsa_pkcs1_sha512";
+
+/// Chrome 150 QUIC ClientHello sigs (browserleaks 2026-07-17): classic + rsa_pkcs1_sha1.
+/// With SCT/status disabled, yields QUIC JA4 `q13d0311h3_55b375c5d22e_653d80c3fe9d`.
+pub const CHROME_QUIC_SSL_SIG_HASH_ALGS: [:0]const u8 =
+    CHROME146_SSL_SIG_HASH_ALGS ++ ":rsa_pkcs1_sha1";
+
+/// Chrome 150+ *TCP/TLS* ClientHello: ML-DSA (0x0904/05/06 = mldsa44/65/87) then classic.
+/// Requires libcurl-impersonate ≥ v2.0.0rc3. Verified JA4 vs Chrome 150 headless:
+/// `t13d1516h2_8daaf6152771_806a8c22fdea` on tls.browserleaks.com / peet.ws.
+///
+/// Do **not** apply this list on QUIC/HTTP3 hops: Chrome 150 QUIC ClientHello omits
+/// ML-DSA and advertises classic sigs (+ trailing 0201). See knowledge note
+/// `fingerprint/tls/2026-07-17-quic-h3-chrome150-vs-curl.md`.
+pub const CHROME150_SSL_SIG_HASH_ALGS: [:0]const u8 =
+    "mldsa44:mldsa65:mldsa87:" ++ CHROME146_SSL_SIG_HASH_ALGS;
+
+/// DoH endpoint used so CURLOPT_ECH=true can fetch HTTPS records (matches Chrome ECH path).
+pub const CHROME_DOH_URL: [:0]const u8 = "https://cloudflare-dns.com/dns-query";
 
 /// Chrome h3_text delta vs stock curl-impersonate is HTTP/3 control-stream frames
 /// (GREASE + PRIORITY_UPDATE 0x0f0700), not CURLOPT_QUIC_TRANSPORT_PARAMETERS.
@@ -703,6 +734,7 @@ pub fn curl_easy_setopt(easy: *Curl, comptime option: CurlOption, value: anytype
         .stream_exclusive,
         .tls_grease,
         .tls_signed_cert_timestamps,
+        .tls_status_request,
         => blk: {
             const n: c_long = switch (@typeInfo(@TypeOf(value))) {
                 .comptime_int, .int => @intCast(value),
@@ -743,6 +775,8 @@ pub fn curl_easy_setopt(easy: *Curl, comptime option: CurlOption, value: anytype
         .http3_tls_extension_order,
         .tls_extension_order,
         .ech,
+        .doh_url,
+        .ssl_sig_hash_algs,
         => blk: {
             const s: ?[*]const u8 = value;
             break :blk c.curl_easy_setopt(easy, opt, s);

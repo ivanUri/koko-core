@@ -19,9 +19,13 @@ The same `/sorry` page appears on **Playwright Chrome headless** from the same I
 
 HTTP stack: [`src/runtime/network/http.zig`](../src/runtime/network/http.zig) via libcurl.
 
-On macOS arm64, Velora links vendored libcurl-impersonate **v2.0.0a5** (`vendor/curl-impersonate/`, `curl 8.15.0-IMPERSONATE`, profile max `chrome146`).
+On macOS arm64, Velora links vendored libcurl-impersonate **v2.0.0rc3** (`vendor/curl-impersonate/`, `curl 8.21.0-IMPERSONATE`).
 
-**Fork:** [ivanUri/curl-impersonate](https://github.com/ivanUri/curl-impersonate) — clone on demand, not in velora tree. Build: `./scripts/build-vendor-curl.sh`. Docs: [curl-impersonate-fork.md](curl-impersonate-fork.md).
+- Base preset: `chrome146`
+- **Chrome 150+ profiles:** same preset + runtime `CURLOPT_SSL_SIG_HASH_ALGS` with ML-DSA (`mldsa44:mldsa65:mldsa87:…`) → JA4 `t13d1516h2_8daaf6152771_806a8c22fdea` (matches headless Chrome 150)
+- CLI wrapper: `vendor/curl-impersonate/curl_chrome150`
+
+**Fork / source:** [lexiforest/curl-impersonate](https://github.com/lexiforest/curl-impersonate) (Velora also documents ivanUri fork for patch workflow). Docs: [curl-impersonate-fork.md](curl-impersonate-fork.md). Capture notes: `knowledge/fingerprint/tls/2026-07-17-chrome150-vs-chrome146-ja4-gap.md`.
 
 ## Spike procedure
 
@@ -30,10 +34,11 @@ On macOS arm64, Velora links vendored libcurl-impersonate **v2.0.0a5** (`vendor/
 
 ```bash
 # Default curl — expect /sorry or redirect
-curl -sI "https://www.google.com/search?q=test&hl=en" -A "Mozilla/5.0 ... Chrome/146..."
+curl -sI "https://www.google.com/search?q=test&hl=en" -A "Mozilla/5.0 ... Chrome/150..."
 
-# curl-impersonate — compare status/location
-vendor/curl-impersonate/curl_chrome146 -sI "https://www.google.com/search?q=test&hl=en"
+# curl-impersonate Chrome 150 JA4 (ML-DSA)
+vendor/curl-impersonate/curl_chrome150 -sS "https://tls.peet.ws/api/all" | jq '.tls.ja4'
+# expect: t13d1516h2_8daaf6152771_806a8c22fdea
 ```
 
 3. If impersonate passes and default curl fails → TLS hypothesis confirmed.

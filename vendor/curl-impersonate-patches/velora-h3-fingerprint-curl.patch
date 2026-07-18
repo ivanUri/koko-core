@@ -1,10 +1,14 @@
-diff --git a/lib/vquic/curl_ngtcp2.c b/lib/vquic/curl_ngtcp2.c
---- a/lib/vquic/curl_ngtcp2.c
-+++ b/lib/vquic/curl_ngtcp2.c
-@@ -2151,6 +2151,30 @@ static CURLcode init_ngh3_conn(struct Curl_cfilter *cf,
-     return CURLE_QUIC_CONNECT_ERROR;
+diff --git a/lib/vquic/cf-ngtcp2.c b/lib/vquic/cf-ngtcp2.c
+--- a/lib/vquic/cf-ngtcp2.c
++++ b/lib/vquic/cf-ngtcp2.c
+@@ -635,6 +635,36 @@ static CURLcode init_ngh3_conn(struct Curl_cfilter *cf,
+       return result;
    }
  
++  /* Chrome 150 H3 control stream (browserleaks h3_text):
++   *   …;GREASE | GREASE | 984832 | m,a,s,p
++   * NGHTTP3_FRAME_PRIORITY_UPDATE is already 0x0f0700 in this nghttp3.
++   * Emit: random empty GREASE, then PRIORITY_UPDATE with "u=0, i". */
 +  {
 +    unsigned char rndbuf[sizeof(uint32_t)];
 +    CURLcode rnd_result = Curl_rand(data, rndbuf, sizeof(rndbuf));
@@ -31,5 +35,5 @@ diff --git a/lib/vquic/curl_ngtcp2.c b/lib/vquic/curl_ngtcp2.c
 +    }
 +  }
 +
-   rc = ngtcp2_conn_open_uni_stream(ctx->qconn, &qpack_enc_stream_id, NULL);
-   if(rc) {
+   return CURLE_OK;
+ }

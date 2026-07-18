@@ -1,10 +1,14 @@
 # curl-impersonate (external fork)
 
-Velora **không** embed `curl-impersonate/` trong repo. Build lấy từ fork:
+Velora **không** embed full source trong repo. Runtime artifacts live in `vendor/curl-impersonate/`.
 
-**https://github.com/ivanUri/curl-impersonate** (forked from lexiforest/curl-impersonate)
+**Current vendor:** [lexiforest/curl-impersonate](https://github.com/lexiforest/curl-impersonate) **v2.0.0rc3** (`curl 8.21.0-IMPERSONATE`, BoringSSL with ML-DSA / Chrome 150 sig algs).
 
-`vendor/curl-impersonate/` chỉ chứa **dylib + headers** sau build — đủ cho `zig build`.
+Optional build-from-source fork (patches / H3): **https://github.com/ivanUri/curl-impersonate**
+
+`vendor/curl-impersonate/` chứa **dylib + headers + CLI wrappers** — đủ cho `zig build`.
+
+**Chrome 150:** không có preset upstream; Velora dùng `chrome146` + `--signature-hashes mldsa44:mldsa65:mldsa87:…` (`curl_chrome150` wrapper, `TransportProfile.chrome150`).
 
 ## Build vendor (một lệnh)
 
