@@ -62,12 +62,18 @@ fn _loadFromFile(session: *Session, path: []const u8) !void {
         const domain = try a.dupe(u8, jc.domain);
         const cookie_path = if (jc.path) |p| try a.dupe(u8, p) else "/";
 
-        // Restored Chrome/profile cookies were set in an HTTPS browsing context.
-        // `source_secure` defaults to false on Cookie{}, which makes
-        // originBindingMatches reject every https:// request — so hop-1 sent
-        // zero Cookie despite a full Cookies.json (only live Set-Cookie AEC
-        // from the same request survived). Mark restored entries as secure-origin.
+        // Restored Chrome/profile cookies default to HTTPS origin binding so
+        // hop-1 https:// attaches cookies (see 2026-07-16 source_secure bug).
+        // Optional JSON fields override when present (round-trip fidelity).
         const secure = jc.secure orelse false;
+        const source_secure = jc.sourceSecure orelse true;
+        const source_port: u16 = jc.sourcePort orelse 443;
+        const partitioned = jc.partitioned orelse false;
+        var partition_site: ?[]const u8 = null;
+        if (jc.partitionSite) |ps| {
+            partition_site = try a.dupe(u8, ps);
+        }
+
         const cookie = Cookie{
             .arena = cookie_arena,
             .name = name,
@@ -78,10 +84,14 @@ fn _loadFromFile(session: *Session, path: []const u8) !void {
             .secure = secure,
             .http_only = jc.httpOnly orelse false,
             .same_site = parseJsonSameSite(jc.sameSite),
-            .source_secure = true,
-            .source_port = 443,
+            .source_secure = source_secure,
+            .source_port = source_port,
+            .partitioned = partitioned,
+            .partition_site = partition_site,
         };
 
+        // Use add() so pre-serialized partition_site (scheme:host) is kept.
+        // addWithTopLevel recomputes from a URL and would mangle stored keys.
         jar.add(cookie, now, true) catch |err| {
             cookie.deinit();
             log.warn(.app, "invalid cookie", .{ .name = jc.name, .err = err });
@@ -130,6 +140,10 @@ fn _saveToFile(jar: *Cookie.Jar, path: []const u8) !void {
             .secure = c.secure,
             .httpOnly = c.http_only,
             .sameSite = @tagName(c.same_site),
+            .partitioned = if (c.partitioned) true else null,
+            .partitionSite = c.partition_site,
+            .sourceSecure = c.source_secure,
+            .sourcePort = c.source_port,
         }, .{}, w);
     }
 
@@ -151,6 +165,12 @@ const JsonCookie = struct {
     secure: ?bool = null,
     httpOnly: ?bool = null,
     sameSite: ?[]const u8 = null,
+    /// CHIPS / partition metadata (optional for back-compat with older jars).
+    partitioned: ?bool = null,
+    partitionSite: ?[]const u8 = null,
+    /// Origin binding (optional; load defaults to HTTPS:443 when absent).
+    sourceSecure: ?bool = null,
+    sourcePort: ?u16 = null,
 };
 
 fn parseJsonSameSite(value: ?[]const u8) Cookie.SameSite {

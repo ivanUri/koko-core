@@ -131,15 +131,15 @@ fn deleteCookies(cmd: *CDP.Command) !void {
         path: ?[]const u8 = null,
         partitionKey: ?CdpStorage.CookiePartitionKey = null,
     })) orelse return error.InvalidParams;
-    // Silently ignore partitionKey since we don't support partitioned cookies (CHIPS).
-    // This allows Puppeteer's frame.setCookie() to work, which sends deleteCookies
-    // with partitionKey as part of its cookie-setting workflow.
-    if (params.partitionKey != null) {
-        log.warn(.not_implemented, "partition key", .{ .src = "deleteCookies" });
-    }
 
     const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
     const cookies = &bc.session.cookie_jar.cookies;
+
+    // When partitionKey is set, only delete cookies in that CHIPS partition.
+    // When absent, delete matching cookies regardless of partition (Chrome-like
+    // for unpartitioned deletes; Puppeteer setCookie still works).
+    const want_partition = params.partitionKey != null;
+    const partition_site: ?[]const u8 = if (params.partitionKey) |pk| pk.topLevelSite else null;
 
     var index = cookies.items.len;
     while (index > 0) {
@@ -150,11 +150,28 @@ fn deleteCookies(cmd: *CDP.Command) !void {
 
         // We do not want to use Cookie.appliesTo here. As a Cookie with a shorter path would match.
         // Similar to deduplicating with areCookiesEqual, except domain and path are optional.
-        if (cookieMatches(cookie, params.name, domain, path)) {
-            cookies.swapRemove(index).deinit();
+        if (!cookieMatches(cookie, params.name, domain, path)) continue;
+
+        if (want_partition) {
+            // Only CHIPS cookies in the given top-level site partition.
+            if (!cookie.partitioned) continue;
+            const site = cookie.partition_site orelse continue;
+            const want = partition_site orelse continue;
+            // Compare schemeful sites loosely (allow missing trailing slash).
+            if (!partitionSitesEqual(site, want)) continue;
         }
+
+        cookies.swapRemove(index).deinit();
     }
     return cmd.sendResult(null, .{});
+}
+
+fn partitionSitesEqual(a: []const u8, b: []const u8) bool {
+    if (std.mem.eql(u8, a, b)) return true;
+    // "https://example.com" vs "https://example.com/"
+    const a_trim = std.mem.trimRight(u8, a, "/");
+    const b_trim = std.mem.trimRight(u8, b, "/");
+    return std.mem.eql(u8, a_trim, b_trim);
 }
 
 fn clearBrowserCookies(cmd: *CDP.Command) !void {
