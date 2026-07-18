@@ -1344,6 +1344,17 @@ fn makeTransfer(self: *Client, req: Request) !*Transfer {
     return transfer;
 }
 
+/// Schemes libcurl can load for this client. Reject empty / relative / opaque
+/// garbage (e.g. bare base64 from SPA resolvers) before CURLOPT_URL.
+/// `file://` is allowed (local fixtures / offline). `blob:`/`data:` have
+/// dedicated loaders and should not hit configureConn.
+fn isCurlSupportedTransferUrl(url: []const u8) bool {
+    if (url.len < 8) return false;
+    return std.mem.startsWith(u8, url, "https://") or
+        std.mem.startsWith(u8, url, "http://") or
+        std.mem.startsWith(u8, url, "file://");
+}
+
 fn requestFailed(transfer: *Transfer, err: anyerror, comptime execute_callback: bool) void {
     if (transfer._notified_fail) {
         // we can force a failed request within a callback, which will eventually
@@ -2453,9 +2464,10 @@ pub const Transfer = struct {
         const network = client.network;
 
         if (comptime build_config.curl_impersonate) {
-            if (std.mem.indexOf(u8, req.params.url, "sg_ss=") != null) {
-                // Pooled easy handles retain HTTP/3 QUIC state after sei=;
-                // curl_easy_reset + fresh_connect is not enough for sg_ss=.
+            // In-session / retry paths set force_fresh_connection via NavigationPlan
+            // (or document retry). Pooled easy handles can retain HTTP/3 QUIC state;
+            // reinit before applyProfileTransportVersion.
+            if (req.params.force_fresh_connection) {
                 try conn.reinit(network.config, network.ca_blob, network.ip_filter);
             }
         }
@@ -2466,6 +2478,10 @@ pub const Transfer = struct {
         try conn.setProxy(client.http_proxy);
         try conn.setTlsVerify(client.tls_verify, client.use_proxy);
 
+        // Reject unusable URLs before curl (avoids CURLE_URL_MALFORMAT storms).
+        if (!isCurlSupportedTransferUrl(req.params.url)) {
+            return error.UrlMalformat;
+        }
         try conn.setURL(req.params.url);
         if (req.params.custom_method) |custom| {
             try conn.setMethodString(custom);

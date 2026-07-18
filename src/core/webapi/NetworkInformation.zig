@@ -1,29 +1,42 @@
 const std = @import("std");
 const js = @import("../js/js.zig");
+const HttpProfile = @import("../../runtime/profile/HttpProfile.zig");
 
 const NetworkInformation = @This();
 
-// NetworkInformation stub for navigator.connection
+// NetworkInformation for navigator.connection
 // https://wicg.github.io/netinfo/
+//
+// Chrome desktop (wifi/ethernet): `type` is "wifi"/"ethernet", `downlinkMax` is
+// Infinity (no cellular max). CreepJS / NetInfo consumers use
+// `'downlinkMax' in NetworkInformation.prototype` — the property must exist.
 
 pub fn getEffectiveType(_: *const NetworkInformation) []const u8 {
     return "4g";
 }
 
 pub fn getDownlink(_: *const NetworkInformation) f64 {
-    return @import("../../runtime/profile/HttpProfile.zig").in_session_downlink;
+    return HttpProfile.in_session_downlink;
 }
 
 pub fn getRtt(_: *const NetworkInformation) f64 {
-    return @floatFromInt(@import("../../runtime/profile/HttpProfile.zig").in_session_rtt);
+    return @floatFromInt(HttpProfile.in_session_rtt);
 }
 
 pub fn getSaveData(_: *const NetworkInformation) bool {
     return false;
 }
 
-pub fn getConnectionType(_: *const NetworkInformation) []const u8 {
+/// Connection type (Chrome: `navigator.connection.type`).
+pub fn getType(_: *const NetworkInformation) []const u8 {
     return "wifi";
+}
+
+/// Max downlink Mbps for the underlying technology. Chrome returns `Infinity`
+/// for wifi/ethernet (no cellular radio max). Cellular profiles would use a
+/// finite Mbps value later — keep Infinity for desktop wifi default.
+pub fn getDownlinkMax(_: *const NetworkInformation) f64 {
+    return std.math.inf(f64);
 }
 
 pub fn addEventListener(_: *NetworkInformation, _: []const u8, _: js.Value) void {}
@@ -41,9 +54,11 @@ pub const JsApi = struct {
 
     pub const effectiveType = bridge.accessor(NetworkInformation.getEffectiveType, null, .{});
     pub const downlink = bridge.accessor(NetworkInformation.getDownlink, null, .{});
+    pub const downlinkMax = bridge.accessor(NetworkInformation.getDownlinkMax, null, .{});
     pub const rtt = bridge.accessor(NetworkInformation.getRtt, null, .{});
     pub const saveData = bridge.accessor(NetworkInformation.getSaveData, null, .{});
-    pub const connectionType = bridge.accessor(NetworkInformation.getConnectionType, null, .{});
+    // Spec/Chrome attribute is `type`, not `connectionType`.
+    pub const @"type" = bridge.accessor(NetworkInformation.getType, null, .{});
     pub const addEventListener = bridge.function(NetworkInformation.addEventListener, .{});
     pub const removeEventListener = bridge.function(NetworkInformation.removeEventListener, .{});
 };

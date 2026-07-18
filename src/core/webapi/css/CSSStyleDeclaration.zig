@@ -1099,18 +1099,23 @@ fn getDefaultColor(element: *const Element) []const u8 {
     }
 }
 
-/// Resolve CSS system colors to realistic macOS light mode values
+/// Resolve CSS system colors to realistic **macOS light / Chrome-on-Mac** values.
 /// https://www.w3.org/TR/css-color-4/#css-system-colors
+///
+/// Do not use Phantom/old-headless pure `rgb(255, 0, 0)` for ActiveText —
+/// CreepJS treats that exact triple as `hasKnownBgColor` (like-headless).
+/// Apple systemRed-ish active text is the platform-accurate desktop default.
 pub fn resolveSystemColor(color_name: []const u8) ?[]const u8 {
     // System colors (case-insensitive)
     const SystemColorEntry = struct { name: []const u8, value: []const u8 };
     const system_colors = [_]SystemColorEntry{
-        // CSS Color Level 4 system colors
+        // CSS Color Level 4 system colors (macOS light theme)
         .{ .name = "Canvas", .value = "rgb(255, 255, 255)" }, // Page background (white)
         .{ .name = "CanvasText", .value = "rgb(0, 0, 0)" }, // Text on canvas (black)
-        .{ .name = "LinkText", .value = "rgb(0, 0, 238)" }, // Hyperlinks (blue)
+        .{ .name = "LinkText", .value = "rgb(0, 102, 204)" }, // Safari/Chrome-Mac style link blue
         .{ .name = "VisitedText", .value = "rgb(85, 26, 139)" }, // Visited links (purple)
-        .{ .name = "ActiveText", .value = "rgb(255, 0, 0)" }, // Active links (red)
+        // ActiveText: platform active control/link text — not Phantom pure red.
+        .{ .name = "ActiveText", .value = "rgb(255, 59, 48)" }, // macOS systemRed-ish
         .{ .name = "ButtonFace", .value = "rgb(239, 239, 239)" },
         .{ .name = "ButtonText", .value = "rgb(0, 0, 0)" },
         .{ .name = "ButtonBorder", .value = "rgb(0, 0, 0)" },
