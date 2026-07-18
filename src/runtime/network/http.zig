@@ -102,6 +102,30 @@ pub const Headers = struct {
         self.headers = updated_headers;
     }
 
+    /// Insert `header` immediately after the first header whose name matches
+    /// `after_name` (case-insensitive). Falls back to `add` if not found.
+    /// Used for Chrome document order: Cookie after Accept-Language.
+    pub fn insertAfterName(self: *Headers, after_name: []const u8, header: [*c]const u8) !void {
+        var cur = self.headers;
+        while (cur) |node| {
+            // curl_slist.data is a C pointer and may be null on some nodes.
+            if (node.data) |raw| {
+                const data = std.mem.span(@as([*:0]const u8, @ptrCast(raw)));
+                if (parseHeader(data)) |parsed| {
+                    if (std.ascii.eqlIgnoreCase(parsed.name, after_name)) {
+                        // Append creates a single-node list; splice that node after `node`.
+                        const inserted = libcurl.curl_slist_append(null, header) orelse return error.OutOfMemory;
+                        inserted.*.next = node.next;
+                        node.next = inserted;
+                        return;
+                    }
+                }
+            }
+            cur = node.next;
+        }
+        try self.add(header);
+    }
+
     pub fn parseHeader(header_str: []const u8) ?Header {
         const colon_pos = std.mem.indexOfScalar(u8, header_str, ':') orelse return null;
 
@@ -149,14 +173,18 @@ pub const HeaderIterator = union(enum) {
         prev: ?*libcurl.CurlHeader = null,
 
         pub fn next(self: *CurlHeaderIterator) ?Header {
-            const h = libcurl.curl_easy_nextheader(self.conn._easy, .header, -1, self.prev) orelse return null;
-            self.prev = h;
+            while (true) {
+                const h = libcurl.curl_easy_nextheader(self.conn._easy, .header, -1, self.prev) orelse return null;
+                self.prev = h;
 
-            const header = h.*;
-            return .{
-                .name = std.mem.span(header.name),
-                .value = std.mem.span(header.value),
-            };
+                const header = h.*;
+                // libcurl may return entries with null name/value; skip them.
+                if (header.name == null or header.value == null) continue;
+                return .{
+                    .name = std.mem.span(header.name),
+                    .value = std.mem.span(header.value),
+                };
+            }
         }
     };
 
@@ -164,9 +192,18 @@ pub const HeaderIterator = union(enum) {
         header: [*c]libcurl.CurlSList,
 
         pub fn next(self: *CurlSListIterator) ?Header {
-            const h = self.header orelse return null;
-            self.header = h.*.next;
-            return Headers.parseHeader(std.mem.span(@as([*:0]const u8, @ptrCast(h.*.data))));
+            // Walk the curl_slist, skipping null/empty/malformed nodes.
+            // A null `data` used to panic ReleaseSafe via:
+            //   @ptrCast(h.*.data) as [*:0]const u8  → "cast causes pointer to be null"
+            // (seen when CDP serializes request headers during Google home→search nav).
+            while (true) {
+                const h = self.header orelse return null;
+                self.header = h.*.next;
+                const raw = h.*.data orelse continue;
+                const data = std.mem.span(@as([*:0]const u8, @ptrCast(raw)));
+                if (data.len == 0) continue;
+                if (Headers.parseHeader(data)) |hdr| return hdr;
+            }
         }
     };
 
@@ -631,10 +668,12 @@ pub const Connection = struct {
         version: ProfileHttpVersion,
     ) !void {
         const easy = self._easy;
+        // chrome150 → curl target chrome146; ML-DSA applied in applyChromeTlsKnobs.
         const target = config.profile.transport.impersonate;
         try libcurl.setImpersonate(easy, target, default_headers);
-        if (!config.profile.isFirefox()) {
-            try applyChromeTlsKnobs(easy);
+        // Firefox/Safari: leave vendor impersonate defaults (h2 for Safari 260, no ML-DSA).
+        if (config.profile.isChromium()) {
+            try applyChromeTlsKnobs(easy, config.profile.transport.target, version);
             const http_version: c_long = switch (version) {
                 .h2 => libcurl.HTTP_VERSION_2TLS,
                 .h3 => libcurl.HTTP_VERSION_3,
@@ -644,16 +683,42 @@ pub const Connection = struct {
         try libcurl.curl_easy_setopt(easy, .accept_encoding, "");
     }
 
-    fn applyChromeTlsKnobs(easy: *libcurl.Curl) !void {
+    fn applyChromeTlsKnobs(
+        easy: *libcurl.Curl,
+        transport_target: @import("../profile/TransportProfile.zig").Target,
+        version: ProfileHttpVersion,
+    ) !void {
         if (!build_config.curl_impersonate) return;
         // chrome146 --impersonate already sets TLS/QUIC fingerprints. Re-apply only
-        // TLS knobs that survive curl_easy_reset without breaking HTTP/3:
-        //   - CURLOPT_HTTP3_PSEUDO_HEADERS_ORDER → curl_easy_perform error 43
-        //   - CURLOPT_QUIC_TRANSPORT_PARAMETERS → forces http/1.1 fallback (quic-probe)
-        try libcurl.curl_easy_setopt(easy, .ssl_enable_alps, 1);
-        try libcurl.curl_easy_setopt(easy, .tls_grease, 1);
-        // chrome146 + real Chrome permute TLS extensions per connection (JA3 varies; JA4 stable).
-        try libcurl.curl_easy_setopt(easy, .ssl_permute_extensions, 1);
+        // knobs that survive curl_easy_reset without breaking HTTP/3.
+        // Use optional setopt for vendor-fragile flags: BadFunctionArgument must not
+        // abort document navigation (maps to CDP BadFunctionArgument / multi abort).
+        libcurl.curlEasySetoptOptional(easy, .ssl_enable_alps, 1);
+        libcurl.curlEasySetoptOptional(easy, .tls_grease, 1);
+        libcurl.curlEasySetoptOptional(easy, .ssl_permute_extensions, 1);
+        // Signature algorithms + QUIC ClientHello (browserleaks 2026-07-17):
+        // - TCP/h2: Chrome 150 prepends ML-DSA → CHROME150 (JA4 t13d…_806a8c22fdea).
+        // - QUIC/h3: classic + rsa_pkcs1_sha1; disable SCT (0012) + status_request (0005).
+        // Vendor without ML-DSA names → optional setopt no-ops; then classic list.
+        if (version == .h3) {
+            libcurl.curlEasySetoptOptional(easy, .ssl_sig_hash_algs, libcurl.CHROME_QUIC_SSL_SIG_HASH_ALGS.ptr);
+            libcurl.curlEasySetoptOptional(easy, .http3_sig_hash_algs, libcurl.CHROME_QUIC_SSL_SIG_HASH_ALGS.ptr);
+            libcurl.curlEasySetoptOptional(easy, .tls_signed_cert_timestamps, @as(c_long, 0));
+            libcurl.curlEasySetoptOptional(easy, .tls_status_request, @as(c_long, 0));
+        } else {
+            const use_mldsa = transport_target.usesChrome150SigAlgs();
+            if (use_mldsa) {
+                // Prefer ML-DSA; if vendor rejects names, fall back to classic list.
+                libcurl.curl_easy_setopt(easy, .ssl_sig_hash_algs, libcurl.CHROME150_SSL_SIG_HASH_ALGS.ptr) catch {
+                    log.warn(.http, "chrome150_mldsa_sigalgs_fallback", .{});
+                    libcurl.curlEasySetoptOptional(easy, .ssl_sig_hash_algs, libcurl.CHROME146_SSL_SIG_HASH_ALGS.ptr);
+                };
+            } else {
+                libcurl.curlEasySetoptOptional(easy, .ssl_sig_hash_algs, libcurl.CHROME146_SSL_SIG_HASH_ALGS.ptr);
+            }
+            libcurl.curlEasySetoptOptional(easy, .http3_sig_hash_algs, libcurl.CHROME_QUIC_SSL_SIG_HASH_ALGS.ptr);
+        }
+        // ECH multi still unsafe; leave impersonate defaults.
     }
 
     /// Kept for call sites that only hold a Connection pointer.

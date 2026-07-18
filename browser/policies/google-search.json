@@ -13,12 +13,12 @@
     },
     "referer": "search_q_only",
     "priorOrigin": "https://www.google.com",
-    "omitCookies": "in_session",
+    "omitCookies": "never",
     "omitSecFetchUser": "in_session",
-    "curlDefaultsOnly": "first_hop",
+    "curlDefaultsOnly": "never",
     "externalTransport": {
       "configFlag": "google_chrome_transport",
-      "when": "query_contains",
+      "when": "first_hop_or_query_contains",
       "queryContains": ["sg_ss="]
     }
   },

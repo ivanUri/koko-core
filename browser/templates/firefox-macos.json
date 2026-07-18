@@ -3,6 +3,9 @@
   "id": "firefox-macos",
   "mode": "antidetect",
   "browserFamily": "firefox",
+  "policies": [
+    "google-search"
+  ],
   "personaId": "macos_sonoma_intel",
   "transport": {
     "impersonate": "firefox147"
@@ -15,7 +18,7 @@
       "en"
     ],
     "hardwareConcurrency": 8,
-    "deviceMemory": 8,
+    "deviceMemory": 16,
     "maxTouchPoints": 0,
     "vendor": "",
     "pdfViewerEnabled": true,
@@ -33,11 +36,12 @@
       }
     ],
     "platform": "macOS",
-    "platformVersion": "15.0.0",
+    "platformVersion": "15.3.0",
     "architecture": "arm",
     "bitness": "64",
     "uaFullVersion": "147.0.0.0",
-    "mobile": false
+    "mobile": false,
+    "prefersColorScheme": "dark"
   },
   "plugins": [],
   "screen": {
@@ -45,7 +49,7 @@
     "height": 900,
     "availWidth": 1440,
     "availHeight": 869,
-    "devicePixelRatio": 1,
+    "devicePixelRatio": 2,
     "colorDepth": 30,
     "pixelDepth": 30,
     "touch": false

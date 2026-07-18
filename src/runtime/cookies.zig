@@ -62,6 +62,12 @@ fn _loadFromFile(session: *Session, path: []const u8) !void {
         const domain = try a.dupe(u8, jc.domain);
         const cookie_path = if (jc.path) |p| try a.dupe(u8, p) else "/";
 
+        // Restored Chrome/profile cookies were set in an HTTPS browsing context.
+        // `source_secure` defaults to false on Cookie{}, which makes
+        // originBindingMatches reject every https:// request — so hop-1 sent
+        // zero Cookie despite a full Cookies.json (only live Set-Cookie AEC
+        // from the same request survived). Mark restored entries as secure-origin.
+        const secure = jc.secure orelse false;
         const cookie = Cookie{
             .arena = cookie_arena,
             .name = name,
@@ -69,9 +75,11 @@ fn _loadFromFile(session: *Session, path: []const u8) !void {
             .domain = domain,
             .path = cookie_path,
             .expires = jc.expires,
-            .secure = jc.secure orelse false,
+            .secure = secure,
             .http_only = jc.httpOnly orelse false,
             .same_site = parseJsonSameSite(jc.sameSite),
+            .source_secure = true,
+            .source_port = 443,
         };
 
         jar.add(cookie, now, true) catch |err| {

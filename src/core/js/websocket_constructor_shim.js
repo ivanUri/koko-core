@@ -1,4 +1,5 @@
 (function () {
+  if (typeof WebSocket === "undefined") return;
   const Native = WebSocket;
 
   function isValidProtocolChar(c) {

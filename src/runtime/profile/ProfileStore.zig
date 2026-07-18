@@ -46,15 +46,21 @@ pub const Mode = enum {
 pub const BrowserFamily = enum {
     chrome,
     firefox,
+    safari,
 
     pub fn parse(raw: []const u8) ?BrowserFamily {
         if (std.mem.eql(u8, raw, "chrome")) return .chrome;
         if (std.mem.eql(u8, raw, "firefox")) return .firefox;
+        if (std.mem.eql(u8, raw, "safari")) return .safari;
         return null;
     }
 
     pub fn inferFromUserAgent(user_agent: []const u8) BrowserFamily {
         if (std.mem.indexOf(u8, user_agent, "Firefox/") != null) return .firefox;
+        if (std.mem.indexOf(u8, user_agent, "Safari/") != null and
+            std.mem.indexOf(u8, user_agent, "Chrome/") == null and
+            std.mem.indexOf(u8, user_agent, "Chromium/") == null)
+            return .safari;
         return .chrome;
     }
 };
@@ -161,6 +167,15 @@ pub const LoadedProfile = struct {
 
     pub fn isFirefox(self: *const LoadedProfile) bool {
         return self.browser_family == .firefox;
+    }
+
+    pub fn isSafari(self: *const LoadedProfile) bool {
+        return self.browser_family == .safari;
+    }
+
+    /// Chrome/Chromium client-hints + X-Browser + ML-DSA knobs.
+    pub fn isChromium(self: *const LoadedProfile) bool {
+        return self.browser_family == .chrome;
     }
 
     pub fn canvas_probe_data_url_for(self: *const LoadedProfile, probe: CanvasIntelligent.ProbeId) ?[]const u8 {
@@ -474,7 +489,7 @@ fn fromEmbedded(name: ?[]const u8) !LoadedProfile {
     profile.http.accept_language = try buildAcceptLanguage(allocator, src.languages);
     profile.http.prefers_color_scheme = "light";
     profile.transport.target = TransportProfile.Target.chrome146;
-    profile.transport.impersonate = try allocator.dupeZ(u8, profile.transport.target.name());
+    profile.transport.impersonate = try allocator.dupeZ(u8, profile.transport.target.curlImpersonate());
     profile.plugins = &.{};
     return profile;
 }
@@ -563,7 +578,8 @@ fn parseJson(bytes: []const u8) !LoadedProfile {
     );
 
     profile.transport.target = transport_target;
-    profile.transport.impersonate = try allocator.dupeZ(u8, transport_target.name());
+    // chrome150 → curl --impersonate chrome146; ML-DSA applied after in http.zig.
+    profile.transport.impersonate = try allocator.dupeZ(u8, transport_target.curlImpersonate());
 
     profile.plugins = if (doc.plugins.len > 0)
         try parsePlugins(allocator, doc.plugins)
@@ -1175,6 +1191,10 @@ fn validateAntidetect(
         },
         .firefox => {
             if (std.mem.indexOf(u8, user_agent, "Firefox/") == null) return error.InvalidProfile;
+        },
+        .safari => {
+            if (std.mem.indexOf(u8, user_agent, "Safari/") == null) return error.InvalidProfile;
+            if (std.mem.indexOf(u8, user_agent, "Chrome/") != null) return error.InvalidProfile;
         },
     }
 }

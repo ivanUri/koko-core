@@ -1,6 +1,6 @@
-// Fetch Google sg_ss= document hops via curl_chrome146 subprocess.
+// Fetch Google sg_ss= document hops via curl_chrome150 (or curl_chrome146) subprocess.
 // In-process libcurl (multi or easy) can stall on multi-kB sg_ss URLs; the CLI
-// binary completes in <1s with minimal headers (curl_chrome146 subprocess).
+// binary completes in <1s with minimal headers.
 const std = @import("std");
 const log = @import("../../support/log.zig");
 
@@ -17,7 +17,7 @@ pub const Document = struct {
     redirect_count: u8 = 0,
 };
 
-/// Profile headers (incl. X-Browser) + curl_chrome146 TLS/HTTP2. Follows redirects like Chrome.
+/// Profile headers (incl. X-Browser) + curl_chrome150 TLS/HTTP2. Follows redirects like Chrome.
 pub fn fetchSgSsDocument(
     allocator: Allocator,
     url: [:0]const u8,
@@ -113,6 +113,18 @@ fn resolveCurlCliPath(allocator: Allocator) ![:0]const u8 {
         return try allocator.dupeZ(u8, p);
     }
     const root = std.posix.getenv("VELORA_ROOT") orelse ".";
+    // Prefer chrome150 (ML-DSA JA4); fall back to chrome146 if wrapper missing.
+    const preferred = try std.fmt.allocPrintSentinel(
+        allocator,
+        "{s}/vendor/curl-impersonate/curl_chrome150",
+        .{root},
+        0,
+    );
+    if (std.fs.cwd().access(preferred, .{})) |_| {
+        return preferred;
+    } else |_| {
+        allocator.free(preferred);
+    }
     return try std.fmt.allocPrintSentinel(
         allocator,
         "{s}/vendor/curl-impersonate/curl_chrome146",

@@ -680,7 +680,13 @@ pub fn postMessage(self: *WorkerGlobalScope, data: JS.Value, transfer_arg: ?JS.V
     }
 
     const message_id = self._debug_nextMessageId();
-    if (comptime IS_DEBUG) {
+    // Mid-eval postMessage must queue on Worker — see Worker._initial_eval_active.
+    if (self._worker._initial_eval_active) {
+        log.info(.browser, "worker postMessage mid-initial-eval", .{
+            .worker_id = self._frame_id,
+            .message_id = message_id,
+        });
+    } else if (comptime IS_DEBUG) {
         log.info(.browser, "worker postMessage to page", .{
             .worker_id = self._frame_id,
             .message_id = message_id,

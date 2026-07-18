@@ -15,7 +15,8 @@ const Performance = @This();
 
 /// Monotonic microsecond anchor for performance.now() (reset on each navigation).
 _monotonic_origin_us: u64,
-/// When set, now() returns this value (Google knitsail sg_ss encode window).
+/// When set, `now()` stays near this encode-window target (knitsail ~192.6ms)
+/// with micro-jitter; `frozenNowMs()` / `chrome.csi().pageT` use the exact value.
 _frozen_now_ms: ?f64 = null,
 /// Google Accounts identity telemetry encodes performance.now() as int32 ms.
 _integer_now_ms: bool = false,
@@ -94,7 +95,16 @@ pub fn recordDocumentComplete(self: *Performance) void {
 
 pub fn now(self: *const Performance) f64 {
     if (self._frozen_now_ms) |frozen| {
-        return if (self._integer_now_ms) @round(frozen) else frozen;
+        // Google Accounts identity encodes now() as int32 — keep exact freeze there.
+        if (self._integer_now_ms) return @round(frozen);
+        // Knitsail VM samples performance.now() many times while building SG_SS
+        // (SerpBase: timing *texture*, not a single scalar). A perfectly flat
+        // freeze is a synthetic-clock signal. Keep samples near the encode-window
+        // target (~192.6ms) but add sub-100μs jitter so the stream is not
+        // bit-identical. chrome.csi().pageT still uses frozenNowMs() unjittered.
+        const t = highResTimestamp();
+        const jitter_us = (t ^ (t >> 5) ^ (t >> 11) ^ (t >> 17)) % 83; // 0..82 μs
+        return frozen + @as(f64, @floatFromInt(jitter_us)) / 1000.0;
     }
     const current = highResTimestamp();
     const origin = self._monotonic_origin_us;
