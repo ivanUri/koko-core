@@ -834,11 +834,17 @@ pub fn postMessage(self: *Window, message: js.Value.Temp, target_origin: ?[]cons
     }
 
     // Parent → child must be synchronous once the iframe is ready, but not while
-    // the target is still inside an outbound postMessage (reentrant delivery).
-    // Turnstile posts requestExtraParams, the parent replies with extraParams, and
-    // running that handler before the child's stack unwinds leaves bootstrap globals
+    // the target is still inside an outbound postMessage / classic eval
+    // (reentrant delivery). Turnstile posts requestExtraParams; running the
+    // parent reply before the child's stack unwinds leaves bootstrap globals
     // (e.g. Wuby5) undefined → TypeError reading '.call'.
-    const defer_parent_reply = parent_to_child and target_frame.js.call_depth > 0;
+    //
+    // Target-local only: do not use mustQueueAsTask — it includes
+    // anyContextOnV8Stack, which is true whenever the *parent* is running JS
+    // that calls postMessage (would defer every parent→child delivery).
+    const target_exec = &target_frame.js.execution;
+    const defer_parent_reply = parent_to_child and
+        (target_frame.js.call_depth > 0 or js.JsEntryGate.scriptEvalActive(target_exec));
     const sync_dispatch = transferred_ports.len > 0 or child_to_parent or
         (parent_to_child and !defer_parent_reply);
 

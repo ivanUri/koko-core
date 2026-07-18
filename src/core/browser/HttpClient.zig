@@ -359,6 +359,13 @@ const AbortOpts = struct {
     /// readystatechange handler; aborting that XHR inside the same
     /// data_callback noops done_callback and strands MI613e before rs=4.
     skip_xhr: bool = false,
+    /// When true, in-flight `.fetch` transfers are left alone (same class of
+    /// hazard as skip_xhr). Fingerprint Pro config GET is `fetch()`; agent
+    /// iframe / script navigations that hit abortFrame must not kill it —
+    /// Chrome keeps the config transfer alive and playground shows Visitor ID.
+    /// Real document teardown still uses abortTransfersAttributedTo without
+    /// this flag, so page discard cancels fetches correctly.
+    skip_fetch: bool = false,
 };
 
 fn shouldAbortTransfer(params: *const RequestParams, opts: AbortOpts) bool {
@@ -366,6 +373,7 @@ fn shouldAbortTransfer(params: *const RequestParams, opts: AbortOpts) bool {
     if (opts.scope != .full and params.protect_from_abort) return false;
     if (opts.skip_document and params.resource_type == .document) return false;
     if (opts.skip_xhr and params.resource_type == .xhr) return false;
+    if (opts.skip_fetch and params.resource_type == .fetch) return false;
     return true;
 }
 
@@ -406,7 +414,7 @@ fn abortTransferQueueAttributed(q: *std.DoublyLinkedList, frame: *anyopaque, opt
         const transfer: *Transfer = @fieldParentPtr("_node", node);
         if (transferAttributedTo(transfer, frame) and shouldAbortTransfer(&transfer.req.params, opts)) {
             q.remove(node);
-            transfer.kill();
+            transfer.kill("attr.queue");
         }
     }
 }
@@ -419,7 +427,7 @@ fn abortConnectionsAttributed(list: std.DoublyLinkedList, frame: *anyopaque, opt
         switch (conn.transport) {
             .http => |transfer| {
                 if (transferAttributedTo(transfer, frame) and shouldAbortTransfer(&transfer.req.params, opts)) {
-                    transfer.kill();
+                    transfer.kill("attr.conn");
                 }
             },
             .websocket, .none => {},
@@ -529,6 +537,35 @@ pub fn hasInFlightTransfersForFrame(self: *const Client, frame_id: u32) bool {
         transferInQueue(self.queue, frame_id) or
         transferInQueue(self.sync_easy_queue, frame_id) or
         chromeJobForFrame(self, frame_id);
+}
+
+/// Transfers waiting on a free handle/connection, or connections parked until
+/// curl_multi_perform / transfer callbacks unwind. These are NOT counted in
+/// `http_active` yet — Lightpanda's `pending_queue` / `ready_queue` idle gate.
+pub fn hasQueuedHttpWork(self: *const Client) bool {
+    return self.queue.first != null or
+        self.ready_queue.first != null or
+        self.sync_easy_queue.first != null or
+        self.deferred_delivery.first != null;
+}
+
+/// Active HTTP + intercept holds + queued work not yet in `http_active`.
+/// Used for networkIdle / networkAlmostIdle thresholds (Chrome 0 / ≤2 style).
+pub fn totalHttpActivity(self: *const Client) usize {
+    var n = self.http_active + self.interception_layer.intercepted;
+    // Queued work is at least one unit of activity even when http_active is 0.
+    if (self.hasQueuedHttpWork()) n += 1;
+    return n;
+}
+
+/// Full network quiet: no inflight HTTP/WS/RTC, no intercept, no queues.
+/// Matches Lightpanda Runner `network_idle` (pending_queue + ready_queue).
+pub fn isNetworkIdle(self: *const Client) bool {
+    return self.http_active == 0 and
+        self.ws_active == 0 and
+        self.rtc_active == 0 and
+        self.interception_layer.intercepted == 0 and
+        !self.hasQueuedHttpWork();
 }
 
 /// After `abortFrame`, pump curl until `frame_id` has no lingering transfers.
@@ -672,10 +709,10 @@ fn abortTransferQueue(
         const transfer: *Transfer = @fieldParentPtr("_node", node);
         const params = transfer.req.params;
         if (comptime abort_all) {
-            transfer.kill();
+            transfer.kill("abort.all.queue");
         } else if (params.frame_id == frame_id and shouldAbortTransfer(&params, opts)) {
             q.remove(node);
-            transfer.kill();
+            transfer.kill("abortFrame.queue");
         }
     }
 }
@@ -689,9 +726,9 @@ fn abortConnections(list: std.DoublyLinkedList, comptime abort_all: bool, frame_
             .http => |transfer| {
                 const params = transfer.req.params;
                 if (comptime abort_all) {
-                    transfer.kill();
+                    transfer.kill("abort.all.conn");
                 } else if (params.frame_id == frame_id and shouldAbortTransfer(&params, opts)) {
-                    transfer.kill();
+                    transfer.kill("abortFrame.conn");
                 }
             },
             .websocket => |ws| {
@@ -1850,6 +1887,9 @@ pub fn serviceInboundCdpIfReadable(self: *Client) void {
     // Mid multi_perform outside Zig callbacks — do not re-enter curl/CDP.
     if (self.performing and !self.inTransferCallback()) return;
     if (self.env) |env| {
+        // CDP service is not a host-event dispatch — only block while V8 is
+        // actively on the stack (not full JsEntryGate, which also covers
+        // is_evaluating and would starve Page.navigate during script drain).
         if (env.anyContextOnV8Stack()) return;
         if (env.blocksInboundCdp()) return;
     }
@@ -2066,6 +2106,9 @@ pub const RequestParams = struct {
     revalidate_last_modified: ?[]const u8 = null,
     /// Root document retry after transient curl status=0 — new TCP/TLS hop.
     force_fresh_connection: bool = false,
+    /// Prefer HTTP/3 for this transfer (set by NavigationPlan for cold search
+    /// document hops). Keeps URL site specials out of configureConn.
+    prefer_http3: bool = false,
 
     pub const ResourceType = enum {
         document,
@@ -2356,7 +2399,8 @@ pub const Transfer = struct {
 
     // internal, when the frame is shutting down. Doesn't have the same ceremony
     // as abort (doesn't send a notification, doesn't invoke an error callback)
-    fn kill(self: *Transfer) void {
+    fn kill(self: *Transfer, comptime source: []const u8) void {
+        _ = source;
         // Always detach user callbacks *first*. Even when we deinit immediately
         // below, a concurrent/deferred curl path must never invoke Script/XHR
         // ctx after script_manager.reset frees those arenas (nytimes.com UAF).
@@ -2447,7 +2491,12 @@ pub const Transfer = struct {
                     .{cookies},
                     0,
                 );
-                try header_list.add(cookie_hdr);
+                // Chrome document navigations place Cookie after Accept-Language.
+                if (req.params.resource_type == .document) {
+                    try header_list.insertAfterName("Accept-Language", cookie_hdr);
+                } else {
+                    try header_list.add(cookie_hdr);
+                }
             }
         } else if (try self.req.getCookieString()) |cookies| {
             try conn.setCookies(@ptrCast(cookies.ptr));
@@ -2465,7 +2514,7 @@ pub const Transfer = struct {
         }
 
         if (comptime build_config.curl_impersonate) {
-            // In-search sei=/sg_ss= hops embed Referer in the manual header list (HAR order).
+            // In-search sei=/sg_ss= hops embed Referer in the manual header list (Chrome order).
             const referer_in_headers = req.params.omit_sec_fetch_user and
                 req.params.resource_type == .document and
                 req.params.referer != null;
@@ -2485,19 +2534,32 @@ pub const Transfer = struct {
 
         // TLS impersonate before HTTP overrides — profile headers must win over chrome146 defaults.
         if (comptime build_config.curl_impersonate) {
+            // Document navigations use a full Chrome 150 Accept-first header list
+            // (Frame.headersForRequest); curl-impersonate default_headers would
+            // reintroduce chrome146 Sec-CH-first order and duplicate headers.
             const curl_default_headers = req.params.curl_default_headers and
-                !(req.params.omit_sec_fetch_user and req.params.resource_type == .document);
-            const sg_ss_hop = std.mem.indexOf(u8, req.params.url, "sg_ss=") != null;
-            // Guest Chrome uses h2 for document navigations (ebay.com HAR: http/2.0).
-            // curl-impersonate HTTP/3 intermittently completes with response_code=0.
-            const http_version: http.Connection.ProfileHttpVersion = if (sg_ss_hop or req.params.resource_type == .document) .h2 else .h3;
-            if (sg_ss_hop or req.params.force_fresh_connection) try conn.forceFreshConnection();
+                !(req.params.resource_type == .document);
+            // prefer_http3 / force_fresh_connection: set by NavigationPlan or
+            // retry paths — no URL host/path specials here.
+            const http_version: http.Connection.ProfileHttpVersion = if (req.params.prefer_http3)
+                .h3
+            else if (req.params.resource_type == .document)
+                .h2
+            else
+                .h3;
+            if (req.params.force_fresh_connection) try conn.forceFreshConnection();
             try conn.applyProfileTransportVersion(client.network.config, curl_default_headers, http_version);
-            if (sg_ss_hop) {
-                if (comptime IS_DEBUG) {
-                    log.debug(.http, "sg_ss transport", .{ .http_version = "h2", .fresh_connect = true });
+            if (comptime IS_DEBUG) {
+                if (req.params.force_fresh_connection) {
+                    log.debug(.http, "document force_fresh", .{ .http_version = if (req.params.prefer_http3) "h3" else "h2" });
+                } else if (req.params.prefer_http3) {
+                    log.debug(.http, "document prefer_http3", .{ .http_version = "h3" });
                 }
             }
+            // NOTE: Do NOT add empty "Host:" to suppress Host on H2/H3.
+            // That made Google return HTTP 400 (Bad Request) — curl needs Host
+            // to populate :authority. Chrome CDP lists :authority not Host; the
+            // Host line in HEADER_OUT is a curl debug artifact, not a demotion root.
             if (req.params.revalidate_etag) |etag| {
                 const hdr = try std.fmt.allocPrintSentinel(req.params.arena, "If-None-Match: {s}", .{etag}, 0);
                 try header_list.add(hdr);

@@ -415,13 +415,18 @@ fn _createContext(self: *Env, global: anytype, params: ContextParams, kind: Cont
         }
         MathsNative.installOnContext(context, global);
     } else {
-        installWorkerIntlShim(context);
-        installUrlSearchParamsConstructorShim(context);
-        installWebSocketConstructorShim(context);
-        installWorkerDomExceptionThrowShim(context);
-        installWorkerRethrowShim(context);
-        installWorkerImportScriptsMimeShim(context);
-        installWorkerPostMessageShim(context);
+        // Nested-V8: eval-based WPT shims during Worker() mid-page-script
+        // (Fingerprint agent) leave isolate such that classic Script::Run returns
+        // null with empty TryCatch. Cold worker create still gets full shims.
+        if (!nested_v8) {
+            installWorkerIntlShim(context);
+            installUrlSearchParamsConstructorShim(context);
+            installWebSocketConstructorShim(context);
+            installWorkerDomExceptionThrowShim(context);
+            installWorkerRethrowShim(context);
+            installWorkerImportScriptsMimeShim(context);
+            installWorkerPostMessageShim(context);
+        }
         MathsNative.installOnContext(context, global._worker._frame);
     }
 
@@ -687,83 +692,65 @@ pub fn performMicrotaskCheckpoint(self: *Env, ctx: *Context) void {
     const exec = &ctx.execution;
     if (exec.realmState() == .dead) return;
     if (!exec.canEnterJs(.allow_draining)) {
-        switch (ctx.global) {
-            .frame => |frame| {
-                if (std.mem.indexOf(u8, frame.url, "fingerprint.com") != null) {
-                    log.warn(.frame, "fp checkpoint blocked", .{
-                        .realm = exec.realmState(),
-                        .scheduler_suppressed = frame.schedulerSuppressed(),
-                    });
-                }
-            },
-            .worker => {},
-        }
         return;
     }
     v8.v8__MicrotaskQueue__PerformCheckpoint(ctx.microtask_queue, self.isolate.handle);
 }
 
-/// Fingerprint yb() may run while `canEnterJs(.allow_draining)` is false during
-/// nested load(); still drain V8 reactions so Y.ip settles before vv()'s 2s race.
+/// Unrestricted single-context checkpoint (even when canEnterJs is false).
+/// Pure-JS `Promise.resolve` from iframe.onload does **not** go through
+/// Zig PromiseResolver, so it never sets `checkpoint_pending`. When this runs
+/// nested under an outer `runMicrotasks`, wake that outer loop so await
+/// continuations (Fingerprint shared-iframe `ip`) are not stranded until the
+/// 2s race.
 pub fn performMicrotaskCheckpointFp(self: *Env, ctx: *Context) void {
     if (v8.v8__Isolate__IsExecutionTerminating(self.isolate.handle)) return;
     if (ctx.execution.realmState() == .dead) return;
     v8.v8__MicrotaskQueue__PerformCheckpoint(ctx.microtask_queue, self.isolate.handle);
+    if (self.checkpoint_active) self.checkpoint_pending = true;
 }
 
-/// Fingerprint yb() queues Y.ip continuations while checkpoint_active. Pump the
-/// per-context queue from nested V8 returns (Promise executor after I(), load()).
-pub fn drainFingerprintYbMicrotasks(self: *Env, ctx: *Context) void {
-    const frame = switch (ctx.global) {
-        .frame => |f| f,
-        .worker => return,
-    };
-    if (std.mem.indexOf(u8, frame.url, "fingerprint.com") == null) return;
-
-    if (self.checkpoint_active) self.checkpoint_pending = true;
-    frame.clearSchedulerSuppression();
-
-    var pass: u8 = 0;
-    while (pass < 32) : (pass += 1) {
-        self.performMicrotaskCheckpointFp(ctx);
+/// Drain every live realm's microtask queue once, then the isolate default
+/// queue. iframe.onload pure-JS Promise reactions can land on either depending
+/// on which queue V8 associates with the active Context.
+pub fn drainAllRealmMicrotasks(self: *Env) void {
+    if (v8.v8__Isolate__IsExecutionTerminating(self.isolate.handle)) return;
+    // Snapshot — destroyContext can run from a reaction.
+    var snapshot: [64]*Context = undefined;
+    const n = self.context_count;
+    @memcpy(snapshot[0..n], self.contexts[0..n]);
+    for (snapshot[0..n]) |ctx| {
+        if (!self.isContextRegistered(ctx)) continue;
+        if (ctx.execution.realmState() == .dead) continue;
+        v8.v8__MicrotaskQueue__PerformCheckpoint(ctx.microtask_queue, self.isolate.handle);
     }
-    // yb() I() schedules setTimeout(10) readyState polls after appendChild.
-    frame.pumpDueTimersNow(15);
-    pass = 0;
-    while (pass < 24) : (pass += 1) {
-        self.performMicrotaskCheckpointFp(ctx);
-    }
+    // Isolate-level checkpoint (kExplicit policy still honors this).
+    v8.v8__Isolate__PerformMicrotaskCheckpoint(self.isolate.handle);
+    self.checkpoint_pending = true;
+}
+
+/// Same-turn drain after DOM / iframe mutations. **Prefer**
+/// `EventLoop.afterDomMutation` at new call sites.
+///
+/// Thin wrapper: nested → microtasks only; top-level → spin/timers (see EventLoop).
+/// Never invent a third drain path that calls `pumpDueTimersNow` while nested.
+pub fn drainNestedHostMicrotasks(self: *Env, ctx: *Context) void {
+    _ = self;
+    const EventLoop = @import("EventLoop.zig");
+    EventLoop.afterDomMutation(&ctx.execution);
 }
 
 pub fn runMicrotasks(self: *Env, source: TaskSource) void {
     if (self.checkpoint_active) {
         if (comptime IS_DEBUG) std.debug.assert(self.checkpoint_active);
+        // Nested resolve/timer while an outer checkpoint owns the loop: only mark
+        // pending. Nested PerformCheckpoint (even host-gated) × yb drain × timer
+        // storms UAF/segfault on fingerprint playground (microtask.reentry spam).
         self.checkpoint_pending = true;
-        for (self.contexts[0..self.context_count]) |ctx| {
-            const exec = &ctx.execution;
-            if (exec.realmState() == .dead or exec.schedulerSuppressed()) continue;
-            switch (ctx.global) {
-                .frame => |frame| {
-                    if (std.mem.indexOf(u8, frame.url, "fingerprint.com") != null) {
-                        var fp_pass: u8 = 0;
-                        while (fp_pass < 8) : (fp_pass += 1) {
-                            self.performMicrotaskCheckpoint(ctx);
-                        }
-                    }
-                },
-                .worker => {},
-            }
-            RealmLifecycleKernel.traceMicrotaskCheckpointReentryDeferred(
-                exec.frameId(),
-                exec.realmEpoch(),
-                exec.realmState(),
-                0,
-                self.checkpoint_active,
-                self.checkpoint_pending,
-            );
-        }
         if (builtin.mode == .Debug) {
-            log.warn(.frame, "microtask.reentry", .{
+            // Rate-limit: one log line per outer turn is enough; flooding stderr
+            // during agent collection hid the real fault and slowed Debug builds.
+            log.debug(.frame, "microtask.reentry", .{
                 .source = @tagName(source),
             });
         }
@@ -919,6 +906,14 @@ pub fn pumpSchedulerTasks(self: *Env) void {
     };
 }
 
+/// True if `context` is still registered on this Env (not destroyContext'd).
+fn isContextRegistered(self: *const Env, context: *Context) bool {
+    for (self.contexts[0..self.context_count]) |c| {
+        if (c == context) return true;
+    }
+    return false;
+}
+
 pub fn runMacrotasks(self: *Env) !void {
     if (v8.v8__Isolate__IsExecutionTerminating(self.isolate.handle)) {
         return;
@@ -927,7 +922,15 @@ pub fn runMacrotasks(self: *Env) !void {
     self.macrotask_run_depth += 1;
     defer self.macrotask_run_depth -= 1;
 
-    for (self.contexts[0..self.context_count]) |ctx| {
+    // Snapshot pointers: destroyContext swap-removes and deinit's a Context
+    // mid-pump (React removes agent about:blank iframe ~100ms after append).
+    // Iterating `contexts[0..count]` live would UAF Scheduler PriorityQueue.
+    var snapshot: [64]*Context = undefined;
+    const n = self.context_count;
+    @memcpy(snapshot[0..n], self.contexts[0..n]);
+
+    for (snapshot[0..n]) |ctx| {
+        if (!self.isContextRegistered(ctx)) continue;
         const exec = &ctx.execution;
         if (exec.realmState() == .dead) {
             // Drop tasks that can never run legally on a dead realm (cancel-on-nav).
@@ -959,9 +962,12 @@ pub fn runMacrotasks(self: *Env) !void {
             }
         }
 
+        if (!self.isContextRegistered(ctx)) continue;
         var hs: js.HandleScope = undefined;
         const entered = ctx.enter(&hs) orelse continue;
         defer entered.exit();
+        // Re-check after enter — detach can race with enter.
+        if (!self.isContextRegistered(ctx)) continue;
         switch (ctx.global) {
             .frame => |frame| try frame.runOwnedScheduler(),
             .worker => try ctx.scheduler.run(),
@@ -980,7 +986,12 @@ pub fn runOneMacrotaskRound(self: *Env) !bool {
     self.macrotask_run_depth += 1;
     defer self.macrotask_run_depth -= 1;
 
-    for (self.contexts[0..self.context_count]) |ctx| {
+    var snapshot: [64]*Context = undefined;
+    const n = self.context_count;
+    @memcpy(snapshot[0..n], self.contexts[0..n]);
+
+    for (snapshot[0..n]) |ctx| {
+        if (!self.isContextRegistered(ctx)) continue;
         const exec = &ctx.execution;
         if (exec.realmState() == .dead) {
             switch (ctx.global) {
@@ -1001,9 +1012,11 @@ pub fn runOneMacrotaskRound(self: *Env) !bool {
         if (contextBlocksTimerPump(ctx)) continue;
         if (!ctx.scheduler.hasReadyTasks()) continue;
 
+        if (!self.isContextRegistered(ctx)) continue;
         var hs: js.HandleScope = undefined;
         const entered = ctx.enter(&hs) orelse continue;
         defer entered.exit();
+        if (!self.isContextRegistered(ctx)) continue;
         const ran = switch (ctx.global) {
             .frame => |frame| try frame.runOwnedSchedulerOne(),
             .worker => try ctx.scheduler.runOne(),
@@ -1038,13 +1051,11 @@ fn contextBlocksTimerPump(ctx: *Context) bool {
     return switch (ctx.global) {
         .frame => |frame| blk: {
             if (!frame.isDocumentParsing()) break :blk false;
-            // Fingerprint load() may run while _load_state is still .parsing but the
-            // document is already interactive/complete; yb() polls with setTimeout(10).
-            if (std.mem.indexOf(u8, frame.url, "fingerprint.com") != null) {
-                const rs = frame.document.getReadyState();
-                if (std.mem.eql(u8, rs, "interactive") or std.mem.eql(u8, rs, "complete")) {
-                    break :blk false;
-                }
+            // Document already interactive/complete while still "parsing" for
+            // lifecycle bookkeeping: allow short timers (agent/SPA polls).
+            const rs = frame.document.getReadyState();
+            if (std.mem.eql(u8, rs, "interactive") or std.mem.eql(u8, rs, "complete")) {
+                break :blk false;
             }
             break :blk true;
         },
@@ -1179,6 +1190,10 @@ pub fn dumpMemoryStats(self: *Env) void {
 
 pub fn terminate(self: *Env) void {
     v8.v8__Isolate__TerminateExecution(self.isolate.handle);
+}
+
+pub fn isExecutionTerminating(self: *const Env) bool {
+    return v8.v8__Isolate__IsExecutionTerminating(self.isolate.handle);
 }
 
 /// Clears explicit CLI/server teardown termination only. Microtask containment

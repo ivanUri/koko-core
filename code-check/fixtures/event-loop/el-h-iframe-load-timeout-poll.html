@@ -1,0 +1,60 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>EL-H</title>
+<body>
+  <script>
+    // Agent-style: onload + readyState poll via setTimeout(10) after appendChild.
+    // Must resolve well under the 2s race without a dense multi-delay host storm.
+    window.__el = { id: "EL-H", ok: false };
+    const t0 = performance.now();
+    const ip = new Promise(function (resolve, reject) {
+      const iframe = document.createElement("iframe");
+      iframe.src = "about:blank";
+      let resolved = false;
+      const to = setTimeout(function () {
+        if (!resolved) reject(new Error("iframe timeout"));
+      }, 2000);
+      function finish(via) {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(to);
+        resolve(via);
+      }
+      iframe.onload = function () {
+        finish("onload");
+      };
+      document.body.appendChild(iframe);
+      (function poll() {
+        try {
+          if (
+            iframe.contentWindow &&
+            iframe.contentDocument &&
+            iframe.contentDocument.readyState === "complete"
+          ) {
+            finish("readyState");
+            return;
+          }
+        } catch (e) {}
+        if (!resolved) setTimeout(poll, 10);
+      })();
+    });
+    ip.then(function (via) {
+      const ms = Math.round(performance.now() - t0);
+      window.__el.ok = ms < 500;
+      document.title = JSON.stringify({
+        id: "EL-H",
+        ok: window.__el.ok,
+        ms: ms,
+        via: via,
+      });
+      window.__elDone = true;
+    }).catch(function (e) {
+      document.title = JSON.stringify({
+        id: "EL-H",
+        ok: false,
+        err: String(e && e.message ? e.message : e),
+      });
+      window.__elDone = true;
+    });
+  </script>
+</body>

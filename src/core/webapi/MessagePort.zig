@@ -35,6 +35,62 @@ fn scheduleDeferredPump(exec: *const js.Execution) void {
     };
 }
 
+/// Retry parked MessagePort deliveries (pending_deliveries) on a fresh task.
+/// Critical for React 18 MessageChannel scheduling: first delay-0 callback may
+/// still see call_depth/V8 stack and park; without reschedule, CSR never flushes.
+fn scheduleDeferredFlush(exec: *const js.Execution, port: *MessagePort) void {
+    const frame: *Frame = switch (exec.context.global) {
+        .frame => |f| f,
+        .worker => |wgs| wgs._worker._frame,
+    };
+    const arena = frame.getArena(.tiny, "MessagePort.deferFlush") catch |err| {
+        log.warn(.browser, "MessagePort deferFlush arena", .{ .err = err });
+        return;
+    };
+    const callback = arena.create(DeferFlushCallback) catch {
+        frame.releaseArena(arena);
+        return;
+    };
+    callback.* = .{ .frame = frame, .port = port, .arena = arena, .attempts = 0 };
+    frame.js.scheduler.add(callback, DeferFlushCallback.run, 0, .{
+        .name = "MessagePort.deferFlush",
+        .low_priority = false,
+        .finalizer = DeferFlushCallback.cancelled,
+    }) catch {
+        frame.releaseArena(arena);
+    };
+}
+
+const DeferFlushCallback = struct {
+    frame: *Frame,
+    port: *MessagePort,
+    arena: Allocator,
+    attempts: u8,
+
+    fn cancelled(ctx: *anyopaque) void {
+        const self: *DeferFlushCallback = @ptrCast(@alignCast(ctx));
+        self.frame.releaseArena(self.arena);
+    }
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *DeferFlushCallback = @ptrCast(@alignCast(ctx));
+        if (self.port._closed) {
+            self.frame.releaseArena(self.arena);
+            return null;
+        }
+        self.port.flushPendingDeliveries() catch |err| {
+            log.warn(.browser, "MessagePort.deferFlush", .{ .err = err });
+        };
+        if (self.port._pending_deliveries.items.len > 0 and self.attempts < 32) {
+            self.attempts += 1;
+            // Still gated (e.g. mid-eval): retry next tick, keep arena alive.
+            return 0;
+        }
+        self.frame.releaseArena(self.arena);
+        return null;
+    }
+};
+
 fn scheduleDeferredMessageDelivery(frame: *Frame) !void {
     const arena = try frame.getArena(.tiny, "MessagePort.deferDelivery");
     errdefer frame.releaseArena(arena);
@@ -241,32 +297,49 @@ fn dispatchMessageNow(
 ) !bool {
     if (self._closed) return false;
 
-    // Nested on V8 / lifecycle evaluate: sync message handlers re-enter V8 and
-    // V8_Fatal before DOMContentLoaded (stripe.com MessagePort chains during
-    // Next defer chunks). Enqueue as a separate task instead (HTML task queue).
-    const host_frame: *Frame = switch (exec.context.global) {
-        .frame => |f| f,
-        .worker => |wgs| wgs._worker._frame,
-    };
-    if (host_frame._script_manager.base.is_evaluating) return false;
-    if (exec.context.call_depth > 0) return false;
-    if (host_frame._session.browser.env.anyContextOnV8Stack()) return false;
+    // Sync path only when JsEntryGate allows — otherwise enqueue (HTML task).
+    if (js.JsEntryGate.mustQueueAsTask(exec)) return false;
 
     const target = self.asEventTarget();
     if (!exec.hasDirectListeners(target, "message", self._on_message)) {
         return false;
     }
 
+    try dispatchMessageForced(self, message, ports, exec);
+    return true;
+}
+
+/// Task-path delivery (no sync reentrancy gates). Host scheduler already owns
+/// this turn — see architecture ADR "queued task never re-gates".
+fn dispatchMessageForced(
+    self: *MessagePort,
+    message: js.Value.Temp,
+    ports: []const *MessagePort,
+    exec: *const js.Execution,
+) !void {
+    if (self._closed) {
+        message.release();
+        return;
+    }
+    const target = self.asEventTarget();
+    if (!exec.hasDirectListeners(target, "message", self._on_message)) {
+        message.release();
+        return;
+    }
+
+    const page = switch (exec.context.global) {
+        .frame => |fr| fr._page,
+        .worker => |wgs| wgs._worker._frame._page,
+    };
     const event = (try MessageEvent.initTrusted(comptime .wrap("message"), .{
         .data = .{ .value = message },
         .ports = ports,
         .origin = "",
         .source = null,
-    }, exec.context.page)).asEvent();
+    }, page)).asEvent();
 
     try exec.dispatch(target, event, self._on_message, .{ .context = "MessagePort message" });
     pumpMessagingAfterDispatch(exec);
-    return true;
 }
 
 fn enqueueMessage(
@@ -354,13 +427,17 @@ pub fn flushPendingDeliveries(self: *MessagePort) !void {
 
     while (self._pending_deliveries.items.len > 0) {
         const message = self._pending_deliveries.orderedRemove(0);
-        if (!try dispatchMessageNow(self, message, &.{}, exec)) {
+        // Sync flush (start/setOnmessage) may still be nested: re-park + deferFlush.
+        // PostMessageCallback task path uses dispatchMessageForced without this gate.
+        if (js.JsEntryGate.mustQueueAsTask(exec)) {
             try self._pending_deliveries.append(exec.arena, message);
+            scheduleDeferredFlush(exec, self);
             break;
         }
+        try dispatchMessageForced(self, message, &.{}, exec);
     }
 
-    scheduleDeferredPump(exec);
+    js.EventLoop.afterTask(exec);
 }
 
 pub fn getOnMessageError(self: *const MessagePort) ?js.Function.Global {
@@ -389,13 +466,10 @@ const PostMessageCallback = struct {
             return null;
         }
 
-        if (!try dispatchMessageNow(self.port, self.message, self.ports, self.exec)) {
-            try self.port._pending_deliveries.append(self.exec.arena, self.message);
-            return null;
-        }
-
-        scheduleDeferredPump(self.exec);
-
+        // Task path: no sync gates (JsEntryGate rule — queued work never re-parks).
+        try dispatchMessageForced(self.port, self.message, self.ports, self.exec);
+        // Chained port posts (React host scheduler) drain via shared EventLoop.
+        js.EventLoop.afterTask(self.exec);
         return null;
     }
 };

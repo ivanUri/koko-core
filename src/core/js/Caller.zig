@@ -118,32 +118,35 @@ pub fn deinit(self: *Caller) void {
         const arena: *ArenaAllocator = @ptrCast(@alignCast(ctx.call_arena.ptr));
         _ = arena.reset(.{ .retain_with_limit = CALL_ARENA_RETAIN });
         if (!had_callback_exception) {
-            // Fingerprint load() calls yb(Y) synchronously; drain Y.ip before get().
-            const is_fp = switch (ctx.global) {
-                .frame => |f| std.mem.indexOf(u8, f.url, "fingerprint.com") != null,
-                .worker => false,
-            };
-            if (is_fp) {
-                ctx.env.drainFingerprintYbMicrotasks(ctx);
-            } else {
-                var pass: u8 = 0;
-                while (pass < 24) : (pass += 1) {
-                    ctx.env.performMicrotaskCheckpoint(ctx);
-                    if (ctx.env.checkpoint_active) break;
-                    ctx.env.runMicrotasks(.event_handler);
-                    if (!ctx.env.checkpoint_pending) break;
-                }
+            switch (ctx.global) {
+                .frame => {
+                    // Bounded microtask drain after native callback (not the full
+                    // nested-host path — that re-entered V8 and segfaulted).
+                    var pass: u8 = 0;
+                    while (pass < 24) : (pass += 1) {
+                        ctx.env.performMicrotaskCheckpoint(ctx);
+                        if (ctx.env.checkpoint_active) break;
+                        ctx.env.runMicrotasks(.event_handler);
+                        if (!ctx.env.checkpoint_pending) break;
+                    }
+                },
+                .worker => {
+                    // Worker native callbacks often run mid-classic-script
+                    // (Script::Run does not hold call_depth). Never call
+                    // runMicrotasks here — that drains *all* realms and re-enters
+                    // the parent page (shared C stack → RangeError in agent blob).
+                    var pass: u8 = 0;
+                    while (pass < 8) : (pass += 1) {
+                        ctx.env.performMicrotaskCheckpoint(ctx);
+                    }
+                },
             }
         }
-    } else switch (ctx.global) {
-        .frame => |frame| {
-            if (std.mem.indexOf(u8, frame.url, "fingerprint.com") != null) {
-                // yb() Promise executor returns after appendChild + I(); drain Y.ip
-                // continuations before outer load() reaches vv()'s 2s race.
-                ctx.env.drainFingerprintYbMicrotasks(ctx);
-            }
-        },
-        .worker => {},
+    } else {
+        // Nested call_depth>0: only mark microtask pending; full
+        // drainNestedHostMicrotasks re-enters V8 and can UAF. Outer callback
+        // (call_depth==0 path above) or EventLoop.spin after script will drain.
+        ctx.env.checkpoint_pending = true;
     }
 }
 

@@ -1,0 +1,71 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>EL-I</title>
+<body>
+  <script>
+    // Nested appendChild + MessageChannel: posts during DOM mutation must not
+    // re-enter unsafely; chained port tasks must still drain on the host loop.
+    window.__el = { id: "EL-I", ok: false, log: [] };
+    function log(x) {
+      window.__el.log.push(x);
+    }
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+
+    const ch = new MessageChannel();
+    let n = 0;
+    ch.port1.onmessage = function (ev) {
+      log("msg:" + ev.data);
+      n++;
+      if (n < 4) {
+        ch.port2.postMessage(n + 1);
+      } else {
+        window.__el.ok =
+          window.__el.log.join(",") === "start,append,msg:1,msg:2,msg:3,msg:4";
+        document.title = JSON.stringify({
+          id: "EL-I",
+          ok: window.__el.ok,
+          log: window.__el.log,
+        });
+        window.__elDone = true;
+      }
+    };
+    ch.port1.start();
+    ch.port2.start();
+
+    log("start");
+    // Nested: schedule first port message while still inside appendChild work.
+    const child = document.createElement("div");
+    child.id = "nested";
+    child.addEventListener("DOMNodeInserted", function () {
+      /* legacy; ignore */
+    });
+    Object.defineProperty(child, "id", {
+      configurable: true,
+      get: function () {
+        return "nested";
+      },
+      set: function () {},
+    });
+    // Use MutationObserver as nested-ish side effect after append.
+    const mo = new MutationObserver(function () {
+      log("append");
+      ch.port2.postMessage(1);
+      mo.disconnect();
+    });
+    mo.observe(host, { childList: true });
+    host.appendChild(child);
+
+    setTimeout(function () {
+      if (!window.__elDone) {
+        document.title = JSON.stringify({
+          id: "EL-I",
+          ok: false,
+          err: "timeout",
+          log: window.__el.log,
+        });
+        window.__elDone = true;
+      }
+    }, 2000);
+  </script>
+</body>

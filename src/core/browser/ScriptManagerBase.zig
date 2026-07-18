@@ -826,11 +826,11 @@ fn hasIncompleteLifecycleScripts(self: *const ScriptManagerBase) bool {
     return false;
 }
 
-fn hasPendingEvaluateWork(self: *ScriptManagerBase) bool {
+fn hasPendingEvaluateWork(self: *const ScriptManagerBase) bool {
     if (self.ready_scripts.first != null) return true;
     var n = self.async_scripts.first;
     while (n) |node| {
-        const script: *Script = @fieldParentPtr("node", node);
+        const script: *const Script = @fieldParentPtr("node", node);
         switch (script.extra) {
             .frame => |fe| {
                 if (fe.mode == .async and script.complete) return true;
@@ -841,10 +841,22 @@ fn hasPendingEvaluateWork(self: *ScriptManagerBase) bool {
     }
     if (!self.static_scripts_done) return false;
     if (self.defer_scripts.first) |dn| {
-        const script: *Script = @fieldParentPtr("node", dn);
+        const script: *const Script = @fieldParentPtr("node", dn);
         if (script.complete) return true;
     }
     return false;
+}
+
+/// True while classic/module scripts still need evaluation (or evaluate is
+/// deferred). Runner `.done` / network-idle must not resolve while SPA chunks
+/// sit complete-but-unevaluated (Lightpanda waits on macrotasks that re-enter
+/// evaluate; Velora can have a gap if only evaluate_pending is set).
+pub fn hasPendingJsWork(self: *const ScriptManagerBase) bool {
+    return self.evaluate_pending or
+        self.deferred_evaluate_queued or
+        self.is_evaluating or
+        self.hasPendingEvaluateWork() or
+        self.hasIncompleteLifecycleScripts();
 }
 
 /// True when it is safe to run Script.eval (V8 central stack).
@@ -1774,13 +1786,21 @@ pub const Script = struct {
                     frame.noteKnitsailParserScript();
                     frame.tryPumpKnitsailDocumentLifecycle();
                 }
+                // After classic/module body: microtasks always; EventLoop.spin when
+                // not nested in lifecycle evaluate (nested re-entry → V8_Fatal).
+                // No site URL specials (host event architecture 2026-07-19).
+                const js_mod = @import("../js/js.zig");
+                local.ctx.env.runMicrotasks(.after_evaluate);
                 if (self.manager.is_evaluating) {
+                    frame.scheduleDeferredMacrotaskPump(0) catch {};
                     local.ctx.env.runMicrotasks(.after_evaluate);
                 } else {
-                    local.runMacrotasks();
-                    _ = frame.js.scheduler.run() catch |err| {
-                        log.warn(.frame, "scheduler after script", .{ .err = err, .url = self.url });
-                    };
+                    frame.clearSchedulerSuppression();
+                    // One shared spin path — avoid stacking settle + runMacrotasks + run.
+                    js_mod.EventLoop.spin(&frame.js.execution, .{ .max_tasks = 64, .stop_when_idle = true });
+                    // Single denser settle for pure-JS iframe await (no storm).
+                    frame.settleIframePromisesNow();
+                    local.ctx.env.runMicrotasks(.after_evaluate);
                 }
             }
         }

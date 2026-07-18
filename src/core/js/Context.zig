@@ -483,25 +483,18 @@ pub fn module(self: *Context, comptime want_result: bool, local: *const js.Local
 }
 
 fn drainAfterModuleEvaluate(self: *Context) void {
-    const is_fp = switch (self.global) {
-        .frame => |f| std.mem.indexOf(u8, f.url, "fingerprint.com") != null,
-        .worker => false,
-    };
-    if (is_fp) {
-        self.env.drainFingerprintYbMicrotasks(self);
-    } else {
-        var pass: u8 = 0;
-        while (pass < 32) : (pass += 1) {
-            self.env.performMicrotaskCheckpoint(self);
-            if (self.env.checkpoint_active) break;
-            self.env.runMicrotasks(.after_evaluate);
-            if (!self.env.checkpoint_pending) break;
-        }
+    // Generic multi-pass microtask drain (no site specials). Avoid full
+    // drainNestedHostMicrotasks here — re-enters during module eval.
+    var pass: u8 = 0;
+    while (pass < 32) : (pass += 1) {
+        self.env.performMicrotaskCheckpoint(self);
+        if (self.env.checkpoint_active) break;
+        self.env.runMicrotasks(.after_evaluate);
+        if (!self.env.checkpoint_pending) break;
     }
     switch (self.global) {
         .frame => |frame| {
             frame.drainMicrotasksAfterDomInsertion();
-            if (is_fp) frame.pumpDueTimersNow(15);
         },
         .worker => {},
     }

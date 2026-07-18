@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>EL-G</title>
+<body>
+  <script>
+    // Proves fetch settle continues on task path: then() + setTimeout(0) both run.
+    window.__el = { id: "EL-G", ok: false, fetchOk: false, timeoutOk: false };
+    fetch("el-e-payload.txt")
+      .then(function (r) {
+        return r.text();
+      })
+      .then(function (t) {
+        window.__el.fetchOk = t.trim() === "hello";
+        setTimeout(function () {
+          window.__el.timeoutOk = true;
+          window.__el.ok = window.__el.fetchOk && window.__el.timeoutOk;
+          document.title = JSON.stringify({
+            id: "EL-G",
+            ok: window.__el.ok,
+            fetchOk: window.__el.fetchOk,
+            timeoutOk: window.__el.timeoutOk,
+          });
+          window.__elDone = true;
+        }, 0);
+      })
+      .catch(function (e) {
+        document.title = JSON.stringify({ id: "EL-G", ok: false, err: String(e) });
+        window.__elDone = true;
+      });
+  </script>
+</body>

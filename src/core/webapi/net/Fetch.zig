@@ -218,9 +218,14 @@ fn httpStartCallback(response: HttpClient.Response) !void {
 /// epoch is still current (nytimes.com UAF at signal._aborted).
 /// Callers must only invoke this while the Fetch / Execution are still live
 /// (transfer aborted or callbacks noop'd before page destroy).
+///
+/// Temporary `canEnterJs == false` is **not** an abort. Treating it as one made
+/// `httpHeaderDoneCallback` return false → curl Abort/Shutdown, which killed
+/// Fingerprint config GET (`…/e?region=us`) mid-flight while Chrome completed
+/// the same request in ~0.5s (see demo.fingerprint.com playground).
 fn fetchSignalAborted(self: *Fetch) bool {
-    // Prefer realm/task-owner gates before touching AbortSignal memory.
-    if (fetchJsUnavailable(self)) {
+    // Permanent teardown only — do not use fetchJsUnavailable here.
+    if (self._exec.isTaskOwnerStale(self._task_owner) or self._exec.realmState() == .dead) {
         self._signal = null;
         return true;
     }
@@ -233,14 +238,18 @@ fn fetchSignalAborted(self: *Fetch) bool {
 fn httpHeaderDoneCallback(response: HttpClient.Response) !bool {
     const self: *Fetch = @ptrCast(@alignCast(response.ctx));
 
-    // Outgoing re-nav aborts should have noop'd this callback; if a late header
-    // still arrives, refuse body delivery without walking V8.
-    if (fetchJsUnavailable(self)) {
-        self._signal = null;
-        return false;
-    }
+    // Never return false solely because V8 is temporarily unenterable — that
+    // aborts the HTTP transfer (HttpClient treats false as error.Abort) and
+    // leaves fetch() pending forever. Fingerprint config GET (`…/e?region=us`)
+    // hit this during realm init while identify still completed later.
+    // Buffer status/headers/body always; settle the Promise when JS is ready.
 
     if (fetchSignalAborted(self)) {
+        return false;
+    }
+    // True navigation teardown only.
+    if (self._exec.isTaskOwnerStale(self._task_owner) or self._exec.realmState() == .dead) {
+        self._signal = null;
         return false;
     }
 
@@ -301,26 +310,28 @@ fn httpHeaderDoneCallback(response: HttpClient.Response) !bool {
     }
 
     if (self._integrity.len > 0 and responseHasNullBody(status, self._method)) {
-        try rejectFetchNetworkError(self);
+        if (!fetchJsUnavailable(self)) {
+            try rejectFetchNetworkError(self);
+        }
         return true;
     }
 
-    if (fetchJsUnavailable(self)) {
-        return true;
-    }
-
+    // Body always lands in `_buf` via data_callback.
+    //
+    // Do **not** resolve fetch() on headers for responses with a body.
+    // Early resolve + ReadableStream left Fingerprint `await res.arrayBuffer()`
+    // hanging when enqueue raced JS gates (identify 200 on wire, no /api/event,
+    // UI stuck on "Running Device Intelligence"). Chrome HAR shows identify
+    // completes as a full JSON body (~0.5–1s) then the app calls /api/event.
+    // Resolve only from settleFetchDone with `.bytes` once the transfer ends.
+    // Null-body responses still resolve on headers.
     if (responseHasNullBody(status, self._method)) {
-        try resolveFetchOnHeaders(self);
-    } else {
-        const stream = try ReadableStream.init(null, null, exec);
-        res._body = .{ .stream = stream };
-        self._stream = stream;
-        // With subresource integrity, defer fetch resolution until the body is
-        // complete and the digest can be verified (WPT integrity.sub).
-        if (self._integrity.len == 0) {
+        if (!fetchJsUnavailable(self)) {
             try resolveFetchOnHeaders(self);
         }
+        // else: settleFetchDone will resolve empty body on transfer end
     }
+    // else: wait for done_callback → settleFetchDone with full `_buf` bytes
 
     return true;
 }
@@ -588,50 +599,80 @@ fn httpDoneCallback(ctx: *anyopaque) !void {
         .len = self._buf.items.len,
     });
 
+    // Architecture D3: never settle the JS Promise on the curl transfer stack.
+    // Always enqueue a scheduler task; settleFetchDone runs on the task path.
+    try scheduleDeferredFetchDone(self);
+}
+
+/// Complete a finished fetch transfer into V8. **Task path only** (not curl
+/// done_callback). If still on transfer stack, re-queue.
+fn settleFetchDone(self: *Fetch) !void {
     const exec = self._exec;
 
-    if (fetchJsUnavailable(self)) {
+    // D3: if somehow called mid-transfer, bounce to scheduler.
+    if (js.JsEntryGate.inTransferCallback(exec)) {
+        try scheduleDeferredFetchDone(self);
+        return;
+    }
+
+    var response = self._response;
+
+    if (self._exec.isTaskOwnerStale(self._task_owner) or self._exec.realmState() == .dead) {
+        // Realm gone — best-effort reject so the Promise does not hang.
+        var ls: js.Local.Scope = undefined;
+        if (self._exec.context.tryLocalScope(&ls)) {
+            defer ls.deinit();
+            if (!self._fetch_resolved) {
+                ls.toLocal(self._resolver).rejectError("fetch stale", .{ .type_error = "realm navigated" });
+                self._fetch_resolved = true;
+            }
+        }
         releaseFetchResponse(self);
         return;
     }
 
-    if (!self._fetch_resolved and self._stream != null) {
-        if (self._integrity.len > 0) {
-            const is_opaque = response._type == .@"opaque";
-            const ok = !is_opaque and Integrity.verify(self._integrity, self._buf.items, exec.call_arena);
-            if (!ok) {
-                if (self._stream) |stream| {
-                    try stream._controller.doError("Failed to fetch");
-                }
-                try rejectFetchIntegrity(self);
-                return;
-            }
-        }
-        if (self._stream) |stream| {
-            if (stream._state == .readable) {
-                try stream._controller.close();
-            }
-        }
-        try resolveFetchAfterBody(self);
+    if (fetchJsUnavailable(self)) {
+        // Temporary gate (realm initializing / cannot enter JS yet). Retry soon.
+        scheduleDeferredFetchDone(self) catch |err| {
+            log.warn(.http, "fetch defer settle", .{ .err = err, .url = self._url });
+        };
         return;
     }
 
-    if (self._fetch_resolved) {
+    // Always materialize the full wire buffer as `.bytes` when the transfer is
+    // finished. Streaming bodies that missed enqueue (JS gated mid-body) left
+    // `response.arrayBuffer()` hanging forever — Fingerprint identify returned
+    // 200 with visitor_id on the wire but agent never settled, so no
+    // `/api/event` and no "Your Visitor ID" UI (see demo.fingerprint.com.har).
+    if (self._buf.items.len > 0 or self._stream != null) {
         if (self._integrity.len > 0) {
             const is_opaque = response._type == .@"opaque";
             const ok = !is_opaque and Integrity.verify(self._integrity, self._buf.items, exec.call_arena);
             if (!ok) {
                 if (self._stream) |stream| {
-                    try stream._controller.doError("Failed to fetch");
+                    if (stream._state == .readable) {
+                        try stream._controller.doError("Failed to fetch");
+                    }
+                }
+                if (!self._fetch_resolved) {
+                    try rejectFetchIntegrity(self);
                 }
                 return;
             }
         }
+        // Close any open stream controller so late readers do not hang, then
+        // point body at the complete buffer for arrayBuffer/text/json.
         if (self._stream) |stream| {
             if (stream._state == .readable) {
-                try stream._controller.close();
+                // Prefer error-free close; body consumers should use .bytes.
+                stream._controller.close() catch {};
             }
+            self._stream = null;
         }
+        response._body = .{ .bytes = self._buf.items };
+    }
+
+    if (self._fetch_resolved) {
         return;
     }
 
@@ -643,6 +684,11 @@ fn httpDoneCallback(ctx: *anyopaque) !void {
         };
     }
     if (blocked) {
+        // Not permanently dead — re-check on a later turn.
+        if (!self._exec.isTaskOwnerStale(self._task_owner) and self._exec.realmState() != .dead) {
+            scheduleDeferredFetchDone(self) catch {};
+            return;
+        }
         const cur = exec.captureTaskOwner();
         RealmLifecycleKernel.tracePromiseDropStale(exec.frameId(), self._task_owner.epoch, cur.epoch, .fetch_completion);
         var ls: js.Local.Scope = undefined;
@@ -664,10 +710,12 @@ fn httpDoneCallback(ctx: *anyopaque) !void {
 
     var ls: js.Local.Scope = undefined;
     if (!self._exec.context.tryLocalScope(&ls)) {
-        if (self._owns_response) {
-            self._response.deinit(self._exec.context.page);
-            self._owns_response = false;
-        }
+        scheduleDeferredFetchDone(self) catch {
+            if (self._owns_response) {
+                self._response.deinit(self._exec.context.page);
+                self._owns_response = false;
+            }
+        };
         return;
     }
     defer ls.deinit();
@@ -695,10 +743,134 @@ fn httpDoneCallback(ctx: *anyopaque) !void {
         }
     }
 
+    // Task path: resolve Promise then EventLoop.afterTask (not curl stack).
     const js_val = try ls.local.zigValueToJs(self._response, .{});
     self._owns_response = false;
-    return ls.toLocal(self._resolver).resolve("fetch done", js_val);
+    self._fetch_resolved = true;
+
+    const env = exec.context.env;
+    if (env.checkpoint_active) {
+        ls.toLocal(self._resolver).resolve("fetch done", js_val);
+        env.checkpoint_pending = true;
+    } else {
+        ls.toLocal(self._resolver).resolve("fetch done", js_val);
+    }
+
+    // One delay-0 continue: follow-on timers / reactions via wait-edge spin.
+    // (Was 0/1/5/16/50 cascade — architecture D3 collapses to task + EventLoop.)
+    scheduleDeferredFetchContinue(self) catch |err| {
+        log.warn(.http, "fetch defer continue", .{ .err = err, .url = self._url });
+    };
+    js.EventLoop.afterTask(exec);
 }
+
+/// After fetch Promise resolves on the task path, one more hop to run timer
+/// queues / reactions (setInterval job queues, etc.). Wait edges also spin.
+fn scheduleDeferredFetchContinue(self: *Fetch) !void {
+    const exec = self._exec;
+    const callback = try exec.arena.create(DeferredFetchContinueCallback);
+    callback.* = .{ .fetch = self };
+    try exec._scheduler.add(callback, DeferredFetchContinueCallback.run, 0, .{
+        .name = "Fetch.deferredContinue",
+        .low_priority = false,
+    });
+    switch (exec.context.global) {
+        .frame => |frame| frame.scheduleDeferredMacrotaskPump(0) catch {},
+        .worker => |wgs| wgs._worker._frame.scheduleDeferredMacrotaskPump(0) catch {},
+    }
+}
+
+const DeferredFetchContinueCallback = struct {
+    fetch: *Fetch,
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *DeferredFetchContinueCallback = @ptrCast(@alignCast(ctx));
+        const fetch = self.fetch;
+        if (fetch._exec.isTaskOwnerStale(fetch._task_owner) or fetch._exec.realmState() == .dead) {
+            return null;
+        }
+        const env = fetch._exec.context.env;
+        // Task-path continue (not curl stack): shared EventLoop spin + microtasks.
+        // Avoid private pump storms; JsEntryGate task rule — we're already a task.
+        if (js.JsEntryGate.mustQueueAsTask(fetch._exec)) {
+            // Unexpected nested entry: only nested-safe microtasks, re-arm delay-0.
+            js.EventLoop.drainMicrotasksNested(fetch._exec);
+            return 1;
+        }
+        env.drainAllRealmMicrotasks();
+        env.performMicrotaskCheckpointFp(fetch._exec.context);
+        if (!env.checkpoint_active) {
+            env.runMicrotasks(.promise_resolve);
+        }
+        js.EventLoop.spin(fetch._exec, .{ .max_tasks = 48, .stop_when_idle = true });
+        switch (fetch._exec.context.global) {
+            .frame => |frame| {
+                // Short timer budget for setInterval(1) job queues without full private loop.
+                if (!js.JsEntryGate.mustQueueAsTask(fetch._exec)) {
+                    frame.pumpDueTimersNow(50);
+                    js.EventLoop.spin(fetch._exec, .{ .max_tasks = 16, .stop_when_idle = true });
+                }
+            },
+            .worker => {},
+        }
+        return null;
+    }
+};
+
+fn scheduleDeferredFetchDone(self: *Fetch) !void {
+    const exec = self._exec;
+    const callback = try exec.arena.create(DeferredFetchDoneCallback);
+    callback.* = .{
+        .fetch = self,
+        .task_owner = exec.captureTaskOwner(),
+    };
+    try exec._scheduler.add(callback, DeferredFetchDoneCallback.run, 0, .{
+        .name = "Fetch.deferredDone",
+        .low_priority = false,
+    });
+    // Ensure the delay-0 task is not stuck behind a quiet event loop.
+    switch (exec.context.global) {
+        .frame => |frame| frame.scheduleDeferredMacrotaskPump(0) catch {},
+        .worker => |wgs| wgs._worker._frame.scheduleDeferredMacrotaskPump(0) catch {},
+    }
+}
+
+const DeferredFetchDoneCallback = struct {
+    fetch: *Fetch,
+    task_owner: RealmLifecycleKernel.TaskOwner,
+    attempts: u8 = 0,
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *DeferredFetchDoneCallback = @ptrCast(@alignCast(ctx));
+        const fetch = self.fetch;
+        if (fetch._fetch_resolved) return null;
+        if (fetch._exec.isTaskOwnerStale(self.task_owner)) {
+            // Give up without hang: release; resolve path already abandoned.
+            releaseFetchResponse(fetch);
+            return null;
+        }
+        if (fetchJsUnavailable(fetch)) {
+            self.attempts +%= 1;
+            if (self.attempts > 64) {
+                // ~many event-loop turns; reject rather than hang forever.
+                var ls: js.Local.Scope = undefined;
+                if (fetch._exec.context.tryLocalScope(&ls)) {
+                    defer ls.deinit();
+                    if (!fetch._fetch_resolved) {
+                        ls.toLocal(fetch._resolver).rejectError("fetch settle timeout", .{ .type_error = "Failed to fetch" });
+                        fetch._fetch_resolved = true;
+                    }
+                }
+                releaseFetchResponse(fetch);
+                return null;
+            }
+            // Retry next turn. Scheduler forbids repeat delay 0 in Debug.
+            return 1;
+        }
+        try settleFetchDone(fetch);
+        return null;
+    }
+};
 
 fn httpErrorCallback(ctx: *anyopaque, err: anyerror) void {
     const self: *Fetch = @ptrCast(@alignCast(ctx));
@@ -726,7 +898,14 @@ fn httpErrorCallback(ctx: *anyopaque, err: anyerror) void {
     }
 
     if (fetchJsUnavailable(self)) {
-        releaseFetchResponse(self);
+        // Same hang as done: do not abandon the Promise. Defer reject/settle.
+        if (self._exec.isTaskOwnerStale(self._task_owner) or self._exec.realmState() == .dead) {
+            releaseFetchResponse(self);
+            return;
+        }
+        scheduleDeferredFetchDone(self) catch {
+            releaseFetchResponse(self);
+        };
         return;
     }
 
@@ -770,18 +949,115 @@ fn httpErrorCallback(ctx: *anyopaque, err: anyerror) void {
 fn httpShutdownCallback(ctx: *anyopaque) void {
     const self: *Fetch = @ptrCast(@alignCast(ctx));
     if (comptime IS_DEBUG) {
-        // should always be true
-        std.debug.assert(self._owns_response);
+        // should always be true when we still own the response
+        std.debug.assert(self._owns_response or self._fetch_resolved);
+    }
+
+    // Frame kill / transfer.kill() used to only deinit the Response and leave
+    // the JS Promise pending forever. Fingerprint agent then waited on config
+    // GET until Client timeout (or skipped /api/event after a late identify).
+    // Always reject when possible — never resolve via settleFetchDone (no body).
+    if (!self._fetch_resolved) {
+        const permanently_gone = self._exec.isTaskOwnerStale(self._task_owner) or
+            self._exec.realmState() == .dead;
+        if (!permanently_gone) {
+            rejectFetchShutdown(self);
+        }
     }
 
     if (self._owns_response) {
         var response = self._response;
         response._http_response = null;
+        // If reject deferred (JS gated), keep arena until DeferredFetchReject runs.
+        if (!self._fetch_resolved and !self._exec.isTaskOwnerStale(self._task_owner) and
+            self._exec.realmState() != .dead)
+        {
+            // Transfer is going away; still hold response for deferred reject.
+            return;
+        }
         response.deinit(self._exec.context.page);
         // Do not access `self` after this point: the Fetch struct was
         // allocated from response._arena which has been released.
     }
 }
+
+fn rejectFetchShutdown(self: *Fetch) void {
+    if (self._fetch_resolved) return;
+    if (fetchJsUnavailable(self)) {
+        scheduleDeferredFetchReject(self) catch {
+            // Last resort: try immediate scope anyway.
+        };
+        if (fetchJsUnavailable(self)) return;
+    }
+    var ls: js.Local.Scope = undefined;
+    if (!self._exec.context.tryLocalScope(&ls)) {
+        scheduleDeferredFetchReject(self) catch {};
+        return;
+    }
+    defer ls.deinit();
+    ls.toLocal(self._resolver).rejectError("fetch shutdown", .{ .type_error = "Failed to fetch" });
+    self._fetch_resolved = true;
+}
+
+fn scheduleDeferredFetchReject(self: *Fetch) !void {
+    const exec = self._exec;
+    const callback = try exec.arena.create(DeferredFetchRejectCallback);
+    callback.* = .{
+        .fetch = self,
+        .task_owner = exec.captureTaskOwner(),
+    };
+    try exec._scheduler.add(callback, DeferredFetchRejectCallback.run, 0, .{
+        .name = "Fetch.deferredReject",
+        .low_priority = false,
+    });
+    switch (exec.context.global) {
+        .frame => |frame| frame.scheduleDeferredMacrotaskPump(0) catch {},
+        .worker => |wgs| wgs._worker._frame.scheduleDeferredMacrotaskPump(0) catch {},
+    }
+}
+
+const DeferredFetchRejectCallback = struct {
+    fetch: *Fetch,
+    task_owner: RealmLifecycleKernel.TaskOwner,
+    attempts: u8 = 0,
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *DeferredFetchRejectCallback = @ptrCast(@alignCast(ctx));
+        const fetch = self.fetch;
+        if (fetch._fetch_resolved) {
+            releaseFetchResponse(fetch);
+            return null;
+        }
+        if (fetch._exec.isTaskOwnerStale(self.task_owner) or fetch._exec.realmState() == .dead) {
+            releaseFetchResponse(fetch);
+            return null;
+        }
+        if (fetchJsUnavailable(fetch)) {
+            self.attempts +%= 1;
+            if (self.attempts > 64) {
+                releaseFetchResponse(fetch);
+                return null;
+            }
+            return 1;
+        }
+        var ls: js.Local.Scope = undefined;
+        if (!fetch._exec.context.tryLocalScope(&ls)) {
+            self.attempts +%= 1;
+            if (self.attempts > 64) {
+                releaseFetchResponse(fetch);
+                return null;
+            }
+            return 1;
+        }
+        defer ls.deinit();
+        if (!fetch._fetch_resolved) {
+            ls.toLocal(fetch._resolver).rejectError("fetch shutdown", .{ .type_error = "Failed to fetch" });
+            fetch._fetch_resolved = true;
+        }
+        releaseFetchResponse(fetch);
+        return null;
+    }
+};
 
 const testing = @import("../../../testing/testing.zig");
 test "WebApi: fetch" {

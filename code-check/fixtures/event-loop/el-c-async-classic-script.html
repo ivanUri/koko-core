@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>EL-C</title>
+<body>
+  <script>
+    window.__el = { id: "EL-C", ok: false, ran: false };
+    // Dynamic classic async script inject (SPA chunk pattern).
+    const s = document.createElement("script");
+    s.async = true;
+    s.textContent = "window.__el.ran = true; window.__elChunk = 1;";
+    s.onload = function () {
+      /* inline scripts may not fire load; poll below */
+    };
+    document.head.appendChild(s);
+    setTimeout(function () {
+      window.__el.ok = window.__el.ran === true && window.__elChunk === 1;
+      document.title = JSON.stringify({
+        id: "EL-C",
+        ok: window.__el.ok,
+        ran: window.__el.ran,
+        chunk: window.__elChunk,
+      });
+      window.__elDone = true;
+    }, 50);
+  </script>
+</body>

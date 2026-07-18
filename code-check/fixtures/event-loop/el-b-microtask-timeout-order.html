@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>EL-B</title>
+<body>
+  <script>
+    // Spec-ish order: sync, then microtasks, then timers.
+    window.__el = { id: "EL-B", ok: false, log: [] };
+    window.__el.log.push("sync");
+    Promise.resolve().then(function () {
+      window.__el.log.push("micro");
+    });
+    setTimeout(function () {
+      window.__el.log.push("timeout");
+      const expected = ["sync", "micro", "timeout"];
+      window.__el.ok =
+        window.__el.log.length === 3 &&
+        window.__el.log[0] === "sync" &&
+        window.__el.log[1] === "micro" &&
+        window.__el.log[2] === "timeout";
+      document.title = JSON.stringify({
+        id: "EL-B",
+        ok: window.__el.ok,
+        log: window.__el.log,
+        expected: expected,
+      });
+      window.__elDone = true;
+    }, 0);
+  </script>
+</body>

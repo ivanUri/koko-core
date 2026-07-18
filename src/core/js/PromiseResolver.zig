@@ -63,9 +63,10 @@ fn _resolve(self: PromiseResolver, value: anytype) !void {
     if (!out.has_value or !out.value) {
         return error.FailedToResolvePromise;
     }
-    // Nested drain during an active checkpoint is a no-op (reentry guard). Mark
-    // pending so the outer checkpoint loop flushes reactions — CreepJS audio
-    // probes depend on this when startRendering runs inside timer microtasks.
+    // Nested full runMicrotasks is deferred (reentry guard). Mark pending so an
+    // outer loop or a deferred continue (Fetch.deferredContinue) can flush.
+    // Do not PerformCheckpoint here when nested under HTTP done_callback — that
+    // re-enters page JS on the curl stack and races Fingerprint agent collection.
     if (env.checkpoint_active) {
         env.checkpoint_pending = true;
         return;

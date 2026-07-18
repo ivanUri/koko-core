@@ -53,6 +53,11 @@ _url: [:0]const u8,
 _terminated: bool = false,
 _script_loaded: bool = false,
 _bootstrap_complete: bool = false,
+/// True only while `loadInitialScript` / module eval is on the worker V8 stack.
+/// Outbound `postMessage` during this window must queue — entering the parent
+/// frame's Local.Scope mid-worker-eval returns Script::Run null with no
+/// TryCatch exception (agent blob bootstrap posts `[2]` at end of classic body).
+_initial_eval_active: bool = false,
 /// After deferred parent flush, worker→page posts must not sit in
 /// `_pending_inbound_messages` (Fingerprint agent replies from onmessage).
 _parent_delivery_ready: bool = false,
@@ -345,7 +350,18 @@ pub fn deinitForSession(self: *Worker, session: *Session) void {
     self._terminated = true;
     self._bootstrap_complete = false;
     self._parent_delivery_ready = false;
-    session.browser.http_client.abortFrame(self._frame_id, .{ .scope = .full });
+    // Cancel only this worker's *script* transfer (and same frame_id work), but
+    // do not abort `.fetch` / `.xhr` sharing the synthetic worker frame_id.
+    // Fingerprint agent can start config GET (`fetch …/e?region=us`) while a
+    // short-lived collection worker is torn down; abortFrame(.full) was killing
+    // that fetch (CDP Shutdown) before body, blocking identify→/api/event.
+    // Explicit worker HTTP response is aborted below; parent document re-nav
+    // still cancels via attribution_frame on the parent Frame.
+    session.browser.http_client.abortFrame(self._frame_id, .{
+        .scope = .full,
+        .skip_fetch = true,
+        .skip_xhr = true,
+    });
     if (self._http_response) |res| {
         res.abort(error.Abort);
         self._http_response = null;
@@ -450,7 +466,8 @@ pub fn pumpBootstrapContext(ctx: *js.Context, env: *js.Env) void {
     const exec = &ctx.execution;
     if (exec.realmState() == .dead) return;
     if (!exec.canEnterJs(.strict_active)) return;
-    if (env.anyContextOnV8Stack()) return;
+    // Shared host reentrancy policy (architecture: JsEntryGate).
+    if (js.JsEntryGate.mustQueueAsTask(exec)) return;
 
     var hs: js.HandleScope = undefined;
     const entered = ctx.enter(&hs) orelse return;
@@ -514,16 +531,62 @@ fn loadInitialScript(self: *Worker, script: []const u8) !void {
         defer try_catch.deinit();
 
         // reCAPTCHA's worker bootstrap posts to the parent during importScripts and
-        // expects a synchronous reply before the initial eval returns.
+        // expects a synchronous reply before the initial eval returns — but only
+        // *after* we leave the worker Script::Run stack. Mark bootstrap complete
+        // for messaging policy, keep `_initial_eval_active` so mid-eval posts queue.
         self._bootstrap_complete = true;
+        self._initial_eval_active = true;
+        defer self._initial_eval_active = false;
 
         const script_parse_ok = ls.local.canCompileScript(script, self._url);
         // WPT worker scripts assign onmessage/onerror on the global object; wrapping
         // in an IIFE can leave those handlers off the Zig accessor slots.
-        const eval_source: []const u8 = script;
+        // Step markers survive empty-TryCatch aborts (agent blob diagnostics).
+        const eval_source = std.fmt.allocPrint(self._arena,
+            \\globalThis.__veloraWorkerStep=0;
+            \\try{{
+            \\globalThis.__veloraWorkerStep=1;
+            \\{s}
+            \\globalThis.__veloraWorkerStep=99;
+            \\}}catch(e){{
+            \\globalThis.__veloraWorkerStep=-(globalThis.__veloraWorkerStep||1);
+            \\globalThis.__veloraWorkerErr=String(e&&e.stack||e);
+            \\throw e;
+            \\}}
+        , .{script}) catch script;
+
+        // Parent classic-script watchdogs share the isolate. A prior Terminate
+        // left on the isolate makes Script::Run return null with no exception.
+        const env = &self._frame._session.browser.env;
+        env.cancelTerminate();
 
         _ = ls.local.eval(eval_source, self._url) catch |err| {
+            const terminating = env.isExecutionTerminating();
+            if (terminating) env.cancelTerminate();
             const caught = try_catch.caughtOrError(self._arena, err);
+            var step: i32 = -999;
+            var err_txt: []const u8 = "";
+            if (ls.local.exec("globalThis.__veloraWorkerStep|0", null)) |sv| {
+                step = sv.toZig(i32) catch -998;
+            } else |_| {}
+            if (ls.local.exec("globalThis.__veloraWorkerErr||''", null)) |ev| {
+                if (ev.isString()) |js_str| {
+                    err_txt = js_str.toSliceWithAlloc(self._arena) catch "";
+                }
+            } else |_| {}
+            log.err(.browser, "worker script error", .{
+                .url = self._url,
+                .err = err,
+                .parse_ok = script_parse_ok,
+                .has_caught = try_catch.hasCaught(),
+                .terminating = terminating,
+                .step = step,
+                .js_err = err_txt,
+                .parent_call_depth = self._frame.js.call_depth,
+                .checkpoint_active = env.checkpoint_active,
+                .caught = caught,
+                .script_len = script.len,
+            });
             if (self._shared_mode and script_parse_ok) {
                 const message = caught.exception orelse @errorName(err);
                 const line = caught.line orelse 0;
@@ -539,7 +602,6 @@ fn loadInitialScript(self: *Worker, script: []const u8) !void {
                     pending_shared_runtime_error = .{ .message = message, .line = line };
                 }
             } else {
-                log.err(.browser, "worker script error", .{ .url = self._url, .caught = caught });
                 const message = caught.exception orelse @errorName(err);
                 const line = caught.line orelse 0;
                 if (script_parse_ok) {
@@ -587,6 +649,8 @@ fn loadInitialModule(self: *Worker, script: []const u8) !void {
         defer ls.deinit();
 
         self._bootstrap_complete = true;
+        self._initial_eval_active = true;
+        defer self._initial_eval_active = false;
 
         {
             const flag_src =
@@ -1054,8 +1118,8 @@ pub fn bootstrapMessagingActive(exec: *const Execution) bool {
 /// only — not nested inside Script.eval / DOM API / HTTP doneCallback).
 pub fn pumpMessageDelivery(frame: *Frame) void {
     const env = &frame._session.browser.env;
-    // Nested V8 entry throws with IsOnCentralStack (tinhte ads + worker postMessage).
-    if (env.anyContextOnV8Stack()) return;
+    // Nested host stack (V8 / script eval / transfer) is unsafe for runOne pumps.
+    if (js.JsEntryGate.mustQueueAsTask(&frame.js.execution)) return;
     var pass: u32 = 0;
     while (pass < bootstrap_drain_max_passes) : (pass += 1) {
         var any_ready = false;
@@ -1140,6 +1204,25 @@ pub fn receiveMessage(
     ports: []const *MessagePort,
     transfer_list: ?[]const js.Value,
 ) !void {
+    // Mid-initial-eval: never enter parent Local to clone — queue worker-side
+    // Temp and clone on flush after Script::Run returns.
+    if (self._initial_eval_active) {
+        const ports_copy = try self._arena.dupe(*MessagePort, ports);
+        const worker_temp = try data.temp();
+        try self._pending_inbound_messages.append(self._arena, .{
+            .message_id = message_id,
+            .data = worker_temp,
+            .ports = ports_copy,
+            .needs_frame_clone = true,
+        });
+        log.info(.browser, "worker postMessage mid-initial-eval", .{
+            .worker_id = self._frame_id,
+            .message_id = message_id,
+            .queue_len = self._pending_inbound_messages.items.len,
+        });
+        return;
+    }
+
     if (try self.dispatchInboundMessageNow(data, message_id, ports, transfer_list)) return;
 
     if (!self._bootstrap_complete and !self._parent_delivery_ready) {
@@ -1336,6 +1419,20 @@ fn enqueueInboundMessage(self: *Worker, data: js.Value, message_id: u64, ports: 
     try self.enqueueInboundTempMessage(cloned_data, message_id, ports);
 }
 
+fn cloneWorkerTempToFrame(self: *Worker, worker_temp: js.Value.Temp) !js.Value.Temp {
+    var source_ls: js.Local.Scope = undefined;
+    self._worker_scope.js.localScope(&source_ls);
+    defer source_ls.deinit();
+    var target_ls: js.Local.Scope = undefined;
+    self._frame.js.localScope(&target_ls);
+    defer target_ls.deinit();
+
+    const local_val = source_ls.local.toLocal(worker_temp);
+    defer worker_temp.release();
+    const cloned = try local_val.structuredCloneTo(&target_ls.local, null);
+    return try cloned.temp();
+}
+
 fn flushPendingInboundMessages(self: *Worker) !void {
     for (self._pending_inbound_messages.items) |pending| {
         if (comptime IS_DEBUG) {
@@ -1343,9 +1440,14 @@ fn flushPendingInboundMessages(self: *Worker) !void {
                 .worker_id = self._frame_id,
                 .message_id = pending.message_id,
                 .queue_len = self._pending_inbound_messages.items.len,
+                .needs_frame_clone = pending.needs_frame_clone,
             });
         }
-        try self.enqueueInboundTempMessage(pending.data, pending.message_id, pending.ports);
+        const frame_data = if (pending.needs_frame_clone)
+            try self.cloneWorkerTempToFrame(pending.data)
+        else
+            pending.data;
+        try self.enqueueInboundTempMessage(frame_data, pending.message_id, pending.ports);
     }
     self._pending_inbound_messages.clearRetainingCapacity();
 }
@@ -1367,6 +1469,9 @@ const PendingInboundMessage = struct {
     message_id: u64,
     data: js.Value.Temp,
     ports: []const *MessagePort,
+    /// True when `data` is still a worker-realm Temp that must be structured-cloned
+    /// into the parent frame before dispatch (queued mid-initial-eval).
+    needs_frame_clone: bool = false,
 };
 
 const ReceiveMessageCallback = struct {

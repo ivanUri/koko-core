@@ -31,6 +31,11 @@ pub const NavigationPlan = struct {
     omit_sec_fetch_user: bool = false,
     curl_defaults_only: bool = false,
     use_external_transport: bool = false,
+    /// Cold search first-hop documents prefer HTTP/3 (Chrome 150 CDP). Set here
+    /// so HttpClient does not substring-match host/path.
+    prefer_http3: bool = false,
+    /// In-session search hops (sei=/sg_ss=) need a fresh TCP/TLS path.
+    force_fresh_connection: bool = false,
 };
 
 pub fn navigationPlan(
@@ -97,12 +102,12 @@ fn applyPolicy(allocator: Allocator, policy: *const PolicyRegistry.SitePolicy, c
 
     var prior_origin = ctx.prior_origin;
     var referer = ctx.referer;
-    if (first_hop or in_session) {
+    // Cold omnibox hop-1: Sec-Fetch-Site: none (no synthetic priorOrigin).
+    // In-session sei=/sg_ss=: same-origin via priorOrigin from policy.
+    if (in_session) {
         if (rules.prior_origin) |origin| {
             if (prior_origin == null) prior_origin = try allocator.dupe(u8, origin);
         }
-    }
-    if (in_session) {
         if (rules.referer == .search_q_only) {
             const ref_src = if (isSearchUrl(ctx.prior_url)) ctx.prior_url else effective_url;
             referer = try searchQOnlyReferer(allocator, ref_src);
@@ -131,6 +136,11 @@ fn applyPolicy(allocator: Allocator, policy: *const PolicyRegistry.SitePolicy, c
         .omit_sec_fetch_user = whenActive(rules.omit_sec_fetch_user, in_session, first_hop),
         .curl_defaults_only = whenActive(rules.curl_defaults_only, in_session, first_hop),
         .use_external_transport = use_external_transport,
+        // Cold omnibox / first search document hop: Chrome 150 uses h3. In-session
+        // sei=/sg_ss= hops stay h2 (prefer_http3=false when !first_hop).
+        .prefer_http3 = search_flow and first_hop,
+        // In-session search document hops: fresh TCP/TLS (was sg_ss= URL check).
+        .force_fresh_connection = in_session,
     };
 }
 
@@ -239,7 +249,7 @@ test "NavigationPlanner: velora mode is no-op" {
     try testing.expect(!plan.curl_defaults_only);
 }
 
-test "NavigationPlanner: antidetect first hop uses curl defaults" {
+test "NavigationPlanner: antidetect first hop is cold omnibox (no priorOrigin, full headers)" {
     const registry = try PolicyRegistry.PolicyRegistry.init(testing.allocator);
     defer registry.deinit();
 
@@ -252,11 +262,45 @@ test "NavigationPlanner: antidetect first hop uses curl defaults" {
     if (plan.referer) |ref| testing.allocator.free(ref);
     if (plan.prior_origin) |origin| testing.allocator.free(origin);
 
-    try testing.expect(plan.curl_defaults_only);
+    try testing.expect(!plan.curl_defaults_only);
     try testing.expect(!plan.omit_cookies);
     try testing.expect(!plan.omit_sec_fetch_user);
-    try testing.expect(plan.prior_origin != null);
-    try testing.expectEqualStrings("https://www.google.com", plan.prior_origin.?);
+    try testing.expect(plan.prior_origin == null);
+    try testing.expect(!plan.use_external_transport);
+}
+
+test "NavigationPlanner: first hop uses Chrome transport when flag enabled" {
+    const registry = try PolicyRegistry.PolicyRegistry.init(testing.allocator);
+    defer registry.deinit();
+
+    const plan = try navigationPlan(testing.allocator, .antidetect, &google_search_policy, &registry, .{
+        .prior_url = "about:blank",
+        .request_url = "https://www.google.com/search?q=test",
+        .reason = .address_bar,
+        .external_transport_enabled = true,
+    });
+    defer testing.allocator.free(plan.effective_url);
+    if (plan.referer) |ref| testing.allocator.free(ref);
+    if (plan.prior_origin) |origin| testing.allocator.free(origin);
+
+    try testing.expect(plan.use_external_transport);
+}
+
+test "NavigationPlanner: sg_ss hop uses Chrome transport when flag enabled" {
+    const registry = try PolicyRegistry.PolicyRegistry.init(testing.allocator);
+    defer registry.deinit();
+
+    const plan = try navigationPlan(testing.allocator, .antidetect, &google_search_policy, &registry, .{
+        .prior_url = "https://www.google.com/search?q=prev",
+        .request_url = "https://www.google.com/search?q=test&sg_ss=*abc",
+        .reason = .navigation,
+        .external_transport_enabled = true,
+    });
+    defer testing.allocator.free(plan.effective_url);
+    if (plan.referer) |ref| testing.allocator.free(ref);
+    if (plan.prior_origin) |origin| testing.allocator.free(origin);
+
+    try testing.expect(plan.use_external_transport);
 }
 
 test "NavigationPlanner: in-session redirect hop uses navigation reason" {
@@ -270,13 +314,15 @@ test "NavigationPlanner: in-session redirect hop uses navigation reason" {
     });
     defer testing.allocator.free(plan.effective_url);
     if (plan.referer) |ref| testing.allocator.free(ref);
+    if (plan.prior_origin) |origin| testing.allocator.free(origin);
 
-    try testing.expect(plan.omit_cookies);
+    try testing.expect(!plan.omit_cookies);
     try testing.expect(plan.omit_sec_fetch_user);
     try testing.expect(!plan.curl_defaults_only);
+    try testing.expect(plan.prior_origin != null);
 }
 
-test "NavigationPlanner: antidetect in-session omits cookies and sec-fetch-user" {
+test "NavigationPlanner: antidetect in-session omits sec-fetch-user keeps cookies" {
     const registry = try PolicyRegistry.PolicyRegistry.init(testing.allocator);
     defer registry.deinit();
 
@@ -287,8 +333,9 @@ test "NavigationPlanner: antidetect in-session omits cookies and sec-fetch-user"
     });
     defer testing.allocator.free(plan.effective_url);
     if (plan.referer) |ref| testing.allocator.free(ref);
+    if (plan.prior_origin) |origin| testing.allocator.free(origin);
 
-    try testing.expect(plan.omit_cookies);
+    try testing.expect(!plan.omit_cookies);
     try testing.expect(plan.omit_sec_fetch_user);
     try testing.expect(!plan.curl_defaults_only);
     try testing.expect(plan.referer != null);

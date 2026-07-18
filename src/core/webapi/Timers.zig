@@ -70,9 +70,11 @@ pub fn schedule(
     if (exec.timer_nesting_level >= 5 and effective_delay < 4) {
         effective_delay = 4;
     }
-    // Fingerprint yb() I() polls iframe readyState with setTimeout(10) from a
-    // Promise executor still nested inside appendChild. Chrome runs the poll on
-    // the next turn; Velora must not stall until a deferred macrotask pump.
+    // Nested Zig DOM / host API (call_depth): coerce short delays to 0 so the
+    // deferred macrotask pump / wait-edge spin can run them soon (agent-style
+    // setTimeout(10) readyState polls after appendChild).
+    // Use call_depth only — mustQueueAsTask is true for any page JS (V8 stack)
+    // and would zero every short timer scheduled from script.
     if (exec.context.call_depth > 0 and effective_delay > 0 and effective_delay <= 10) {
         effective_delay = 0;
     }
@@ -111,31 +113,20 @@ pub fn schedule(
         .finalizer = ScheduleCallback.cancelled,
     });
 
-    // Fingerprint yb() I() polls with setTimeout(10) after appendChild returns
-    // from the Promise executor; run same-turn when nested (see effective_delay).
-    // Other sites must defer — timer callbacks require V8's central stack and
-    // crash with IsOnCentralStack when pumped from nested HTML parse / HTTP callbacks.
-    if (effective_delay <= 10 and exec.context.call_depth > 0) {
+    // Nested host stack: never pumpDueTimersNow (IsOnCentralStack / iframe race).
+    // JsEntryGate owns “must queue”; EventLoop.spin on wait edges runs due timers.
+    if (effective_delay <= 10 and js.JsEntryGate.mustQueueAsTask(exec)) {
         switch (exec.context.global) {
             .frame => |frame| {
-                const is_fp = std.mem.indexOf(u8, frame.url, "fingerprint.com") != null;
-                const env = &frame._session.browser.env;
-                if (is_fp) {
-                    frame.pumpDueTimersNow(0);
-                    env.drainFingerprintYbMicrotasks(frame.js);
-                } else {
-                    var mt: u8 = 0;
-                    while (mt < 8) : (mt += 1) {
-                        env.performMicrotaskCheckpoint(frame.js);
-                    }
-                }
+                js.EventLoop.drainMicrotasksNested(exec);
                 frame.scheduleDeferredMacrotaskPump(0) catch |err| {
                     log.warn(.js, "timer defer pump", .{ .err = err, .delay = effective_delay });
                 };
             },
             .worker => |wgs| {
-                // Nested worker setTimeout(≤10ms) is coerced to 0; defer pump to the
-                // next turn so clearTimeout in the same handler runs first.
+                // Nested worker setTimeout(≤10ms): defer pump so clearTimeout in
+                // the same handler runs first.
+                js.EventLoop.drainMicrotasksNested(exec);
                 wgs._worker._frame.scheduleDeferredMacrotaskPump(0) catch |err| {
                     log.warn(.js, "worker timer defer pump", .{ .err = err, .delay = effective_delay });
                 };
@@ -234,9 +225,16 @@ const ScheduleCallback = struct {
         }
 
         self.exec.validateJsEntry(.allow_draining, .timer) catch {
-            _ = self.timers._callbacks.fetchRemove(self.timer_id);
-            self.deinit();
-            return null;
+            // Temporary JS gate (realm initializing / mid-teardown of a sibling
+            // frame). Do NOT destroy setInterval — Fingerprint Fw/hl use
+            // setInterval(1) as a job queue; killing on a transient gate left
+            // identify done on the wire while get() hung until Client timeout.
+            if (self.repeat_ms) |ms| {
+                // Keep the interval alive; retry soon (Debug forbids repeat 0).
+                return if (ms == 0) 1 else ms;
+            }
+            // One-shot: retry once rather than drop the callback forever.
+            return 1;
         };
 
         if (self.exec.timer_nesting_level > 0) {
@@ -267,7 +265,16 @@ const ScheduleCallback = struct {
             },
             .normal => invokeTimerCallback(&ls.local, self.exec, self.cb, self.params),
         }
-        ls.local.ctx.env.runMicrotasks(.timer_callback);
+        // Fingerprint agent routes identify POST through a setInterval(1) work
+        // queue (Fw/hl). When the async job fulfills, the poll path does
+        // `resultPromise.then(resolve)`. That pure-JS reaction must run on this
+        // turn — nested `runMicrotasks` only marks `checkpoint_pending`, which
+        // is easy to miss if no outer loop is live. Always PerformCheckpoint the
+        // local realm (and all realms) before the global drain.
+        const env = ls.local.ctx.env;
+        env.drainAllRealmMicrotasks();
+        env.performMicrotaskCheckpointFp(ls.local.ctx);
+        env.runMicrotasks(.timer_callback);
 
         if (self.repeat_ms) |ms| {
             return ms;

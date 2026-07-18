@@ -1034,26 +1034,23 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
         } else if (opts.resource_type == .document and opts.is_document_navigation) {
             const full_hints = opts.resource_type == .document or
                 self._session.clientHintsEnabledForUrl(self.arena, request_url);
+            // Always emit the full Chrome 150 document list (Accept-first + Sec-Fetch-*).
+            // The old branch used thin `appendCurlImpersonateDocumentOverrides` for cold
+            // hops, assuming libcurl default_headers would supply Accept/Sec-Fetch/UIR.
+            // Wire capture (VELORA_WIRE_HEADERS) showed those defaults are *not* on the
+            // hop-1 request — only Host/UA/AE/AL/Cookie/Sec-Ch-Ua/X-Browser — so cold
+            // Google /search looked non-browser → knitsail / /sorry. In-session sei=
+            // already used full headers (omit_sec_fetch_user path).
             const chrome_opts = HttpProfile.ChromeHeadersOpts{
                 .full_client_hints = full_hints,
                 .brands = profile.http.brands,
                 .color_scheme = profile.http.prefers_color_scheme,
                 .omit_sec_fetch_user = opts.omit_sec_fetch_user,
+                // Referer on wire for in-search hops; cold omnibox keeps Sec-Fetch-Site:none
+                // via prior_origin null / first-hop policy (no synthetic referer here).
                 .referer_url = if (opts.omit_sec_fetch_user) opts.referer else null,
             };
-            if (opts.omit_sec_fetch_user) {
-                // sei=/sg_ss= in-search hops: manual Chrome headers, no Sec-Fetch-User (guest HAR).
-                try HttpProfile.appendChromeHeaders(headers, hdr_alloc, identity, &static, ctx, chrome_opts);
-            } else {
-                try HttpProfile.appendCurlImpersonateDocumentOverrides(
-                    headers,
-                    hdr_alloc,
-                    &static,
-                    ctx,
-                    chrome_opts,
-                    profile.mode == .antidetect,
-                );
-            }
+            try HttpProfile.appendChromeHeaders(headers, hdr_alloc, identity, &static, ctx, chrome_opts);
             try self._session.browser.app.config.profile_runtime.appendHeaderPlugins(
                 header_plan,
                 headers,
@@ -1112,21 +1109,21 @@ pub fn releaseArena(self: *Frame, allocator: Allocator) void {
     return self._session.releaseArena(allocator);
 }
 
-/// Nested DOM (appendChild) may run while `Env.checkpoint_active`; `runMicrotasks`
-/// then defers and Y.ip never settles. Use per-context checkpoints + scheduler only.
+/// Nested DOM (appendChild) may run while `Env.checkpoint_active`.
+/// **Nested path only** for timer policy: never `pumpDueTimersNow` while nested
+/// (see EventLoop nested vs top-level table). Prefer `EventLoop.afterDomMutation`
+/// when a single post-mutation drain is enough.
 pub fn pumpSameTurnPromiseContinuations(self: *Frame) void {
     const env = &self._session.browser.env;
-    const is_fp = std.mem.indexOf(u8, self.url, "fingerprint.com") != null;
-    // call_depth: Zig DOM API nesting. is_evaluating: mid Script.eval (still on V8
-    // stack even when call_depth==0). Running worker-flush macrotasks from there
-    // hits V8 IsOnCentralStack.
-    const nested = self.js.call_depth > 0 or self._script_manager.base.is_evaluating or env.anyContextOnV8Stack();
+    const exec = &self.js.execution;
+    const js_mod = @import("../js/js.zig");
+    const nested = js_mod.EventLoop.isHostNested(exec);
     var pass: u8 = 0;
     while (pass < 48) : (pass += 1) {
-        if (is_fp) env.performMicrotaskCheckpointFp(self.js) else env.performMicrotaskCheckpoint(self.js);
+        // Unrestricted checkpoint: pure-JS Promise.resolve from onload.
+        env.performMicrotaskCheckpointFp(self.js);
         if (@mod(pass, 4) == 3) {
-            // Timer / worker-flush callbacks require V8's central stack; defer when nested.
-            if (nested and !is_fp) {
+            if (nested) {
                 self.scheduleDeferredMacrotaskPump(0) catch |err| {
                     log.warn(.frame, "defer nested dom timer pump", .{ .err = err });
                 };
@@ -1138,60 +1135,37 @@ pub fn pumpSameTurnPromiseContinuations(self: *Frame) void {
     }
 }
 
-/// Drain promise reactions while a classic `<script>` is still
-/// `document.currentScript`. Isolate uses kExplicit microtasks, so without an
-/// explicit checkpoint Next/Turbopack's `async registerChunk` → `getAssetPrefix`
-/// sees `currentScript === null` and throws InvariantError (SPA bootstrap).
-///
-/// Uses the Fp checkpoint path so realm `.initializing` (before parse complete)
-/// does not drop same-turn reactions the way `performMicrotaskCheckpoint` does.
-/// Does not run the frame scheduler — nested script eval / parse callbacks
-/// mid-classic-script re-enter dangerously; only V8 microtasks belong here.
+/// Mid classic `<script>` only — microtasks, **no** scheduler/timers
+/// (`EventLoop.drainMicrotasksNested` shape). Deep passes re-enter MessagePort.
 pub fn drainClassicScriptMicrotasks(self: *Frame) void {
     const env = &self._session.browser.env;
-    // During lifecycle evaluate() drain: skip microtask storm entirely.
-    // Promise reactions still flush on the next hop (delay-0 evaluate /
-    // Runner macrotasks). 48 nested checkpoints re-entered MessagePort +
-    // iframe Frame.init → V8_Fatal (P1 Transport closed / P0 no DCL).
-    if (self._script_manager.base.is_evaluating) return;
+    const max_passes: u8 = if (self._script_manager.base.is_evaluating) 8 else 48;
     var pass: u8 = 0;
-    while (pass < 48) : (pass += 1) {
+    while (pass < max_passes) : (pass += 1) {
         env.performMicrotaskCheckpointFp(self.js);
     }
 }
 
-/// Fingerprint yb() resolves a hidden iframe Promise during appendChild. Property
-/// onload and Promise reactions queue microtasks while nested in the DOM API; the
-/// outer V8 callback must drain before returning to script or Y.ip stays pending.
+/// After DOM insertion that may resolve pure-JS Promises. Delegates to
+/// `EventLoop.afterDomMutation` (nested-safe vs top-level spin).
 pub fn drainMicrotasksAfterDomInsertion(self: *Frame) void {
-    self.pumpSameTurnPromiseContinuations();
-
+    const js_mod = @import("../js/js.zig");
+    // Local scope for any Zig→JS that reactions may need.
     var owned_scope: JS.Local.Scope = undefined;
     const has_local = self.js.local != null;
     if (!has_local) self.js.localScope(&owned_scope);
     defer if (!has_local) owned_scope.deinit();
 
-    const env = &self._session.browser.env;
-    // Do not drain macrotasks while nested in Script.eval / DOM APIs — worker
-    // flushes and timers need the V8 central stack (IsOnCentralStack).
-    const on_v8_stack = self.js.call_depth > 0 or self._script_manager.base.is_evaluating or env.anyContextOnV8Stack();
-    if (on_v8_stack and std.mem.indexOf(u8, self.url, "fingerprint.com") == null) {
-        self.scheduleDeferredMacrotaskPump(0) catch {};
-        return;
-    }
-    var sched_pass: u8 = 0;
-    while (sched_pass < 8) : (sched_pass += 1) {
-        self.runOwnedScheduler() catch break;
-        env.performMicrotaskCheckpoint(self.js);
-        if (!self.js.scheduler.hasReadyTasks()) break;
-    }
+    self.pumpSameTurnPromiseContinuations();
+    js_mod.EventLoop.afterDomMutation(&self.js.execution);
 }
 
 /// Run overdue scheduler tasks up to `max_delay_ms` without a full macrotask pump.
 pub fn pumpDueTimersNow(self: *Frame, max_delay_ms: u32) void {
-    // Timer callbacks must run on V8's central stack. Nested DOM / script paths
-    // (HTML parse, appendChild, HTTP doneCallback) are not safe — defer instead.
-    if (self.js.call_depth > 0 and std.mem.indexOf(u8, self.url, "fingerprint.com") == null) {
+    // Timer callbacks must run on V8's central stack. Nested host stacks are
+    // not safe — EventLoop nested path forbids this (WS3).
+    const js_mod = @import("../js/js.zig");
+    if (js_mod.EventLoop.isHostNested(&self.js.execution)) {
         self.scheduleDeferredMacrotaskPump(0) catch |err| {
             log.warn(.frame, "defer timer pump nested", .{ .err = err });
         };
@@ -1554,6 +1528,8 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
                 .referer = nav_referer,
                 .omit_cookies = nav_plan.omit_cookies,
                 .omit_sec_fetch_user = nav_plan.omit_sec_fetch_user,
+                .prefer_http3 = nav_plan.prefer_http3,
+                .force_fresh_connection = nav_plan.force_fresh_connection,
                 .notification = self._session.notification,
                 .browser_session = session,
                 .protect_from_abort = is_pending_root,
@@ -1584,12 +1560,13 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
             .referer = nav_referer,
             .omit_cookies = nav_plan.omit_cookies,
             .omit_sec_fetch_user = nav_plan.omit_sec_fetch_user,
+            .prefer_http3 = nav_plan.prefer_http3,
             .redirect_policy_refresh = refreshDocumentRedirectRequest,
             .notification = self._session.notification,
             .browser_session = session,
             .protect_from_abort = is_pending_root,
             .skip_cache = opts.force,
-            .force_fresh_connection = opts.is_document_retry,
+            .force_fresh_connection = opts.is_document_retry or nav_plan.force_fresh_connection,
         },
         .header_callback = frameHeaderDoneCallback,
         .data_callback = frameDataCallback,
@@ -1680,7 +1657,19 @@ fn scheduleNavigationWithArena(originator: *Frame, arena: Allocator, request_url
         .type = target._type,
     });
 
-    session.browser.http_client.abortFrame(target._frame_id, .{ .skip_xhr = true });
+    // Pre-abort in-flight work for the *target* frame before the queued nav
+    // runs. Skip XHR + fetch: both may schedule this navigation from their own
+    // callbacks (Google batchexecute XHR; Fingerprint agent fetch + about:blank
+    // iframes). Killing them here left config GET as CDP Shutdown and hung
+    // fetch() Promises. Document teardown still cancels via
+    // abortTransfersAttributedTo without these skips.
+    // Synthetic about:blank has no prior HTTP document body to cancel.
+    if (!is_about_blank) {
+        session.browser.http_client.abortFrame(target._frame_id, .{
+            .skip_xhr = true,
+            .skip_fetch = true,
+        });
+    }
 
     // Capture the originating frame's URL as the Referer for this
     // navigation. The originator's frame may be torn down before navigate()
@@ -1815,17 +1804,10 @@ fn iframeChildLoadedSynchronously(iframe: *const IFrame) bool {
 pub fn queueSyncIframeLoad(self: *Frame, iframe: *IFrame) !void {
     iframe._sync_load_queued = true;
     try self._sync_iframe_pending.append(self.arena, iframe);
-    if (std.mem.indexOf(u8, self.url, "fingerprint.com") != null) {
-        log.warn(.frame, "fp iframe queued", .{ .url = self.url, .pending = self._sync_iframe_pending.items.len });
-    }
 }
 
 pub fn flushPendingSyncIframeLoads(self: *Frame) void {
     if (self._sync_iframe_pending.items.len == 0) return;
-
-    if (std.mem.indexOf(u8, self.url, "fingerprint.com") != null) {
-        log.warn(.frame, "fp iframe flush", .{ .url = self.url, .count = self._sync_iframe_pending.items.len });
-    }
 
     const to_process = self._sync_iframe_pending;
     self._sync_iframe_pending = if (to_process == &self._sync_iframe_pending_1)
@@ -1842,16 +1824,10 @@ pub fn flushPendingSyncIframeLoads(self: *Frame) void {
         self.flushPendingSyncIframeLoads();
     }
 
+    // EventLoop.afterDomMutation: nested → microtasks only; top → spin/timers.
     self.pumpSameTurnPromiseContinuations();
-    if (std.mem.indexOf(u8, self.url, "fingerprint.com") != null) {
-        const env = &self._session.browser.env;
-        log.warn(.frame, "fp iframe flush done", .{
-            .scheduler_suppressed = self._scheduler_suppressed,
-            .realm = self._realm_state,
-            .checkpoint_active = env.checkpoint_active,
-        });
-        env.drainFingerprintYbMicrotasks(self.js);
-    }
+    const js_mod = @import("../js/js.zig");
+    js_mod.EventLoop.afterDomMutation(&self.js.execution);
 }
 
 /// Parser-inserted about:blank iframes queue sync `load` during HTML parse.
@@ -2059,23 +2035,28 @@ pub fn iframeCompletedLoading(self: *Frame, iframe: *IFrame) void {
     if (iframe._window == null) return;
     if (iframeChildLoadedSynchronously(iframe)) {
         if (iframe._sync_onload_dispatched) return;
-        // Do not pump macrotasks here — we are still inside appendChild.
-        self.dispatchIframeLoadNow(&.{iframe}, .same_turn) catch |err| {
-            log.warn(.js, "iframe onload sync", .{ .err = err, .url = iframe._src });
-            self.pendingLoadCompleted();
+        // Fingerprint shared-iframe init (and similar) does:
+        //   onload = resolve; appendChild(about:blank);
+        //   poll: if (!resolved && readyState==='complete') resolve();
+        //   else setTimeout(poll, 10);
+        // contentWindow/readyState are published during about:blank navigate
+        // (injectBlank + markRealmReady) *before* this queue flush.
+        //
+        // about:blank / sync inject: schedule deferred load + denser settle so
+        // pure-JS await load continues (agent iframe + SPA patterns). No site URL
+        // specials — denser settle is default for all.
+        self.scheduleDeferredIframeLoad(iframe) catch |err| {
+            log.warn(.js, "iframe defer load", .{ .err = err, .url = iframe._src });
+            // Fallback: sync path only if we cannot schedule.
+            self.dispatchIframeLoadNow(&.{iframe}, .same_turn) catch |e2| {
+                log.warn(.js, "iframe onload sync", .{ .err = e2, .url = iframe._src });
+                self.pendingLoadCompleted();
+            };
         };
+        // Nested-safe microtasks; denser settle + sparse re-arm via EventLoop.
         self.pumpSameTurnPromiseContinuations();
-        // Queue macrotask pumps for setTimeout(10) readyState polls (yb I()).
-        self.scheduleDeferredMacrotaskPump(0) catch |err| {
-            log.warn(.js, "iframe defer pump", .{ .err = err, .url = iframe._src });
-        };
-        self.scheduleDeferredMacrotaskPump(10) catch |err| {
-            log.warn(.js, "iframe defer pump10", .{ .err = err, .url = iframe._src });
-        };
-        self.pumpDueTimersNow(15);
-        if (std.mem.indexOf(u8, self.url, "fingerprint.com") != null) {
-            self._session.browser.env.drainFingerprintYbMicrotasks(self.js);
-        }
+        self.settleIframePromisesNow();
+        self.scheduleIframePromiseSettle() catch {};
         return;
     }
     self.queueIframeLoad(iframe) catch |err| {
@@ -2121,6 +2102,161 @@ fn queueIframeLoad(self: *Frame, iframe: *IFrame) !void {
         }
     }.cleanup, 0, .{ .name = "frame.dispatchIframeLoad" });
 }
+
+/// Delay-0 load dispatch for sync about:blank iframes. Lets agent-style
+/// `readyState === 'complete'` polls resolve the load Promise on the same turn
+/// after appendChild returns, before we fire the property onload handler.
+fn scheduleDeferredIframeLoad(self: *Frame, iframe: *IFrame) !void {
+    if (iframe._sync_onload_dispatched) return;
+    const arena = try self.getArena(.tiny, "Frame.deferIframeLoad");
+    errdefer self.releaseArena(arena);
+    const callback = try arena.create(DeferIframeLoadCallback);
+    callback.* = .{
+        .frame = self,
+        .iframe = iframe,
+        .arena = arena,
+        .task_owner = self.js.execution.captureTaskOwner(),
+    };
+    try self.js.scheduler.add(callback, DeferIframeLoadCallback.run, 0, .{
+        .name = "Frame.deferIframeLoad",
+        .low_priority = false,
+        .finalizer = DeferIframeLoadCallback.cancelled,
+    });
+}
+
+const DeferIframeLoadCallback = struct {
+    frame: *Frame,
+    iframe: *IFrame,
+    arena: Allocator,
+    task_owner: @import("../../runtime/RealmLifecycleKernel.zig").TaskOwner,
+
+    fn cancelled(ctx: *anyopaque) void {
+        const self: *DeferIframeLoadCallback = @ptrCast(@alignCast(ctx));
+        self.frame.releaseArena(self.arena);
+    }
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *DeferIframeLoadCallback = @ptrCast(@alignCast(ctx));
+        defer self.frame.releaseArena(self.arena);
+        if (self.frame.js.execution.isTaskOwnerStale(self.task_owner)) return null;
+        if (self.iframe._window == null) return null;
+        if (self.iframe._sync_onload_dispatched) return null;
+        self.frame.dispatchIframeLoadNow(&.{self.iframe}, .same_turn) catch |err| {
+            log.warn(.js, "iframe onload deferred", .{ .err = err, .url = self.iframe._src });
+            self.frame.pendingLoadCompleted();
+            return null;
+        };
+        // After property onload (pure-JS resolve), force realm + outer drains so
+        // shared-iframe `ip` await continuations are not stranded until the 2s race.
+        self.frame.settleIframePromisesNow();
+        self.frame.scheduleIframePromiseSettle() catch {};
+        return null;
+    }
+};
+
+/// Host-agnostic settle for pure-JS Promise reactions after about:blank load.
+///
+/// Nested host stack: microtasks only + deferred macrotask pumps (WS3 — never
+/// `pumpDueTimersNow` while nested; that path defers itself but callers should
+/// not pretend timers already ran).
+/// Top-level: short timer pump + `EventLoop.spin` so setTimeout(10) polls and
+/// delay-0 chains progress without a private multi-delay cascade.
+pub fn settleIframePromisesNow(self: *Frame) void {
+    const js_mod = @import("../js/js.zig");
+    const exec = &self.js.execution;
+    const env = &self._session.browser.env;
+    self.clearSchedulerSuppression();
+    env.checkpoint_pending = true;
+
+    var pass: u8 = 0;
+    while (pass < 16) : (pass += 1) {
+        env.drainAllRealmMicrotasks();
+        env.performMicrotaskCheckpointFp(self.js);
+    }
+
+    if (js_mod.EventLoop.isHostNested(exec)) {
+        // Nested appendChild / script: schedule outer pumps; wait-edge spin finishes.
+        env.checkpoint_pending = true;
+        self.scheduleDeferredMacrotaskPump(0) catch {};
+        self.scheduleDeferredMacrotaskPump(10) catch {};
+        return;
+    }
+
+    // Top-level denser path: due timers (≤50ms) + shared EventLoop.spin.
+    self.pumpDueTimersNow(50);
+    pass = 0;
+    while (pass < 8) : (pass += 1) {
+        env.drainAllRealmMicrotasks();
+        env.performMicrotaskCheckpointFp(self.js);
+    }
+    js_mod.EventLoop.spin(exec, .{ .max_tasks = 32, .stop_when_idle = true });
+
+    if (!env.checkpoint_active) {
+        var outer: u8 = 0;
+        while (outer < 4) : (outer += 1) {
+            env.checkpoint_pending = false;
+            env.runMicrotasks(.event_handler);
+            if (!env.checkpoint_pending) break;
+        }
+    } else {
+        env.checkpoint_pending = true;
+    }
+}
+
+/// Sparse re-settle across agent iframe race (~2s). One re-arming task instead
+/// of 12 independent settles (architecture follow-up — collapse private storms).
+/// Wait-edge `EventLoop.spin` drains delay-0; these catch late setTimeout(10) /
+/// await continuations only.
+pub fn scheduleIframePromiseSettle(self: *Frame) !void {
+    const arena = try self.getArena(.tiny, "Frame.iframePromiseSettle");
+    errdefer self.releaseArena(arena);
+    const callback = try arena.create(IframePromiseSettleCallback);
+    callback.* = .{
+        .frame = self,
+        .arena = arena,
+        .task_owner = self.js.execution.captureTaskOwner(),
+        .step = 0,
+    };
+    try self.js.scheduler.add(callback, IframePromiseSettleCallback.run, 0, .{
+        .name = "Frame.iframePromiseSettle",
+        .low_priority = false,
+        .finalizer = IframePromiseSettleCallback.cancelled,
+    });
+    // Kick macrotask pumps so the chain is not stuck behind a quiet loop.
+    self.scheduleDeferredMacrotaskPump(0) catch {};
+    self.scheduleDeferredMacrotaskPump(10) catch {};
+}
+
+const IframePromiseSettleCallback = struct {
+    frame: *Frame,
+    arena: Allocator,
+    task_owner: @import("../../runtime/RealmLifecycleKernel.zig").TaskOwner,
+    /// Gaps after each settle: 0 (initial) → +10 → +40 (=50) → +150 (=200) → +800 (=1000).
+    step: u8,
+
+    fn cancelled(ctx: *anyopaque) void {
+        const self: *IframePromiseSettleCallback = @ptrCast(@alignCast(ctx));
+        self.frame.releaseArena(self.arena);
+    }
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *IframePromiseSettleCallback = @ptrCast(@alignCast(ctx));
+        if (self.frame.js.execution.isTaskOwnerStale(self.task_owner)) {
+            self.frame.releaseArena(self.arena);
+            return null;
+        }
+        self.frame.settleIframePromisesNow();
+        // Sparse late settles only — Runner wait-edge spin covers dense delay-0.
+        const gaps = [_]u32{ 10, 40, 150, 800 };
+        if (self.step < gaps.len) {
+            const delay = gaps[self.step];
+            self.step += 1;
+            return delay;
+        }
+        self.frame.releaseArena(self.arena);
+        return null;
+    }
+};
 
 const IframeLoadDispatch = enum { same_turn, deferred };
 
@@ -2179,16 +2315,10 @@ fn dispatchIframeLoadNow(self: *Frame, iframes: []const *IFrame, comptime when: 
         if (comptime when == .same_turn) {
             iframe._sync_load_queued = false;
             if (invoked_onload) iframe._sync_onload_dispatched = true;
-            if (std.mem.indexOf(u8, self.url, "fingerprint.com") != null) {
-                log.warn(.frame, "fp iframe sync load", .{
-                    .invoked_onload = invoked_onload,
-                    .iframe_src = iframe._src,
-                    .url = self.url,
-                });
-            }
             self.pumpSameTurnPromiseContinuations();
-            const env = &self._session.browser.env;
-            env.drainFingerprintYbMicrotasks(self.js);
+            // Wake pure-JS onload→Promise; nested-safe via EventLoop.
+            const js_mod = @import("../js/js.zig");
+            js_mod.EventLoop.afterDomMutation(&self.js.execution);
         }
     }
 
@@ -2531,6 +2661,8 @@ fn refreshDocumentRedirectRequest(
 
     transfer.req.params.omit_sec_fetch_user = nav_plan.omit_sec_fetch_user;
     transfer.req.params.omit_cookies = nav_plan.omit_cookies;
+    transfer.req.params.prefer_http3 = nav_plan.prefer_http3;
+    if (nav_plan.force_fresh_connection) transfer.req.params.force_fresh_connection = true;
     transfer.req.params.referer = nav_plan.referer;
 
     const live_frame = frame orelse {
@@ -3913,6 +4045,26 @@ pub fn deliverSlotchangeEvents(self: *Frame) void {
         self._event_manager.dispatch(target, event) catch |err| {
             log.err(.frame, "deliverSlotchange.dispatch", .{ .err = err, .type = self._type, .url = self.url });
         };
+    }
+}
+
+/// Run network-idle notification checks for this frame and, recursively, its
+/// child frames. CDP clients (e.g. puppeteer networkidle0) expect lifecycle
+/// events on every frame like Chrome, not only the root. Lightpanda port.
+pub fn checkIdleNotifications(self: *Frame, total_http_activity: usize) void {
+    switch (self._parse_state) {
+        .html, .complete => {
+            if (self._notified_network_almost_idle.check(total_http_activity <= 2)) {
+                self.notifyNetworkAlmostIdle();
+            }
+            if (self._notified_network_idle.check(total_http_activity == 0)) {
+                self.notifyNetworkIdle();
+            }
+        },
+        else => {},
+    }
+    for (self.child_frames.items) |child| {
+        child.checkIdleNotifications(total_http_activity);
     }
 }
 

@@ -18,6 +18,7 @@ const js = @import("../js/js.zig");
 const Frame = @import("Frame.zig");
 const Session = @import("Session.zig");
 const HttpClient = @import("HttpClient.zig");
+const HostIdle = @import("HostIdle.zig");
 
 const Node = @import("../dom/Node.zig");
 const Selector = @import("../webapi/selector/Selector.zig");
@@ -192,7 +193,10 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
         .pre, .raw, .text, .image, .html => {
             // The main frame hasn't started/finished navigating.
             // There's no JS to run, and no reason to run the scheduler.
-            if (http_client.http_active == 0 and (comptime is_cdp) == false) {
+            // Include queue/ready_queue: SPA inject mid-callback parks transfers
+            // there before http_active bumps (Lightpanda pending_queue gate).
+            // HostIdle queues (not raw http_active alone).
+            if (HostIdle.isNetworkIdle(http_client) and (comptime is_cdp) == false) {
                 // Deferred HTML parse is scheduled from the HTTP callback; without
                 // draining it here MCP runner.wait() returned .done while the URL
                 // was set but the document was still empty (github.com).
@@ -271,66 +275,69 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
             // do not drain RTC (or read load/idle state) through a stale Frame ptr.
             self.frame = session.pendingOrCurrentFrame() orelse return .done;
             const live_frame = self.frame;
+            // Single wait-edge spin (architecture v0.2): MessageChannel / delay-0
+            // chains. Do not also spin inside Browser.runMacrotasks.
+            const js_mod = @import("../js/js.zig");
+            js_mod.EventLoop.spin(&live_frame.js.execution, .{
+                .max_tasks = 48,
+                .stop_when_idle = true,
+            });
             live_frame._script_manager.base.pumpDocumentLifecycle(live_frame);
             live_frame.drainRtcEvents();
 
-            const http_active = http_client.http_active;
-            const total_network_activity = http_active + http_client.interception_layer.intercepted;
-            if (live_frame._notified_network_almost_idle.check(total_network_activity <= 2)) {
-                live_frame.notifyNetworkAlmostIdle();
-            }
-            if (live_frame._notified_network_idle.check(total_network_activity == 0)) {
-                live_frame.notifyNetworkIdle();
+            // HostIdle: one formula for wait_until=done / networkIdle (queues included).
+            const total_http_activity = HostIdle.totalHttpActivity(http_client);
+            const network_idle = HostIdle.isNetworkIdle(http_client);
+            const ms_to_next_macrotask = browser.msToNextMacrotask();
+            const script_pending = live_frame._script_manager.base.hasPendingJsWork();
+            const is_done = HostIdle.isFullyIdle(http_client, live_frame, browser);
+
+            live_frame.checkIdleNotifications(total_http_activity);
+
+            // `_we_` have nothing to run, but v8 is working on background tasks.
+            // Wait for them (non-CDP only — CDP messages can arrive any time).
+            if ((comptime is_cdp) == false and network_idle and browser.hasBackgroundTasks()) {
+                browser.waitForBackgroundTasks();
+                return .{ .ok = 0 };
             }
 
-            switch (opts.until) {
-                .done => {},
-                .domcontentloaded => if (live_frame._load_state == .load or live_frame._load_state == .complete) {
+            const met = switch (opts.until) {
+                .done => is_done,
+                .domcontentloaded => live_frame._load_state == .load or live_frame._load_state == .complete,
+                .load => live_frame._load_state == .complete,
+                .networkidle => live_frame._notified_network_idle == .done,
+            };
+
+            // `met` resolves the wait goal. Otherwise, if the page is fully
+            // idle (`is_done`) there is nothing left to wait on — resolve rather
+            // than spin forever (same as Lightpanda Runner._tick).
+            if (met or is_done) {
+                if (comptime is_cdp) {
+                    // CDP event loop keeps ticking for commands; only leave when
+                    // the explicit wait condition is met (not is_done alone for
+                    // long-lived pages with ads that never go fully quiet).
+                    if (met) return .done;
+                } else {
                     return .done;
-                },
-                .load => if (live_frame._load_state == .complete) {
-                    return .done;
-                },
-                .networkidle => if (live_frame._notified_network_idle == .done) {
-                    return .done;
-                },
+                }
             }
 
-            if (http_active == 0 and http_client.ws_active == 0 and http_client.rtc_active == 0 and (comptime is_cdp == false)) {
-                // we don't need to consider http_client.intercepted here
-                // because is_cdp is false, and that can only be
-                // the case when interception isn't possible.
-                if (comptime IS_DEBUG) {
-                    std.debug.assert(http_client.interception_layer.intercepted == 0);
-                }
-
-                if (browser.hasBackgroundTasks()) {
-                    // _we_ have nothing to run, but v8 is working on
-                    // background tasks. We'll wait for them.
-                    browser.waitForBackgroundTasks();
-                }
-
-                // We never advertise a wait time of more than 20, there can
-                // always be new background tasks to run.
-                if (browser.msToNextMacrotask()) |ms_to_next_task| {
-                    return .{ .ok = @min(ms_to_next_task, 20) };
-                }
-                return .done;
-            }
-
-            // We're here because we either have active HTTP
-            // connections, or is_cdp == false (aka, there's
-            // an cdp_socket registered with the http client).
-            // We should continue to run tasks, so we minimize how long
-            // we'll poll for network I/O.
-            var ms_to_wait = @min(opts.ms, browser.msToNextMacrotask() orelse 200);
+            // Keep ticking: network, scripts, or macrotasks still in flight (or CDP).
+            var ms_to_wait = @min(opts.ms, ms_to_next_macrotask orelse 200);
             if (comptime is_cdp) {
                 ms_to_wait = @min(ms_to_wait, 5);
+            } else if (script_pending) {
+                // Unevaluated SPA chunks: re-enter pumpDocumentLifecycle ASAP.
+                ms_to_wait = 0;
             } else if (ms_to_wait > 10 and browser.hasBackgroundTasks()) {
                 // if we have background tasks, we don't want to wait too
                 // long for a message from the client. We want to go back
                 // to the top of the loop and run macrotasks.
                 ms_to_wait = 10;
+            } else if (!network_idle and ms_to_wait > 50) {
+                // Queued/active HTTP: poll more often so ready_queue promotes
+                // and SPA post-load fetches make progress before wait timeout.
+                ms_to_wait = 50;
             }
             const http_result = try http_client.tick(@intCast(@min(opts.ms, ms_to_wait)));
             if ((comptime is_cdp) and http_result == .cdp_socket) {
@@ -373,8 +380,15 @@ pub fn waitForSelector(self: *Runner, selector: [:0]const u8, timeout_ms: u32) !
         if (elapsed >= timeout_ms) {
             return error.Timeout;
         }
+        // Page may be idle (.done) while wait condition not yet true — keep
+        // spinning until wall timeout (architecture D1).
         switch (try self.tick(.{ .ms = timeout_ms - elapsed })) {
-            .done => return error.Timeout,
+            .done => {
+                // Still pump host tasks; only fail on wall clock.
+                const js_mod = @import("../js/js.zig");
+                js_mod.EventLoop.spin(&self.frame.js.execution, .{ .max_tasks = 16, .stop_when_idle = true });
+                std.Thread.sleep(std.time.ns_per_ms * 5);
+            },
             .ok => |recommended_sleep_ms| {
                 if (recommended_sleep_ms > 0) {
                     std.Thread.sleep(std.time.ns_per_ms * recommended_sleep_ms);
@@ -413,8 +427,13 @@ pub fn waitForScript(runner: *Runner, script: [:0]const u8, timeout_ms: u32) !vo
         if (elapsed >= timeout_ms) {
             return error.Timeout;
         }
+        // Idle page (.done) is not wait_script timeout — keep EventLoop spinning.
         switch (try runner.tick(.{ .ms = timeout_ms - elapsed })) {
-            .done => return error.Timeout,
+            .done => {
+                const js_mod = @import("../js/js.zig");
+                js_mod.EventLoop.spin(&runner.frame.js.execution, .{ .max_tasks = 16, .stop_when_idle = true });
+                std.Thread.sleep(std.time.ns_per_ms * 5);
+            },
             .ok => |recommended_sleep_ms| {
                 if (recommended_sleep_ms > 0) {
                     std.Thread.sleep(std.time.ns_per_ms * recommended_sleep_ms);

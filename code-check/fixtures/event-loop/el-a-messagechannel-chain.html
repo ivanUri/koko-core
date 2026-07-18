@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>EL-A</title>
+<body>
+  <script>
+    // React 18 host-scheduler shape: reuse onmessage, chain postMessage.
+    window.__el = { id: "EL-A", ok: false, count: 0, log: [] };
+    const channel = new MessageChannel();
+    let scheduled = false;
+    function performWorkUntilDeadline() {
+      scheduled = false;
+      window.__el.count++;
+      window.__el.log.push("work" + window.__el.count);
+      if (window.__el.count < 8) {
+        if (!scheduled) {
+          scheduled = true;
+          channel.port2.postMessage(null);
+        }
+      } else {
+        window.__el.ok = true;
+      }
+    }
+    channel.port1.onmessage = performWorkUntilDeadline;
+    scheduled = true;
+    channel.port2.postMessage(null);
+    setTimeout(function () {
+      document.title = JSON.stringify({
+        id: "EL-A",
+        ok: window.__el.ok,
+        count: window.__el.count,
+        log: window.__el.log,
+      });
+      window.__elDone = true;
+    }, 100);
+  </script>
+</body>

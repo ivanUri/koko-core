@@ -31,23 +31,30 @@ const Queue = std.PriorityQueue(Task, void, struct {
 const Scheduler = @This();
 
 _sequence: u64,
+/// Bumped by `reset`/`deinit` so an in-flight `run`/`runOne` stops after the
+/// current callback instead of peeking a freed PriorityQueue (about:blank
+/// iframe detach mid agent collection → SIGSEGV in runOneFromQueue).
+_generation: u64 = 0,
 low_priority: Queue,
 high_priority: Queue,
 
 pub fn init(allocator: std.mem.Allocator) Scheduler {
     return .{
         ._sequence = 0,
+        ._generation = 0,
         .low_priority = Queue.init(allocator, {}),
         .high_priority = Queue.init(allocator, {}),
     };
 }
 
 pub fn deinit(self: *Scheduler) void {
+    self._generation +%= 1;
     finalizeTasks(&self.low_priority);
     finalizeTasks(&self.high_priority);
 }
 
 pub fn reset(self: *Scheduler) void {
+    self._generation +%= 1;
     finalizeTasks(&self.low_priority);
     finalizeTasks(&self.high_priority);
     self.low_priority.clearRetainingCapacity();
@@ -102,23 +109,28 @@ pub fn add(self: *Scheduler, ctx: *anyopaque, cb: Callback, run_in_ms: u32, opts
         .sequence = seq,
         .name = opts.name,
         .finalizer = opts.finalizer,
+        .low_priority = opts.low_priority,
         .run_at = milliTimestamp(.monotonic) + run_in_ms,
     });
 }
 
 pub fn run(self: *Scheduler) !void {
+    const gen = self._generation;
     const now = milliTimestamp(.monotonic);
     // High-priority tasks (promise follow-ups, audio resolve) must not lose to
     // repeating low-priority timers (CreepJS setTimeout polling).
-    try self.runQueue(&self.high_priority, now);
-    try self.runQueue(&self.low_priority, now);
+    try self.runQueue(&self.high_priority, now, gen);
+    if (self._generation != gen) return;
+    try self.runQueue(&self.low_priority, now, gen);
 }
 
 /// Run at most one ready task (high priority first). Used for knitsail timer milestones.
 pub fn runOne(self: *Scheduler) !bool {
+    const gen = self._generation;
     const now = milliTimestamp(.monotonic);
-    if (try self.runOneFromQueue(&self.high_priority, now)) return true;
-    if (try self.runOneFromQueue(&self.low_priority, now)) return true;
+    if (try self.runOneFromQueue(&self.high_priority, now, gen)) return true;
+    if (self._generation != gen) return false;
+    if (try self.runOneFromQueue(&self.low_priority, now, gen)) return true;
     return false;
 }
 
@@ -154,11 +166,14 @@ fn msToNextInQueue(queue: *Queue) ?u64 {
     return @intCast(task.run_at - now);
 }
 
-fn runQueue(self: *Scheduler, queue: *Queue, now: u64) !void {
-    while (try self.runOneFromQueue(queue, now)) {}
+fn runQueue(self: *Scheduler, queue: *Queue, now: u64, gen: u64) !void {
+    while (self._generation == gen) {
+        if (!try self.runOneFromQueue(queue, now, gen)) break;
+    }
 }
 
-fn runOneFromQueue(self: *Scheduler, queue: *Queue, now: u64) !bool {
+fn runOneFromQueue(self: *Scheduler, queue: *Queue, now: u64, gen: u64) !bool {
+    if (self._generation != gen) return false;
     if (queue.count() == 0) return false;
     const head = queue.peek() orelse return false;
     if (head.run_at > now) return false;
@@ -168,17 +183,28 @@ fn runOneFromQueue(self: *Scheduler, queue: *Queue, now: u64) !bool {
         log.debug(.scheduler, "scheduler.runTask", .{ .name = task.name });
     }
 
+    // Callback may destroy the owning frame/worker and `reset` this scheduler
+    // (iframe detach during fingerprint agent). Stop using `queue` after that.
     const repeat_in_ms = task.callback(task.ctx) catch |err| {
+        if (self._generation != gen) return false;
         log.warn(.scheduler, "task.callback", .{ .name = task.name, .err = err });
         return true;
     };
 
+    if (self._generation != gen) return false;
+
     if (repeat_in_ms) |ms| {
-        if (comptime IS_DEBUG) {
-            std.debug.assert(ms != 0);
+        // Debug forbids 0-delay repeats (tight loop). Treat 0 as 1ms.
+        const delay: u32 = if (ms == 0) 1 else ms;
+        task.run_at = now + delay;
+        // Re-arm into the **same** priority queue the task was scheduled with.
+        // Page timers (setTimeout/setInterval) use high_priority via AddOpts;
+        // requestIdleCallback stays low. No string matching on task.name.
+        if (task.low_priority) {
+            try self.low_priority.add(task);
+        } else {
+            try self.high_priority.add(task);
         }
-        task.run_at = now + ms;
-        try self.low_priority.add(task);
     }
     return true;
 }
@@ -204,6 +230,8 @@ const Task = struct {
     name: []const u8,
     callback: Callback,
     finalizer: ?Finalizer,
+    /// When re-arming a repeating task, keep the original priority band.
+    low_priority: bool = false,
 };
 
 pub const Callback = *const fn (ctx: *anyopaque) anyerror!?u32;

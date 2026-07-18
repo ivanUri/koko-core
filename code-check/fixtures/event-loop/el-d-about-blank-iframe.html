@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>EL-D</title>
+<body>
+  <script>
+    window.__el = { id: "EL-D", ok: false, ms: null };
+    const t0 = performance.now();
+    const ip = new Promise(function (resolve, reject) {
+      const iframe = document.createElement("iframe");
+      iframe.src = "about:blank";
+      const to = setTimeout(function () {
+        reject(new Error("iframe timeout"));
+      }, 2000);
+      iframe.onload = function () {
+        clearTimeout(to);
+        resolve(true);
+      };
+      document.body.appendChild(iframe);
+    });
+    ip.then(function () {
+      window.__el.ms = Math.round(performance.now() - t0);
+      window.__el.ok = window.__el.ms < 500;
+      document.title = JSON.stringify({
+        id: "EL-D",
+        ok: window.__el.ok,
+        ms: window.__el.ms,
+      });
+      window.__elDone = true;
+    }).catch(function (e) {
+      document.title = JSON.stringify({
+        id: "EL-D",
+        ok: false,
+        err: String(e && e.message ? e.message : e),
+      });
+      window.__elDone = true;
+    });
+  </script>
+</body>
