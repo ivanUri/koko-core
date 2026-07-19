@@ -1,0 +1,69 @@
+{
+  "sites": [
+    {
+      "id": "el-f-offline",
+      "name": "EL-F offline bailout router",
+      "kind": "offline",
+      "file": "code-check/fixtures/event-loop/el-f-client-bailout-router.html",
+      "minText": 5,
+      "expectTextIncludes": ["hydrated"],
+      "maxSec": 8
+    },
+    {
+      "id": "fp-playground",
+      "name": "Fingerprint Pro Playground (Next)",
+      "url": "https://demo.fingerprint.com/playground",
+      "minText": 400,
+      "expectAny": ["hasVisitor", "hasNext", "hasRoot"],
+      "maxSec": 20
+    },
+    {
+      "id": "react-docs",
+      "name": "React docs",
+      "url": "https://react.dev/",
+      "minText": 800,
+      "expectAny": ["hasRoot", "hasMain"],
+      "maxSec": 20
+    },
+    {
+      "id": "nextjs",
+      "name": "Next.js marketing",
+      "url": "https://nextjs.org/",
+      "minText": 800,
+      "expectAny": ["hasNext", "hasRoot", "hasMain"],
+      "maxSec": 20
+    },
+    {
+      "id": "vuejs",
+      "name": "Vue.js",
+      "url": "https://vuejs.org/",
+      "minText": 600,
+      "expectAny": ["hasRoot", "hasMain"],
+      "maxSec": 20
+    },
+    {
+      "id": "svelte",
+      "name": "Svelte",
+      "url": "https://svelte.dev/",
+      "minText": 600,
+      "expectAny": ["hasRoot", "hasMain"],
+      "maxSec": 20
+    },
+    {
+      "id": "angular",
+      "name": "Angular.dev",
+      "url": "https://angular.dev/",
+      "minText": 600,
+      "expectAny": ["hasRoot", "hasMain"],
+      "maxSec": 20
+    },
+    {
+      "id": "remix",
+      "name": "Remix",
+      "url": "https://remix.run/",
+      "minText": 500,
+      "expectAny": ["hasRoot", "hasMain"],
+      "maxSec": 20
+    }
+  ]
+}

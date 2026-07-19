@@ -61,8 +61,9 @@ pub const ProfileRuntime = struct {
         headers: *HttpClient.Headers,
         allocator: Allocator,
         user_agent: []const u8,
+        fingerprint_seed: u64,
     ) !void {
         const plugin_id = plan.header_plugin orelse return;
-        try self.plugins.append(plugin_id, headers, allocator, user_agent);
+        try self.plugins.append(plugin_id, headers, allocator, user_agent, fingerprint_seed);
     }
 };

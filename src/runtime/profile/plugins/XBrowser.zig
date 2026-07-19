@@ -1,5 +1,6 @@
 const std = @import("std");
 const HttpClient = @import("../../../core/browser/HttpClient.zig");
+const ClientVariations = @import("ClientVariations.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -23,7 +24,9 @@ pub const Plugin = struct {
         defer allocator.free(bytes);
         _ = try file.readAll(bytes);
 
-        var parsed = try std.json.parseFromSlice(JsonPlugin, allocator, bytes, .{});
+        var parsed = try std.json.parseFromSlice(JsonPlugin, allocator, bytes, .{
+            .ignore_unknown_fields = true,
+        });
         defer parsed.deinit();
         const doc = parsed.value;
         if (doc.version != 1) return error.UnsupportedPluginVersion;
@@ -55,6 +58,7 @@ pub const Plugin = struct {
         headers: *HttpClient.Headers,
         allocator: Allocator,
         user_agent: []const u8,
+        fingerprint_seed: u64,
     ) !void {
         // Pure-path A/B: VELORA_X_BROWSER_VALIDATION overrides the token.
         // Chrome 150.0.7871.129 guest hop-1 ExtraInfo uses a digest that is NOT
@@ -100,24 +104,54 @@ pub const Plugin = struct {
         );
         try headers.add(year_hdr);
 
-        // X-Client-Data on www.google.com document hops.
-        // - Guest cold ExtraInfo (omnibox): short "CLaAywE=" (default).
-        // - Live SERP sei hop HAR 2026-07-17 Cookie=0: fat multi-field
-        //   "CKmdygEIlqHLAQiGoM0BCMu5zwEIh9OUMAjp1pQwCPTWlDAYh7vPAQ==" — pure A/B via
-        //   VELORA_X_CLIENT_DATA (default short; fat did not unlock cold SERP alone).
-        const xcd = if (std.posix.getenv("VELORA_X_CLIENT_DATA")) |override|
-            override
-        else
-            "CLaAywE=";
+        // X-Client-Data: Chromium ClientVariations formula (never a frozen base64).
+        // Priority:
+        // 1) VELORA_X_CLIENT_DATA — full base64 override for A/B only
+        // 2) VELORA_VARIATION_IDS — comma-separated study IDs → encodeBase64
+        // 3) session entropy → one google-web variation_id → encodeBase64
+        // Empty encode → omit header (Chromium when total_id_count == 0).
+        try appendClientDataHeader(headers, allocator, fingerprint_seed);
+    }
+};
+
+fn appendClientDataHeader(
+    headers: *HttpClient.Headers,
+    allocator: Allocator,
+    fingerprint_seed: u64,
+) !void {
+    if (std.posix.getenv("VELORA_X_CLIENT_DATA")) |override| {
+        if (override.len == 0) return;
         const xcd_hdr = try std.fmt.allocPrintSentinel(
             allocator,
             "X-Client-Data: {s}",
-            .{xcd},
+            .{override},
             0,
         );
         try headers.add(xcd_hdr);
+        return;
     }
-};
+
+    const b64 = blk: {
+        if (std.posix.getenv("VELORA_VARIATION_IDS")) |csv| {
+            const ids = try ClientVariations.parseIdList(allocator, csv);
+            defer allocator.free(ids);
+            break :blk try ClientVariations.encodeBase64(allocator, ids, &[_]i32{});
+        }
+        var session_ids: [1]i32 = undefined;
+        ClientVariations.sessionGoogleWebIds(fingerprint_seed, &session_ids);
+        break :blk try ClientVariations.encodeBase64(allocator, session_ids[0..], &[_]i32{});
+    };
+    defer allocator.free(b64);
+    if (b64.len == 0) return;
+
+    const xcd_hdr = try std.fmt.allocPrintSentinel(
+        allocator,
+        "X-Client-Data: {s}",
+        .{b64},
+        0,
+    );
+    try headers.add(xcd_hdr);
+}
 
 const JsonApiKeys = struct {
     macos: []const u8,
@@ -203,9 +237,30 @@ test "XBrowser: Chrome 150 macOS uses captured ExtraInfo validation" {
     try testing.expect(chrome150MacosValidationOverride("Chrome/149.0.0.0") == null);
 }
 
-test "XBrowser: loads plugin JSON" {
+test "XBrowser: loads plugin JSON without clientData hardcode" {
     var plugin = try Plugin.load(testing.allocator);
     defer plugin.deinit(testing.allocator);
     try testing.expectEqualStrings("stable", plugin.config.channel);
     try testing.expectEqualStrings("2026", plugin.config.year);
+}
+
+test "XBrowser: client data is formula-encoded from session seed" {
+    // Two seeds → two different base64 strings (not a fixed capture).
+    const a = blk: {
+        var ids: [1]i32 = undefined;
+        ClientVariations.sessionGoogleWebIds(1, &ids);
+        break :blk try ClientVariations.encodeBase64(testing.allocator, ids[0..], &[_]i32{});
+    };
+    defer testing.allocator.free(a);
+    const b = blk: {
+        var ids: [1]i32 = undefined;
+        ClientVariations.sessionGoogleWebIds(2, &ids);
+        break :blk try ClientVariations.encodeBase64(testing.allocator, ids[0..], &[_]i32{});
+    };
+    defer testing.allocator.free(b);
+    try testing.expect(a.len > 0);
+    try testing.expect(b.len > 0);
+    try testing.expect(!std.mem.eql(u8, a, b));
+    // Must not freeze either historical capture as the only legal value.
+    try testing.expect(!std.mem.eql(u8, a, "CLaAywE=") or !std.mem.eql(u8, b, "CLaAywE="));
 }

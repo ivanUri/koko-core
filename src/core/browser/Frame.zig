@@ -1024,6 +1024,7 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
                 headers,
                 hdr_alloc,
                 http_client.getUserAgent(),
+                self._session.fingerprint_seed,
             );
             return;
         }
@@ -1056,6 +1057,7 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
                 headers,
                 hdr_alloc,
                 http_client.getUserAgent(),
+                self._session.fingerprint_seed,
             );
         } else {
             const full_hints = opts.resource_type == .document or
@@ -1077,6 +1079,7 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
                 headers,
                 hdr_alloc,
                 http_client.getUserAgent(),
+                self._session.fingerprint_seed,
             );
         }
         return;

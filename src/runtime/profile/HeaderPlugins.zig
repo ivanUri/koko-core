@@ -24,9 +24,10 @@ pub const Registry = struct {
         headers: *HttpClient.Headers,
         allocator: Allocator,
         user_agent: []const u8,
+        fingerprint_seed: u64,
     ) !void {
         if (std.mem.eql(u8, plugin_id, "x-browser")) {
-            try self.x_browser.appendHeaders(headers, allocator, user_agent);
+            try self.x_browser.appendHeaders(headers, allocator, user_agent, fingerprint_seed);
             return;
         }
     }

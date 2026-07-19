@@ -1,51 +1,215 @@
 {
   "meta": {
-    "timestamp": "2026-07-10T04:14:07.553Z",
-    "veloraProfile": "chrome-macos-catalina",
-    "repeats": 1,
-    "maxSec": 30
+    "timestamp": "2026-07-18T18:42:50.159Z",
+    "veloraProfile": "chrome-local-huys-macbook-pro",
+    "repeats": 2,
+    "maxSec": 20
   },
   "overall": {
-    "totalSites": 1,
-    "passedSites": 1,
-    "stableSites": 1,
+    "totalSites": 4,
+    "passedSites": 4,
+    "stableSites": 4,
     "hungSites": 0,
     "allPassed": true,
     "allStable": true
   },
   "results": [
     {
-      "id": "amazon",
-      "name": "Amazon",
-      "url": "https://www.amazon.com",
+      "id": "example",
+      "name": "Example.com",
+      "url": "https://example.com",
       "runs": [
         {
           "run": 1,
           "ok": true,
-          "ms": 3141.423041,
+          "ms": 2343.1600000000003,
           "extract": {
-            "title": "Amazon.com. Spend less. Smile more.",
+            "title": "Example Domain",
             "readyState": "complete",
-            "htmlBytes": 843399,
-            "bodyBytes": 0,
-            "linkCount": 232,
+            "htmlBytes": 544,
+            "bodyBytes": 207,
+            "linkCount": 1,
             "hasBody": true,
-            "url": "https://www.amazon.com/"
+            "url": "https://example.com/"
+          }
+        },
+        {
+          "run": 2,
+          "ok": true,
+          "ms": 2270.55375,
+          "extract": {
+            "title": "Example Domain",
+            "readyState": "complete",
+            "htmlBytes": 544,
+            "bodyBytes": 207,
+            "linkCount": 1,
+            "hasBody": true,
+            "url": "https://example.com/"
           }
         }
       ],
       "summary": {
-        "attempts": 1,
-        "passed": 1,
+        "attempts": 2,
+        "passed": 2,
         "failed": 0,
         "hung": false,
         "stable": true,
-        "minMs": 3141.423041,
-        "medianMs": 3141.423041,
-        "maxMs": 3141.423041,
+        "minMs": 2270.55375,
+        "medianMs": 2343.1600000000003,
+        "maxMs": 2343.1600000000003,
         "htmlBytesRange": [
-          843399,
-          843399
+          544,
+          544
+        ],
+        "errors": []
+      }
+    },
+    {
+      "id": "wikipedia",
+      "name": "Wikipedia",
+      "url": "https://www.wikipedia.org",
+      "runs": [
+        {
+          "run": 1,
+          "ok": true,
+          "ms": 2856.6576250000007,
+          "extract": {
+            "title": "Wikipedia",
+            "readyState": "complete",
+            "htmlBytes": 118828,
+            "bodyBytes": 56843,
+            "linkCount": 376,
+            "hasBody": true,
+            "url": "https://www.wikipedia.org/"
+          }
+        },
+        {
+          "run": 2,
+          "ok": true,
+          "ms": 2516.5000419999997,
+          "extract": {
+            "title": "Wikipedia",
+            "readyState": "complete",
+            "htmlBytes": 118828,
+            "bodyBytes": 56843,
+            "linkCount": 376,
+            "hasBody": true,
+            "url": "https://www.wikipedia.org/"
+          }
+        }
+      ],
+      "summary": {
+        "attempts": 2,
+        "passed": 2,
+        "failed": 0,
+        "hung": false,
+        "stable": true,
+        "minMs": 2516.5000419999997,
+        "medianMs": 2856.6576250000007,
+        "maxMs": 2856.6576250000007,
+        "htmlBytesRange": [
+          118828,
+          118828
+        ],
+        "errors": []
+      }
+    },
+    {
+      "id": "github",
+      "name": "GitHub",
+      "url": "https://github.com",
+      "runs": [
+        {
+          "run": 1,
+          "ok": true,
+          "ms": 14194.617875000002,
+          "extract": {
+            "title": "GitHub · Change is constant. GitHub keeps you ahead. · GitHub",
+            "readyState": "complete",
+            "htmlBytes": 550625,
+            "bodyBytes": 521645,
+            "linkCount": 146,
+            "hasBody": true,
+            "url": "https://github.com/"
+          }
+        },
+        {
+          "run": 2,
+          "ok": true,
+          "ms": 13030.952291999998,
+          "extract": {
+            "title": "GitHub · Change is constant. GitHub keeps you ahead. · GitHub",
+            "readyState": "complete",
+            "htmlBytes": 550625,
+            "bodyBytes": 521644,
+            "linkCount": 146,
+            "hasBody": true,
+            "url": "https://github.com/"
+          }
+        }
+      ],
+      "summary": {
+        "attempts": 2,
+        "passed": 2,
+        "failed": 0,
+        "hung": false,
+        "stable": true,
+        "minMs": 13030.952291999998,
+        "medianMs": 14194.617875000002,
+        "maxMs": 14194.617875000002,
+        "htmlBytesRange": [
+          550625,
+          550625
+        ],
+        "errors": []
+      }
+    },
+    {
+      "id": "hn",
+      "name": "Hacker News",
+      "url": "https://news.ycombinator.com",
+      "runs": [
+        {
+          "run": 1,
+          "ok": true,
+          "ms": 4138.753250000002,
+          "extract": {
+            "title": "Hacker News",
+            "readyState": "complete",
+            "htmlBytes": 35153,
+            "bodyBytes": 34779,
+            "linkCount": 229,
+            "hasBody": true,
+            "url": "https://news.ycombinator.com/"
+          }
+        },
+        {
+          "run": 2,
+          "ok": true,
+          "ms": 2559.091207999998,
+          "extract": {
+            "title": "Hacker News",
+            "readyState": "complete",
+            "htmlBytes": 35153,
+            "bodyBytes": 34779,
+            "linkCount": 229,
+            "hasBody": true,
+            "url": "https://news.ycombinator.com/"
+          }
+        }
+      ],
+      "summary": {
+        "attempts": 2,
+        "passed": 2,
+        "failed": 0,
+        "hung": false,
+        "stable": true,
+        "minMs": 2559.091207999998,
+        "medianMs": 4138.753250000002,
+        "maxMs": 4138.753250000002,
+        "htmlBytesRange": [
+          35153,
+          35153
         ],
         "errors": []
       }
