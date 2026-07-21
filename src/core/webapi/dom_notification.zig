@@ -53,11 +53,13 @@ pub const DomNotification = struct {
             pub var class_id: bridge.ClassId = undefined;
         };
         pub const constructor = bridge.constructor(DomNotification.constructor, .{});
-        pub const permission = bridge.function(struct {
-            fn f(_: *DomNotification, frame: *Frame) []const u8 {
+        // Chrome: static data property `Notification.permission` (string), not a method.
+        // Exposing a function made `Notification.permission` look non-string to FP agents.
+        pub const permission = bridge.accessor(struct {
+            fn get(_: *DomNotification, frame: *Frame) []const u8 {
                 return DomNotification.permission(frame);
             }
-        }.f, .{ .static = true });
+        }.get, null, .{ .static = true });
         pub const requestPermission = bridge.function(struct {
             fn f(_: *DomNotification, opts: ?js.Value, frame: *Frame) !js.Promise {
                 return DomNotification.requestPermission(opts, frame);

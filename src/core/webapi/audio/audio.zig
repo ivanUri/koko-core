@@ -1096,7 +1096,9 @@ pub const AudioContext = struct {
     _last_render_data: ?*AudioRenderData = null,
 
     pub fn constructor(_: ?js.Value, frame: *Frame) !*AudioContext {
-        return initContext(frame, 44100);
+        // Chrome desktop (macOS) default AudioContext sampleRate is 48000.
+        // 44100 is a common VM/Linux/offline fingerprint; mismatches canvas/WebGL Mac profiles.
+        return initContext(frame, 48000);
     }
 
     fn createListener(frame: *Frame) !*AudioListener {

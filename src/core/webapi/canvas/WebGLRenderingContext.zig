@@ -335,7 +335,7 @@ pub fn getDrawingBufferHeight(self: *const WebGLRenderingContext) u32 {
 /// This actually takes "GLenum" which, in fact, is a fancy way to say number.
 /// Return value also depends on what's being passed as `pname`; we don't really
 /// support any though.
-pub fn getParameter(_: *const WebGLRenderingContext, pname: u32, exec: *Execution) !js.Value {
+pub fn getParameter(self: *const WebGLRenderingContext, pname: u32, exec: *Execution) !js.Value {
     const local = exec.context.local orelse return error.NotHandled;
     if (exec.loadedProfile().mode == .antidetect) {
         const frame = switch (exec.context.global) {
@@ -344,17 +344,38 @@ pub fn getParameter(_: *const WebGLRenderingContext, pname: u32, exec: *Executio
         };
         if (frame) |f| {
             const WebGLIntelligent = @import("../../../runtime/profile/WebGLIntelligent.zig");
-            if (try WebGLIntelligent.parameterJsValue(f, pname, local)) |value| {
-                return value;
+            // Probe capture is usually from a WebGL2 context (VERSION = "WebGL 2.0 …").
+            // Applying those strings to getContext('webgl') is a classic FP contradiction:
+            // WebGLRenderingContext reporting WebGL 2.0 → tamper / automation scores.
+            // Skip VERSION / SHADING_LANGUAGE_VERSION for WebGL1 so identity profile
+            // WebGL 1.0 strings apply; other probe params (limits, unmasked GPU) stay.
+            const skip_probe_version_strings = !self._is_webgl2 and
+                (pname == VERSION or pname == SHADING_LANGUAGE_VERSION);
+            if (!skip_probe_version_strings) {
+                if (try WebGLIntelligent.parameterJsValue(f, pname, local)) |value| {
+                    return value;
+                }
             }
         }
     }
     const profile = exec.identityProfile().webgl;
     switch (pname) {
-        VERSION => return (try local.zigValueToJs(profile.version, .{})),
+        VERSION => {
+            // WebGL2 identity profiles often only store WebGL1 version strings.
+            // When probe params miss VERSION, still return Chrome-accurate WebGL2 text.
+            if (self._is_webgl2 and !std.mem.startsWith(u8, profile.version, "WebGL 2")) {
+                return (try local.zigValueToJs("WebGL 2.0 (OpenGL ES 3.0 Chromium)", .{}));
+            }
+            return (try local.zigValueToJs(profile.version, .{}));
+        },
         VENDOR => return (try local.zigValueToJs(profile.vendor, .{})),
         RENDERER => return (try local.zigValueToJs(profile.renderer, .{})),
-        SHADING_LANGUAGE_VERSION => return (try local.zigValueToJs(profile.shading_language_version, .{})),
+        SHADING_LANGUAGE_VERSION => {
+            if (self._is_webgl2 and !std.mem.startsWith(u8, profile.shading_language_version, "WebGL GLSL ES 3")) {
+                return (try local.zigValueToJs("WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)", .{}));
+            }
+            return (try local.zigValueToJs(profile.shading_language_version, .{}));
+        },
         Extension.Type.WEBGL_debug_renderer_info.UNMASKED_VENDOR_WEBGL => return (try local.zigValueToJs(profile.unmasked_vendor, .{})),
         Extension.Type.WEBGL_debug_renderer_info.UNMASKED_RENDERER_WEBGL => return (try local.zigValueToJs(profile.unmasked_renderer, .{})),
         MAX_TEXTURE_SIZE => return (try local.zigValueToJs(profile.max_texture_size, .{})),

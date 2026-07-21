@@ -53,8 +53,32 @@ const SNAP = `(() => {
   const hasVisitor =
     /visitor\\s*id|Visitor ID|your visitor/i.test(body) ||
     !!document.querySelector('[class*="visitor"],[data-testid*="visitor"]');
-  const hasBot = /bot detection|botd|isBot/i.test(body);
+  const hasBot = /bot detection|botd|isBot|bad bot|browser_automation/i.test(body);
   const hasError = /error|failed|something went wrong/i.test(body);
+  const sig = (re) => {
+    const m = body.match(re);
+    return m ? String(m[1]).replace(/\\s+/g, ' ').trim() : null;
+  };
+  // Playground smart-signal labels (UI text, not sealed API).
+  const signals = {
+    visitorId: sig(/Visitor ID is\\s*([A-Za-z0-9]{8,})/i),
+    browser: sig(/Browser\\s*(Chrome[\\d .]+|Chromium[\\w -]+|Not Available)/i),
+    confidence: sig(/Confidence Score\\s*([\\d.]+)/i),
+    bot: sig(/Bot\\s*(Not detected|You are a bad bot[^V]{0,90}|Detected)/i),
+    tampering: sig(/Browser Tampering\\s*(Yes[^A-Za-z]{0,8}|No|Not detected)/i),
+    vm: sig(/Virtual Machine\\s*(Yes[^A-Za-z]{0,8}|No|Not detected)/i),
+    devtools: sig(/Developer Tools\\s*(Yes[^A-Za-z]{0,8}|No|Not detected)/i),
+    suspect: sig(/Suspect Score\\s*(\\d+)/i),
+    glVersion: (() => {
+      try {
+        const c = document.createElement('canvas');
+        const g = c.getContext('webgl');
+        return g ? g.getParameter(0x1F02) : null;
+      } catch {
+        return null;
+      }
+    })(),
+  };
   // Fingerprint agent global probes
   const fpKeys = keys.filter((k) => /fp|fingerprint/i.test(k));
   return {
@@ -63,7 +87,7 @@ const SNAP = `(() => {
     ready: document.readyState,
     htmlLen: document.documentElement ? document.documentElement.outerHTML.length : 0,
     bodyLen: body.replace(/\\s+/g, ' ').trim().length,
-    bodyHead: body.replace(/\\s+/g, ' ').trim().slice(0, 400),
+    bodyHead: body.replace(/\\s+/g, ' ').trim().slice(0, 2000),
     hasBailout: !!(document.querySelector('template[data-dgst*="BAILOUT"]') ||
       document.documentElement.innerHTML.includes('BAILOUT_TO_CLIENT_SIDE_RENDERING')),
     hasNext: typeof window.next !== 'undefined',
@@ -81,6 +105,7 @@ const SNAP = `(() => {
     hasVisitor,
     hasBot,
     hasError,
+    signals,
     webdriver: navigator.webdriver,
     ua: (navigator.userAgent || '').slice(0, 100),
     currentScript: document.currentScript
@@ -360,6 +385,7 @@ async function main() {
       webpackChunkLen: last?.webpackChunkLen,
       hasVisitor: last?.hasVisitor,
       hasBailout: last?.hasBailout,
+      signals: last?.signals,
       consoles: cdp.consoles.length,
       exceptions: cdp.exceptions.length,
       scriptCount: last?.scriptCount,
