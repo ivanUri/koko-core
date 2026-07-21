@@ -19,7 +19,6 @@ const Allocator = std.mem.Allocator;
 ///
 /// This module only implements the **encoding formula**. It does **not** hardcode
 /// a captured base64 blob. Active IDs come from session entropy / env / (future) Finch.
-
 /// Encode active variation IDs the way Chromium builds `X-Client-Data`.
 /// Returns owned base64, or empty slice when there are no IDs (caller omits header).
 pub fn encodeBase64(
