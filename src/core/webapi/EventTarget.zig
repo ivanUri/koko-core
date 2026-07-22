@@ -55,6 +55,8 @@ pub const Type = union(enum) {
     rtc_peer_connection: *@import("rtc_bindings.zig").RTCPeerConnectionJs,
     rtc_data_channel: *@import("rtc_bindings.zig").RTCDataChannelJs,
     shared_worker: *@import("shared_worker.zig").SharedWorker,
+    media_source: *@import("media/MediaSource.zig"),
+    source_buffer: *@import("media/SourceBuffer.zig"),
 };
 
 pub fn init(page: *Page) !*EventTarget {
@@ -214,6 +216,8 @@ pub fn format(self: *EventTarget, writer: *std.Io.Writer) !void {
         .rtc_peer_connection => writer.writeAll("<RTCPeerConnection>"),
         .rtc_data_channel => writer.writeAll("<RTCDataChannel>"),
         .shared_worker => writer.writeAll("<SharedWorker>"),
+        .media_source => writer.writeAll("<MediaSource>"),
+        .source_buffer => writer.writeAll("<SourceBuffer>"),
     };
 }
 
@@ -245,6 +249,8 @@ pub fn toString(self: *EventTarget) []const u8 {
         .rtc_peer_connection => return "[object RTCPeerConnection]",
         .rtc_data_channel => return "[object RTCDataChannel]",
         .shared_worker => return "[object SharedWorker]",
+        .media_source => return "[object MediaSource]",
+        .source_buffer => return "[object SourceBuffer]",
     };
 }
 

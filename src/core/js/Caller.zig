@@ -76,13 +76,6 @@ pub fn initFromHandle(self: *Caller, handle: ?*const v8.FunctionCallbackInfo) bo
     return self.init(isolate);
 }
 
-fn isInsideEventDispatch(ctx: *Context) bool {
-    return switch (ctx.global) {
-        .frame => |frame| frame._event_manager.base.dispatch_depth > 0,
-        .worker => |wgs| wgs._event_manager.dispatch_depth > 0,
-    };
-}
-
 pub fn deinit(self: *Caller) void {
     const ctx = self.local.ctx;
     const call_depth = ctx.call_depth - 1;
@@ -102,51 +95,17 @@ pub fn deinit(self: *Caller) void {
     ctx.local = self.prev_local;
     ctx.global.setJs(self.prev_context);
 
-    // Nested DOM APIs (appendChild → iframe onload) queue Promise reactions that
-    // must run before the outer load() callback returns to the event loop.
-    // Skip when the callback threw: checkpoint can drain the pending exception
-    // before it reaches in-script try/catch (WPT assert_throws_* on first run).
-    // Also skip while an event dispatch is suspended (e.g. dispatchEvent from a
-    // listener): draining microtasks here can reorder the outer capture/bubble walk.
-    if (!ctx.pending_callback_exception and !isInsideEventDispatch(ctx)) {
-        ctx.env.performMicrotaskCheckpoint(ctx);
-    }
+    // Returning from a native binding resumes the suspended JavaScript stack;
+    // it is never an HTML microtask checkpoint. Draining here can run Promise
+    // reactions in the middle of a reducer or other non-reentrant operation.
+    // Script/function/task runners own the checkpoint after V8 returns. DOM
+    // operations needing explicit same-turn progress use EventLoop helpers.
+    ctx.env.checkpoint_pending = true;
 
     if (call_depth == 0) {
-        const had_callback_exception = ctx.pending_callback_exception;
         ctx.pending_callback_exception = false;
         const arena: *ArenaAllocator = @ptrCast(@alignCast(ctx.call_arena.ptr));
         _ = arena.reset(.{ .retain_with_limit = CALL_ARENA_RETAIN });
-        if (!had_callback_exception) {
-            switch (ctx.global) {
-                .frame => {
-                    // Bounded microtask drain after native callback (not the full
-                    // nested-host path — that re-entered V8 and segfaulted).
-                    var pass: u8 = 0;
-                    while (pass < 24) : (pass += 1) {
-                        ctx.env.performMicrotaskCheckpoint(ctx);
-                        if (ctx.env.checkpoint_active) break;
-                        ctx.env.runMicrotasks(.event_handler);
-                        if (!ctx.env.checkpoint_pending) break;
-                    }
-                },
-                .worker => {
-                    // Worker native callbacks often run mid-classic-script
-                    // (Script::Run does not hold call_depth). Never call
-                    // runMicrotasks here — that drains *all* realms and re-enters
-                    // the parent page (shared C stack → RangeError in agent blob).
-                    var pass: u8 = 0;
-                    while (pass < 8) : (pass += 1) {
-                        ctx.env.performMicrotaskCheckpoint(ctx);
-                    }
-                },
-            }
-        }
-    } else {
-        // Nested call_depth>0: only mark microtask pending; full
-        // drainNestedHostMicrotasks re-enters V8 and can UAF. Outer callback
-        // (call_depth==0 path above) or EventLoop.spin after script will drain.
-        ctx.env.checkpoint_pending = true;
     }
 }
 

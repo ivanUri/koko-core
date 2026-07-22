@@ -15,6 +15,9 @@ _loading: bool = false,
 _complete: bool = false,
 _failed: bool = false,
 _load_url: ?[:0]const u8 = null,
+/// Intrinsic size after successful load (attr or CSS default object size 300×150).
+_natural_width: u32 = 0,
+_natural_height: u32 = 0,
 
 pub fn constructor(w_: ?u32, h_: ?u32, frame: *Frame) !*Image {
     const node = try frame.createElementNS(.html, "img", null);
@@ -114,22 +117,34 @@ pub fn setLoading(self: *Image, value: []const u8, frame: *Frame) !void {
     try self.asElement().setAttributeSafe(comptime .wrap("loading"), .wrap(value), frame);
 }
 
-pub fn getNaturalWidth(_: *const Image) u32 {
-    // this is a valid response under a number of normal conditions, but could
-    // be used to detect the nature of Browser.
-    return 0;
+pub fn getNaturalWidth(self: *const Image) u32 {
+    return self._natural_width;
 }
 
-pub fn getNaturalHeight(_: *const Image) u32 {
-    // this is a valid response under a number of normal conditions, but could
-    // be used to detect the nature of Browser.
-    return 0;
+pub fn getNaturalHeight(self: *const Image) u32 {
+    return self._natural_height;
 }
 
 pub fn getComplete(self: *const Image) bool {
     const src = self.asConstElement().getAttributeSafe(comptime .wrap("src")) orelse return true;
     if (src.len == 0) return true;
-    return !self._loading;
+    return self._complete and !self._loading;
+}
+
+/// Prefer width/height content attributes; else CSS default object size 300×150.
+fn resolveNaturalDimensions(self: *const Image) struct { w: u32, h: u32 } {
+    var w: u32 = 0;
+    var h: u32 = 0;
+    if (self.asConstElement().getAttributeSafe(comptime .wrap("width"))) |raw| {
+        w = std.fmt.parseUnsigned(u32, raw, 10) catch 0;
+    }
+    if (self.asConstElement().getAttributeSafe(comptime .wrap("height"))) |raw| {
+        h = std.fmt.parseUnsigned(u32, raw, 10) catch 0;
+    }
+    // Default object size (CSS Images) when intrinsic pixels are unknown.
+    if (w == 0) w = 300;
+    if (h == 0) h = 150;
+    return .{ .w = w, .h = h };
 }
 
 /// Used in `Page.nodeIsReady`.
@@ -168,6 +183,8 @@ pub fn imageAddedCallback(self: *Image, frame: *Frame) !void {
     self._loading = true;
     self._complete = false;
     self._failed = false;
+    self._natural_width = 0;
+    self._natural_height = 0;
     self._load_url = owned_url;
 
     const arena = scratch;
@@ -258,8 +275,15 @@ const ImageLoad = struct {
         self.image._failed = !ok;
 
         if (ok) {
+            // Headless does not decode pixels; still expose a non-zero intrinsic
+            // size so scripts relying on naturalWidth/Height after load work.
+            const dims = self.image.resolveNaturalDimensions();
+            self.image._natural_width = dims.w;
+            self.image._natural_height = dims.h;
             try self.frame.queueLoad(self.image._proto);
         } else {
+            self.image._natural_width = 0;
+            self.image._natural_height = 0;
             try self.dispatchError();
         }
     }
@@ -271,6 +295,8 @@ const ImageLoad = struct {
         self.image._loading = false;
         self.image._complete = true;
         self.image._failed = true;
+        self.image._natural_width = 0;
+        self.image._natural_height = 0;
         self.dispatchError() catch {};
     }
 

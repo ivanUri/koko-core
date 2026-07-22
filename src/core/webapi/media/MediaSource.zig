@@ -3,9 +3,11 @@ const js = @import("../../js/js.zig");
 const Frame = @import("../../browser/Frame.zig");
 const Page = @import("../../browser/Page.zig");
 const Execution = js.Execution;
+const EventTarget = @import("../EventTarget.zig");
 
 const MediaSource = @This();
 
+_proto: *EventTarget,
 _ready_state: u16 = 0, // 0=closed, 1=open, 2=ended
 _duration: f64 = std.math.nan(f64),
 _source_buffers: std.ArrayListUnmanaged(*SourceBuffer) = .empty,
@@ -15,11 +17,15 @@ const SourceBuffer = @import("SourceBuffer.zig");
 
 pub fn init(exec: *js.Execution) !*MediaSource {
     const arena = try exec.getArena(.tiny, "MediaSource");
-    const self = arena.create(MediaSource) catch unreachable;
-    self.* = .{
+    errdefer exec.releaseArena(arena);
+    return exec._factory.eventTargetWithAllocator(arena, MediaSource{
+        ._proto = undefined,
         ._arena = arena,
-    };
-    return self;
+    });
+}
+
+pub fn asEventTarget(self: *MediaSource) *EventTarget {
+    return self._proto;
 }
 
 pub fn getReadyState(self: *const MediaSource) u16 {
@@ -45,11 +51,11 @@ pub fn getActiveSourceBuffers(_: *MediaSource, frame: *Frame) !js.Array {
     return arr;
 }
 
-pub fn addSourceBuffer(self: *MediaSource, mime_type: []const u8, _: *Frame) !*SourceBuffer {
-    const sb = try self._arena.create(SourceBuffer);
-    sb.* = .{
+pub fn addSourceBuffer(self: *MediaSource, mime_type: []const u8, frame: *Frame) !*SourceBuffer {
+    const sb = try frame._factory.eventTargetWithAllocator(self._arena, SourceBuffer{
+        ._proto = undefined,
         ._mime_type = try self._arena.dupe(u8, mime_type),
-    };
+    });
     try self._source_buffers.append(self._arena, sb);
     return sb;
 }
@@ -89,6 +95,8 @@ pub const JsApi = struct {
         pub var class_id: bridge.ClassId = undefined;
         pub const enumerable = false;
     };
+
+    pub const Prototype = EventTarget;
 
     pub const constructor = bridge.constructor(MediaSource.init, .{});
     pub const readyState = bridge.accessor(MediaSource.getReadyState, null, .{});

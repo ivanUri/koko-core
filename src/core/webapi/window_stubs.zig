@@ -89,7 +89,6 @@ const names = [_][]const u8{
     "CSSTransition",
     "DocumentTimeline",
     "LayoutShiftAttribution",
-    "ResizeObserverSize",
     "CSSPropertyRule",
     "CookieChangeEvent",
     "CookieStoreManager",

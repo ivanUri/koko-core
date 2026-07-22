@@ -1578,11 +1578,17 @@ fn rootLayoutSize(frame: *Frame) LayoutSize {
 
 const layout_default_size: f64 = 5.0;
 const layout_leaf_block_height: f64 = 20.0;
-// HTML's default object size for replaced elements such as iframe when no
-// concrete CSS/attribute dimensions are available. Keeping the internal 5px
-// sentinel here made unsized challenge iframes effectively unclickable.
-const iframe_default_width: f64 = 300.0;
-const iframe_default_height: f64 = 150.0;
+// CSS 2.1 / CSS Images default object size for replaced elements (img, iframe,
+// object, embed, video, …) when no concrete CSS, attribute, or intrinsic size
+// is available: 300×150. Using the internal 5px layout sentinel left unsized
+// images and challenge iframes collapsed (getBoundingClientRect 5×5), so SPA
+// image loaders (IntersectionObserver / container queries / responsive src
+// pickers) never committed real `src` URLs.
+const replaced_default_width: f64 = 300.0;
+const replaced_default_height: f64 = 150.0;
+// Back-compat aliases (iframe fixtures / comments).
+const iframe_default_width: f64 = replaced_default_width;
+const iframe_default_height: f64 = replaced_default_height;
 
 /// Google Search errsrp grid: width ≈ 56 * cols − 20 (±2px tolerance).
 const google_serp_col_px: f64 = 56.0;
@@ -1838,7 +1844,7 @@ fn resolveElementDimensions(self: *Element, frame: *Frame, depth: usize) LayoutS
         if (height == layout_default_size) {
             height = if (tag == .body) @max(root.height * 8.0, 800.0) else root.height;
         }
-    } else if (tag == .img or tag == .iframe) {
+    } else if (tag == .img or tag == .iframe or tag == .video or tag == .embed or tag == .object) {
         if (width == layout_default_size) {
             if (self.getAttributeSafe(comptime .wrap("width"))) |w| {
                 width = std.fmt.parseFloat(f64, w) catch width;
@@ -1849,10 +1855,9 @@ fn resolveElementDimensions(self: *Element, frame: *Frame, depth: usize) LayoutS
                 height = std.fmt.parseFloat(f64, h) catch height;
             }
         }
-        if (tag == .iframe) {
-            if (width == layout_default_size) width = iframe_default_width;
-            if (height == layout_default_size) height = iframe_default_height;
-        }
+        // Default object size when still unresolved (attr/CSS/intrinsic missing).
+        if (width == layout_default_size) width = replaced_default_width;
+        if (height == layout_default_size) height = replaced_default_height;
     } else if (tag == .svg) {
         if (width == layout_default_size) {
             if (self.getAttributeSafe(comptime .wrap("width"))) |w| {
@@ -1945,7 +1950,7 @@ fn elementLayoutSizeShallowForHitTest(self: *Element, frame: *Frame) LayoutSize 
         if (height == layout_default_size) {
             height = if (tag == .body) @max(root.height * 8.0, 800.0) else root.height;
         }
-    } else if (tag == .img or tag == .iframe) {
+    } else if (tag == .img or tag == .iframe or tag == .video or tag == .embed or tag == .object) {
         if (width == layout_default_size) {
             if (self.getAttributeSafe(comptime .wrap("width"))) |w| {
                 width = std.fmt.parseFloat(f64, w) catch width;
@@ -1956,10 +1961,8 @@ fn elementLayoutSizeShallowForHitTest(self: *Element, frame: *Frame) LayoutSize 
                 height = std.fmt.parseFloat(f64, h) catch height;
             }
         }
-        if (tag == .iframe) {
-            if (width == layout_default_size) width = iframe_default_width;
-            if (height == layout_default_size) height = iframe_default_height;
-        }
+        if (width == layout_default_size) width = replaced_default_width;
+        if (height == layout_default_size) height = replaced_default_height;
     } else if (isBlockLevel(self, frame)) {
         if (width == layout_default_size) width = parent_size.width;
         if (height == layout_default_size) height = layout_leaf_block_height;
@@ -2231,7 +2234,7 @@ fn elementLayoutSizeShallow(self: *Element, frame: *Frame) LayoutSize {
         if (height == layout_default_size) {
             height = if (tag == .body) @max(root.height * 8.0, 800.0) else root.height;
         }
-    } else if (tag == .img or tag == .iframe) {
+    } else if (tag == .img or tag == .iframe or tag == .video or tag == .embed or tag == .object) {
         if (width == layout_default_size) {
             if (self.getAttributeSafe(comptime .wrap("width"))) |w| {
                 width = std.fmt.parseFloat(f64, w) catch width;
@@ -2242,10 +2245,8 @@ fn elementLayoutSizeShallow(self: *Element, frame: *Frame) LayoutSize {
                 height = std.fmt.parseFloat(f64, h) catch height;
             }
         }
-        if (tag == .iframe) {
-            if (width == layout_default_size) width = iframe_default_width;
-            if (height == layout_default_size) height = iframe_default_height;
-        }
+        if (width == layout_default_size) width = replaced_default_width;
+        if (height == layout_default_size) height = replaced_default_height;
     } else if (isBlockLevel(self, frame)) {
         if (width == layout_default_size) width = parent_size.width;
         if (height == layout_default_size) height = layout_leaf_block_height;

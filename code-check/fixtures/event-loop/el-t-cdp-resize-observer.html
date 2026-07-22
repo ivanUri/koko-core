@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>resize observer pending</title>
+<div id="target" style="width: 240px; height: 120px"></div>
+<script>
+  const target = document.querySelector("#target");
+  let synchronous = true;
+  const observer = new ResizeObserver((entries, deliveredObserver) => {
+    const entry = entries[0];
+    const checks = {
+      asynchronous: !synchronous,
+      observerIdentity: deliveredObserver === observer,
+      targetIdentity: entry.target === target,
+      contentRect: typeof entry.contentRect.width === "number" && typeof entry.contentRect.height === "number",
+      contentBoxArray: Array.isArray(entry.contentBoxSize) && entry.contentBoxSize.length === 1,
+      sizeShape: typeof entry.contentBoxSize[0].inlineSize === "number" &&
+        typeof entry.contentBoxSize[0].blockSize === "number",
+    };
+    window.__el = { id: "EL-T", ok: Object.values(checks).every(Boolean), checks };
+    window.__elDone = true;
+    document.title = JSON.stringify(window.__el);
+    observer.disconnect();
+  });
+  observer.observe(target);
+  synchronous = false;
+</script>

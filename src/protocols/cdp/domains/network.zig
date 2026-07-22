@@ -344,7 +344,6 @@ pub fn httpResponseHeaderDone(arena: Allocator, bc: *CDP.BrowserContext, msg: *c
         .requestId = &request_id,
         .loaderId = &id.toLoaderId(req.params.loader_id),
         .type = req.params.resource_type.string(),
-        .request = RequestWriter.init(req),
         .response = ResponseWriter.init(arena, msg.response),
         .hasExtraInfo = true,
     }, .{ .session_id = session_id });

@@ -84,7 +84,7 @@ fn request(ptr: *anyopaque, client: *Client, req: Request) anyerror!void {
         cache.evict(req.params.url);
     }
 
-    return unconditionalRequest(self, client, req);
+    return unconditionalRequest(self, client, req, cache_req);
 }
 
 fn requestHasClientValidators(cache_req: CacheRequest) bool {
@@ -105,7 +105,7 @@ fn closeCachedData(data: *const CachedData) void {
     }
 }
 
-fn unconditionalRequest(self: *CacheLayer, client: *Client, req: Request) !void {
+fn unconditionalRequest(self: *CacheLayer, client: *Client, req: Request, cache_req: CacheRequest) !void {
     const arena = req.params.arena;
 
     const cache_ctx = try arena.create(CacheContext);
@@ -114,7 +114,10 @@ fn unconditionalRequest(self: *CacheLayer, client: *Client, req: Request) !void 
         .client = client,
         .forward = Forward.fromRequest(req),
         .req_url = req.params.url,
-        .req_headers = req.params.headers,
+        // RequestParams is copied by value through the network layers while
+        // Headers owns a curl_slist. Redirect policy may replace and free that
+        // list, so cache metadata must retain the arena-owned header snapshot.
+        .req_headers = cache_req.request_headers,
     };
 
     const wrapped = cache_ctx.forward.wrapRequest(
@@ -153,7 +156,7 @@ fn conditionalRequest(
         .client = client,
         .forward = Forward.fromRequest(mutable_req),
         .req_url = mutable_req.params.url,
-        .req_headers = mutable_req.params.headers,
+        .req_headers = cache_req.request_headers,
         .stale_cached = stale_meta,
         .stale_body = stale_body,
         .cache_req = cache_req,
@@ -245,7 +248,7 @@ const CacheContext = struct {
     transfer: ?*Transfer = null,
     forward: Forward,
     req_url: [:0]const u8,
-    req_headers: http.Headers,
+    req_headers: []const http.Header,
     pending_metadata: ?*CachedMetadata = null,
     stale_cached: ?*CachedMetadata = null,
     stale_body: ?CachedData = null,
@@ -388,8 +391,7 @@ const CacheContext = struct {
             const end_of_response = header_list.items.len;
 
             if (vary) |vary_str| {
-                var req_it = self.req_headers.iterator();
-                while (req_it.next()) |hdr| {
+                for (self.req_headers) |hdr| {
                     var vary_iter = std.mem.splitScalar(u8, vary_str, ',');
                     while (vary_iter.next()) |part| {
                         const name = std.mem.trim(u8, part, &std.ascii.whitespace);

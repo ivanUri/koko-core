@@ -1,8 +1,10 @@
 const std = @import("std");
 const js = @import("../../js/js.zig");
+const EventTarget = @import("../EventTarget.zig");
 
 const SourceBuffer = @This();
 
+_proto: *EventTarget,
 _mime_type: []const u8 = "",
 _updating: bool = false,
 _buffered: f64 = 0,
@@ -58,6 +60,8 @@ pub const JsApi = struct {
         pub const enumerable = false;
     };
 
+    pub const Prototype = EventTarget;
+
     pub const updating = bridge.accessor(SourceBuffer.getUpdating, null, .{});
     pub const buffered = bridge.accessor(SourceBuffer.getBuffered, null, .{});
     pub const timestampOffset = bridge.accessor(SourceBuffer.getTimestampOffset, SourceBuffer.setTimestampOffset, .{});
@@ -67,3 +71,6 @@ pub const JsApi = struct {
     pub const abort = bridge.function(SourceBuffer.abort, .{});
     pub const remove = bridge.function(SourceBuffer.remove, .{});
 };
+pub fn asEventTarget(self: *SourceBuffer) *EventTarget {
+    return self._proto;
+}

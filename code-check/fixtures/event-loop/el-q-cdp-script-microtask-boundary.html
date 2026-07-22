@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>script microtask pending</title>
+<script>
+  let scriptRunning = true;
+  let reactionRanInsideScript = false;
+
+  Promise.resolve().then(() => {
+    reactionRanInsideScript = scriptRunning;
+    window.__el = { id: "EL-Q", ok: !reactionRanInsideScript };
+    window.__elDone = true;
+    document.title = JSON.stringify(window.__el);
+  });
+
+  // Returning from an arbitrary native binding is not a microtask boundary.
+  // This used to drain the Promise above while Script::Run was still active.
+  localStorage.getItem("el-q");
+  scriptRunning = false;
+</script>

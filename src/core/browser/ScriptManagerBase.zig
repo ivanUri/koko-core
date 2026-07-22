@@ -1789,6 +1789,10 @@ pub const Script = struct {
             // window is open. Running the full scheduler here re-enters
             // DeferEvaluateCallback → nested evaluate → stacked Script.eval and
             // V8_Fatal. Runner macrotask loop drains timers after the hop.
+            // Every classic script body is a microtask boundary, including parser
+            // scripts before realmParseComplete. Native bindings only mark work
+            // pending; they must never checkpoint while the JS stack is suspended.
+            local.ctx.env.runMicrotasks(.after_evaluate);
             const should_pump = frame.realmParseComplete() or Frame.isGoogleKnitsailHost(frame.url);
             if (should_pump) {
                 if (frame.isDocumentParsing() and Frame.isGoogleKnitsailHost(frame.url)) {
@@ -1799,7 +1803,6 @@ pub const Script = struct {
                 // not nested in lifecycle evaluate (nested re-entry → V8_Fatal).
                 // No site URL specials (host event architecture 2026-07-19).
                 const js_mod = @import("../js/js.zig");
-                local.ctx.env.runMicrotasks(.after_evaluate);
                 if (self.manager.is_evaluating) {
                     frame.scheduleDeferredMacrotaskPump(0) catch {};
                     local.ctx.env.runMicrotasks(.after_evaluate);

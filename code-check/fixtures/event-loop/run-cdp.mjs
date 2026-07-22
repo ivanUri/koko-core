@@ -32,6 +32,31 @@ function freePort() {
 async function startStatic(port) {
   const server = createServer((req, res) => {
     const name = (req.url || "/").replace(/^\//, "").split("?")[0] || "index.html";
+    if (name === "el-p-cdp-http-redirect") {
+      res.writeHead(302, { Location: "/el-p-cdp-http-redirect.html" });
+      res.end();
+      return;
+    }
+    if (name === "el-r-cdp-child-navigation-fail") {
+      req.socket.destroy();
+      return;
+    }
+    if (name === "el-u-cdp-large-parser-script-order.html") {
+      const padding = "x".repeat(300_000);
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html><!--${padding}--><script defer src="/el-u-defer.js"></script><script src="/el-u-blocking.js"></script>`);
+      return;
+    }
+    if (name === "el-u-blocking.js") {
+      res.writeHead(200, { "Content-Type": "application/javascript" });
+      res.end(`window.__dependency=true; window.__order=["blocking"]`);
+      return;
+    }
+    if (name === "el-u-defer.js") {
+      res.writeHead(200, { "Content-Type": "application/javascript" });
+      res.end(`window.__order.push("defer"); window.__el={id:"EL-U",ok:window.__dependency===true&&window.__order.join(",")==="blocking,defer",order:window.__order}; window.__elDone=true; document.title=JSON.stringify(window.__el)`);
+      return;
+    }
     try {
       const body = readFileSync(join(FIXTURE_DIR, name));
       const ct = name.endsWith(".html") ? "text/html; charset=utf-8" : "text/plain; charset=utf-8";
@@ -115,12 +140,18 @@ async function main() {
     };
 
     const fixtures = [
+      "el-u-cdp-large-parser-script-order.html",
       "el-a-messagechannel-chain.html",
       "el-e-fetch-then-messagechannel.html",
       "el-k-xhr-completion-during-script.html",
       "el-l-cdp-large-spa-click.html",
       "el-n-cdp-press-hold.html",
       "el-o-cdp-locator-actions.html",
+      "el-p-cdp-http-redirect",
+      "el-q-cdp-script-microtask-boundary.html",
+      "el-r-cdp-child-navigation-fail.html",
+      "el-s-cdp-media-event-target.html",
+      "el-t-cdp-resize-observer.html",
     ];
     let failed = 0;
     for (const file of fixtures) {
@@ -130,6 +161,7 @@ async function main() {
       const { sessionId } = await send("Target.attachToTarget", { targetId, flatten: true });
       await send("Page.enable", {}, sessionId);
       await send("Runtime.enable", {}, sessionId);
+      await send("Network.enable", {}, sessionId);
       await send("Page.navigate", { url }, sessionId, 15000).catch((e) => console.log("nav", e.message));
       if (file === "el-l-cdp-large-spa-click.html") {
         let point = null;

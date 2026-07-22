@@ -2000,6 +2000,15 @@ const DeferDocumentParseCallback = struct {
 
     fn run(ctx: *anyopaque) !?u32 {
         const self: *DeferDocumentParseCallback = @ptrCast(@alignCast(ctx));
+        const http_client = &self.frame._session.browser.http_client;
+        // Runner may service ready scheduler tasks from processMessages while
+        // curl_multi_perform is still active. Parsing there turns every parser-
+        // blocking external script into an async script because libcurl cannot
+        // start a nested transfer. Wait until the outer perform has returned so
+        // normal scripts can synchronously block the parser, as HTML requires.
+        if (http_client.performing or http_client.inTransferCallback()) {
+            return 1;
+        }
         // Re-entrancy guard: pollCdpDuringLongWork → pumpDeferredDocumentParse can
         // re-enter this callback mid-parse (Google re-nav → Bing double parse →
         // corrupt _parent / SIGABRT). Never parse the same document twice.
@@ -3351,6 +3360,17 @@ fn frameErrorCallback(ctx: *anyopaque, err: anyerror) void {
     // Active page: still free any stranded CDP navigate promise before error HTML.
     self.completePendingCdpNavigateFailure(err);
 
+    // A failed child-frame navigation does not replace an already committed
+    // Document with a synthetic error page. Besides matching browser behavior,
+    // parsing a second document into the existing tree violates html5ever's
+    // TreeSink contract (the document container has no element data).
+    if (self.parent != null) {
+        self._parse_state.deinit(self);
+        self._parse_state = .{ .complete = {} };
+        self.documentIsComplete();
+        return;
+    }
+
     self._parse_state.deinit(self);
     self._parse_state = .{ .err = err };
 
@@ -3382,7 +3402,15 @@ pub fn scriptAddedCallback(self: *Frame, comptime from_parser: bool, script: *El
     if (comptime from_parser) {
         // parser-inserted scripts have force-async set to false, but only if
         // they have src or non-empty content
-        if (script._src.len > 0 or script.asNode().firstChild() != null) {
+        // html5ever populates the DOM attribute directly; `_src` is primarily
+        // updated by the IDL setter. Inspect both representations so parser-
+        // inserted external scripts do not retain the dynamic-script force-
+        // async flag and lose parser-blocking/defer ordering.
+        const has_src = script._src.len > 0 or blk: {
+            const src = script.asElement().getAttributeSafe(comptime .wrap("src")) orelse break :blk false;
+            break :blk src.len > 0;
+        };
+        if (has_src or script.asNode().firstChild() != null) {
             script._force_async = false;
         }
     }

@@ -61,15 +61,22 @@ fn keysToJson(allocator: std.mem.Allocator, keys: []const []const u8) ![]const u
 /// Globals written by real site runtimes (Next/Turbopack/React/etc.). Antidetect
 /// prune must not delete these — SPA bootstrap (window.next, TURBOPACK) is wiped
 /// ~100ms after install and soft-nav /login never completes (dovihome-sale).
+///
+/// Prefer the value-based keep rule in buildPruneScript over growing this list:
+/// install runs at DOMContentLoaded *after* parser scripts, so UMD shells
+/// (e.g. window.webShellClient) already exist and must not be deleted.
 const runtime_assigned_json =
     \\["Fingerprint","Creep","knitsail","td","next","TURBOPACK","TURBOPACK_NEXT_CHUNK_URLS","React","ReactDOM","ReactDOMClient","__VUE__","__NUXT__","ng","angular","Vue","VueRouter","webpackChunk_N_E"]
 ;
 
 fn buildPruneScript(allocator: std.mem.Allocator, keys: []const []const u8) ![]const u8 {
     const keys_json = try keysToJson(allocator, keys);
+    // Keep any own property with a real value (object/function/string/number/null).
+    // Fingerprint-only stubs installed as `undefined` and not on the allow-list
+    // are still removed. Never delete page-assigned globals after DCL.
     return std.fmt.allocPrint(
         allocator,
-        \\(function(){{const allowed=new Set({s});const runtimeAssigned=new Set({s});const prune=[];for(const k of Object.getOwnPropertyNames(globalThis)){{if(/_|\\d{{3,}}/.test(k))continue;if(allowed.has(k)||runtimeAssigned.has(k))continue;prune.push(k)}}for(const k of prune){{try{{delete globalThis[k]}}catch(e){{}}}}}})();
+        \\(function(){{const allowed=new Set({s});const runtimeAssigned=new Set({s});const prune=[];for(const k of Object.getOwnPropertyNames(globalThis)){{if(/_|\\d{{3,}}/.test(k))continue;if(allowed.has(k)||runtimeAssigned.has(k))continue;try{{if(globalThis[k]!==undefined)continue;}}catch(e){{continue;}}prune.push(k)}}for(const k of prune){{try{{delete globalThis[k]}}catch(e){{}}}}}})();
     ,
         .{ keys_json, runtime_assigned_json },
     );

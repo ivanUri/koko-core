@@ -23,7 +23,11 @@
     channel.port1.onmessage = performWorkUntilDeadline;
     scheduled = true;
     channel.port2.postMessage(null);
-    setTimeout(function () {
+    function finishWhenDrained() {
+      if (window.__el.count < 8) {
+        setTimeout(finishWhenDrained, 10);
+        return;
+      }
       document.title = JSON.stringify({
         id: "EL-A",
         ok: window.__el.ok,
@@ -31,6 +35,7 @@
         log: window.__el.log,
       });
       window.__elDone = true;
-    }, 100);
+    }
+    setTimeout(finishWhenDrained, 100);
   </script>
 </body>

@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>child failure pending</title>
+<iframe src="/el-r-cdp-child-navigation-fail"></iframe>
+<script>
+  setTimeout(() => {
+    const frame = document.querySelector("iframe");
+    window.__el = {
+      id: "EL-R",
+      ok: !!frame && document.body.contains(frame),
+    };
+    window.__elDone = true;
+    document.title = JSON.stringify(window.__el);
+  }, 250);
+</script>
