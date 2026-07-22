@@ -248,8 +248,7 @@ owner: Owner,
 is_evaluating: bool,
 
 // evaluate() arrived while is_evaluating (or while unsafe for V8/curl). Retry
-// when the outer window ends or via scheduleDeferredEvaluate — never drop SPA
- .
+// when the outer window ends or via scheduleDeferredEvaluate — never drop SPA.
 evaluate_pending: bool = false,
 
 // True while a DeferEvaluateCallback is scheduled (debounce; avoid 0-delay
@@ -857,7 +856,6 @@ fn hasPendingEvaluateWork(self: *const ScriptManagerBase) bool {
 
 /// True while classic/module scripts still need evaluation (or evaluate is
 /// deferred). Runner `.done` / network-idle must not resolve while SPA chunks
- 
 /// evaluate; Velora can have a gap if only evaluate_pending is set).
 pub fn hasPendingJsWork(self: *const ScriptManagerBase) bool {
     return self.evaluate_pending or
@@ -1010,7 +1008,6 @@ pub fn drainOrderedAsyncScripts(self: *ScriptManagerBase) void {
 }
 
 /// Script evaluation + DOMContentLoaded (tailHook).
- 
 /// - Run **at most one** script body per evaluate() invoke, then hop via
 ///   delay-0 scheduler / Runner. That matches browsers treating each script
 ///   as a separate task and keeps Zig+V8 stack shallow (prevents V8_Fatal
@@ -1458,7 +1455,6 @@ pub const Script = struct {
     pub fn doneCallback(self: *Script) !void {
         if (self.guard.isFinished() or self.manager.shutdown) return;
 
- 
         // false (navigationCritical / draining) returned BEFORE complete=true, so
         // defer heads stayed incomplete forever → readyState stuck `loading`, no DCL.
         self.complete = true;
@@ -1569,7 +1565,7 @@ pub const Script = struct {
             // on a head that will never complete. Use scheduleDeferredEvaluate
             // (not immediate evaluate) to avoid re-entering V8 from the HTTP tick
             // when unsafe — same safety goal as the old early-return, without
- 
+
             .frame => {
                 self.deinit();
                 if (!manager.shutdown) manager.scheduleDeferredEvaluate();
@@ -1597,7 +1593,6 @@ pub const Script = struct {
 
     /// Wall-clock watchdog: terminate isolate if a single script eval runs too long.
     /// eBay discoveryplatform modules have been observed to spin forever in V8,
- 
     /// TerminateExecution usage.
     const ScriptEvalWatchdog = struct {
         thread: ?std.Thread = null,

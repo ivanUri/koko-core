@@ -1368,12 +1368,18 @@ pub const JsApi = struct {
     pub const adoptedStyleSheets = bridge.accessor(Document.getAdoptedStyleSheets, Document.setAdoptedStyleSheets, .{});
     pub const hidden = bridge.accessor(Document.getHidden, null, .{});
     pub const visibilityState = bridge.accessor(Document.getVisibilityState, null, .{});
+    /// HTML: documents not associated with a browsing context have defaultView null.
+    /// createHTMLDocument / createDocument leave `_frame == null` until adopted.
     pub const defaultView = bridge.accessor(struct {
-        fn defaultView(self: *const Document, frame: *Frame) *@import("../webapi/Window.zig") {
-            const doc_frame = self._frame orelse frame;
+        fn defaultView(self: *const Document, frame: *Frame) ?*@import("../webapi/Window.zig") {
+            // Only the live document of a browsing context exposes a Window.
+            const doc_frame = self._frame orelse return null;
+            // Stale documents after navigation: frame.document may no longer be self.
+            if (doc_frame.document != self) return null;
+            _ = frame;
             return doc_frame.window;
         }
-    }.defaultView, null, .{});
+    }.defaultView, null, .{ .null_as_undefined = false });
     pub const hasFocus = bridge.function(Document.hasFocus, .{});
 
     pub const prerendering = bridge.attribute(false, .{});

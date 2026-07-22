@@ -272,17 +272,25 @@ pub fn toString(self: *const URL, exec: *const Execution) ![:0]const u8 {
     return buf.written()[0 .. buf.written().len - 1 :0];
 }
 
+/// WebIDL USVString: JS `undefined` arrives as null. Required arg → `"undefined"`;
+/// optional base omitted (`url` present, `base` null) → no base (`""`).
+fn usvUrlAndBase(url_: ?[]const u8, base_: ?[]const u8) struct { []const u8, []const u8 } {
+    const url = url_ orelse "undefined";
+    const base = if (base_ != null) base_.? else if (url_ == null) "undefined" else "";
+    return .{ url, base };
+}
+
 pub fn canParse(url_: ?[]const u8, base_: ?[]const u8) !bool {
-    if (url_ == null) return error.TypeError;
-    return U.canParse(url_, base_);
+    const pair = usvUrlAndBase(url_, base_);
+    return U.canParse(pair[0], pair[1]);
 }
 
 pub fn parse(url_: ?[]const u8, base_: ?[]const u8, exec: *const Execution) !?*URL {
-    if (url_ == null) return error.TypeError;
-    if (!try canParse(url_, base_)) return null;
+    const pair = usvUrlAndBase(url_, base_);
+    const url = pair[0];
+    const base = pair[1];
+    if (!U.canParse(url, base)) return null;
 
-    const url = url_ orelse "";
-    const base = base_ orelse "";
     const arena = exec.arena;
 
     const raw: [:0]const u8 = if (url.len == 0)

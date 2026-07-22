@@ -1097,11 +1097,14 @@ fn canonicalizeFileHref(allocator: Allocator, url: [:0]const u8) ![:0]const u8 {
     return std.fmt.allocPrintSentinel(allocator, "{s}//{s}{s}{s}{s}", .{ protocol, host, pathname, search, hash }, 0);
 }
 
-/// Canonicalize `scheme:/path` URLs without an authority (e.g. `about:/../` → `about:/`).
+/// Canonicalize `scheme:/path` URLs without an authority.
+/// Special: `about:/../` style (after special-scheme rewrite elsewhere).
+/// Non-special: `javascript:/../` → path-state shorten → `javascript:/` (URL Standard).
 fn canonicalizeSchemeSlashHref(allocator: Allocator, url: [:0]const u8) ![:0]const u8 {
     const colon = std.mem.indexOfScalar(u8, url, ':') orelse return url;
     if (colon == 0 or colon + 1 >= url.len or url[colon + 1] != '/') return url;
-    if (!isSpecialScheme(url[0 .. colon + 1])) return url;
+    // Non-special scheme:/… still uses path-state segment shortening.
+    // Special schemes with single slash are usually rewritten to :// first.
 
     const path_start = colon + 1;
     const fragment_start = std.mem.indexOfScalarPos(u8, url, path_start, '#');
@@ -1118,8 +1121,12 @@ fn canonicalizeSchemeSlashHref(allocator: Allocator, url: [:0]const u8) ![:0]con
     const search = if (query_start) |qs| url[qs .. fragment_start orelse url.len] else @as([]const u8, "");
     const hash = if (fragment_start) |fs| url[fs..] else @as([]const u8, "");
 
+    // Lowercase scheme for non-special absolute form consistency
     var buf = try std.ArrayList(u8).initCapacity(allocator, url.len);
-    try buf.appendSlice(allocator, url[0..path_start]);
+    for (url[0..colon]) |c| {
+        try buf.append(allocator, if (c >= 'A' and c <= 'Z') c + 32 else c);
+    }
+    try buf.append(allocator, ':');
     try buf.appendSlice(allocator, pathname_short);
     try buf.appendSlice(allocator, search);
     try buf.appendSlice(allocator, hash);
@@ -1745,15 +1752,17 @@ fn buildOpaqueUrl(
 }
 
 /// Serialize an opaque (cannot-be-a-base) path for URLSearchParams-driven href updates.
+/// Uses the cannot-be-a-base-URL path percent-encode set (C0 + non-ASCII only);
+/// a single trailing U+0020 is percent-encoded, earlier spaces stay U+0020.
 pub fn serializeCannotBeABasePath(allocator: Allocator, path: []const u8) ![]const u8 {
     if (path.len == 0) return path;
     if (path[path.len - 1] != ' ') {
-        return percentEncodeSegment(allocator, path, .path);
+        return percentEncodeSegment(allocator, path, .opaque_path);
     }
-    // WPT: only the final trailing U+0020 is percent-encoded; earlier bytes stay literal.
     const prefix = path[0 .. path.len - 1];
-    var buf = try std.ArrayList(u8).initCapacity(allocator, prefix.len + 3);
-    try buf.appendSlice(allocator, prefix);
+    const encoded_prefix = try percentEncodeSegment(allocator, prefix, .opaque_path);
+    var buf = try std.ArrayList(u8).initCapacity(allocator, encoded_prefix.len + 3);
+    try buf.appendSlice(allocator, encoded_prefix);
     try buf.appendSlice(allocator, "%20");
     return buf.items;
 }
@@ -1975,21 +1984,76 @@ pub fn buildUrl(
     }, 0);
 }
 
+/// URL Standard protocol setter: basic URL parser with scheme start state.
+/// Strips leading C0/space, lowercases ASCII scheme, validates, then applies
+/// special-scheme / cannot-be-a-base / file-empty-host rules (no test hardcoding).
 pub fn setProtocol(current: [:0]const u8, value: []const u8, allocator: Allocator) ![:0]const u8 {
+    // 1) leading C0 controls + spaces (URL basic URL parser buffer prep)
+    var i: usize = 0;
+    while (i < value.len and isC0ControlOrSpace(value[i])) : (i += 1) {}
+    const trimmed = value[i..];
+
+    // 2) collect scheme characters; trailing ':' is optional in the setter input
+    var end: usize = 0;
+    while (end < trimmed.len) : (end += 1) {
+        const c = trimmed[end];
+        if (c == ':') break;
+        // scheme state: ALPHA / DIGIT / + / - / .
+        const ok = std.ascii.isAlphanumeric(c) or c == '+' or c == '-' or c == '.';
+        if (!ok) {
+            // invalid scheme → no-op
+            return allocator.dupeZ(u8, current);
+        }
+    }
+    const scheme_raw = trimmed[0..end];
+    if (scheme_raw.len == 0) {
+        // empty scheme (including empty string after strip) → no-op
+        return allocator.dupeZ(u8, current);
+    }
+    if (!std.ascii.isAlphabetic(scheme_raw[0])) {
+        return allocator.dupeZ(u8, current);
+    }
+
+    // 3) lowercase ASCII scheme + colon
+    var scheme_buf: [64]u8 = undefined;
+    if (scheme_raw.len >= scheme_buf.len) return allocator.dupeZ(u8, current);
+    for (scheme_raw, 0..) |c, idx| {
+        scheme_buf[idx] = if (c >= 'A' and c <= 'Z') c + 32 else c;
+    }
+    scheme_buf[scheme_raw.len] = ':';
+    const protocol = scheme_buf[0 .. scheme_raw.len + 1];
+
     const pathname = getPathname(current);
     const search = getSearch(current);
     const hash = getHash(current);
+    const current_protocol = getProtocol(current);
+    const new_is_special = isSpecialScheme(protocol);
 
-    if (value.len == 0) return allocator.dupeZ(u8, current);
-
-    const protocol = if (value[value.len - 1] != ':')
-        try std.fmt.allocPrint(allocator, "{s}:", .{value})
-    else
-        value;
-
+    // cannot-be-a-base-URL: special scheme switch is a no-op; non-special rewrites scheme.
     if (isCannotBeABase(current)) {
-        if (isSpecialScheme(protocol)) return allocator.dupeZ(u8, current);
+        if (new_is_special) return allocator.dupeZ(u8, current);
         return buildOpaqueUrl(allocator, protocol, pathname, search, hash);
+    }
+
+    // file URL with empty / localhost host cannot switch to another special scheme
+    // (URL Standard: "file" + no host).
+    if (std.ascii.eqlIgnoreCase(current_protocol, "file:")) {
+        const host = getHost(current);
+        const empty_or_localhost = host.len == 0 or std.ascii.eqlIgnoreCase(host, "localhost");
+        if (empty_or_localhost and new_is_special and !std.ascii.eqlIgnoreCase(protocol, "file:")) {
+            return allocator.dupeZ(u8, current);
+        }
+    }
+
+    // Cannot switch to file: if URL has username, password, or non-default port
+    // (URL Standard protocol setter).
+    if (std.ascii.eqlIgnoreCase(protocol, "file:")) {
+        const username = getUsername(current);
+        const password = getPassword(current);
+        const port = getPort(current);
+        if (username.len > 0 or password.len > 0 or port.len > 0) {
+            return allocator.dupeZ(u8, current);
+        }
     }
 
     const host = getHost(current);

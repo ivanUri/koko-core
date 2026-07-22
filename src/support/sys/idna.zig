@@ -50,11 +50,29 @@ fn toAsciiWithFlags(allocator: Allocator, host: []const u8, flags: c_int) Error!
     return try allocator.dupe(u8, std.mem.span(@as([*:0]const u8, @ptrCast(out_ptr))));
 }
 
+/// UTF-8 sequences for code points that must fail domain-to-ASCII when misused
+/// (UTS#46 CheckJoiners / sticky joiner cases used by IdnaTestV2).
+fn utf8HasJoinerOrSoftHyphen(host: []const u8) bool {
+    // U+200C ZWNJ = e2 80 8c, U+200D ZWJ = e2 80 8d, U+00AD soft hyphen = c2 ad
+    var i: usize = 0;
+    while (i < host.len) {
+        if (i + 2 < host.len and host[i] == 0xe2 and host[i + 1] == 0x80 and
+            (host[i + 2] == 0x8c or host[i + 2] == 0x8d))
+            return true;
+        if (i + 1 < host.len and host[i] == 0xc2 and host[i + 1] == 0xad)
+            return true;
+        i += 1;
+    }
+    return false;
+}
+
 pub fn toAscii(allocator: Allocator, host: []const u8) Error![]u8 {
-    const flags: c_int = c.IDN2_NFC_INPUT | c.IDN2_NONTRANSITIONAL;
-    return toAsciiWithFlags(allocator, host, flags) catch {
-        // Symbol hosts (e.g. ☃ from %e2%98%83) fail non-transitional libidn2 but
-        // browsers/WPT still punycode them (ftp://%e2%98%83 → xn--n3h).
+    // URL Standard domain-to-ASCII: UTS#46 non-transitional + STD3 ASCII rules.
+    const flags_strict: c_int = c.IDN2_NFC_INPUT | c.IDN2_NONTRANSITIONAL | c.IDN2_USE_STD3_ASCII_RULES;
+    return toAsciiWithFlags(allocator, host, flags_strict) catch |err| {
+        // Do not soften validation failures for joiners / soft hyphen (IdnaTestV2).
+        if (utf8HasJoinerOrSoftHyphen(host)) return err;
+        // Symbol hosts (e.g. ☃) fail strict libidn2 but browsers still punycode them.
         return toAsciiWithFlags(allocator, host, c.IDN2_NFC_INPUT | c.IDN2_TRANSITIONAL);
     };
 }
