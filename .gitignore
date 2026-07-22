@@ -2,6 +2,10 @@
 /zig-pkg/
 zig-out
 /bin/
+# Prebuilt V8 archives (download per platform; do not commit ~100MB+)
+/v8/*.a
+/v8/*.so
+/v8/*.dylib
 velora.id
 /src/html5ever/target/
 src/snapshot.bin

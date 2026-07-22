@@ -237,11 +237,14 @@ pub const CurlOption = enum(c.CURLoption) {
     forbid_reuse = c.CURLOPT_FORBID_REUSE,
     ssl_cipher_list = c.CURLOPT_SSL_CIPHER_LIST,
     ssl_ec_curves = c.CURLOPT_SSL_EC_CURVES,
-    // curl-impersonate extensions (lexiforest fork)
+    // curl-impersonate extensions (lexiforest fork).
+    // Numeric values so stock libcurl builds (no impersonate headers) still compile.
+    // Runtime use is gated by build_config.curl_impersonate.
     ssl_enable_alps = 1002,
     ssl_cert_compression = 11003,
     ssl_permute_extensions = 1007,
-    tls_extension_order = c.CURLOPT_TLS_EXTENSION_ORDER,
+    // CURLOPTTYPE_STRINGPOINT (10000) + 1012
+    tls_extension_order = 11012,
     http2_pseudo_headers_order = 11005,
     http2_settings = 11006,
     http2_window_update = 1008,
@@ -257,11 +260,11 @@ pub const CurlOption = enum(c.CURLoption) {
     doh_url = c.CURLOPT_DOH_URL,
     /// curl-impersonate: CURLOPTTYPE_STRINGPOINT + 1001 → 11001 (sigalgs list).
     ssl_sig_hash_algs = 11001,
-    http3_pseudo_headers_order = c.CURLOPT_HTTP3_PSEUDO_HEADERS_ORDER,
-    http3_settings = c.CURLOPT_HTTP3_SETTINGS,
-    quic_transport_parameters = c.CURLOPT_QUIC_TRANSPORT_PARAMETERS,
-    http3_sig_hash_algs = c.CURLOPT_HTTP3_SIG_HASH_ALGS,
-    http3_tls_extension_order = c.CURLOPT_HTTP3_TLS_EXTENSION_ORDER,
+    http3_pseudo_headers_order = 11025,
+    http3_settings = 11026,
+    quic_transport_parameters = 11027,
+    http3_sig_hash_algs = 11028,
+    http3_tls_extension_order = 11029,
 };
 
 /// Classic Chrome ≤149 / TCP signature_algorithms (no ML-DSA).

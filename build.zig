@@ -92,6 +92,19 @@ pub fn build(b: *Build) !void {
                 .file = b.path("vendor/canvas_text_macos.c"),
                 .flags = &.{},
             });
+        } else {
+            // Linux/Windows: prebuilt libc_v8.a may lag binding.cpp; stock libcurl has no
+            // curl_easy_impersonate (vendor archive is macOS Mach-O). Shims for smoke tests.
+            mod.addCSourceFile(.{
+                .file = b.path("vendor/v8_missing_shims.c"),
+                .flags = &.{},
+            });
+            const curl_dep = b.dependency("curl", .{});
+            mod.addIncludePath(curl_dep.path("include"));
+            mod.addCSourceFile(.{
+                .file = b.path("vendor/curl_impersonate_stub.c"),
+                .flags = &.{},
+            });
         }
 
         break :blk mod;
@@ -990,6 +1003,7 @@ fn buildCurl(
 
     const curl_config = b.addConfigHeader(.{
         .include_path = "curl_config.h",
+        // curl 8.18 ships lib/curl_config-cmake.h.in (8.15 used curl_config.h.cmake)
         .style = .{ .cmake = dep.path("lib/curl_config-cmake.h.in") },
     }, .{
         .CURL_EXTERN_SYMBOL = "__attribute__ ((__visibility__ (\"default\"))",

@@ -29,8 +29,8 @@
             // (preferred), build.zig uses those includes instead (currently v2.0.0rc3 /
             // 8.21.0-IMPERSONATE with Chrome 150 ML-DSA sig algs). Keep 8.15 fallback
             // hash until a non-impersonate path is retargeted deliberately.
-            .url = "https://github.com/curl/curl/releases/download/curl-8_15_0/curl-8.15.0.tar.gz",
-            .hash = "N-V-__8AAHGgPwH1XE5mB7bNofrDyBE5VWADWmBRlFQaVXWU",
+            .url = "https://github.com/curl/curl/releases/download/curl-8_18_0/curl-8.18.0.tar.gz",
+            .hash = "N-V-__8AALp9QAGn6CCHZ6fK_FfMyGtG824LSHYHHasM3w-y",
         },
         .sqlite3 = .{
             .url = "https://github.com/allyourcodebase/sqlite3/archive/8f840560eae88ab66668c6827c64ffbd0d74ef37.tar.gz",
