@@ -6,7 +6,18 @@ Velora **không** embed full source trong repo. Runtime artifacts live in `vendo
 
 Optional build-from-source fork (patches / H3): **https://github.com/ivanUri/curl-impersonate**
 
-`vendor/curl-impersonate/` chứa **dylib + headers + CLI wrappers** — đủ cho `zig build`.
+`vendor/curl-impersonate/` (macOS) chứa **dylib + headers + CLI wrappers** — đủ cho `zig build` trên macOS.
+
+**Linux:** download prebuilt ELF (không ghi đè macOS dylib):
+
+```bash
+./scripts/fetch-linux-curl-impersonate.sh
+# → vendor/curl-impersonate/linux/libcurl-impersonate.so + .a + include/
+zig build -Dprebuilt_v8_path=v8/libc_v8.a
+export LD_LIBRARY_PATH="$PWD/vendor/curl-impersonate/linux:$LD_LIBRARY_PATH"
+```
+
+`build.zig` chọn artifact theo OS: macOS dùng dylib root vendor; Linux dùng `vendor/curl-impersonate/linux/`. Hai cây độc lập — có macOS `.a` không bật impersonate trên Linux.
 
 **Chrome 150:** không có preset upstream; Velora dùng `chrome146` + `--signature-hashes mldsa44:mldsa65:mldsa87:…` (`curl_chrome150` wrapper, `TransportProfile.chrome150`).
 

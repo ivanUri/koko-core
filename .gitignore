@@ -6,6 +6,14 @@ zig-out
 /v8/*.a
 /v8/*.so
 /v8/*.dylib
+
+# Linux curl-impersonate prebuilts (fetch via scripts/fetch-linux-curl-impersonate.sh)
+/vendor/curl-impersonate/linux/libcurl-impersonate.a
+/vendor/curl-impersonate/linux/libcurl-impersonate.so
+/vendor/curl-impersonate/linux/libcurl-impersonate.so.*
+/vendor/curl-impersonate/linux/libcurl-impersonate.runtime-probe.so
+/vendor/curl-impersonate/linux/*.tar.gz
+/vendor/curl-impersonate/linux/lib.tgz
 velora.id
 /src/html5ever/target/
 src/snapshot.bin

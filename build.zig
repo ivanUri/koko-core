@@ -48,7 +48,7 @@ pub fn build(b: *Build) !void {
     opts.addOption([]const u8, "version", version_string);
     opts.addOption([]const u8, "version_encoded", version_encoded);
     opts.addOption(?[]const u8, "snapshot_path", snapshot_path);
-    opts.addOption(bool, "curl_impersonate", hasCurlImpersonate(b));
+    opts.addOption(bool, "curl_impersonate", hasCurlImpersonate(b, target.result.os.tag));
     const strip_binaries = b.option(bool, "strip", "Strip debug symbols from velora binaries") orelse true;
     const enable_tsan = b.option(bool, "tsan", "Enable Thread Sanitizer") orelse false;
     const enable_asan = b.option(bool, "asan", "Enable Address Sanitizer") orelse false;
@@ -92,19 +92,15 @@ pub fn build(b: *Build) !void {
                 .file = b.path("vendor/canvas_text_macos.c"),
                 .flags = &.{},
             });
-        } else {
-            // Linux/Windows: prebuilt libc_v8.a may lag binding.cpp; stock libcurl has no
-            // curl_easy_impersonate (vendor archive is macOS Mach-O). Shims for smoke tests.
-            mod.addCSourceFile(.{
-                .file = b.path("vendor/v8_missing_shims.c"),
-                .flags = &.{},
-            });
-            const curl_dep = b.dependency("curl", .{});
-            mod.addIncludePath(curl_dep.path("include"));
-            mod.addCSourceFile(.{
-                .file = b.path("vendor/curl_impersonate_stub.c"),
-                .flags = &.{},
-            });
+        } else if (target.result.os.tag == .linux) {
+            // Older lightpanda prebuilt libc_v8.a lacks a few C wrappers present in
+            // vendor/v8-wrapper binding.cpp. Shims only; macOS / full V8 builds unchanged.
+            if (fileExists(b, "vendor/v8_missing_shims.c")) {
+                mod.addCSourceFile(.{
+                    .file = b.path("vendor/v8_missing_shims.c"),
+                    .flags = &.{},
+                });
+            }
         }
 
         break :blk mod;
@@ -347,58 +343,104 @@ fn linkSqlite(b: *Build, mod: *Build.Module, enable_csan: ?std.zig.SanitizeC, is
     mod.linkLibrary(lib);
 }
 
-const curl_impersonate_lib = "vendor/curl-impersonate/libcurl-impersonate.a";
-const curl_impersonate_dylib = "vendor/curl-impersonate/libcurl-impersonate.dylib";
-const curl_impersonate_include = "vendor/curl-impersonate/include";
+// macOS vendor layout (unchanged): dylib + static next to include/
+const curl_impersonate_macos_lib = "vendor/curl-impersonate/libcurl-impersonate.a";
+const curl_impersonate_macos_dylib = "vendor/curl-impersonate/libcurl-impersonate.dylib";
+const curl_impersonate_macos_include = "vendor/curl-impersonate/include";
+// Linux vendor layout (lexiforest prebuilt via scripts/fetch-linux-curl-impersonate.sh)
+const curl_impersonate_linux_lib = "vendor/curl-impersonate/linux/libcurl-impersonate.a";
+const curl_impersonate_linux_so = "vendor/curl-impersonate/linux/libcurl-impersonate.so";
+const curl_impersonate_linux_include = "vendor/curl-impersonate/linux/include";
 
-fn hasCurlImpersonate(b: *Build) bool {
-    const path = b.pathFromRoot(curl_impersonate_lib);
+fn fileExists(b: *Build, rel: []const u8) bool {
+    const path = b.pathFromRoot(rel);
     b.build_root.handle.access(path, .{}) catch return false;
     return true;
+}
+
+/// True when this host OS has platform-matching curl-impersonate artifacts.
+/// macOS and Linux trees are independent so a macOS .a never enables Linux impersonate.
+fn hasCurlImpersonate(b: *Build, os: std.Target.Os.Tag) bool {
+    return switch (os) {
+        .macos => fileExists(b, curl_impersonate_macos_lib) or fileExists(b, curl_impersonate_macos_dylib),
+        .linux => fileExists(b, curl_impersonate_linux_so) or fileExists(b, curl_impersonate_linux_lib),
+        else => false,
+    };
 }
 
 fn hasCurlImpersonateDylib(b: *Build) bool {
-    const path = b.pathFromRoot(curl_impersonate_dylib);
-    b.build_root.handle.access(path, .{}) catch return false;
-    return true;
+    return fileExists(b, curl_impersonate_macos_dylib);
 }
 
 fn linkCurlImpersonate(b: *Build, mod: *Build.Module, is_tsan: bool) !void {
+    const target = mod.resolved_target.?;
+    const os = target.result.os.tag;
     const curl_dep = b.dependency("curl", .{});
-    // Prefer vendor impersonate headers (CURLOPT_IMPERSONATE, GREASE, ALPS, …).
-    mod.addIncludePath(b.path(curl_impersonate_include));
-    mod.addIncludePath(curl_dep.path("include"));
 
-    // Prefer dylib: linking the 29MB static archive into the V8 exe can SIGSEGV Zig's linker.
-    if (hasCurlImpersonateDylib(b)) {
-        mod.addLibraryPath(b.path("vendor/curl-impersonate"));
-        mod.addRPath(b.path("vendor/curl-impersonate"));
-        mod.linkSystemLibrary("curl-impersonate", .{});
-    } else {
-        mod.addObjectFile(b.path(curl_impersonate_lib));
+    switch (os) {
+        .macos => {
+            // Prefer vendor impersonate headers (CURLOPT_IMPERSONATE, GREASE, ALPS, …).
+            mod.addIncludePath(b.path(curl_impersonate_macos_include));
+            mod.addIncludePath(curl_dep.path("include"));
+
+            // Prefer dylib: linking the 29MB static archive into the V8 exe can SIGSEGV Zig's linker.
+            if (hasCurlImpersonateDylib(b)) {
+                mod.addLibraryPath(b.path("vendor/curl-impersonate"));
+                mod.addRPath(b.path("vendor/curl-impersonate"));
+                mod.linkSystemLibrary("curl-impersonate", .{});
+            } else {
+                mod.addObjectFile(b.path(curl_impersonate_macos_lib));
+            }
+            mod.addCSourceFile(.{
+                .file = b.path("vendor/curl-impersonate/curl_ws_stub.c"),
+                .flags = &.{"-DHAVE_CONFIG_H"},
+            });
+            mod.addIncludePath(curl_dep.path("lib"));
+
+            const libidn2 = buildLibidn2(b, target, mod.optimize.?, is_tsan);
+            mod.linkLibrary(libidn2);
+
+            mod.linkSystemLibrary("iconv", .{});
+            mod.linkSystemLibrary("icucore", .{});
+
+            mod.addSystemFrameworkPath(.{ .cwd_relative = "/System/Library/Frameworks" });
+            mod.linkFramework("CoreFoundation", .{});
+            mod.linkFramework("CoreServices", .{});
+            mod.linkFramework("SystemConfiguration", .{});
+        },
+        .linux => {
+            // Prefer linux/include when present; fall back to macOS vendor headers (same API surface).
+            if (fileExists(b, curl_impersonate_linux_include ++ "/curl/curl.h")) {
+                mod.addIncludePath(b.path(curl_impersonate_linux_include));
+            } else {
+                mod.addIncludePath(b.path(curl_impersonate_macos_include));
+            }
+            mod.addIncludePath(curl_dep.path("include"));
+
+            // Prefer shared lib (prebuilt ELF). Static .a is huge and slower to link.
+            if (fileExists(b, curl_impersonate_linux_so)) {
+                mod.addLibraryPath(b.path("vendor/curl-impersonate/linux"));
+                mod.addRPath(b.path("vendor/curl-impersonate/linux"));
+                mod.linkSystemLibrary("curl-impersonate", .{});
+            } else {
+                mod.addObjectFile(b.path(curl_impersonate_linux_lib));
+            }
+            mod.linkSystemLibrary("pthread", .{});
+            mod.linkSystemLibrary("dl", .{});
+            mod.linkSystemLibrary("m", .{});
+
+            const libidn2 = buildLibidn2(b, target, mod.optimize.?, is_tsan);
+            mod.linkLibrary(libidn2);
+        },
+        else => return error.CurlImpersonateUnsupportedOs,
     }
-    mod.addCSourceFile(.{
-        .file = b.path("vendor/curl-impersonate/curl_ws_stub.c"),
-        .flags = &.{"-DHAVE_CONFIG_H"},
-    });
-    mod.addIncludePath(curl_dep.path("lib"));
-
-    const libidn2 = buildLibidn2(b, mod.resolved_target.?, mod.optimize.?, is_tsan);
-    mod.linkLibrary(libidn2);
-
-    mod.linkSystemLibrary("iconv", .{});
-    mod.linkSystemLibrary("icucore", .{});
-
-    mod.addSystemFrameworkPath(.{ .cwd_relative = "/System/Library/Frameworks" });
-    mod.linkFramework("CoreFoundation", .{});
-    mod.linkFramework("CoreServices", .{});
-    mod.linkFramework("SystemConfiguration", .{});
 }
 
 fn linkCurl(b: *Build, mod: *Build.Module, is_tsan: bool) !void {
     const target = mod.resolved_target.?;
 
-    if (target.result.os.tag == .macos and hasCurlImpersonate(b)) {
+    // Platform-native curl-impersonate when artifacts exist; macOS path is identical to before.
+    if (hasCurlImpersonate(b, target.result.os.tag)) {
         return linkCurlImpersonate(b, mod, is_tsan);
     }
 
