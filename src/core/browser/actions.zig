@@ -34,8 +34,41 @@ fn dispatchInputAndChangeEvents(el: *Element, frame: *Frame) !void {
     };
 }
 
-pub fn click(node: *DOMNode, frame: *Frame) !void {
+/// State required before an automation action can target an element.
+///
+/// This deliberately does not use bounding-box size as an actionability
+/// signal.  Layout is approximate in a headless DOM and node-targeted actions
+/// do not need viewport coordinates.  Connectedness, CSS visibility,
+/// disabled/read-only state and pointer-events are stable DOM semantics and
+/// therefore belong in the shared action layer rather than in each client.
+pub const ActionKind = enum { click, fill };
+
+pub fn actionableElement(node: *DOMNode, kind: ActionKind, frame: *Frame) !*Element {
     const el = node.is(Element) orelse return error.InvalidNodeType;
+    if (!el.asNode().isConnected()) return error.ElementDetached;
+    if (!el.checkVisibilityCached(null, frame)) return error.ElementNotVisible;
+    if (el.isDisabled()) return error.ElementDisabled;
+
+    if (kind == .click) {
+        if (el.hasPointerEventsNone(null, frame)) return error.ElementNotReceivesEvents;
+        if (el.getAttributeSafe(.wrap("aria-disabled"))) |disabled| {
+            if (std.ascii.eqlIgnoreCase(disabled, "true")) return error.ElementDisabled;
+        }
+        return el;
+    }
+
+    if (el.getAttributeSafe(comptime .wrap("readonly")) != null) return error.ElementReadOnly;
+    if (el.is(Element.Html.Input) == null and
+        el.is(Element.Html.TextArea) == null and
+        el.is(Element.Html.Select) == null)
+    {
+        return error.ElementNotEditable;
+    }
+    return el;
+}
+
+pub fn click(node: *DOMNode, frame: *Frame) !void {
+    const el = try actionableElement(node, .click, frame);
     const owner = el.asNode().ownerFrame(frame);
 
     @import("InputController.zig").dispatchActivationOnElement(el, owner) catch |err| {
@@ -139,7 +172,7 @@ pub fn setChecked(node: *DOMNode, checked: bool, frame: *Frame) !void {
 }
 
 pub fn fill(node: *DOMNode, text: []const u8, frame: *Frame) !void {
-    const el = node.is(Element) orelse return error.InvalidNodeType;
+    const el = try actionableElement(node, .fill, frame);
 
     el.focus(frame) catch |err| {
         @import("../../support/log.zig").err(.app, "fill focus failed", .{ .err = err });
@@ -154,23 +187,21 @@ pub fn fill(node: *DOMNode, text: []const u8, frame: *Frame) !void {
         return;
     }
 
-    var acc = try std.ArrayList(u8).initCapacity(frame.call_arena, text.len);
-    for (text) |ch| {
-        try acc.append(frame.call_arena, ch);
-        if (el.is(Element.Html.Input)) |input| {
-            try input.setValue(acc.items, frame);
-        } else if (el.is(Element.Html.TextArea)) |textarea| {
-            try textarea.setValue(acc.items, frame);
-        } else {
-            return error.InvalidNodeType;
-        }
-        var buf: [4]u8 = undefined;
-        const key_len = std.unicode.utf8Encode(ch, &buf) catch continue;
-        try press(node, buf[0..key_len], frame);
-        std.Thread.sleep(HumanInput.charDelay(ch) * std.time.ns_per_ms);
+    // Browser automation "fill" replaces the current editable value in one
+    // trusted beforeinput/input transaction.  Synthesizing a key event after
+    // mutating the value duplicated text and made controlled SPA inputs race
+    // their own state updates.
+    if (el.is(Element.Html.Input)) |input| {
+        try input.select(frame);
+        try input.innerInsert(text, frame);
+        return;
     }
-
-    try dispatchInputAndChangeEvents(el, frame);
+    if (el.is(Element.Html.TextArea)) |textarea| {
+        try textarea.select(frame);
+        try textarea.innerInsert(text, frame);
+        return;
+    }
+    return error.InvalidNodeType;
 }
 
 pub fn scroll(node: ?*DOMNode, x: ?i32, y: ?i32, frame: *Frame) !void {
@@ -207,14 +238,44 @@ pub fn scroll(node: ?*DOMNode, x: ?i32, y: ?i32, frame: *Frame) !void {
 }
 
 pub fn waitForSelector(selector: [:0]const u8, timeout_ms: u32, session: *Session) !*DOMNode {
+    var runner = try session.runner(.{});
+    // Runner.waitForSelector follows pending/current frames across navigation
+    // and pumps the event loop itself.  Waiting for `load` first consumed the
+    // entire timeout on long-lived SPAs and then left no budget for the actual
+    // selector.
+    const el = try runner.waitForSelector(selector, timeout_ms);
+    return el.asNode();
+}
+
+pub fn waitForActionableSelector(
+    selector: [:0]const u8,
+    timeout_ms: u32,
+    kind: ActionKind,
+    session: *Session,
+) !*DOMNode {
     var timer = try std.time.Timer.start();
     var runner = try session.runner(.{});
-    try runner.wait(.{ .ms = timeout_ms, .until = .load });
 
-    const elapsed: u32 = @intCast(timer.read() / std.time.ns_per_ms);
-    const remaining = timeout_ms -| elapsed;
-    if (remaining == 0) return error.Timeout;
+    while (true) {
+        const elapsed: u32 = @intCast(timer.read() / std.time.ns_per_ms);
+        if (elapsed >= timeout_ms) return error.Timeout;
 
-    const el = try runner.waitForSelector(selector, remaining);
-    return el.asNode();
+        const remaining = timeout_ms - elapsed;
+        const node = try waitForSelector(selector, remaining, session);
+        const frame = session.pendingOrCurrentFrame() orelse return error.FrameNotLoaded;
+        const owner = node.ownerFrame(frame);
+        _ = actionableElement(node, kind, owner) catch |err| switch (err) {
+            error.ElementDetached,
+            error.ElementNotVisible,
+            error.ElementDisabled,
+            error.ElementNotReceivesEvents,
+            error.ElementReadOnly,
+            => {
+                _ = try runner.tick(.{ .ms = @min(remaining, 50) });
+                continue;
+            },
+            else => return err,
+        };
+        return node;
+    }
 }

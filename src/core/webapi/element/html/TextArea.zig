@@ -51,7 +51,7 @@ pub fn setOnSelectionChange(self: *TextArea, listener: ?js.Function) !void {
 }
 
 fn dispatchSelectionChangeEvent(self: *TextArea, frame: *Frame) !void {
-    const event = try Event.init("selectionchange", .{ .bubbles = true }, frame._page);
+    const event = try Event.initTrusted(.wrap("selectionchange"), .{ .bubbles = true }, frame._page);
     try frame._event_manager.dispatch(self.asElement().asEventTarget(), event);
 }
 
@@ -178,7 +178,7 @@ pub fn setMinLength(self: *TextArea, min_length: i32, frame: *Frame) !void {
 pub fn select(self: *TextArea, frame: *Frame) !void {
     const len = if (self._value) |v| @as(u32, @intCast(v.len)) else 0;
     try self.setSelectionRange(0, len, null, frame);
-    const event = try Event.init("select", .{ .bubbles = true }, frame._page);
+    const event = try Event.initTrusted(comptime .wrap("select"), .{ .bubbles = true }, frame._page);
     try frame._event_manager.dispatch(self.asElement().asEventTarget(), event);
 }
 

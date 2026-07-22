@@ -120,6 +120,7 @@ async function main() {
       "el-k-xhr-completion-during-script.html",
       "el-l-cdp-large-spa-click.html",
       "el-n-cdp-press-hold.html",
+      "el-o-cdp-locator-actions.html",
     ];
     let failed = 0;
     for (const file of fixtures) {
@@ -165,6 +166,30 @@ async function main() {
         }, sessionId, 5000);
         if (!observed?.result?.value) console.log("press was not observed before release");
         await send("Input.dispatchMouseEvent", { ...common, type: "mouseReleased" }, sessionId);
+      }
+      if (file === "el-o-cdp-locator-actions.html") {
+        for (let i = 0; i < 40; i++) {
+          const ready = await send("Runtime.evaluate", {
+            expression: "!!document.querySelector('#email')",
+            returnByValue: true,
+          }, sessionId, 5000).catch(() => null);
+          if (ready?.result?.value) break;
+          await delay(50);
+        }
+        await send("LP.fillSelector", {
+          selector: "#email",
+          text: "new@example.test",
+          timeout: 5000,
+        }, sessionId, 7000).catch((error) => { throw new Error(`fillSelector: ${error.message}`); });
+        await send("LP.selectOptionSelector", {
+          selector: "#month",
+          value: "2",
+          timeout: 5000,
+        }, sessionId, 7000).catch((error) => { throw new Error(`selectOptionSelector: ${error.message}`); });
+        await send("LP.clickSelector", {
+          selector: "#submit",
+          timeout: 5000,
+        }, sessionId, 7000).catch((error) => { throw new Error(`clickSelector: ${error.message}`); });
       }
       let ok = false;
       let last = null;

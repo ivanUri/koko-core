@@ -50,7 +50,7 @@ pub fn acquireRef(self: *Selection) void {
 }
 
 fn dispatchSelectionChangeEvent(frame: *Frame) !void {
-    const event = try Event.init("selectionchange", .{}, frame._page);
+    const event = try Event.initTrusted(.wrap("selectionchange"), .{}, frame._page);
     try frame._event_manager.dispatch(frame.document.asEventTarget(), event);
 }
 

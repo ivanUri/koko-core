@@ -34,6 +34,9 @@ pub fn processMessage(cmd: *CDP.Command) !void {
         detectForms,
         clickNode,
         fillNode,
+        clickSelector,
+        fillSelector,
+        selectOptionSelector,
         scrollNode,
         hoverNode,
         pressKey,
@@ -52,6 +55,9 @@ pub fn processMessage(cmd: *CDP.Command) !void {
         .detectForms => return detectForms(cmd),
         .clickNode => return clickNode(cmd),
         .fillNode => return fillNode(cmd),
+        .clickSelector => return clickSelector(cmd),
+        .fillSelector => return fillSelector(cmd),
+        .selectOptionSelector => return selectOptionSelector(cmd),
         .scrollNode => return scrollNode(cmd),
         .hoverNode => return hoverNode(cmd),
         .pressKey => return pressKey(cmd),
@@ -216,10 +222,100 @@ fn clickNode(cmd: anytype) !void {
     const node = bc.node_registry.lookup_by_id.get(node_id) orelse return error.InvalidNodeId;
 
     const el = node.dom.is(@import("../../../core/dom/Element.zig")) orelse return error.InvalidParam;
+    const owner = el.asNode().ownerFrame(frame);
+    _ = @import("../../../core/browser/actions.zig").actionableElement(node.dom, .click, owner) catch |err| {
+        return actionError(err);
+    };
 
     // Reply first; schedule activation on next tick (same pattern as Input.dispatchMouseEvent).
     try cmd.sendResult(.{}, .{});
-    try frame.scheduleActivationOnElement(el);
+    try owner.scheduleActivationOnElement(el);
+}
+
+/// Locator actions keep selector polling, SPA frame changes and actionability
+/// inside the browser core.  Clients only describe intent; they do not need to
+/// reproduce visibility/focus/retry policy with Runtime.evaluate.
+fn clickSelector(cmd: anytype) !void {
+    const Params = struct {
+        selector: []const u8,
+        timeout: ?u32 = null,
+    };
+    const params = (try cmd.params(Params)) orelse return error.InvalidParam;
+    const bc = cmd.browser_context orelse return error.NoBrowserContext;
+    const selector_z = try cmd.arena.dupeZ(u8, params.selector);
+    const actions = @import("../../../core/browser/actions.zig");
+    const node = actions.waitForActionableSelector(
+        selector_z,
+        params.timeout orelse 5000,
+        .click,
+        bc.session,
+    ) catch |err| return actionError(err);
+    const current = bc.session.pendingOrCurrentFrame() orelse return error.FrameNotLoaded;
+    const el = node.is(@import("../../../core/dom/Element.zig")) orelse return error.InvalidParam;
+    const owner = el.asNode().ownerFrame(current);
+
+    try cmd.sendResult(.{}, .{});
+    try owner.scheduleActivationOnElement(el);
+}
+
+fn fillSelector(cmd: anytype) !void {
+    const Params = struct {
+        selector: []const u8,
+        text: []const u8,
+        timeout: ?u32 = null,
+    };
+    const params = (try cmd.params(Params)) orelse return error.InvalidParam;
+    const bc = cmd.browser_context orelse return error.NoBrowserContext;
+    const selector_z = try cmd.arena.dupeZ(u8, params.selector);
+    const actions = @import("../../../core/browser/actions.zig");
+    const node = actions.waitForActionableSelector(
+        selector_z,
+        params.timeout orelse 5000,
+        .fill,
+        bc.session,
+    ) catch |err| return actionError(err);
+    const current = bc.session.pendingOrCurrentFrame() orelse return error.FrameNotLoaded;
+    const owner = node.ownerFrame(current);
+    actions.fill(node, params.text, owner) catch |err| return actionError(err);
+    return cmd.sendResult(.{}, .{});
+}
+
+fn selectOptionSelector(cmd: anytype) !void {
+    const Params = struct {
+        selector: []const u8,
+        value: []const u8,
+        timeout: ?u32 = null,
+    };
+    const params = (try cmd.params(Params)) orelse return error.InvalidParam;
+    const bc = cmd.browser_context orelse return error.NoBrowserContext;
+    const selector_z = try cmd.arena.dupeZ(u8, params.selector);
+    const actions = @import("../../../core/browser/actions.zig");
+    const node = actions.waitForActionableSelector(
+        selector_z,
+        params.timeout orelse 5000,
+        .fill,
+        bc.session,
+    ) catch |err| return actionError(err);
+    const current = bc.session.pendingOrCurrentFrame() orelse return error.FrameNotLoaded;
+    const owner = node.ownerFrame(current);
+    actions.selectOption(node, params.value, owner) catch |err| return actionError(err);
+    return cmd.sendResult(.{}, .{});
+}
+
+fn actionError(err: anyerror) anyerror {
+    return switch (err) {
+        error.InvalidNodeType,
+        error.ElementNotEditable,
+        => error.InvalidParam,
+        error.Timeout,
+        error.ElementDetached,
+        error.ElementNotVisible,
+        error.ElementDisabled,
+        error.ElementNotReceivesEvents,
+        error.ElementReadOnly,
+        => err,
+        else => error.InternalError,
+    };
 }
 
 fn fillNode(cmd: anytype) !void {
@@ -236,10 +332,8 @@ fn fillNode(cmd: anytype) !void {
     const node_id = params.nodeId orelse params.backendNodeId orelse return error.InvalidParam;
     const node = bc.node_registry.lookup_by_id.get(node_id) orelse return error.InvalidNodeId;
 
-    @import("../../../core/browser/actions.zig").fill(node.dom, params.text, frame) catch |err| {
-        if (err == error.InvalidNodeType) return error.InvalidParam;
-        return error.InternalError;
-    };
+    const owner = node.dom.ownerFrame(frame);
+    @import("../../../core/browser/actions.zig").fill(node.dom, params.text, owner) catch |err| return actionError(err);
 
     return cmd.sendResult(.{}, .{});
 }

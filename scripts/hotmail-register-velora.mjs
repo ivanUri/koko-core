@@ -2,9 +2,8 @@
 /**
  * Register one Outlook/Hotmail account through Velora's native CDP endpoint.
  *
- * This intentionally does not automate CAPTCHA solving. If Microsoft presents
- * a challenge, the exact Velora process, page, proxy and browser profile remain
- * alive and an operator prompt is opened for interaction in that same session.
+ * Form actions use Velora's core locator API. CAPTCHA interaction, when the
+ * supported press-and-hold UI appears, stays in the same persistent session.
  */
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
@@ -237,32 +236,9 @@ async function evaluate(cdp, sessionId, expression) {
 
 const FINDER_SOURCE = `
 const find = (selectors, texts = []) => {
-  // Prefer layout geometry over getComputedStyle — Fluent UI + Velora warn on
-  // pseudo getComputedStyle and can leave inputs "invisible" under strict CSS checks.
-  const visible = (element) => {
-    if (!element) return false;
-    if (element.disabled || element.getAttribute('aria-hidden') === 'true') return false;
-    const rect = element.getBoundingClientRect?.();
-    if (rect && rect.width > 1 && rect.height > 1) return true;
-    if ((element.offsetWidth || 0) > 1 && (element.offsetHeight || 0) > 1) return true;
-    // Last resort: present in DOM and not display:none on self.
-    try {
-      const style = getComputedStyle(element);
-      if (style?.display === 'none' || style?.visibility === 'hidden') return false;
-    } catch {}
-    return element.isConnected;
-  };
   for (const selector of selectors) {
     for (const element of document.querySelectorAll(selector)) {
-      if (!visible(element)) continue;
-      if (!texts.length || texts.some((text) => (element.innerText || element.value || element.getAttribute('aria-label') || '').toLowerCase().includes(text.toLowerCase()))) return element;
-    }
-  }
-  // Fallback: first connected match without geometry (SPA hydration lag).
-  for (const selector of selectors) {
-    for (const element of document.querySelectorAll(selector)) {
-      if (!element?.isConnected) continue;
-      if (element.disabled) continue;
+      if (!element.isConnected) continue;
       if (!texts.length || texts.some((text) => (element.innerText || element.value || element.getAttribute('aria-label') || '').toLowerCase().includes(text.toLowerCase()))) return element;
     }
   }
@@ -303,17 +279,7 @@ async function pageState(cdp, sessionId) {
       bodyHead: text.slice(0, 500),
     };
   })()`;
-  let lastError;
-  for (let attempt = 0; attempt < 30; attempt += 1) {
-    try {
-      return await evaluate(cdp, sessionId, expression);
-    } catch (error) {
-      lastError = error;
-      if (!/execution context|realm|navigation/i.test(error.message)) throw error;
-      await sleep(100);
-    }
-  }
-  throw lastError;
+  return evaluate(cdp, sessionId, expression);
 }
 
 function printState(state) {
@@ -328,156 +294,20 @@ function printState(state) {
 }
 
 async function waitFor(cdp, sessionId, label, selectors, timeoutMs, texts = []) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const result = await evaluate(cdp, sessionId, `(() => { ${FINDER_SOURCE}
-        const element = find(${JSON.stringify(selectors)}, ${JSON.stringify(texts)});
-        return element ? {
-          found: true,
-          tag: element.tagName,
-          id: element.id || null,
-          name: element.getAttribute('name'),
-          type: element.getAttribute('type'),
-          text: (element.innerText || element.value || '').trim().slice(0, 120),
-        } : { found: false };
-      })()`);
-      if (result.found) return result;
-    } catch (error) {
-      if (!/execution context|realm|navigation/i.test(error.message)) throw error;
-    }
-    const state = await pageState(cdp, sessionId).catch(() => null);
-    if (state?.success) return { success: true };
-    if (state?.challenge) {
-      console.warn(`[wait] challenge detected while waiting for ${label}`);
-      printState(state);
-      return { challenge: true, state };
-    }
-    await sleep(250);
-  }
-  const state = await pageState(cdp, sessionId).catch(() => null);
-  if (state) printState(state);
-  throw new Error(`timeout waiting for ${label}${state?.bodyHead ? `; page: ${state.bodyHead}` : ""}`);
+  if (texts.length) console.warn(`[wait] ${label}: text filter is diagnostic only; CSS locator owns actionability`);
+  const selector = selectors.join(", ");
+  const result = await cdp.send("LP.waitForSelector", { selector, timeout: timeoutMs }, sessionId, timeoutMs + 2_000);
+  return { found: true, backendNodeId: result.backendNodeId };
 }
 
 async function fill(cdp, sessionId, selectors, value, label, timeoutMs) {
-  const waited = await waitFor(cdp, sessionId, label, selectors, timeoutMs);
-  if (waited?.challenge) throw new Error(`blocked by challenge while filling ${label}`);
-  console.log(`[fill] ${label} found`, waited?.id || waited?.name || waited?.type || waited?.tag || "");
-
-  const focused = await evaluate(cdp, sessionId, `(() => { ${FINDER_SOURCE}
-    const element = find(${JSON.stringify(selectors)});
-    if (!element) return false;
-    element.scrollIntoView({ block: 'center', inline: 'nearest' });
-    element.focus();
-    element.click?.();
-    globalThis.__veloraInputTrace = [];
-    if (!globalThis.__veloraInputTraceInstalled) {
-      globalThis.__veloraInputTraceInstalled = true;
-      for (const type of ['beforeinput', 'input']) {
-        document.addEventListener(type, event => {
-          globalThis.__veloraInputTrace.push({ scope: 'document', type, data: event.data, target: event.target?.tagName, value: event.target?.value, trusted: event.isTrusted });
-        }, true);
-      }
-    }
-    for (const type of ['keydown', 'beforeinput', 'input', 'keyup', 'change']) {
-      element.addEventListener(type, event => {
-        globalThis.__veloraInputTrace.push({ scope: 'target', type, key: event.key, data: event.data, value: element.value, trusted: event.isTrusted });
-        if (globalThis.__veloraInputTrace.length > 160) globalThis.__veloraInputTrace.shift();
-      });
-    }
-    // Clear existing value via select+backspace when select works; else Cmd/Ctrl-A.
-    try {
-      const selectable = element instanceof HTMLTextAreaElement ||
-        (element instanceof HTMLInputElement && ['text', 'search', 'url', 'tel', 'password', 'email', 'number'].includes(element.type));
-      if (selectable && typeof element.select === 'function') element.select();
-    } catch {}
-    return document.activeElement === element || element === document.activeElement;
-  })()`);
-  if (!focused) throw new Error(`could not focus ${label}`);
-
-  // Trusted path: select-all + insertText (Velora now supports selection on
-  // type=email; insertText replaces full selection like Chrome).
-  const text = String(value);
-  await evaluate(cdp, sessionId, `(() => { ${FINDER_SOURCE}
-    const element = find(${JSON.stringify(selectors)});
-    if (!element) return false;
-    element.focus();
-    try {
-      if (typeof element.select === 'function') element.select();
-      else if (typeof element.setSelectionRange === 'function') {
-        element.setSelectionRange(0, (element.value || '').length);
-      }
-    } catch {}
-    return true;
-  })()`);
-  await cdp.send("Input.insertText", { text }, sessionId);
-  await sleep(250);
-
-  // If insertText did not stick (empty), fall back to per-char keys once.
-  // Skip key spam when Fluent kept the local-part of an email (normal).
-  let current = await evaluate(cdp, sessionId, `(() => { ${FINDER_SOURCE}
-    const element = find(${JSON.stringify(selectors)});
-    return element?.value ?? null;
-  })()`).catch(() => null);
-  const localOfText = text.includes("@") ? text.split("@")[0] : text;
-  const localOk = current && (current === text || current === localOfText || current.replace(/@.*/, "") === localOfText);
-  if (!localOk) {
-    console.warn(`[fill] insertText incomplete for ${label} (have=${JSON.stringify(current)}); typing keys`);
-    await evaluate(cdp, sessionId, `(() => { ${FINDER_SOURCE}
-      const element = find(${JSON.stringify(selectors)});
-      if (!element) return false;
-      element.focus();
-      try { element.select(); } catch {}
-      return true;
-    })()`);
-    await cdp.send("Input.insertText", { text: localOfText }, sessionId);
-    await sleep(100);
-  }
-
-  const wanted = text;
-  const localPart = wanted.includes("@") ? wanted.split("@")[0] : wanted;
-  const allowLocalOnly = !wanted.includes("@");
-  const deadline = Date.now() + Math.min(timeoutMs, 5000);
-  let result = { matches: false, value: null, active: null, trace: null };
-  while (Date.now() < deadline) {
-    result = await evaluate(cdp, sessionId, `(() => { ${FINDER_SOURCE}
-      const element = find(${JSON.stringify(selectors)});
-      const v = element?.value ?? null;
-      const wanted = ${JSON.stringify(wanted)};
-      const local = ${JSON.stringify(localPart)};
-      const allowLocal = ${JSON.stringify(allowLocalOnly)};
-      // Domain-suffix UI ("New email" + visible "@outlook.com") only stores local-part.
-      const label = (element.getAttribute('aria-label') || element.getAttribute('name') || '').toLowerCase();
-      const domainSuffixUi = /new email|membername|username/.test(label)
-        || (/enter your new email/i.test(document.body?.innerText || '')
-          && !!document.querySelector('input[type="email"], input[name="email"]'));
-      let matches = false;
-      if (element && v != null) {
-        if (v === wanted) matches = true;
-        else if (allowLocal && v === local) matches = true;
-        else if (domainSuffixUi && local && (v === local || v.replace(/@.*/, '') === local)) matches = true;
-        // Fluent primary email field often keeps local-part only even when
-        // insertText sent a full address — treat that as success (domain is
-        // a separate control on later steps / implied @outlook.com).
-        else if (local && wanted.includes('@') && (v === local || v.replace(/@.*/, '') === local)) matches = true;
-      }
-      return {
-        matches,
-        value: v,
-        domainSuffixUi,
-        active: document.activeElement?.tagName + ':' + (document.activeElement?.getAttribute?.('type') || ''),
-        trace: globalThis.__veloraInputTrace?.slice(-30) || null
-      };
-    })()`).catch(() => ({ matches: false, value: null, active: null, trace: null }));
-    if (result.matches) break;
-    await sleep(100);
-  }
-  if (!result.matches) {
-    throw new Error(`could not fill ${label} through trusted input (value=${JSON.stringify(result.value)}, active=${result.active}, trace=${JSON.stringify(result.trace)})`);
-  }
-  console.log(`[fill] ${label} ok value=${JSON.stringify(result.value)}`);
-  await sleep(350);
+  const selector = selectors.join(", ");
+  await cdp.send("LP.fillSelector", {
+    selector,
+    text: String(value),
+    timeout: timeoutMs,
+  }, sessionId, timeoutMs + 2_000);
+  console.log(`[fill] ${label} via core locator`);
 }
 
 async function pointerClick(cdp, sessionId, x, y) {
@@ -497,7 +327,7 @@ async function pointerClick(cdp, sessionId, x, y) {
  */
 const CAPTCHA_HOLD_MS = 12_000;
 const CAPTCHA_HOLD_MAX_MS = 15_000;
-/** Chrome rejects useless boxes; Velora often reports 5×5 for broken iframe layout. */
+/** Reject boxes too small to be a usable pointer target. */
 const CAPTCHA_IFRAME_MIN_W = 40;
 const CAPTCHA_IFRAME_MIN_H = 40;
 
@@ -582,7 +412,7 @@ async function pressAndHoldCaptcha(cdp, sessionId, holdMs = CAPTCHA_HOLD_MS) {
     console.error(
       `[captcha] ERROR: humanCaptchaIframe layout unusable `
       + `(${info.tiny.w}×${info.tiny.h}); need ≥${CAPTCHA_IFRAME_MIN_W}×${CAPTCHA_IFRAME_MIN_H} `
-      + `(Chrome uses real boundingBox). Skip fake hold on label text.`,
+      + `Skip hold because there is no usable pointer target.`,
     );
     return {
       attempted: false,
@@ -725,59 +555,12 @@ async function pressAndHoldCaptcha(cdp, sessionId, holdMs = CAPTCHA_HOLD_MS) {
 }
 
 async function clickElement(cdp, sessionId, selectors, label, timeoutMs, texts = []) {
-  await waitFor(cdp, sessionId, label, selectors, timeoutMs, texts);
-  const marker = `velora-action-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const rect = await evaluate(cdp, sessionId, `(() => { ${FINDER_SOURCE}
-    const element = find(${JSON.stringify(selectors)}, ${JSON.stringify(texts)});
-    if (!element) return null;
-    try { element.scrollIntoView({ block: 'center', inline: 'center' }); } catch {}
-    element.id = ${JSON.stringify(marker)};
-    const rect = element.getBoundingClientRect();
-    return {
-      x: rect.x + rect.width / 2,
-      y: rect.y + rect.height / 2,
-      w: rect.width,
-      h: rect.height,
-      disabled: !!(element.disabled || element.getAttribute('aria-disabled') === 'true'),
-      text: (element.innerText || element.value || '').trim().slice(0, 80),
-      tag: element.tagName,
-    };
-  })()`);
-  if (!rect) throw new Error(`could not click ${label}`);
-  if (rect.disabled) console.warn(`[click] ${label} appears disabled text=${JSON.stringify(rect.text)}`);
-
-  // Prefer LP.clickNode (trusted click on the exact node). Pointer geometry on
-  // Fluent is often collapsed/wrong and used to hit the footer instead of Next.
-  let clicked = false;
-  try {
-    const { elements = [] } = await cdp.send("LP.getInteractiveElements", {}, sessionId, 8_000);
-    const target = elements.find((element) => element.id === marker);
-    if (target?.backendNodeId) {
-      await cdp.send("LP.clickNode", { backendNodeId: target.backendNodeId }, sessionId, 8_000);
-      clicked = true;
-      console.log(`[click] ${label} via LP.clickNode text=${JSON.stringify(rect.text)}`);
-    }
-  } catch (error) {
-    console.warn(`[click] LP.clickNode failed for ${label}: ${error.message}`);
-  }
-
-  // Pointer fallback only when rect looks like a real control (not 5×5 collapse).
-  if (!clicked && rect.w >= 24 && rect.h >= 16) {
-    await pointerClick(cdp, sessionId, rect.x, rect.y);
-    clicked = true;
-    console.log(`[click] ${label} via pointer (${rect.x.toFixed(1)},${rect.y.toFixed(1)})`);
-  }
-  if (!clicked) {
-    // Last resort: trusted? HTMLElement.click is untrusted — still better than noop.
-    await evaluate(cdp, sessionId, `(() => {
-      const el = document.getElementById(${JSON.stringify(marker)});
-      if (!el) return false;
-      el.click();
-      return true;
-    })()`).catch(() => {});
-    console.warn(`[click] ${label} fell back to element.click() (untrusted)`);
-  }
-  await sleep(500);
+  if (texts.length) console.log(`[click] ${label} expected text=${texts.join("|")}`);
+  await cdp.send("LP.clickSelector", {
+    selector: selectors.join(", "),
+    timeout: timeoutMs,
+  }, sessionId, timeoutMs + 2_000);
+  console.log(`[click] ${label} via core locator`);
 }
 
 async function pressEnter(cdp, sessionId) {
@@ -800,57 +583,6 @@ const MONTH_NAMES = [
   "july", "august", "september", "october", "november", "december",
 ];
 const MONTH_ABBR = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
-
-function fluentOptionMatchSource(wanted) {
-  return `(() => {
-    const wanted = ${JSON.stringify(String(wanted))};
-    const n = Number(wanted);
-    const monthNames = ${JSON.stringify(MONTH_NAMES)};
-    const monthAbbr = ${JSON.stringify(MONTH_ABBR)};
-    const visible = (element) => {
-      const rect = element.getBoundingClientRect();
-      return rect.width > 0 && rect.height > 0;
-    };
-    const textOf = (el) => (el.textContent || el.getAttribute("aria-label") || "").replace(/\\s+/g, " ").trim();
-    const matches = (el) => {
-      const t = textOf(el);
-      const tl = t.toLowerCase();
-      const dv = el.getAttribute("data-value") || el.getAttribute("value") || "";
-      if (dv === wanted || t === wanted) return true;
-      if (Number.isFinite(n) && (dv === String(n) || Number(dv) === n || t === String(n))) return true;
-      if (Number.isFinite(n) && n >= 1 && n <= 12) {
-        if (tl === monthNames[n - 1] || tl.startsWith(monthAbbr[n - 1])) return true;
-      }
-      return false;
-    };
-    const options = [...document.querySelectorAll('[role="option"], [role="listbox"] [data-value], option')]
-      .filter((el) => el && el.isConnected && visible(el));
-    let option = options.find(matches);
-    if (!option && Number.isFinite(n) && n >= 1 && options.length >= n) option = options[n - 1];
-    if (!option) {
-      return {
-        ok: false,
-        count: options.length,
-        sample: options.slice(0, 16).map((el) => ({ t: textOf(el).slice(0, 40), v: el.getAttribute("data-value") || "" })),
-      };
-    }
-    const marker = "veloraOpt" + Date.now().toString(36);
-    option.setAttribute("data-velora-opt", marker);
-    option.id = option.id || marker;
-    option.scrollIntoView({ block: "nearest", inline: "nearest" });
-    const rect = option.getBoundingClientRect();
-    return {
-      ok: true,
-      marker,
-      id: option.id,
-      text: textOf(option),
-      x: rect.x + rect.width / 2,
-      y: rect.y + rect.height / 2,
-      w: rect.width,
-      h: rect.height,
-    };
-  })()`;
-}
 
 async function comboboxShowsValue(cdp, sessionId, selectors, value) {
   return evaluate(cdp, sessionId, `(() => { ${FINDER_SOURCE}
@@ -905,12 +637,14 @@ async function choose(cdp, sessionId, selectors, value, label, timeoutMs) {
       || (Number.isFinite(n) && (item.value === String(n) || Number(item.value) === n))
     ) || (Number.isFinite(n) && n >= 1 ? element.options[n - 1] : null);
     if (!option) return { done: false, reason: "no-native-option" };
-    element.value = option.value;
-    element.dispatchEvent(new Event("input", { bubbles: true }));
-    element.dispatchEvent(new Event("change", { bubbles: true }));
-    return { done: true, via: "select", text: option.textContent.trim() };
+    return { done: true, value: option.value, text: option.textContent.trim() };
   })()`);
   if (native?.done) {
+    await cdp.send("LP.selectOptionSelector", {
+      selector: selectors.join(", "),
+      value: native.value,
+      timeout: timeoutMs,
+    }, sessionId, timeoutMs + 2_000);
     console.log(`[choose] ${label}=${wanted} via <select> ${JSON.stringify(native.text)}`);
     return;
   }
@@ -942,39 +676,6 @@ async function choose(cdp, sessionId, selectors, value, label, timeoutMs) {
     console.warn(`[choose] ${label} keyboard attempt ${attempt} not confirmed: ${JSON.stringify(shown)}`);
   }
 
-  // Secondary: LP.clickNode on list option (less reliable for Fluent state)
-  await dispatchKey(cdp, sessionId, "Escape", "Escape", 27);
-  await clickElement(cdp, sessionId, selectors, `${label} option-fallback`, timeoutMs);
-  await sleep(400);
-  let found = null;
-  const findDeadline = Date.now() + 4_000;
-  while (Date.now() < findDeadline) {
-    found = await evaluate(cdp, sessionId, fluentOptionMatchSource(wanted)).catch(() => null);
-    if (found?.ok) break;
-    await sleep(200);
-  }
-  if (found?.ok) {
-    try {
-      const { elements = [] } = await cdp.send("LP.getInteractiveElements", {}, sessionId, 8_000);
-      const byText = elements.find((el) => {
-        const t = String(el.text || el.name || "").replace(/\s+/g, " ").trim().toLowerCase();
-        const want = String(found.text || "").toLowerCase();
-        return t === want || t === wanted || t === String(n);
-      });
-      if (byText?.backendNodeId) {
-        await cdp.send("LP.clickNode", { backendNodeId: byText.backendNodeId }, sessionId, 8_000);
-        await sleep(400);
-        const shown = await comboboxShowsValue(cdp, sessionId, selectors, wanted);
-        if (shown?.ok) {
-          console.log(`[choose] ${label}=${wanted} via LP option ${JSON.stringify(found.text)}`);
-          return;
-        }
-      }
-    } catch (error) {
-      console.warn(`[choose] ${label} option LP: ${error.message}`);
-    }
-  }
-
   throw new Error(`could not select ${value} for ${label}`);
 }
 
@@ -983,7 +684,6 @@ const SUBMIT_SELECTORS = [
   "input[type='submit']",
   "#idSIButton9",
   "button[data-testid='primaryButton']",
-  "button",
 ];
 const NEXT_TEXTS = ["next", "submit", "tiếp theo", "continue"];
 
@@ -1509,14 +1209,11 @@ async function main() {
         }
       });
     }
-    // Prefer opening signup URL directly — about:blank → navigate races Velora
-    // realm drain (realm.scheduler_suppressed) and can yield a blank SPA shell.
-    const { targetId } = await cdp.send("Target.createTarget", { url: SIGNUP_URL });
+    const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" });
     const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
     await cdp.send("Page.enable", {}, sessionId);
     await cdp.send("Runtime.enable", {}, sessionId);
     if (opts.trace) await cdp.send("Network.enable", {}, sessionId);
-    await sleep(500);
     if (opts.trace) {
       await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
         globalThis.__veloraHotmailTrace = [];
@@ -1559,6 +1256,7 @@ async function main() {
         mobile: true,
       }, sessionId).catch((error) => console.warn(`mobile viewport unavailable: ${error.message}`));
     }
+    await cdp.send("Page.navigate", { url: SIGNUP_URL }, sessionId, opts.timeoutMs);
     console.log(`Velora endpoint: ${endpoint}`);
     console.log(`Velora profile: ${opts.profile}`);
     if (source) console.log(`Source profile: ${opts.sourceProfile}`);

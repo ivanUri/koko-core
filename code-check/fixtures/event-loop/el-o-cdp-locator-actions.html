@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>pending</title>
+<main id="app">loading</main>
+<script>
+  window.__events = [];
+  setTimeout(() => {
+    document.querySelector('#app').innerHTML = `
+      <input id="email" type="email" value="old@example.test" disabled>
+      <select id="month"><option value="1">January</option><option value="2">February</option></select>
+      <button id="submit" type="button">Submit</button>`;
+    const input = document.querySelector('#email');
+    for (const type of ['beforeinput', 'input']) {
+      input.addEventListener(type, event => window.__events.push(`${type}:${event.isTrusted}`));
+    }
+    document.querySelector('#submit').addEventListener('click', event => {
+      window.__events.push(`click:${event.isTrusted}`);
+      const ok = input.value === 'new@example.test'
+        && document.querySelector('#month').value === '2'
+        && window.__events.includes('beforeinput:true')
+        && window.__events.includes('input:true')
+        && window.__events.includes('click:true');
+      window.__el = { ok, value: input.value, events: window.__events };
+      window.__elDone = true;
+      document.title = JSON.stringify(window.__el);
+    });
+    setTimeout(() => { input.removeAttribute('disabled'); }, 120);
+  }, 120);
+</script>

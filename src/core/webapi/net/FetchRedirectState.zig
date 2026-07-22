@@ -96,8 +96,14 @@ pub fn rebuildHeaders(ctx: *anyopaque, transfer: *HttpClient.Transfer, conn: *ht
     const params = &transfer.req.params;
     const method_name = methodNameFromTransfer(params);
 
+    // CURLOPT_HTTPHEADER points at the old curl_slist. Detach it first, build
+    // the replacement, then release the list before overwriting ownership.
+    // Redirect-heavy SPAs otherwise leaked every request-header node on each
+    // hop while only the final list was released with RequestParams.
     try conn.clearHeaders();
-    params.headers = try buildWireHeaders(state, params.url, params.body, method_name);
+    const replacement = try buildWireHeaders(state, params.url, params.body, method_name);
+    params.headers.deinit();
+    params.headers = replacement;
 
     const raw_post_body = params.body != null and state.body_content_type == null;
     params.raw_post_body = raw_post_body;
