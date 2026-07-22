@@ -24,6 +24,7 @@ Every bug fixed, browser behavior understood, GitHub issue investigated, WPT ana
 | WPT workers | [`bugs/2026-07-workers-wpt-suite.md`](bugs/2026-07-workers-wpt-suite.md) |
 | WPT URL | [`bugs/2026-07-04-url-wpt-suite.md`](bugs/2026-07-04-url-wpt-suite.md) |
 | WPT WebSocket | [`bugs/2026-07-websocket-wpt-suite.md`](bugs/2026-07-websocket-wpt-suite.md) |
+| WPT CSS syntax | [`bugs/2026-07-22-wpt-css-syntax-suite.md`](bugs/2026-07-22-wpt-css-syntax-suite.md) |
 | Google Sign-In | [`bugs/2026-07-google-signin-suite.md`](bugs/2026-07-google-signin-suite.md) |
 | Benchmarks | [`performance/benchmarks/2026-06-benchmark-harness.md`](performance/benchmarks/2026-06-benchmark-harness.md) |
 
@@ -52,6 +53,7 @@ Consolidated blog-length post-mortems — one file per WPT area. Short per-file 
 - `2026-07-workers-wpt-suite.md`
 - `2026-07-04-url-wpt-suite.md`
 - `2026-07-websocket-wpt-suite.md`
+- `2026-07-22-wpt-css-syntax-suite.md`
 - `2026-07-google-signin-suite.md`
 
 Standalone (not merged): `2026-07-05-wpt-async-error-handling-batch.md`, `2026-07-07-iframe-unload-visibilitychange-lifecycle.md`.

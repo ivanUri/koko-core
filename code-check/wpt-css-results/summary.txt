@@ -1,0 +1,6 @@
+ran=40
+pass=1
+fail=39
+crash_count=0
+failures_file=/mnt/d/velora/code-check/wpt-css-results/failures.txt
+detail_file=/mnt/d/velora/code-check/wpt-css-results/failures.detail.txt
