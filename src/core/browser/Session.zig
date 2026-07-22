@@ -199,7 +199,10 @@ pub fn deinit(self: *Session) void {
     self.browser.env.memoryPressureNotification(.critical);
     self.fc_identity_pool.deinit();
 
-    self.storage_shed.deinit(self.browser.app.allocator);
+    // storage_shed and all Lookup contents use the session arena. Reset the
+    // root before returning that arena to the pool; freeing entries through the
+    // app allocator would mix allocator ownership.
+    self.storage_shed = .{};
     self.arena_pool.release(self.arena);
 }
 
@@ -490,7 +493,7 @@ fn processFrameNavigation(self: *Session, frame: *Frame, qn: *QueuedNavigation) 
 
     frame._queued_navigation = null;
     // Commit-time suppression — see processRootQueuedNavigation.
-    frame.suppressScheduler();
+    frame.suppressScheduler(.teardown);
     defer self.releaseArena(qn.arena);
 
     errdefer iframe._window = null;
@@ -550,7 +553,7 @@ fn processFrameNavigation(self: *Session, frame: *Frame, qn: *QueuedNavigation) 
 // object inside is replaced, matching how iframes behave on navigation).
 fn processPopupNavigation(self: *Session, frame: *Frame, qn: *QueuedNavigation) !void {
     frame._queued_navigation = null;
-    frame.suppressScheduler();
+    frame.suppressScheduler(.teardown);
     defer self.releaseArena(qn.arena);
 
     // Preserve popup identity fields. _name lives in the Page arena and
@@ -622,7 +625,7 @@ fn processRootQueuedNavigation(self: *Session) !void {
 fn replaceRootImmediate(self: *Session, frame_id: u32, qn: *QueuedNavigation) !void {
     defer self.arena_pool.release(qn.arena);
 
-    if (self._active) |active| active.frame.suppressScheduler();
+    if (self._active) |active| active.frame.suppressScheduler(.teardown);
     self.tearDownActivePage();
     const new_frame = try self.installNewActivePage(frame_id);
 
@@ -683,7 +686,7 @@ pub fn initiateRootNavigation(self: *Session, frame_id: u32, url: [:0]const u8, 
         if (active.frame._frame_id == frame_id) {
             abortOutgoingSubresources(&active.frame, &self.browser.http_client);
             if (clean_slate) {
-                active.frame.suppressScheduler();
+                active.frame.suppressScheduler(.teardown);
                 self.browser.env.waitForBackgroundTasks();
                 self.tearDownActivePage();
                 self.reapZombiePages();
@@ -800,7 +803,7 @@ pub fn commitPendingPage(self: *Session) !void {
     //
     // Suppress the departing realm before teardown so runaway microtasks in
     // the old context cannot monopolize the event loop during destroyPage.
-    old_active.frame.suppressScheduler();
+    old_active.frame.suppressScheduler(.teardown);
     // Drain V8 background tasks tied to the old context before freeing it.
     // Without this, platform worker threads can still be in Zig DOM hooks
     // (e.g. img.src → domChanged) after destroyContext → UAF / segfault.

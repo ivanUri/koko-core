@@ -236,6 +236,12 @@ _intersection_delivery_scheduled: bool = false,
 _slots_pending_slotchange: std.AutoHashMapUnmanaged(*Element.Html.Slot, void) = .{},
 _slotchange_delivery_scheduled: bool = false,
 
+// CSS class-driven animations: headless has no compositor timeline, so we
+// synthesize animationend/transitionend after class changes (Fluent SPA route
+// transitions commit the next location only in onAnimationEnd).
+_css_anim_pending: std.AutoHashMapUnmanaged(*Element, void) = .{},
+_css_anim_delivery_scheduled: bool = false,
+
 /// `TaskOwner` captured when each single-flight microtask was scheduled (epoch / realm legality).
 _mutation_delivery_task_owner: RealmLifecycleKernel.TaskOwner = .{ .realm_id = 0, .epoch = 0, .document_id = null },
 _intersection_check_task_owner: RealmLifecycleKernel.TaskOwner = .{ .realm_id = 0, .epoch = 0, .document_id = null },
@@ -349,8 +355,8 @@ _last_pointer_x: f64 = 120,
 _last_pointer_y: f64 = 120,
 _automation_scrubbed: bool = false,
 
-// Coordinates for CDP mouse press/release deferred until both halves arrive.
-_cdp_mouse_press_stash: ?struct { x: f64, y: f64 } = null,
+// Coordinates for independently scheduled CDP mouse press/release halves.
+// Press must dispatch immediately so a real hold duration exists before release.
 _cdp_mouse_pending_x: f64 = 0,
 _cdp_mouse_pending_y: f64 = 0,
 _cdp_mouse_release_x: f64 = 0,
@@ -611,18 +617,44 @@ fn detachChildFrameForIframe(self: *Frame, iframe: *IFrame) void {
     };
 }
 
-/// Returns true if the scheduler has been suppressed due to runaway microtask execution.
+/// Returns true if the scheduler has been suppressed due to runaway microtask execution
+/// or intentional teardown containment.
 pub fn schedulerSuppressed(self: *const Frame) bool {
     return self._scheduler_suppressed;
 }
 
-/// Suppress the scheduler circuit breaker. Called when runaway microtask
-/// execution is detected. This prevents further microtask checkpoints.
-pub fn suppressScheduler(self: *Frame) void {
-    if (!self._scheduler_suppressed) {
-        self._scheduler_suppressed = true;
-        RealmLifecycleKernel.traceSchedulerSuppressed(self._frame_id, self._realm_epoch, self._realm_state);
-        RealmLifecycleKernel.trace(.scheduler_suppressed, self._frame_id, self._realm_epoch, null);
+/// Why the realm scheduler was suppressed. Teardown is expected lifecycle;
+/// runaway is a circuit breaker after microtask budget exhaustion.
+pub const SuppressReason = enum {
+    /// Departing realm during re-nav / commit — expected, must not ERROR-spam.
+    teardown,
+    /// Microtask checkpoint exceeded hard budget — real fault signal.
+    runaway,
+};
+
+/// Suppress microtask checkpoints for this realm.
+/// - `.teardown`: silent/debug; used by Session before destroying a departing page.
+/// - `.runaway`: ERROR log via `realm.scheduler_suppressed` (circuit breaker).
+pub fn suppressScheduler(self: *Frame, reason: SuppressReason) void {
+    if (self._scheduler_suppressed) return;
+    self._scheduler_suppressed = true;
+    switch (reason) {
+        .runaway => {
+            RealmLifecycleKernel.traceSchedulerSuppressed(self._frame_id, self._realm_epoch, self._realm_state);
+            RealmLifecycleKernel.trace(.scheduler_suppressed, self._frame_id, self._realm_epoch, null);
+        },
+        .teardown => {
+            // Expected on every clean-slate / iframe re-nav. Do not use log.err —
+            // hotmail/signup probes treated those lines as load failures.
+            if (comptime IS_DEBUG) {
+                log.debug(.frame, "realm.scheduler_suppressed.teardown", .{
+                    .frame_id = self._frame_id,
+                    .current_epoch = self._realm_epoch,
+                    .realm_state = @tagName(self._realm_state),
+                });
+            }
+            RealmLifecycleKernel.trace(.scheduler_suppressed, self._frame_id, self._realm_epoch, null);
+        },
     }
 }
 
@@ -639,6 +671,7 @@ pub fn bumpRealmNavigationEpoch(self: *Frame) void {
     self._document_parse_scheduled = false;
     self._document_parse_active = false;
     self._cdp_poll_counter = 0;
+    self._input_press_hit = null;
     // Capacities are only valid for the parse that created them.
     self._parser_text_cap = .empty;
     // New navigation installs a new execution world; suppression belongs to
@@ -649,6 +682,9 @@ pub fn bumpRealmNavigationEpoch(self: *Frame) void {
 
 pub fn markRealmReadyForPublication(self: *Frame) void {
     self._realm_state = .active;
+    // New document is live — never carry teardown/runaway suppression into
+    // the published realm (Fluent SPA hydrate needs microtask checkpoints).
+    self._scheduler_suppressed = false;
 }
 
 fn enterRealmDraining(self: *Frame) void {
@@ -3661,6 +3697,19 @@ pub fn finishTopLevelLayoutResolve(self: *Frame) void {
     self._layout_resolve_depth = 0;
 }
 
+/// Drop cached offsetWidth/height after inline style mutation.
+/// Font fingerprint probes reassign `style.fontFamily` on one span and re-read
+/// `offsetWidth`. Version-only invalidation is not enough: `syncStyleAttribute`
+/// → `setAttribute` → `domChanged` re-aligns `_layout_cache_dom_version` with
+/// `version` while the HashMap still holds the pre-mutation sizes.
+pub fn invalidateElementLayoutCache(self: *Frame) void {
+    // Main-thread style path only (not worker). clearRetainingCapacity is OK here;
+    // domChanged avoids it because workers raced HTTP/parser on SERP.
+    self._element_layout_cache.clearRetainingCapacity();
+    self._layout_cache_dom_version = self.version;
+    self._style_manager.invalidateLayoutPropertyCache();
+}
+
 pub fn domChanged(self: *Frame) void {
     // Bulk layout reads (offsetWidth chains) must not invalidate mid-resolve.
     if (self.layoutResolveActive()) return;
@@ -5642,6 +5691,59 @@ pub fn attributeChange(self: *Frame, element: *Element, name: String, value: Str
         if (element.is(Element.Html.Slot)) |slot| {
             self.signalSlotChange(slot);
         }
+    } else if (name.eql(comptime .wrap("class"))) {
+        // Class swaps often start CSS animations (Fluent route fade-out). Without a
+        // compositor we still must fire animationend so React onAnimationEnd runs.
+        if (old_value == null or !old_value.?.eql(value)) {
+            self.scheduleCssAnimationEnd(element) catch |err| {
+                log.debug(.frame, "scheduleCssAnimationEnd", .{ .err = err, .type = self._type, .url = self.url });
+            };
+        }
+    }
+}
+
+/// Queue a synthetic CSS animationend/transitionend for `element` after class change.
+pub fn scheduleCssAnimationEnd(self: *Frame, element: *Element) !void {
+    try self._css_anim_pending.put(self.arena, element, {});
+    if (self._css_anim_delivery_scheduled) return;
+    self._css_anim_delivery_scheduled = true;
+    // Small delay approximates animation-duration (Fluent uses ~0.25s); 0 still
+    // runs after the current task so React has committed onAnimationEnd props.
+    try self.js.scheduler.add(self, struct {
+        fn run(ctx: *anyopaque) !?u32 {
+            const frame: *Frame = @ptrCast(@alignCast(ctx));
+            frame.deliverCssAnimationEnds();
+            return null;
+        }
+    }.run, 0, .{ .name = "css.animationend" });
+}
+
+fn deliverCssAnimationEnds(self: *Frame) void {
+    self._css_anim_delivery_scheduled = false;
+    if (self._realm_state != .active) {
+        self._css_anim_pending.clearRetainingCapacity();
+        return;
+    }
+
+    var elements: std.ArrayList(*Element) = .empty;
+    defer elements.deinit(self.call_arena);
+    var it = self._css_anim_pending.keyIterator();
+    while (it.next()) |key_ptr| {
+        elements.append(self.call_arena, key_ptr.*) catch continue;
+    }
+    self._css_anim_pending.clearRetainingCapacity();
+
+    for (elements.items) |element| {
+        // Fire both: Fluent uses CSS animation; some SPAs use transitions.
+        for ([_][]const u8{ "animationend", "transitionend" }) |typ| {
+            const event = Event.initTrusted(String.wrap(typ), .{ .bubbles = true }, self._page) catch |err| {
+                log.debug(.frame, "css.animEvent.init", .{ .err = err, .type = self._type });
+                continue;
+            };
+            self._event_manager.dispatch(element.asNode().asEventTarget(), event) catch |err| {
+                log.debug(.frame, "css.animEvent.dispatch", .{ .err = err, .type = self._type });
+            };
+        }
     }
 }
 
@@ -6309,9 +6411,23 @@ pub fn triggerMouseRelease(self: *Frame, x: f64, y: f64) !void {
     try @import("InputController.zig").dispatchPointerUpAtCdp(self, x, y);
 }
 
-/// Record CDP `mousePressed` coordinates; activation runs on `mouseReleased`.
-pub fn stashCdpMousePress(self: *Frame, x: f64, y: f64) void {
-    self._cdp_mouse_press_stash = .{ .x = x, .y = y };
+/// Queue mousePressed after its CDP reply. Unlike the old paired implementation,
+/// this dispatches pointerdown/mousedown before mouseReleased arrives so
+/// press-and-hold challenges observe the actual elapsed hold duration.
+pub fn scheduleCdpMousePress(self: *Frame, x: f64, y: f64) !void {
+    self._cdp_mouse_pending_x = x;
+    self._cdp_mouse_pending_y = y;
+    try self.js.scheduler.add(self, struct {
+        fn run(ctx: *anyopaque) !?u32 {
+            const frame: *Frame = @ptrCast(@alignCast(ctx));
+            try @import("InputController.zig").dispatchPointerDownAtCdp(
+                frame,
+                frame._cdp_mouse_pending_x,
+                frame._cdp_mouse_pending_y,
+            );
+            return null;
+        }
+    }.run, 0, .{ .name = "input.mousePressed" });
 }
 
 /// Queue element activation after LP.clickNode CDP reply (avoids blocking transport).
@@ -6330,38 +6446,45 @@ pub fn scheduleActivationOnElement(self: *Frame, element: *Element) !void {
     }.run, 0, .{ .name = "lp.clickNode" });
 }
 
-/// Queue the paired press+release after both CDP halves have been acknowledged.
+/// Queue mouseReleased independently; mousePressed has already established
+/// `_input_press_hit` and dispatched its down events.
 pub fn scheduleCdpMouseRelease(self: *Frame, x: f64, y: f64) !void {
-    const press_x = if (self._cdp_mouse_press_stash) |p| p.x else x;
-    const press_y = if (self._cdp_mouse_press_stash) |p| p.y else y;
-    self._cdp_mouse_press_stash = null;
-    self._cdp_mouse_pending_x = press_x;
-    self._cdp_mouse_pending_y = press_y;
     self._cdp_mouse_release_x = x;
     self._cdp_mouse_release_y = y;
     try self.js.scheduler.add(self, struct {
         fn run(ctx: *anyopaque) !?u32 {
             const frame: *Frame = @ptrCast(@alignCast(ctx));
-            const InputController = @import("InputController.zig");
-            try InputController.dispatchPointerDownAtCdp(
-                frame,
-                frame._cdp_mouse_pending_x,
-                frame._cdp_mouse_pending_y,
-            );
-            try InputController.dispatchPointerUpAtCdp(
+            try @import("InputController.zig").dispatchPointerUpAtCdp(
                 frame,
                 frame._cdp_mouse_release_x,
                 frame._cdp_mouse_release_y,
             );
             return null;
         }
-    }.run, 0, .{ .name = "input.mouseClick" });
+    }.run, 0, .{ .name = "input.mouseReleased" });
 }
 
 // callback when the "click" event reaches the frame.
 pub fn handleClick(self: *Frame, target: *Node) !void {
     // TODO: Also support <area> elements when implement
-    const element = target.is(Element) orelse return;
+    // Clicks often land on text/span *inside* a <button type=submit>. Walk up
+    // to the nearest activation target (Fluent Next wraps label text in spans).
+    var element = target.is(Element) orelse return;
+    var walk: ?*Node = target;
+    while (walk) |n| {
+        if (n.is(Element)) |el| {
+            if (el.is(Element.Html)) |html| {
+                switch (html._type) {
+                    .button, .input, .anchor, .label => {
+                        element = el;
+                        break;
+                    },
+                    else => {},
+                }
+            }
+        }
+        walk = n._parent;
+    }
     const html_element = element.is(Element.Html) orelse return;
 
     switch (html_element._type) {
@@ -6481,7 +6604,16 @@ pub fn handleKeydown(self: *Frame, target: *Node, event: *Event) !void {
             return;
         }
 
-        // Handle printable characters
+        if (key == .Backspace) {
+            try input.innerDeleteBackward(self);
+            return;
+        }
+        if (key == .Delete) {
+            try input.innerDeleteForward(self);
+            return;
+        }
+
+        // Handle printable characters (including type=email)
         if (key.isPrintable()) {
             try input.innerInsert(key.asString(), self);
         }
@@ -6489,6 +6621,17 @@ pub fn handleKeydown(self: *Frame, target: *Node, event: *Event) !void {
     }
 
     if (target.is(Element.Html.TextArea)) |textarea| {
+        if (key == .Backspace or key == .Delete) {
+            // Minimal: clear selection or drop last char via insert replace path.
+            // TextArea lacks dedicated delete helpers; drop last unit when empty selection.
+            const val = textarea.getValue();
+            if (val.len == 0) return;
+            if (key == .Backspace) {
+                const cut = if (val.len >= 1) val.len - 1 else 0;
+                try textarea.setValue(val[0..cut], self);
+            }
+            return;
+        }
         // zig fmt: off
         const append =
             if (key == .Enter) "\n"

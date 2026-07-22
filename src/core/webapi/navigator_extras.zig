@@ -12,6 +12,7 @@ const log = @import("../../support/log.zig");
 pub fn registerTypes() []const type {
     return &.{
         MediaDevices,
+        MediaDeviceInfo,
         Clipboard,
         CredentialsContainer,
         Bluetooth,
@@ -253,72 +254,79 @@ pub const USB = emptyInterface("USB");
 pub const Serial = emptyInterface("Serial");
 pub const HID = emptyInterface("HID");
 pub const Keyboard = emptyInterface("Keyboard");
+
+/// Chrome-like MediaDeviceInfo (BrowserLeaks Media Devices section).
+/// Labels empty until getUserMedia permission (not granted in headless).
+pub const MediaDeviceInfo = struct {
+    // Defaults required for empty_with_no_proto dummy instance (TaggedOpaque).
+    _device_id: []const u8 = "",
+    _group_id: []const u8 = "",
+    _kind: []const u8 = "",
+    _label: []const u8 = "",
+
+    pub fn getDeviceId(self: *const MediaDeviceInfo) []const u8 {
+        return self._device_id;
+    }
+
+    pub fn getGroupId(self: *const MediaDeviceInfo) []const u8 {
+        return self._group_id;
+    }
+
+    pub fn getKind(self: *const MediaDeviceInfo) []const u8 {
+        return self._kind;
+    }
+
+    pub fn getLabel(self: *const MediaDeviceInfo) []const u8 {
+        return self._label;
+    }
+
+    pub const JsApi = struct {
+        pub const bridge = js.Bridge(MediaDeviceInfo);
+        pub const Meta = struct {
+            pub const name = "MediaDeviceInfo";
+            pub const prototype_chain = bridge.prototypeChain();
+            pub var class_id: bridge.ClassId = undefined;
+            // NOT empty_with_no_proto: instance fields (deviceId/kind/…) must
+            // round-trip through TaggedOpaque. empty_with_no_proto always returns &.{}
+            // on JS→Zig, which blanked every property for BrowserLeaks.
+        };
+        pub const deviceId = bridge.accessor(MediaDeviceInfo.getDeviceId, null, .{});
+        pub const groupId = bridge.accessor(MediaDeviceInfo.getGroupId, null, .{});
+        pub const kind = bridge.accessor(MediaDeviceInfo.getKind, null, .{});
+        pub const label = bridge.accessor(MediaDeviceInfo.getLabel, null, .{});
+    };
+};
+
 pub const MediaDevices = struct {
     _pad: bool = false,
-
-    const MediaDeviceInfo = struct {
-        _device_id: []const u8,
-        _group_id: []const u8,
-        _kind: []const u8,
-        _label: []const u8,
-
-        pub fn getDeviceId(self: *const MediaDeviceInfo) []const u8 {
-            return self._device_id;
-        }
-
-        pub fn getGroupId(self: *const MediaDeviceInfo) []const u8 {
-            return self._group_id;
-        }
-
-        pub fn getKind(self: *const MediaDeviceInfo) []const u8 {
-            return self._kind;
-        }
-
-        pub fn getLabel(self: *const MediaDeviceInfo) []const u8 {
-            return self._label;
-        }
-
-        pub const JsApi = struct {
-            pub const bridge = js.Bridge(MediaDeviceInfo);
-            pub const Meta = struct {
-                pub const name = "MediaDeviceInfo";
-                pub const prototype_chain = bridge.prototypeChain();
-                pub var class_id: bridge.ClassId = undefined;
-                pub const empty_with_no_proto = true;
-            };
-            pub const deviceId = bridge.accessor(MediaDeviceInfo.getDeviceId, null, .{});
-            pub const groupId = bridge.accessor(MediaDeviceInfo.getGroupId, null, .{});
-            pub const kind = bridge.accessor(MediaDeviceInfo.getKind, null, .{});
-            pub const label = bridge.accessor(MediaDeviceInfo.getLabel, null, .{});
-        };
-    };
 
     pub fn enumerateDevices(self: *const MediaDevices, frame: *Frame) !js.Promise {
         _ = self;
         const local = frame.js.local orelse return error.NotHandled;
 
-        const mic = local.newObject();
-        _ = try mic.set("deviceId", "default-audio-input", .{});
-        _ = try mic.set("groupId", "default-av-group", .{});
-        _ = try mic.set("kind", "audioinput", .{});
-        _ = try mic.set("label", "Default Microphone", .{});
-
-        const speaker = local.newObject();
-        _ = try speaker.set("deviceId", "default-audio-output", .{});
-        _ = try speaker.set("groupId", "default-av-group", .{});
-        _ = try speaker.set("kind", "audiooutput", .{});
-        _ = try speaker.set("label", "Default Speakers", .{});
-
-        const webcam = local.newObject();
-        _ = try webcam.set("deviceId", "default-video-input", .{});
-        _ = try webcam.set("groupId", "default-av-group", .{});
-        _ = try webcam.set("kind", "videoinput", .{});
-        _ = try webcam.set("label", "FaceTime HD Camera", .{});
+        const mic = try frame._factory.create(MediaDeviceInfo{
+            ._device_id = "default",
+            ._group_id = "group-default-av",
+            ._kind = "audioinput",
+            ._label = "",
+        });
+        const speaker = try frame._factory.create(MediaDeviceInfo{
+            ._device_id = "default",
+            ._group_id = "group-default-av",
+            ._kind = "audiooutput",
+            ._label = "",
+        });
+        const webcam = try frame._factory.create(MediaDeviceInfo{
+            ._device_id = "default",
+            ._group_id = "group-default-av",
+            ._kind = "videoinput",
+            ._label = "",
+        });
 
         const arr = local.newArray(3);
-        _ = try arr.set(0, mic.toValue(), .{});
-        _ = try arr.set(1, speaker.toValue(), .{});
-        _ = try arr.set(2, webcam.toValue(), .{});
+        _ = try arr.set(0, mic, .{});
+        _ = try arr.set(1, speaker, .{});
+        _ = try arr.set(2, webcam, .{});
         return local.resolvePromise(arr);
     }
 

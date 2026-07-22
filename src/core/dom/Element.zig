@@ -29,6 +29,7 @@ const Animation = @import("../webapi/animation/Animation.zig");
 const DOMStringMap = @import("../webapi/element/DOMStringMap.zig");
 const CSSStyleProperties = @import("../webapi/css/CSSStyleProperties.zig");
 const ClientRectsIntelligent = @import("../../runtime/profile/ClientRectsIntelligent.zig");
+const TextMetrics = @import("../webapi/canvas/TextMetrics.zig");
 
 pub const DOMRect = @import("DOMRect.zig");
 pub const Svg = @import("../webapi/element/Svg.zig");
@@ -1577,6 +1578,11 @@ fn rootLayoutSize(frame: *Frame) LayoutSize {
 
 const layout_default_size: f64 = 5.0;
 const layout_leaf_block_height: f64 = 20.0;
+// HTML's default object size for replaced elements such as iframe when no
+// concrete CSS/attribute dimensions are available. Keeping the internal 5px
+// sentinel here made unsized challenge iframes effectively unclickable.
+const iframe_default_width: f64 = 300.0;
+const iframe_default_height: f64 = 150.0;
 
 /// Google Search errsrp grid: width ≈ 56 * cols − 20 (±2px tolerance).
 const google_serp_col_px: f64 = 56.0;
@@ -1742,6 +1748,74 @@ fn estimateHeightFromFontSize(self: *Element, frame: *Frame) ?f64 {
     return null;
 }
 
+/// Estimate intrinsic size of an inline element from its text content + font.
+/// Used by FingerprintJS `fonts` (offsetWidth) and `fontPreferences` (getBoundingClientRect).
+fn estimateInlineTextSize(self: *Element, frame: *Frame) ?LayoutSize {
+    const text = self.asNode().getTextContentAlloc(frame.call_arena) catch return null;
+    if (text.len == 0) return null;
+
+    const font_size = blk: {
+        if (estimateHeightFromFontSize(self, frame)) |fs| break :blk fs;
+        // CSS `font` shorthand may set size without separate font-size longhand.
+        if (readLayoutPropertyRaw(self, frame, "font")) |font_sh| {
+            if (parseFontSizeFromShorthand(font_sh)) |fs| break :blk fs;
+        }
+        break :blk 16.0;
+    };
+    const family = resolveLayoutFontFamily(self, frame);
+    const width = TextMetrics.estimateLayoutTextWidth(text, family, font_size, frame.identityProfile());
+    // Line-box height ~ 1.2× font-size for typical UA metrics.
+    const height = @max(font_size * 1.2, layout_default_size);
+    return .{ .width = @max(width, 1.0), .height = height };
+}
+
+/// font-family longhand, else last token of `font` shorthand (e.g. `-apple-system-body`).
+fn resolveLayoutFontFamily(self: *Element, frame: *Frame) []const u8 {
+    if (readLayoutPropertyRaw(self, frame, "font-family")) |fam| {
+        if (fam.len > 0) return fam;
+    }
+    if (readLayoutPropertyRaw(self, frame, "font")) |font_sh| {
+        // Take last comma-separated family token from shorthand.
+        if (std.mem.lastIndexOfScalar(u8, font_sh, ',')) |comma| {
+            return std.mem.trim(u8, font_sh[comma + 1 ..], &std.ascii.whitespace);
+        }
+        // Single-token special fonts: `-apple-system-body`, `caption`, …
+        var last_space: ?usize = null;
+        for (font_sh, 0..) |c, i| {
+            if (c == ' ') last_space = i;
+        }
+        if (last_space) |sp| {
+            const tail = std.mem.trim(u8, font_sh[sp + 1 ..], &std.ascii.whitespace);
+            if (tail.len > 0 and (tail[0] < '0' or tail[0] > '9')) return tail;
+        }
+        return std.mem.trim(u8, font_sh, &std.ascii.whitespace);
+    }
+    return "sans-serif";
+}
+
+fn parseFontSizeFromShorthand(font: []const u8) ?f64 {
+    var i: usize = 0;
+    while (i < font.len) : (i += 1) {
+        if (font[i] >= '0' and font[i] <= '9') {
+            var end = i + 1;
+            var has_dot = false;
+            while (end < font.len) : (end += 1) {
+                if (font[end] >= '0' and font[end] <= '9') continue;
+                if (font[end] == '.' and !has_dot) {
+                    has_dot = true;
+                    continue;
+                }
+                break;
+            }
+            const num = std.fmt.parseFloat(f64, font[i..end]) catch return null;
+            if (end < font.len and (font[end] == 'p' or font[end] == 'P')) return num;
+            // unitless in shorthand is still treated as px by layout heuristics
+            return num;
+        }
+    }
+    return null;
+}
+
 fn resolveElementDimensions(self: *Element, frame: *Frame, depth: usize) LayoutSize {
     if (depth > 64) return .{ .width = layout_default_size, .height = layout_default_size };
 
@@ -1775,6 +1849,10 @@ fn resolveElementDimensions(self: *Element, frame: *Frame, depth: usize) LayoutS
                 height = std.fmt.parseFloat(f64, h) catch height;
             }
         }
+        if (tag == .iframe) {
+            if (width == layout_default_size) width = iframe_default_width;
+            if (height == layout_default_size) height = iframe_default_height;
+        }
     } else if (tag == .svg) {
         if (width == layout_default_size) {
             if (self.getAttributeSafe(comptime .wrap("width"))) |w| {
@@ -1800,6 +1878,31 @@ fn resolveElementDimensions(self: *Element, frame: *Frame, depth: usize) LayoutS
                 child_height
             else
                 estimateHeightFromFontSize(self, frame) orelse child_height;
+        }
+    } else if (tag == .input or tag == .button or tag == .select or tag == .textarea) {
+        // Replaced form controls: without CSS, layout_default_size (5px) collapses
+        // Fluent/signup controls so pointer hit-tests land on footer/siblings.
+        // UA-ish defaults; explicit width/height CSS still win above.
+        if (width == layout_default_size) {
+            width = switch (tag) {
+                .textarea => 300.0,
+                .button => if (estimateInlineTextSize(self, frame)) |ts| @max(ts.width + 24.0, 64.0) else 80.0,
+                else => 200.0, // input / select
+            };
+        }
+        if (height == layout_default_size) {
+            height = switch (tag) {
+                .textarea => 60.0,
+                else => 32.0,
+            };
+        }
+    } else if (width == layout_default_size or height == layout_default_size) {
+        // Inline / span text sizing — Fingerprint Pro / BotD font probes compare
+        // offsetWidth across font-family fallbacks. A constant 5px width makes
+        // every font look identical → fonts:[] + font_hash empty + high tamper.
+        if (estimateInlineTextSize(self, frame)) |text_size| {
+            if (width == layout_default_size) width = text_size.width;
+            if (height == layout_default_size) height = text_size.height;
         }
     }
 
@@ -1853,6 +1956,10 @@ fn elementLayoutSizeShallowForHitTest(self: *Element, frame: *Frame) LayoutSize 
                 height = std.fmt.parseFloat(f64, h) catch height;
             }
         }
+        if (tag == .iframe) {
+            if (width == layout_default_size) width = iframe_default_width;
+            if (height == layout_default_size) height = iframe_default_height;
+        }
     } else if (isBlockLevel(self, frame)) {
         if (width == layout_default_size) width = parent_size.width;
         if (height == layout_default_size) height = layout_leaf_block_height;
@@ -1900,11 +2007,22 @@ fn flowOffsetAmongSiblingsForHitTest(self: *Element, frame: *Frame) struct { top
     var top: f64 = 0;
     var left: f64 = 0;
 
+    // Cap sibling walk: Fluent trees can have hundreds of prior siblings; each
+    // visibility + dimension resolve was O(n) and blocked CDP activation.
+    var walked: usize = 0;
+    const max_siblings: usize = 48;
+
     var sibling = parent_node.firstChild();
     while (sibling) |s| {
         if (s == self.asNode()) break;
         if (s.is(Element)) |sib| {
-            if (!sib.checkVisibilityCached(layoutVisibilityCache(frame), frame)) continue;
+            walked += 1;
+            if (walked > max_siblings) break;
+            // Cheap display:none skip — avoid full StyleManager HashMap walks.
+            if (sib.isHiddenForLayout(frame)) {
+                sibling = s.nextSibling();
+                continue;
+            }
             const dims = sib.getElementDimensionsForHitTest(frame);
             const margin = getMarginInsetForHitTest(sib, frame);
             if (horizontal) {
@@ -2123,6 +2241,10 @@ fn elementLayoutSizeShallow(self: *Element, frame: *Frame) LayoutSize {
             if (self.getAttributeSafe(comptime .wrap("height"))) |h| {
                 height = std.fmt.parseFloat(f64, h) catch height;
             }
+        }
+        if (tag == .iframe) {
+            if (width == layout_default_size) width = iframe_default_width;
+            if (height == layout_default_size) height = iframe_default_height;
         }
     } else if (isBlockLevel(self, frame)) {
         if (width == layout_default_size) width = parent_size.width;

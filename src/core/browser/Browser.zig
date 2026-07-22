@@ -120,6 +120,11 @@ pub fn runMacrotasks(self: *Browser) !void {
     // EventLoop.spin for the current frame is applied from Runner after
     // runMacrotasks / post-script paths — avoid double-spin reentrancy here.
     env.runMicrotasks(.macrotask_loop);
+
+    // WebRTC ICE candidates land on a network thread queue; BrowserLeaks and
+    // onicecandidate handlers need drain even when CDP awaitPromise starves
+    // Runner._tick (timer-only pages never re-enter the full wait loop).
+    self.drainAllRtcEvents();
 }
 
 /// One macrotask turn for CDP interleaving — returns true if any task ran.
@@ -129,10 +134,19 @@ pub fn runMacrotasksCdpSlice(self: *Browser) !bool {
     const ran = try env.runOneMacrotaskRound();
     env.pumpMessageLoop();
     env.runMicrotasks(.macrotask_loop);
+    self.drainAllRtcEvents();
     if (self.http_client.cdp_client != null) {
         self.http_client.serviceInboundCdpIfReadable();
     }
     return ran;
+}
+
+fn drainAllRtcEvents(self: *Browser) void {
+    const session = &(self.session orelse return);
+    // Prefer active page; fall back to pending root during navigation.
+    if (session.pendingOrCurrentFrame()) |frame| {
+        frame.drainRtcEvents();
+    }
 }
 
 pub fn hasBackgroundTasks(self: *Browser) bool {

@@ -129,49 +129,56 @@ pub const MAX_CLIENT_WAIT_TIMEOUT_WEBGL: u64 = 0x9247;
 pub const RGBA: u64 = 0x1908;
 pub const UNSIGNED_BYTE: u64 = 0x1401;
 
+/// Empty extension object payload. Must be a struct (not `void`):
+/// `zigValueToJs(void)` is JS `undefined`, so Fingerprint Pro marks every
+/// void extension as unsupported → `anti_detect_browser` / high tamper ML.
+/// An empty object is truthy and matches Chrome's "enabled extension" shape
+/// for extensions that expose no methods/constants.
+pub const EmptyWebGLExtension = struct {};
+
 /// On Chrome and Safari, a call to `getSupportedExtensions` returns total of 39.
 /// The reference for it lists lesser number of extensions:
 /// https://developer.mozilla.org/en-US/docs/Web/API/WebGL_API/Using_Extensions#extension_list
 pub const Extension = union(enum) {
-    ANGLE_instanced_arrays: void,
-    EXT_blend_minmax: void,
-    EXT_clip_control: void,
-    EXT_color_buffer_half_float: void,
-    EXT_depth_clamp: void,
-    EXT_disjoint_timer_query: void,
-    EXT_float_blend: void,
-    EXT_frag_depth: void,
-    EXT_polygon_offset_clamp: void,
-    EXT_shader_texture_lod: void,
-    EXT_texture_compression_bptc: void,
-    EXT_texture_compression_rgtc: void,
+    ANGLE_instanced_arrays: EmptyWebGLExtension,
+    EXT_blend_minmax: EmptyWebGLExtension,
+    EXT_clip_control: EmptyWebGLExtension,
+    EXT_color_buffer_half_float: EmptyWebGLExtension,
+    EXT_depth_clamp: EmptyWebGLExtension,
+    EXT_disjoint_timer_query: EmptyWebGLExtension,
+    EXT_float_blend: EmptyWebGLExtension,
+    EXT_frag_depth: EmptyWebGLExtension,
+    EXT_polygon_offset_clamp: EmptyWebGLExtension,
+    EXT_shader_texture_lod: EmptyWebGLExtension,
+    EXT_texture_compression_bptc: EmptyWebGLExtension,
+    EXT_texture_compression_rgtc: EmptyWebGLExtension,
     EXT_texture_filter_anisotropic: *Type.EXT_texture_filter_anisotropic,
-    EXT_texture_mirror_clamp_to_edge: void,
-    EXT_sRGB: void,
-    KHR_parallel_shader_compile: void,
-    OES_element_index_uint: void,
-    OES_fbo_render_mipmap: void,
-    OES_standard_derivatives: void,
-    OES_texture_float: void,
-    OES_texture_float_linear: void,
-    OES_texture_half_float: void,
-    OES_texture_half_float_linear: void,
-    OES_vertex_array_object: void,
-    WEBGL_blend_func_extended: void,
-    WEBGL_color_buffer_float: void,
-    WEBGL_compressed_texture_astc: void,
-    WEBGL_compressed_texture_etc: void,
-    WEBGL_compressed_texture_etc1: void,
-    WEBGL_compressed_texture_pvrtc: void,
-    WEBGL_compressed_texture_s3tc: void,
-    WEBGL_compressed_texture_s3tc_srgb: void,
+    EXT_texture_mirror_clamp_to_edge: EmptyWebGLExtension,
+    EXT_sRGB: EmptyWebGLExtension,
+    KHR_parallel_shader_compile: EmptyWebGLExtension,
+    OES_element_index_uint: EmptyWebGLExtension,
+    OES_fbo_render_mipmap: EmptyWebGLExtension,
+    OES_standard_derivatives: EmptyWebGLExtension,
+    OES_texture_float: EmptyWebGLExtension,
+    OES_texture_float_linear: EmptyWebGLExtension,
+    OES_texture_half_float: EmptyWebGLExtension,
+    OES_texture_half_float_linear: EmptyWebGLExtension,
+    OES_vertex_array_object: EmptyWebGLExtension,
+    WEBGL_blend_func_extended: EmptyWebGLExtension,
+    WEBGL_color_buffer_float: EmptyWebGLExtension,
+    WEBGL_compressed_texture_astc: EmptyWebGLExtension,
+    WEBGL_compressed_texture_etc: EmptyWebGLExtension,
+    WEBGL_compressed_texture_etc1: EmptyWebGLExtension,
+    WEBGL_compressed_texture_pvrtc: EmptyWebGLExtension,
+    WEBGL_compressed_texture_s3tc: EmptyWebGLExtension,
+    WEBGL_compressed_texture_s3tc_srgb: EmptyWebGLExtension,
     WEBGL_debug_renderer_info: *Type.WEBGL_debug_renderer_info,
-    WEBGL_debug_shaders: void,
-    WEBGL_depth_texture: void,
+    WEBGL_debug_shaders: EmptyWebGLExtension,
+    WEBGL_depth_texture: EmptyWebGLExtension,
     WEBGL_draw_buffers: *Type.WEBGL_draw_buffers,
     WEBGL_lose_context: *Type.WEBGL_lose_context,
-    WEBGL_multi_draw: void,
-    WEBGL_polygon_mode: void,
+    WEBGL_multi_draw: EmptyWebGLExtension,
+    WEBGL_polygon_mode: EmptyWebGLExtension,
 
     /// Reified enum type from the fields of this union.
     const Kind = blk: {
@@ -408,6 +415,8 @@ pub fn getParameter(self: *const WebGLRenderingContext, pname: u32, exec: *Execu
         },
         Extension.Type.EXT_texture_filter_anisotropic.MAX_TEXTURE_MAX_ANISOTROPY_EXT => return (try local.zigValueToJs(profile.max_texture_max_anisotropy, .{})),
         Extension.Type.WEBGL_draw_buffers.MAX_DRAW_BUFFERS_WEBGL => return (try local.zigValueToJs(profile.max_draw_buffers, .{})),
+        // Do not invent DRAW_BUFFER*/OES_* getParameter values without Chrome capture —
+        // wrong digests re-triggered Fingerprint Pro Virtual Machine (suspect 15→29).
         else => return (try local.zigValueToJs(@as(u32, 0), .{})),
     }
 }
@@ -568,7 +577,9 @@ pub fn getExtension(_: *const WebGLRenderingContext, name: []const u8, exec: *Ex
             const ext = try exec._factory.create(Extension.Type.WEBGL_draw_buffers{});
             return .{ .WEBGL_draw_buffers = ext };
         },
-        inline else => |comptime_enum| @unionInit(Extension, @tagName(comptime_enum), {}),
+        // Empty object (not undefined) so getExtension is truthy for all supported names.
+        // Keep OES_* as EmptyWebGLExtension until params match Chrome Metal capture.
+        inline else => |comptime_enum| @unionInit(Extension, @tagName(comptime_enum), .{}),
     };
 }
 

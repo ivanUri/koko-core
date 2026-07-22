@@ -34,6 +34,8 @@
     "google:replay-chrome": "node scripts/velora-replay-to-chrome.mjs",
     "google:serp-matrix": "node scripts/velora-serp-case-matrix.mjs",
     "google:serp-product": "node scripts/google-serp-product.mjs",
+    "google:captcha-session": "node scripts/google-captcha-session.mjs",
+    "hotmail:register:velora": "node scripts/hotmail-register-velora.mjs",
     "prebench:google:agent": "npm run bench:preflight",
     "bench:google:agent": "node code-check/bench/google-agent-compare.mjs",
     "bench:google:agent:report": "node code-check/bench/render-google-agent-report.mjs",

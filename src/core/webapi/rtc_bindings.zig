@@ -615,23 +615,23 @@ fn parseConfig(alloc: std.mem.Allocator, config_val: ?js.Value) !RTCPeerConnecti
                 while (i < len) : (i += 1) {
                     const server = arr.get(i) catch continue;
                     const server_obj = server.toObject();
-                    if (server_obj.get("urls")) |urls_val| {
-                        if (urls_val.isArray()) {
-                            var urls_arr = urls_val.toArray();
-                            const urls_len = urls_arr.len();
-                            var j: u32 = 0;
-                            while (j < urls_len) : (j += 1) {
-                                const url_val = urls_arr.get(j) catch continue;
-                                if (url_val.isString()) |s| {
-                                    const url = try s.toSliceWithAlloc(alloc);
-                                    try servers.append(alloc, .{ .url = try alloc.dupe(u8, url) });
-                                }
+                    // Chrome: `urls` (string|array). Legacy: singular `url`.
+                    const urls_val = server_obj.get("urls") catch server_obj.get("url") catch continue;
+                    if (urls_val.isArray()) {
+                        var urls_arr = urls_val.toArray();
+                        const urls_len = urls_arr.len();
+                        var j: u32 = 0;
+                        while (j < urls_len) : (j += 1) {
+                            const url_val = urls_arr.get(j) catch continue;
+                            if (url_val.isString()) |s| {
+                                const url = try s.toSliceWithAlloc(alloc);
+                                try servers.append(alloc, .{ .url = try alloc.dupe(u8, url) });
                             }
-                        } else if (urls_val.isString()) |s| {
-                            const url = try s.toSliceWithAlloc(alloc);
-                            try servers.append(alloc, .{ .url = try alloc.dupe(u8, url) });
                         }
-                    } else |_| {}
+                    } else if (urls_val.isString()) |s| {
+                        const url = try s.toSliceWithAlloc(alloc);
+                        try servers.append(alloc, .{ .url = try alloc.dupe(u8, url) });
+                    }
                 }
             }
         } else |_| {}

@@ -117,6 +117,15 @@ fn dispatchInputEvent(self: *Input, data: ?[]const u8, input_type: []const u8, f
     try frame._event_manager.dispatch(self.asElement().asEventTarget(), event.asEvent());
 }
 
+fn dispatchBeforeInputEvent(self: *Input, data: ?[]const u8, input_type: []const u8, frame: *Frame) !bool {
+    const input_event = try InputEvent.initTrusted(comptime .wrap("beforeinput"), .{ .data = data, .inputType = input_type }, frame);
+    const event = input_event.asEvent();
+    event.acquireRef();
+    defer _ = event.releaseRef(frame._page);
+    try frame._event_manager.dispatch(self.asElement().asEventTarget(), event);
+    return !event.getDefaultPrevented();
+}
+
 pub fn asElement(self: *Input) *Element {
     return self._proto._proto;
 }
@@ -153,6 +162,17 @@ pub fn setValue(self: *Input, value: []const u8, frame: *Frame) !void {
     }
     // This should _not_ call setAttribute. It updates the current state only
     self._value = try self.sanitizeValue(true, value, frame);
+    // HTML / Chrome: setting the value IDL attribute on a text control moves
+    // the selection to the end of the new value. React controlled inputs
+    // re-assign .value on every keystroke; without this, caret stays at 0
+    // and domain keystrokes insert *before* the local-part
+    // (outlook.comstevenmiller…@ on signup.live.com).
+    if (self.selectionAvailable()) {
+        const len: u32 = @intCast((self._value orelse "").len);
+        self._selection_start = len;
+        self._selection_end = len;
+        self._selection_direction = .none;
+    }
 }
 
 pub fn getDefaultValue(self: *const Input) []const u8 {
@@ -683,8 +703,11 @@ pub fn select(self: *Input, frame: *Frame) !void {
 }
 
 fn selectionAvailable(self: *const Input) bool {
+    // Chromium treats these as text-control hosts (select/setSelectionRange work).
+    // Email was missing: CDP insertText could not replace selection, and
+    // input.select() threw InvalidStateError — broke signup.live.com automation.
     switch (self._input_type) {
-        .text, .search, .url, .tel, .password => return true,
+        .text, .search, .url, .tel, .password, .email, .number => return true,
         else => return false,
     }
 }
@@ -701,6 +724,7 @@ fn howSelected(self: *const Input) HowSelected {
 }
 
 pub fn innerInsert(self: *Input, str: []const u8, frame: *Frame) !void {
+    if (!try self.dispatchBeforeInputEvent(str, "insertText", frame)) return;
     const arena = frame.arena;
 
     switch (self.howSelected()) {
@@ -733,13 +757,136 @@ pub fn innerInsert(self: *Input, str: []const u8, frame: *Frame) !void {
             try self.dispatchSelectionChangeEvent(frame);
         },
         .none => {
-            // if the input is not selected, just insert at cursor.
+            // Insert at caret (selectionStart), not always at end.
             const current_value = self.getValue();
-            const new_value = try std.mem.concat(arena, u8, &.{ current_value, str });
+            const caret: usize = if (self.selectionAvailable())
+                @min(@as(usize, self._selection_start), current_value.len)
+            else
+                current_value.len;
+            const before = current_value[0..caret];
+            const after = current_value[caret..];
+            const new_value = try std.mem.concat(arena, u8, &.{ before, str, after });
             try self.setValue(new_value, frame);
+            if (self.selectionAvailable()) {
+                const new_pos: u32 = @intCast(caret + str.len);
+                self._selection_start = new_pos;
+                self._selection_end = new_pos;
+                self._selection_direction = .none;
+                try self.dispatchSelectionChangeEvent(frame);
+            }
         },
     }
     try self.dispatchInputEvent(str, "insertText", frame);
+}
+
+/// Backspace / delete-backward from keyboard. Honors selection when available.
+pub fn innerDeleteBackward(self: *Input, frame: *Frame) !void {
+    if (!try self.dispatchBeforeInputEvent(null, "deleteContentBackward", frame)) return;
+    const arena = frame.arena;
+    const current_value = self.getValue();
+
+    switch (self.howSelected()) {
+        .full => {
+            try self.setValue("", frame);
+            self._selection_start = 0;
+            self._selection_end = 0;
+            self._selection_direction = .none;
+            try self.dispatchSelectionChangeEvent(frame);
+        },
+        .partial => |range| {
+            const before = current_value[0..range[0]];
+            const remaining = current_value[range[1]..];
+            const new_value = try std.mem.concat(arena, u8, &.{ before, remaining });
+            try self.setValue(new_value, frame);
+            self._selection_start = range[0];
+            self._selection_end = range[0];
+            self._selection_direction = .none;
+            try self.dispatchSelectionChangeEvent(frame);
+        },
+        .none => {
+            if (current_value.len == 0) {
+                try self.dispatchInputEvent(null, "deleteContentBackward", frame);
+                return;
+            }
+            const caret: usize = if (self.selectionAvailable())
+                @min(@as(usize, self._selection_start), current_value.len)
+            else
+                current_value.len;
+            if (caret == 0) {
+                try self.dispatchInputEvent(null, "deleteContentBackward", frame);
+                return;
+            }
+            // One Unicode scalar: ASCII-fast path; multi-byte UTF-8 falls back to one byte
+            // (email/signup paths are ASCII). Full grapheme delete is future work.
+            var del_from = caret - 1;
+            if (self.selectionAvailable() and del_from > 0 and current_value[del_from] & 0xC0 == 0x80) {
+                // Skip UTF-8 continuation bytes to the start of the codepoint.
+                while (del_from > 0 and current_value[del_from] & 0xC0 == 0x80) del_from -= 1;
+            }
+            const new_value = try std.mem.concat(arena, u8, &.{ current_value[0..del_from], current_value[caret..] });
+            try self.setValue(new_value, frame);
+            if (self.selectionAvailable()) {
+                self._selection_start = @intCast(del_from);
+                self._selection_end = @intCast(del_from);
+                self._selection_direction = .none;
+                try self.dispatchSelectionChangeEvent(frame);
+            }
+        },
+    }
+    try self.dispatchInputEvent(null, "deleteContentBackward", frame);
+}
+
+/// Forward-delete (Delete key).
+pub fn innerDeleteForward(self: *Input, frame: *Frame) !void {
+    if (!try self.dispatchBeforeInputEvent(null, "deleteContentForward", frame)) return;
+    const arena = frame.arena;
+    const current_value = self.getValue();
+
+    switch (self.howSelected()) {
+        .full => {
+            try self.setValue("", frame);
+            self._selection_start = 0;
+            self._selection_end = 0;
+            self._selection_direction = .none;
+            try self.dispatchSelectionChangeEvent(frame);
+        },
+        .partial => |range| {
+            const before = current_value[0..range[0]];
+            const remaining = current_value[range[1]..];
+            const new_value = try std.mem.concat(arena, u8, &.{ before, remaining });
+            try self.setValue(new_value, frame);
+            self._selection_start = range[0];
+            self._selection_end = range[0];
+            self._selection_direction = .none;
+            try self.dispatchSelectionChangeEvent(frame);
+        },
+        .none => {
+            if (current_value.len == 0) {
+                try self.dispatchInputEvent(null, "deleteContentForward", frame);
+                return;
+            }
+            const caret: usize = if (self.selectionAvailable())
+                @min(@as(usize, self._selection_start), current_value.len)
+            else
+                current_value.len;
+            if (caret >= current_value.len) {
+                try self.dispatchInputEvent(null, "deleteContentForward", frame);
+                return;
+            }
+            var del_to = caret + 1;
+            // Skip UTF-8 continuation after lead.
+            while (del_to < current_value.len and current_value[del_to] & 0xC0 == 0x80) del_to += 1;
+            const new_value = try std.mem.concat(arena, u8, &.{ current_value[0..caret], current_value[del_to..] });
+            try self.setValue(new_value, frame);
+            if (self.selectionAvailable()) {
+                self._selection_start = @intCast(caret);
+                self._selection_end = @intCast(caret);
+                self._selection_direction = .none;
+                try self.dispatchSelectionChangeEvent(frame);
+            }
+        },
+    }
+    try self.dispatchInputEvent(null, "deleteContentForward", frame);
 }
 
 pub fn getSelectionDirection(self: *const Input) []const u8 {

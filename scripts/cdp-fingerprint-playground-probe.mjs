@@ -61,7 +61,8 @@ const SNAP = `(() => {
   };
   // Playground smart-signal labels (UI text, not sealed API).
   const signals = {
-    visitorId: sig(/Visitor ID is\\s*([A-Za-z0-9]{8,})/i),
+    // Body is whitespace-collapsed: "Visitor ID is XBrowserChrome" — stop before "Browser".
+    visitorId: sig(/Visitor ID is\\s*([A-Za-z0-9]{8,20})(?=Browser|\\s|$)/i),
     browser: sig(/Browser\\s*(Chrome[\\d .]+|Chromium[\\w -]+|Not Available)/i),
     confidence: sig(/Confidence Score\\s*([\\d.]+)/i),
     bot: sig(/Bot\\s*(Not detected|You are a bad bot[^V]{0,90}|Detected)/i),

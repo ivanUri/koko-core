@@ -249,6 +249,9 @@ pub fn setProperty(self: *CSSStyleDeclaration, property_name: []const u8, value:
     try self.setPropertyImpl(property_name, value, important, frame);
 
     try self.syncStyleAttribute(frame);
+    // After syncStyleAttribute (which may call domChanged and re-arm the layout
+    // version), drop size entries so font-family / font-size mutations remeasure.
+    frame.invalidateElementLayoutCache();
 }
 
 fn setPropertyImpl(self: *CSSStyleDeclaration, property_name: []const u8, value: []const u8, important: bool, frame: *Frame) !void {
@@ -282,6 +285,7 @@ fn setPropertyImpl(self: *CSSStyleDeclaration, property_name: []const u8, value:
 pub fn removeProperty(self: *CSSStyleDeclaration, property_name: []const u8, frame: *Frame) ![]const u8 {
     const result = try self.removePropertyImpl(property_name, frame);
     try self.syncStyleAttribute(frame);
+    frame.invalidateElementLayoutCache();
     return result;
 }
 
@@ -469,6 +473,7 @@ pub fn setCssText(self: *CSSStyleDeclaration, text: []const u8, frame: *Frame) !
         try self.setPropertyImpl(declaration.name, declaration.value, declaration.important, frame);
     }
     try self.syncStyleAttribute(frame);
+    frame.invalidateElementLayoutCache();
 }
 
 pub fn format(self: *const CSSStyleDeclaration, writer: *std.Io.Writer) !void {

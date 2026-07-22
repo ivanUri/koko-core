@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>EL-J</title>
+<script>
+  window.__el = { id: "EL-J", onload: false, external: false, windowLoad: false };
+  const script = document.createElement("script");
+  script.src = "/el-j-dynamic-script-onload.js";
+  script.onload = function () {
+    window.__el.onload = true;
+  };
+  document.head.appendChild(script);
+
+  window.addEventListener("load", function () {
+    window.__el.windowLoad = true;
+    window.__el.ok =
+      window.__el.external === true &&
+      window.__el.onload === true;
+    document.title = JSON.stringify(window.__el);
+    window.__elDone = true;
+  });
+</script>

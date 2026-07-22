@@ -177,7 +177,14 @@ pub fn drainAll(self: *RtcEventQueue, out: *std.ArrayList(*Node)) !void {
     }
 }
 
-/// Pop one event (JS thread). Returns nodes in LIFO order.
+/// Atomically detach the whole stack (LIFO link order). Caller must reverse
+/// for FIFO processing and free each node. Preferred over repeated `pop()`.
+pub fn takeAll(self: *RtcEventQueue) ?*Node {
+    return self._head.swap(null, .acquire);
+}
+
+/// Pop one event (JS thread). Returns nodes in **LIFO** order — prefer
+/// `takeAll` + reverse for ordered ICE dispatch.
 pub fn pop(self: *RtcEventQueue) ?*Node {
     var head = self._head.load(.acquire);
     while (head) |node| {

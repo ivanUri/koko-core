@@ -144,7 +144,8 @@ pub fn imageAddedCallback(self: *Image, frame: *Frame) !void {
     if (src.len == 0) return;
 
     const scratch = try frame.getArena(.small, "Image.load");
-    errdefer frame.releaseArena(scratch);
+    var caller_owns_scratch = true;
+    errdefer if (caller_owns_scratch) frame.releaseArena(scratch);
     const resolved = try URL.resolve(scratch, frame.base(), src, .{ .encoding = frame.charset });
     const owned_url = try frame.arena.dupeZ(u8, resolved);
 
@@ -186,6 +187,11 @@ pub fn imageAddedCallback(self: *Image, frame: *Frame) !void {
         .resource_type = .image,
     });
 
+    // From this point the ImageLoad callbacks own `scratch`.  Client.request
+    // may report a synchronous curl start error after invoking errorCallback;
+    // leaving the errdefer armed would then release Image.load a second time.
+    // This handoff must happen immediately before entering the async client.
+    caller_owns_scratch = false;
     try http_client.request(.{
         .ctx = load,
         .params = .{

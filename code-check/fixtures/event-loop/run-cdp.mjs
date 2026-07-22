@@ -114,7 +114,13 @@ async function main() {
       });
     };
 
-    const fixtures = ["el-a-messagechannel-chain.html", "el-e-fetch-then-messagechannel.html"];
+    const fixtures = [
+      "el-a-messagechannel-chain.html",
+      "el-e-fetch-then-messagechannel.html",
+      "el-k-xhr-completion-during-script.html",
+      "el-l-cdp-large-spa-click.html",
+      "el-n-cdp-press-hold.html",
+    ];
     let failed = 0;
     for (const file of fixtures) {
       const url = `http://127.0.0.1:${staticPort}/${file}`;
@@ -124,6 +130,42 @@ async function main() {
       await send("Page.enable", {}, sessionId);
       await send("Runtime.enable", {}, sessionId);
       await send("Page.navigate", { url }, sessionId, 15000).catch((e) => console.log("nav", e.message));
+      if (file === "el-l-cdp-large-spa-click.html") {
+        let point = null;
+        for (let i = 0; i < 40 && !point; i++) {
+          await delay(100);
+          const r = await send("Runtime.evaluate", {
+            expression: `(() => { if (!window.__elReady) return null; const r = document.querySelector('#next span').getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`,
+            returnByValue: true,
+          }, sessionId, 5000).catch(() => null);
+          point = r?.result?.value || null;
+        }
+        if (point) {
+          const common = { x: point.x, y: point.y, button: "left", clickCount: 1 };
+          await send("Input.dispatchMouseEvent", { ...common, type: "mouseMoved", button: "none" }, sessionId);
+          await send("Input.dispatchMouseEvent", { ...common, type: "mousePressed" }, sessionId);
+          await send("Input.dispatchMouseEvent", { ...common, type: "mouseReleased" }, sessionId);
+        }
+      }
+      if (file === "el-n-cdp-press-hold.html") {
+        for (let i = 0; i < 40; i++) {
+          const ready = await send("Runtime.evaluate", {
+            expression: "!!window.__elReady",
+            returnByValue: true,
+          }, sessionId, 5000).catch(() => null);
+          if (ready?.result?.value) break;
+          await delay(100);
+        }
+        const common = { x: 10, y: 10, button: "left", clickCount: 1 };
+        await send("Input.dispatchMouseEvent", { ...common, type: "mousePressed" }, sessionId);
+        await delay(300);
+        const observed = await send("Runtime.evaluate", {
+          expression: "window.__downObservedBeforeRelease = window.__downAt !== null",
+          returnByValue: true,
+        }, sessionId, 5000);
+        if (!observed?.result?.value) console.log("press was not observed before release");
+        await send("Input.dispatchMouseEvent", { ...common, type: "mouseReleased" }, sessionId);
+      }
       let ok = false;
       let last = null;
       for (let i = 0; i < 40; i++) {
@@ -132,7 +174,7 @@ async function main() {
           const r = await send(
             "Runtime.evaluate",
             {
-              expression: `({done:!!window.__elDone, title:document.title, el:window.__el||null})`,
+              expression: `({done:!!window.__elDone, title:document.title, el:window.__el||null, events:window.__events||null})`,
               returnByValue: true,
             },
             sessionId,

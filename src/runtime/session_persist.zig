@@ -52,7 +52,10 @@ fn _loadStorage(session: *Session, path: []const u8) !void {
         .ignore_unknown_fields = true,
     });
 
-    const allocator = session.browser.app.allocator;
+    // Storage belongs to the browsing session. Allocate it from the session
+    // arena so keys, values, buckets and hash-map backing storage share one
+    // lifetime and are reclaimed together on Session.deinit.
+    const allocator = session.arena;
     for (entries) |entry| {
         const bucket = try session.storage_shed.getOrPut(allocator, entry.origin);
         for (entry.local) |kv| {
@@ -78,7 +81,10 @@ pub fn saveStorage(session: *Session, path: []const u8) void {
 }
 
 fn _saveStorage(session: *Session, path: []const u8) !void {
-    const allocator = session.browser.app.allocator;
+    // The JSON view is temporary; do not leave its owned slices on the app
+    // allocator after every profile shutdown.
+    const allocator = try session.getArena(.medium, "session_persist.save");
+    defer session.releaseArena(allocator);
     var origins = try std.ArrayList(JsonEntry).initCapacity(allocator, 8);
     defer origins.deinit(allocator);
 

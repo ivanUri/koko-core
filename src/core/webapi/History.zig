@@ -46,6 +46,16 @@ pub fn setScrollRestoration(self: *History, str: []const u8) void {
     }
 }
 
+fn applyHistoryUrl(frame: *Frame, url: [:0]const u8) !void {
+    frame.url = url;
+    // Mutate Location in place — do not replace the Location pointer. Replacing
+    // it can leave JS-held Location identities on a stale URL while document.URL
+    // (frame.url) already moved, which breaks SPA routers (signup.live.com).
+    frame.window._location._url = try URL.init(url, null, &frame.js.execution);
+    // Keep document.URL in lockstep when the document caches its own URL.
+    frame.document._url = url;
+}
+
 pub fn pushState(_: *History, state: js.Value, _: ?[]const u8, _url: ?[]const u8, frame: *Frame) !void {
     const arena = frame._session.arena;
     const url = if (_url) |u|
@@ -56,8 +66,7 @@ pub fn pushState(_: *History, state: js.Value, _: ?[]const u8, _url: ?[]const u8
     const json = state.toJson(arena) catch return error.DataClone;
     _ = try frame._session.navigation.pushEntry(url, .{ .source = .history, .value = json }, frame, true);
 
-    frame.url = url;
-    frame.window._location._url = try URL.init(url, null, &frame.js.execution);
+    try applyHistoryUrl(frame, url);
 }
 
 pub fn replaceState(_: *History, state: js.Value, _: ?[]const u8, _url: ?[]const u8, frame: *Frame) !void {
@@ -70,8 +79,7 @@ pub fn replaceState(_: *History, state: js.Value, _: ?[]const u8, _url: ?[]const
     const json = state.toJson(arena) catch return error.DataClone;
     _ = try frame._session.navigation.replaceEntry(url, .{ .source = .history, .value = json }, frame, true);
 
-    frame.url = url;
-    frame.window._location = try Location.init(url, frame);
+    try applyHistoryUrl(frame, url);
 }
 
 fn goInner(delta: i32, frame: *Frame) !void {

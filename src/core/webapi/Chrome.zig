@@ -155,8 +155,30 @@ pub fn getApp(self: *Chrome) *ChromeApp {
     return &self._app;
 }
 
+/// Chromium `window.external` — empty host object. BotD/Fingerprint read
+/// `external.toString()` (Sequentum check) and treat missing external as rare.
+pub const External = struct {
+    _pad: bool = false,
+
+    pub fn toString(_: *const External) []const u8 {
+        return "[object External]";
+    }
+
+    pub const JsApi = struct {
+        pub const bridge = js.Bridge(External);
+        pub const Meta = struct {
+            pub const name = "External";
+            pub const own_properties = true;
+            pub const empty_with_no_proto = true;
+            pub const prototype_chain = bridge.prototypeChain();
+            pub var class_id: bridge.ClassId = undefined;
+        };
+        pub const toString = bridge.function(External.toString, .{});
+    };
+};
+
 pub fn registerTypes() []const type {
-    return &.{ Chrome, ChromeApp, ChromeAppInstallState, ChromeAppRunningState };
+    return &.{ Chrome, ChromeApp, ChromeAppInstallState, ChromeAppRunningState, External };
 }
 
 /// chrome.app — minimal namespace object (no runtime).
@@ -204,7 +226,9 @@ pub const ChromeApp = struct {
             pub var class_id: bridge.ClassId = undefined;
         };
 
-        pub const isInstalled = bridge.function(ChromeApp.isInstalled, .{});
+        // Chrome exposes isInstalled as a data property (boolean), not a method.
+        // Function form is a common anti-detect / automation tell.
+        pub const isInstalled = bridge.accessor(ChromeApp.isInstalled, null, .{});
         pub const getDetails = bridge.function(ChromeApp.getDetails, .{});
         pub const getIsInstalled = bridge.function(ChromeApp.getIsInstalled, .{});
         pub const installState = bridge.function(ChromeApp.installState, .{});

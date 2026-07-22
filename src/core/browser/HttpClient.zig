@@ -1000,9 +1000,13 @@ pub fn request(self: *Client, req: Request) !void {
     const arena = try self.network.app.arena_pool.acquire(.small, "Request.arena");
     our_req.params.arena = arena;
 
+    // Ownership of `our_req` (including its curl_slist and arena) moves into
+    // the layer chain at this call boundary.  The terminal layer either parks
+    // it or creates a Transfer; both paths own cleanup even when request()
+    // reports a synchronous start error.  Releasing it again here used to
+    // double-free image-request headers while parsing large Google documents.
     return self.entry_layer.request(self, our_req) catch |err| {
         our_req.error_callback(our_req.ctx, err);
-        self.deinitRequest(our_req);
         return err;
     };
 }
@@ -1313,9 +1317,12 @@ fn tryStartQueuedTransfers(self: *Client) void {
             break;
         };
         const transfer: *Transfer = @fieldParentPtr("_node", queue_node);
-        // makeRequest owns cleanup on most failure paths (and drives perform).
+        // Once makeRequest starts, it owns the transfer on every failure path.
+        // In particular, configure/track/start failures deinit it before
+        // returning.  Never inspect `transfer` in this catch: MemoryPool poisons
+        // freed slots with 0xaa in Debug builds, which made this log a UAF.
         self.makeRequest(conn, transfer) catch |err| {
-            log.warn(.http, "queued transfer start", .{ .err = err, .url = transfer.url });
+            log.warn(.http, "queued transfer start", .{ .err = err });
         };
     }
 }

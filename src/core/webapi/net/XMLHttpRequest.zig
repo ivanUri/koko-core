@@ -44,6 +44,9 @@ _arena: Allocator,
 _http_response: ?HttpClient.Response = null,
 _active_request: bool = false,
 _send_flag: bool = false,
+_request_generation: u64 = 0,
+_active_request_generation: u64 = 0,
+_queued_completion_generation: ?u64 = null,
 
 _url: [:0]const u8 = "",
 _method: http.Method = .GET,
@@ -158,8 +161,14 @@ fn releaseSelfRef(self: *XMLHttpRequest) void {
     if (self._active_request == false) {
         return;
     }
+    self.releaseSelfRefForGeneration(self._active_request_generation);
+}
+
+fn releaseSelfRefForGeneration(self: *XMLHttpRequest, generation: u64) void {
     self.releaseRef(self._exec.context.page);
-    self._active_request = false;
+    if (self._active_request and self._active_request_generation == generation) {
+        self._active_request = false;
+    }
 }
 
 pub fn releaseRef(self: *XMLHttpRequest, page: *Page) void {
@@ -224,6 +233,7 @@ pub fn open(self: *XMLHttpRequest, method_: []const u8, url: [:0]const u8) !void
     self._response_headers.clearRetainingCapacity();
     self._request_body = null;
     self._send_flag = false;
+    self._request_generation +%= 1;
 
     const exec = self._exec;
     self._method = try parseMethod(method_);
@@ -283,6 +293,7 @@ pub fn send(self: *XMLHttpRequest, body_: ?[]const u8) !void {
 
     self.acquireRef();
     self._active_request = true;
+    self._active_request_generation = self._request_generation;
     self._send_flag = true;
 
     http_client.request(.{
@@ -561,24 +572,104 @@ fn httpDoneCallback(ctx: *anyopaque) !void {
     const exec = self._exec;
 
     if (canDispatchXhrEvents(self, exec)) {
-        try self.stateChanged(.done, exec);
-
-        const loaded = self._response_data.items.len;
-        try self._proto.dispatch(.load, .{
-            .total = loaded,
-            .loaded = loaded,
-        }, exec);
-        try self._proto.dispatch(.load_end, .{
-            .total = loaded,
-            .loaded = loaded,
-        }, exec);
-
-        exec.context.page.session.drainDeferredCommit();
-    } else {
-        self._ready_state = .done;
+        defer self.releaseSelfRef();
+        try self.dispatchSuccessfulCompletion();
+        return;
     }
-    self.releaseSelfRef();
+
+    // Curl may finish while another JS entry is active (notably a CDP
+    // Runtime.evaluate poll). Dropping the events here leaves readyState=4 but
+    // permanently loses onload/loadend; SPA bootstrap loaders then never append
+    // their main bundle. Queue one HTML task and keep the request's self-ref
+    // until that task either dispatches or is cancelled by realm teardown.
+    try self.queueSuccessfulCompletion();
 }
+
+fn dispatchSuccessfulCompletion(self: *XMLHttpRequest) !void {
+    const exec = self._exec;
+    try self.stateChanged(.done, exec);
+
+    const loaded = self._response_data.items.len;
+    try self._proto.dispatch(.load, .{
+        .total = loaded,
+        .loaded = loaded,
+    }, exec);
+    try self._proto.dispatch(.load_end, .{
+        .total = loaded,
+        .loaded = loaded,
+    }, exec);
+
+    exec.context.page.session.drainDeferredCommit();
+}
+
+fn queueSuccessfulCompletion(self: *XMLHttpRequest) !void {
+    const generation = self._request_generation;
+    if (self._queued_completion_generation == generation) return;
+    self._queued_completion_generation = generation;
+
+    const callback = self._arena.create(DeferredCompletionCallback) catch |err| {
+        self._queued_completion_generation = null;
+        self.releaseSelfRefForGeneration(generation);
+        return err;
+    };
+    callback.* = .{ .xhr = self, .generation = generation };
+    self._exec._scheduler.add(callback, DeferredCompletionCallback.run, 0, .{
+        .name = "XMLHttpRequest.complete",
+        .low_priority = false,
+        .finalizer = DeferredCompletionCallback.cancelled,
+    }) catch |err| {
+        self._queued_completion_generation = null;
+        self.releaseSelfRefForGeneration(generation);
+        return err;
+    };
+}
+
+const DeferredCompletionCallback = struct {
+    xhr: *XMLHttpRequest,
+    generation: u64,
+    attempts: u8 = 0,
+
+    fn clearQueued(self: *DeferredCompletionCallback) void {
+        if (self.xhr._queued_completion_generation == self.generation) {
+            self.xhr._queued_completion_generation = null;
+        }
+    }
+
+    fn cancelled(ctx: *anyopaque) void {
+        const self: *DeferredCompletionCallback = @ptrCast(@alignCast(ctx));
+        self.clearQueued();
+        self.xhr.releaseSelfRefForGeneration(self.generation);
+    }
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *DeferredCompletionCallback = @ptrCast(@alignCast(ctx));
+        const xhr = self.xhr;
+
+        if (xhr._request_generation != self.generation or !xhr._active_request) {
+            self.clearQueued();
+            xhr.releaseSelfRefForGeneration(self.generation);
+            return null;
+        }
+
+        if (!canDispatchXhrEvents(xhr, xhr._exec)) {
+            // A queued task normally has no V8 call depth, but a nested host
+            // pump can still reach it. Retry while this is the active realm;
+            // navigation/teardown makes the old completion ineligible.
+            if (xhr._exec.canEnterJs(.strict_active) and self.attempts < 32) {
+                self.attempts += 1;
+                return 0;
+            }
+            self.clearQueued();
+            xhr.releaseSelfRefForGeneration(self.generation);
+            return null;
+        }
+
+        self.clearQueued();
+        defer xhr.releaseSelfRefForGeneration(self.generation);
+        try xhr.dispatchSuccessfulCompletion();
+        return null;
+    }
+};
 
 fn httpErrorCallback(ctx: *anyopaque, err: anyerror) void {
     const self: *XMLHttpRequest = @ptrCast(@alignCast(ctx));

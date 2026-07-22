@@ -469,12 +469,18 @@ fn handleSrflxResponse(self: *IceAgent, resp: StunClient.BindingResponse) !void 
 
     self._stun_state = .received;
 
-    // Find the base (host) candidate for the socket
+    // Base host for raddr must share address family with the mapped STUN addr
+    // (IPv4 srflx must not cite an IPv6 host as related).
     const base_addr = blk: {
+        const want_v4 = resp.mapped_addr.any.family == std.posix.AF.INET;
+        var fallback: ?std.net.Address = null;
         for (self._local.slice()) |*c| {
-            if (c.typ == .host) break :blk c.addr;
+            if (c.typ != .host) continue;
+            const is_v4 = c.addr.any.family == std.posix.AF.INET;
+            if (is_v4 == want_v4) break :blk c.addr;
+            if (fallback == null) fallback = c.addr;
         }
-        return; // no host candidate found — shouldn't happen
+        break :blk fallback orelse return;
     };
 
     const priority = computePriority(TYPE_PREF_SRFLX, 65535, 1);

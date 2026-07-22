@@ -90,6 +90,7 @@ _on_unhandled_rejection: ?js.Function.Global = null,
 _current_event: ?*Event = null,
 _location: *Location,
 _chrome: Chrome = .init,
+_external: Chrome.External = .{},
 _google: GoogleCompat = .init,
 _timers: Timers = .{},
 _custom_elements: CustomElementRegistry = .{},
@@ -213,7 +214,7 @@ fn getOriginStorageBucket(self: *Window) *storage.Bucket {
     const frame = self._frame;
     const origin = frame.origin orelse "null";
     return frame._session.storage_shed.getOrPut(
-        frame._session.browser.app.allocator,
+        frame._session.arena,
         origin,
     ) catch {
         return &self._storage_bucket;
@@ -243,6 +244,10 @@ pub fn getLocation(self: *const Window) *Location {
 pub fn getChrome(self: *Window) ?*Chrome {
     if (self._frame.loadedProfile().isFirefox()) return null;
     return &self._chrome;
+}
+
+pub fn getExternal(self: *Window) *Chrome.External {
+    return &self._external;
 }
 
 pub fn getGoogle(self: *Window) ?*GoogleCompat {
@@ -298,11 +303,11 @@ pub fn getTaskScheduler(self: *Window) *TaskScheduler {
     return &self._task_scheduler;
 }
 
-pub fn getIsSecureContext(self: *const Window, _: *Frame) bool {
-    const protocol = self._location.getProtocol();
+pub fn getIsSecureContext(self: *const Window, frame: *Frame) bool {
+    const protocol = self._location.getProtocol(frame);
     if (std.mem.eql(u8, protocol, "https:")) return true;
     if (std.mem.eql(u8, protocol, "file:")) return true;
-    const hostname = self._location.getHostname();
+    const hostname = self._location.getHostname(frame);
     if (std.mem.eql(u8, hostname, "localhost")) return true;
     if (std.mem.eql(u8, hostname, "127.0.0.1")) return true;
     if (std.mem.eql(u8, hostname, "[::1]")) return true;
@@ -629,9 +634,24 @@ pub fn matchMedia(_: *const Window, query: []const u8, frame: *Frame) !*MediaQue
 }
 
 pub fn getComputedStyle(_: *const Window, element: *Element, pseudo_element: ?[]const u8, frame: *Frame) !*CSSStyleDeclaration {
+    // Chrome always returns a CSSStyleDeclaration for ::before/::after (often
+    // empty). Fluent UI on signup.live.com queries these heavily; warning on
+    // every call flooded logs and did not change behavior. Fall back to the
+    // element's computed style (same as prior) without spam.
     if (pseudo_element) |pe| {
         if (pe.len != 0) {
-            log.warn(.not_implemented, "window.GetComputedStyle", .{ .pseudo_element = pe });
+            // Known generated-content pseudos: silent host-style fallback.
+            const pe_trim = std.mem.trim(u8, pe, &std.ascii.whitespace);
+            const known =
+                std.ascii.eqlIgnoreCase(pe_trim, "::before") or
+                std.ascii.eqlIgnoreCase(pe_trim, ":before") or
+                std.ascii.eqlIgnoreCase(pe_trim, "::after") or
+                std.ascii.eqlIgnoreCase(pe_trim, ":after") or
+                std.ascii.eqlIgnoreCase(pe_trim, "::marker") or
+                std.ascii.eqlIgnoreCase(pe_trim, ":marker");
+            if (!known) {
+                log.debug(.not_implemented, "window.GetComputedStyle", .{ .pseudo_element = pe });
+            }
         }
     }
     return CSSStyleDeclaration.init(element, true, frame);
@@ -798,7 +818,7 @@ pub fn postMessage(self: *Window, message: js.Value.Temp, target_origin: ?[]cons
     };
 
     // Origin follows the incumbent settings object, same as MessageEvent.source.
-    const origin = try source_window._location.getOrigin(&source_frame.js.execution);
+    const origin = try source_window._location.getOrigin(source_frame);
     const callback = try arena.create(PostMessageCallback);
     callback.* = .{
         .arena = arena,
@@ -1233,6 +1253,7 @@ pub const JsApi = struct {
     pub const origin = bridge.accessor(Window.getOrigin, null, .{});
     pub const location = bridge.accessor(Window.getLocation, Window.setLocation, .{ .deletable = false });
     pub const chrome = bridge.accessor(Window.getChrome, null, .{ .null_as_undefined = true });
+    pub const external = bridge.accessor(Window.getExternal, null, .{});
     pub const google = bridge.accessor(Window.getGoogle, Window.setGoogle, .{ .null_as_undefined = true });
     pub const history = bridge.accessor(Window.getHistory, null, .{});
     pub const navigation = bridge.accessor(Window.getNavigation, null, .{});

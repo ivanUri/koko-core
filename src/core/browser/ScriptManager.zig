@@ -85,7 +85,10 @@ pub fn tailHook(base: *ScriptManagerBase) void {
     // Page makes this safe to call multiple times.
     frame.documentIsLoaded();
 
-    if (base.async_scripts.first == null and self.frame_notified_of_completion == false) {
+    if (base.async_scripts.first == null and
+        base.pending_element_callbacks == 0 and
+        self.frame_notified_of_completion == false)
+    {
         self.frame_notified_of_completion = true;
         frame.scriptsCompletedLoading();
     }
@@ -387,6 +390,7 @@ pub fn staticScriptsDone(self: *ScriptManager) void {
 /// After knitsail pageT freeze + DCL in Frame.pumpPostParseTasks.
 pub fn notifyScriptsCompletedIfNeeded(self: *ScriptManager) void {
     if (self.base.async_scripts.first != null) return;
+    if (self.base.pending_element_callbacks != 0) return;
     if (self.frame_notified_of_completion) return;
     self.frame_notified_of_completion = true;
     self.frame.scriptsCompletedLoading();

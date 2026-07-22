@@ -74,7 +74,7 @@ fn initWithTrusted(arena: Allocator, typ: String, _opts: ?Options, trusted: bool
     // https://developer.mozilla.org/en-US/docs/Web/API/Element/input_event
     const rootevt = event._proto._proto;
     rootevt._bubbles = true;
-    rootevt._cancelable = false;
+    rootevt._cancelable = typ.eql(comptime .wrap("beforeinput"));
     rootevt._composed = true;
 
     return event;

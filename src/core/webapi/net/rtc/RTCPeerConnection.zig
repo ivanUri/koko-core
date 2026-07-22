@@ -462,16 +462,44 @@ pub fn close(self: *RTCPeerConnection) void {
 
 /// Process all pending events from the network thread.
 /// Must be called periodically from the JS thread event loop.
+///
+/// Events are drained **FIFO (oldest first)**. `RtcEventQueue` is an atomic
+/// stack (LIFO push); using `pop()` alone delivered `ice_gathering_complete`
+/// before host/srflx candidates when STUN finished in one batch — BrowserLeaks
+/// then finalized with an empty candidate list and showed Local/Public as "-".
 pub fn drainEvents(self: *RTCPeerConnection) void {
-    while (self._event_queue.pop()) |node| {
-        self.handleEvent(node.event);
-        freeEventNode(self._alloc, node);
+    // Atomically take the whole stack, reverse into oldest-first, dispatch.
+    var node = self._event_queue.takeAll();
+    var tmp: [256]*RtcEventQueue.Node = undefined;
+    var count: usize = 0;
+    while (node) |n| {
+        const next = n.next.load(.monotonic);
+        if (count < tmp.len) {
+            tmp[count] = n;
+            count += 1;
+        } else {
+            // Pathological flood: free excess to avoid leak (should not happen).
+            freeEventNode(self._alloc, n);
+        }
+        node = next;
+    }
+    var i: usize = count;
+    while (i > 0) {
+        i -= 1;
+        const n = tmp[i];
+        self.handleEvent(n.event);
+        freeEventNode(self._alloc, n);
     }
 }
 
 fn handleEvent(self: *RTCPeerConnection, event: RtcEventQueue.RtcEvent) void {
     switch (event) {
         .ice_candidate => |cand| {
+            // Never demote .complete → .gathering if a late candidate races the
+            // gathering-complete event (BrowserLeaks reads iceGatheringState).
+            if (self.ice_gathering_state != .complete) {
+                self.setIceGatheringState(.gathering);
+            }
             if (self.handlers.on_ice_candidate) |cb| {
                 const transport: []const u8 = switch (cand.protocol) {
                     .udp => "UDP",
@@ -492,7 +520,6 @@ fn handleEvent(self: *RTCPeerConnection, event: RtcEventQueue.RtcEvent) void {
                 }) catch return;
                 cb(self.handlers.ctx, line, "0");
             }
-            self.setIceGatheringState(.gathering);
         },
 
         .ice_gathering_complete => {

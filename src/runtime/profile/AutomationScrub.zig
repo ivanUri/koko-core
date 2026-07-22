@@ -12,7 +12,11 @@ pub const scrub_script: []const u8 =
     \\    '__nightmare','nightmare','callPhantom','_phantom','__phantomas',
     \\    'domAutomation','domAutomationController',
     \\    'awesomium','RunPerfTest','CefSharp','fmget_targets','geb','wdioElectron',
-    \\    '__playwright','__pw_manual','__PW_inspect','__puppeteer_evaluation_script__'
+    \\    '__playwright','__pw_manual','__PW_inspect','__puppeteer_evaluation_script__',
+    \\    // Non-Chrome globals that fingerprint / bot classifiers treat as automation.
+    \\    // `_p` was previously injected by Velora TrustedTypes shim (Google SGS stub).
+    \\    '_p','_BROWSERAUTOMATION','_BAS_','_BASBrowser',
+    \\    '__fxdriver_unwrapped','__webdriver_script_fn'
     \\  ];
     \\  const docKeys=[
     \\    '__selenium_evaluate','selenium-evaluate','__selenium_unwrapped',

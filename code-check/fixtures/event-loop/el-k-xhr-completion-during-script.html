@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>EL-K</title>
+<body>
+  <script>
+    // A fast XHR can complete while a parser-blocking SPA bootstrap script is
+    // still on the V8 stack. Completion events must be queued, never dropped.
+    window.__el = { id: "EL-K", ok: false, load: 0, ready: 0 };
+    const xhr = new XMLHttpRequest();
+    xhr.open("GET", "el-e-payload.txt", true);
+    xhr.onreadystatechange = function () {
+      if (xhr.readyState === 4) window.__el.ready++;
+    };
+    xhr.onload = function () {
+      window.__el.load++;
+      window.__el.ok = xhr.status === 200 && xhr.responseText.trim() === "hello";
+      document.title = JSON.stringify(window.__el);
+      window.__elDone = true;
+    };
+    xhr.send();
+
+    // Keep the initial evaluation active long enough for localhost I/O to
+    // complete on the network side, reproducing real SPA bundle loaders.
+    const busyUntil = Date.now() + 400;
+    while (Date.now() < busyUntil) {}
+
+    setTimeout(function () {
+      if (window.__elDone) return;
+      document.title = JSON.stringify(window.__el);
+      window.__elDone = true;
+    }, 1500);
+  </script>
+</body>

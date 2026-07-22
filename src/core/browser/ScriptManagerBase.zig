@@ -256,6 +256,11 @@ evaluate_pending: bool = false,
 // reschedule storms inside runOwnedScheduler when canEval is still false).
 deferred_evaluate_queued: bool = false,
 
+// Script load/error events cannot be dispatched recursively while evaluate()
+// is on the V8 stack. Keep them as lifecycle work so window.load does not run
+// before a dynamically inserted script's onload callback.
+pending_element_callbacks: u32 = 0,
+
 // Set when script-eval watchdog terminates a hung V8 module/script (infinite
 // loop). evaluate() drops remaining incomplete defer heads so DCL can fire.
 watchdog_terminated: bool = false,
@@ -311,6 +316,7 @@ pub fn init(allocator: Allocator, http_client: *HttpClient, owner: Owner) Script
         .is_evaluating = false,
         .evaluate_pending = false,
         .deferred_evaluate_queued = false,
+        .pending_element_callbacks = 0,
         .watchdog_terminated = false,
         .allocator = allocator,
         .imported_modules = .empty,
@@ -325,6 +331,7 @@ pub fn deinit(self: *ScriptManagerBase) void {
     // necessary to free any arenas scripts may be referencing
     self.reset();
     self.reapOrphanedHttpCtxs();
+    self.orphaned_http_ctxs.deinit(self.allocator);
 
     self.imported_modules.deinit(self.allocator);
     // we don't deinit self.importmap b/c we use the owner's arena for its
@@ -367,6 +374,7 @@ pub fn reset(self: *ScriptManagerBase) void {
     self.static_scripts_done_at_ms = 0;
     self.evaluate_pending = false;
     self.deferred_evaluate_queued = false;
+    self.pending_element_callbacks = 0;
     self.watchdog_terminated = false;
     // Script.deinit nulls HttpCtx.script; free the ctx shells after lists clear.
     self.reapOrphanedHttpCtxs();
@@ -854,6 +862,7 @@ fn hasPendingEvaluateWork(self: *const ScriptManagerBase) bool {
 pub fn hasPendingJsWork(self: *const ScriptManagerBase) bool {
     return self.evaluate_pending or
         self.deferred_evaluate_queued or
+        self.pending_element_callbacks != 0 or
         self.is_evaluating or
         self.hasPendingEvaluateWork() or
         self.hasIncompleteLifecycleScripts();
@@ -1816,15 +1825,96 @@ pub const Script = struct {
         self.executeCallback(comptime .wrap("error"));
     }
 
+    const ElementCallbackType = enum { load, @"error" };
+
+    const DeferredElementCallback = struct {
+        manager: *ScriptManagerBase,
+        frame: *Frame,
+        element: *Element.Html.Script,
+        typ: ElementCallbackType,
+        guard: LoadGuard.Guard,
+
+        fn run(ctx: *anyopaque) !?u32 {
+            const self: *DeferredElementCallback = @ptrCast(@alignCast(ctx));
+            const manager = self.manager;
+            defer {
+                if (manager.pending_element_callbacks > 0) {
+                    manager.pending_element_callbacks -= 1;
+                }
+
+                if (!manager.shutdown and manager.pending_element_callbacks == 0) {
+                    if (manager.hasPendingEvaluateWork() or manager.evaluate_pending) {
+                        manager.evaluatePendingWhenCentral();
+                    } else if (!manager.hasIncompleteLifecycleScripts()) {
+                        if (manager.tail_hook) |hook| hook(manager);
+                    }
+                }
+            }
+
+            if (manager.shutdown or self.guard.isFinished()) return null;
+            if (!self.guard.isDeliverableForRealm(self.frame.js.execution.captureTaskOwner(), .{
+                .manager_shutdown = false,
+                .realm_dead_or_draining = self.frame._realm_state == .dead or self.frame._realm_state == .draining,
+                .going_away = self.frame.isGoingAway(),
+            })) return null;
+
+            const event_typ = switch (self.typ) {
+                .load => String.wrap("load"),
+                .@"error" => String.wrap("error"),
+            };
+            const Event = @import("../webapi/Event.zig");
+            const event = try Event.initTrusted(event_typ, .{}, self.frame._page);
+            self.frame._event_manager.dispatchOpts(
+                self.element.asNode().asEventTarget(),
+                event,
+                .{ .apply_ignore = true },
+            ) catch |err| {
+                log.warn(.js, "deferred script callback", .{
+                    .type = event_typ,
+                    .err = err,
+                });
+            };
+            return null;
+        }
+    };
+
+    fn queueElementCallback(self: *const Script, typ: ElementCallbackType) !void {
+        const fe = self.extra.frame;
+        const frame = self.activeFrame() orelse return;
+        const callback = try frame.arena.create(DeferredElementCallback);
+        callback.* = .{
+            .manager = self.manager,
+            .frame = frame,
+            .element = fe.script_element,
+            .typ = typ,
+            .guard = LoadGuard.Guard.init(&frame.js.execution),
+        };
+        self.manager.pending_element_callbacks += 1;
+        frame.js.scheduler.add(callback, DeferredElementCallback.run, 0, .{
+            .name = "ScriptManager.elementCallback",
+            .low_priority = false,
+        }) catch |err| {
+            self.manager.pending_element_callbacks -= 1;
+            return err;
+        };
+    }
+
     fn executeCallback(self: *const Script, typ: String) void {
         const fe = self.extra.frame;
         const frame = self.activeFrame() orelse return;
-        // Do not nest load/error listeners while evaluate() is draining the
-        // lifecycle queue: tracker listeners re-enter V8 on the same Zig stack
-        // and V8_Fatal (stack) before tailHook. Load events are not required for
-        // DOMContentLoaded; the element still ran. Remaining work continues via
-        // timers/macrotasks after the drain.
-        if (self.manager.is_evaluating) return;
+        // Inline scripts do not have a resource-load lifecycle. Only external
+        // scripts dispatch load/error on HTMLScriptElement.
+        if (self.source == .@"inline") return;
+        // Do not recursively enter V8 from the lifecycle evaluator. Dropping
+        // this callback breaks real loaders (Cloudflare starts its challenge in
+        // script.onload), so queue it and keep it in the document load barrier.
+        if (self.manager.is_evaluating) {
+            const callback_typ: ElementCallbackType = if (typ.eql(comptime .wrap("load"))) .load else .@"error";
+            self.queueElementCallback(callback_typ) catch |err| {
+                log.warn(.js, "queue script callback", .{ .url = self.url, .type = typ, .err = err });
+            };
+            return;
+        }
 
         const Event = @import("../webapi/Event.zig");
         const event = Event.initTrusted(typ, .{}, frame._page) catch |err| {

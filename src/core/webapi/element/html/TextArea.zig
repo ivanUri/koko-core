@@ -60,6 +60,15 @@ fn dispatchInputEvent(self: *TextArea, data: ?[]const u8, input_type: []const u8
     try frame._event_manager.dispatch(self.asElement().asEventTarget(), event.asEvent());
 }
 
+fn dispatchBeforeInputEvent(self: *TextArea, data: ?[]const u8, input_type: []const u8, frame: *Frame) !bool {
+    const input_event = try InputEvent.initTrusted(comptime .wrap("beforeinput"), .{ .data = data, .inputType = input_type }, frame);
+    const event = input_event.asEvent();
+    event.acquireRef();
+    defer _ = event.releaseRef(frame._page);
+    try frame._event_manager.dispatch(self.asElement().asEventTarget(), event);
+    return !event.getDefaultPrevented();
+}
+
 pub fn asElement(self: *TextArea) *Element {
     return self._proto._proto;
 }
@@ -184,6 +193,7 @@ fn howSelected(self: *const TextArea) HowSelected {
 }
 
 pub fn innerInsert(self: *TextArea, str: []const u8, frame: *Frame) !void {
+    if (!try self.dispatchBeforeInputEvent(str, "insertText", frame)) return;
     const arena = frame.arena;
 
     switch (self.howSelected()) {

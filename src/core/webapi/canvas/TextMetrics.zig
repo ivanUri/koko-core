@@ -108,11 +108,35 @@ fn parseFontSize(font: []const u8) f64 {
     return 10.0;
 }
 
-/// Estimate text width using simple heuristics
+/// Public layout helper for DOM offsetWidth of text spans (font fingerprint probes).
+/// `font_family_css` is a CSS `font-family` list (e.g. `"'Arial', monospace"`).
+/// Resolves the first available family so installed vs fallback widths differ.
+pub fn estimateLayoutTextWidth(
+    text: []const u8,
+    font_family_css: []const u8,
+    font_size: f64,
+    profile: *const FingerprintProfile.IdentityProfile,
+) f64 {
+    if (text.len == 0) return 0.0;
+    const family = resolveAvailableFontFamily(font_family_css, profile);
+    return estimateTextWidthWithFamily(text, family, font_size, profile);
+}
+
+/// Estimate text width using simple heuristics (canvas `font` shorthand).
 fn estimateTextWidth(text: []const u8, font: []const u8, font_size: f64, profile: *const FingerprintProfile.IdentityProfile) f64 {
     if (text.len == 0) return 0.0;
 
     const font_family = extractPrimaryFontFamily(font);
+    return estimateTextWidthWithFamily(text, font_family, font_size, profile);
+}
+
+fn estimateTextWidthWithFamily(
+    text: []const u8,
+    font_family: []const u8,
+    font_size: f64,
+    profile: *const FingerprintProfile.IdentityProfile,
+) f64 {
+    if (text.len == 0) return 0.0;
     const font_scale = fontFamilyScale(font_family, profile);
     const avg_char_width = font_size * 0.52 * font_scale;
 
@@ -149,6 +173,8 @@ fn estimateTextWidth(text: []const u8, font: []const u8, font_size: f64, profile
 }
 
 fn extractPrimaryFontFamily(font: []const u8) []const u8 {
+    // Canvas font shorthand: size/style first, family last after the final comma
+    // or as the trailing token ("10px Arial" / "italic 12px 'Helvetica Neue'").
     var i: usize = font.len;
     while (i > 0) {
         i -= 1;
@@ -156,7 +182,53 @@ fn extractPrimaryFontFamily(font: []const u8) []const u8 {
             return trimFontFamily(font[i + 1 ..]);
         }
     }
+    // No comma: strip leading size/weight tokens → last token is family.
+    var start: usize = 0;
+    var last_space: ?usize = null;
+    while (start < font.len) : (start += 1) {
+        if (font[start] == ' ') last_space = start;
+    }
+    if (last_space) |sp| return trimFontFamily(font[sp + 1 ..]);
     return trimFontFamily(font);
+}
+
+/// Pick first available family from a CSS `font-family` list; else last generic.
+fn resolveAvailableFontFamily(
+    font_family_css: []const u8,
+    profile: *const FingerprintProfile.IdentityProfile,
+) []const u8 {
+    var last: []const u8 = "sans-serif";
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i <= font_family_css.len) : (i += 1) {
+        if (i == font_family_css.len or font_family_css[i] == ',') {
+            const token = trimFontFamily(font_family_css[start..i]);
+            if (token.len > 0) {
+                last = token;
+                if (isGenericFontFamily(token) or FingerprintProfile.isFontFamilyAvailable(profile, token)) {
+                    return token;
+                }
+            }
+            start = i + 1;
+        }
+    }
+    return last;
+}
+
+fn isGenericFontFamily(family: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(family, "serif") or
+        std.ascii.eqlIgnoreCase(family, "sans-serif") or
+        std.ascii.eqlIgnoreCase(family, "monospace") or
+        std.ascii.eqlIgnoreCase(family, "cursive") or
+        std.ascii.eqlIgnoreCase(family, "fantasy") or
+        std.ascii.eqlIgnoreCase(family, "system-ui") or
+        std.ascii.eqlIgnoreCase(family, "ui-serif") or
+        std.ascii.eqlIgnoreCase(family, "ui-sans-serif") or
+        std.ascii.eqlIgnoreCase(family, "ui-monospace") or
+        std.ascii.eqlIgnoreCase(family, "ui-rounded") or
+        std.ascii.eqlIgnoreCase(family, "emoji") or
+        std.ascii.eqlIgnoreCase(family, "math") or
+        std.ascii.eqlIgnoreCase(family, "fangsong");
 }
 
 fn trimFontFamily(font: []const u8) []const u8 {
@@ -205,8 +277,13 @@ fn fontFamilyScale(family: []const u8, profile: *const FingerprintProfile.Identi
         std.ascii.eqlIgnoreCase(family, "Geneva") or
         std.ascii.eqlIgnoreCase(family, "system-ui") or
         std.ascii.eqlIgnoreCase(family, "-apple-system") or
+        std.ascii.eqlIgnoreCase(family, "-apple-system-body") or
         std.ascii.eqlIgnoreCase(family, "BlinkMacSystemFont") or
-        std.ascii.eqlIgnoreCase(family, ".AppleSystemUIFont"))
+        std.ascii.eqlIgnoreCase(family, ".AppleSystemUIFont") or
+        std.ascii.eqlIgnoreCase(family, "ui-sans-serif") or
+        std.ascii.eqlIgnoreCase(family, "ui-serif") or
+        std.ascii.eqlIgnoreCase(family, "ui-monospace") or
+        std.ascii.eqlIgnoreCase(family, "ui-rounded"))
     {
         return 0.985;
     }

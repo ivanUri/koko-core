@@ -30,6 +30,7 @@ const WorkerGlobalScope = @import("../webapi/WorkerGlobalScope.zig");
 
 const RealmLifecycleKernel = @import("../../runtime/RealmLifecycleKernel.zig");
 const MathsNative = @import("../../runtime/profile/MathsNative.zig");
+const NativeBuiltinHooks = @import("../../runtime/profile/NativeBuiltinHooks.zig");
 
 const v8 = js.v8;
 const log = @import("../../support/log.zig");
@@ -521,38 +522,51 @@ fn installDomTokenListArrayPrototypeShim(context: *Context) void {
 }
 
 /// Propagate constructor failures through pure JS throws (WPT assert_throws_js).
+/// Helpers are non-enumerable so they do not pollute window key fingerprints.
 fn installConstructThrowShim(context: *Context) void {
     var ls: js.Local.Scope = undefined;
     context.localScope(&ls);
     defer ls.deinit();
 
     const src =
-        \\globalThis.__veloraConstructThrow = function(name) {
-        \\  const C = globalThis[name];
-        \\  if (typeof C === "function") throw new C("");
-        \\  throw new Error(name || "");
-        \\};
-        \\globalThis.__veloraDomExceptionThrow=function(n,m){throw new DOMException(m||"",n||"Error")};
-        \\globalThis.__veloraRethrow=function(v){throw v};
+        \\(function(){
+        \\  function hide(name, fn) {
+        \\    try {
+        \\      Object.defineProperty(globalThis, name, {
+        \\        value: fn, writable: true, enumerable: false, configurable: true
+        \\      });
+        \\    } catch (e) { globalThis[name] = fn; }
+        \\  }
+        \\  hide("__veloraConstructThrow", function(name) {
+        \\    const C = globalThis[name];
+        \\    if (typeof C === "function") throw new C("");
+        \\    throw new Error(name || "");
+        \\  });
+        \\  hide("__veloraDomExceptionThrow", function(n,m){throw new DOMException(m||"",n||"Error")});
+        \\  hide("__veloraRethrow", function(v){throw v});
+        \\})();
     ;
     ls.local.eval(src, "construct-throw-shim") catch |err| {
         log.warn(.js, "construct throw shim", .{ .err = err });
     };
 }
 
-/// Chrome unwraps TrustedScript before calling the intrinsic eval. V8's builtin
-/// eval does not; Google's SGS bootstrap probes `eval(policy.createScript("1"))===1`.
+/// Chrome unwraps TrustedScript before calling the intrinsic eval. Install a
+/// **V8 FunctionTemplate** native wrapper (see NativeBuiltinHooks) so iframe
+/// clean `Function.prototype.toString` still reports `[native code]`.
+///
+/// Also scrub `window._p` (never a Chrome global; high-signal automation mark).
 fn installTrustedTypesEvalShim(context: *Context) void {
+    NativeBuiltinHooks.installEval(context);
+
     var ls: js.Local.Scope = undefined;
     context.localScope(&ls);
     defer ls.deinit();
-
-    const src =
-        \\(function(){var o=globalThis.eval;globalThis.eval=function(c){try{if(typeof trustedTypes!=="undefined"&&trustedTypes.isScript&&trustedTypes.isScript(c))c=c.toString()}catch(e){}return o.call(globalThis,c)}})();globalThis._p={createScript:function(s){return s}};
-    ;
-    ls.local.eval(src, "trusted-types-eval-shim") catch |err| {
-        log.warn(.js, "trusted-types eval shim", .{ .err = err });
-    };
+    ls.local.eval(
+        \\try{delete globalThis._p}catch(e){}
+    ,
+        "scrub-p-global",
+    ) catch {};
 }
 
 /// Native JS value rethrows from worker callbacks do not reach in-script try/catch.
@@ -820,7 +834,7 @@ pub fn runMicrotasks(self: *Env, source: TaskSource) void {
                 RealmLifecycleKernel.traceMicrotaskBudgetExceeded(frame_id, epoch, st, checkpoint_passes);
                 RealmLifecycleKernel.traceMicrotaskRunawayDetected(frame_id, epoch, st, checkpoint_passes);
                 switch (ctx.global) {
-                    .frame => |frame| frame.suppressScheduler(),
+                    .frame => |frame| frame.suppressScheduler(.runaway),
                     .worker => {
                         // TODO: worker realms intentionally lack scheduler_suppressed;
                         // add equivalent worker suppression before enabling worker checkpoints.

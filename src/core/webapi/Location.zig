@@ -29,36 +29,44 @@ pub fn init(raw_url: [:0]const u8, frame: *Frame) !*Location {
     });
 }
 
-pub fn getPathname(self: *const Location, exec: *const js.Execution) ![]const u8 {
-    return self._url.getPathname(exec);
+/// Browsing-context URL is the source of truth after history.pushState /
+/// replaceState. Relying only on cached `_url` can leave window.location
+/// stale while document.URL already moved (signup.live.com SPA routes).
+fn liveRaw(_: *const Location, frame: *Frame) [:0]const u8 {
+    return frame.url;
 }
 
-pub fn getProtocol(self: *const Location) []const u8 {
-    return self._url.getProtocol();
+pub fn getPathname(self: *const Location, frame: *Frame) []const u8 {
+    return U.getPathname(self.liveRaw(frame));
 }
 
-pub fn getHostname(self: *const Location) []const u8 {
-    return self._url.getHostname();
+pub fn getProtocol(self: *const Location, frame: *Frame) []const u8 {
+    return U.getProtocol(self.liveRaw(frame));
 }
 
-pub fn getHost(self: *const Location) []const u8 {
-    return self._url.getHost();
+pub fn getHostname(self: *const Location, frame: *Frame) []const u8 {
+    return U.getHostname(self.liveRaw(frame));
 }
 
-pub fn getPort(self: *const Location) []const u8 {
-    return self._url.getPort();
+pub fn getHost(self: *const Location, frame: *Frame) []const u8 {
+    return U.getHost(self.liveRaw(frame));
 }
 
-pub fn getOrigin(self: *const Location, exec: *const js.Execution) ![]const u8 {
-    return self._url.getOrigin(exec);
+pub fn getPort(self: *const Location, frame: *Frame) []const u8 {
+    return U.getPort(self.liveRaw(frame));
 }
 
-pub fn getSearch(self: *const Location, exec: *const js.Execution) ![]const u8 {
-    return self._url.getSearch(exec);
+pub fn getOrigin(self: *const Location, frame: *Frame) ![]const u8 {
+    _ = self;
+    return (try U.getOrigin(frame.call_arena, frame.url)) orelse "null";
 }
 
-pub fn getHash(self: *const Location) []const u8 {
-    return self._url.getHash();
+pub fn getSearch(self: *const Location, frame: *Frame) []const u8 {
+    return U.getSearch(self.liveRaw(frame));
+}
+
+pub fn getHash(self: *const Location, frame: *Frame) []const u8 {
+    return U.getHash(self.liveRaw(frame));
 }
 
 pub fn setPathname(_: *const Location, pathname: []const u8, frame: *Frame) !void {
@@ -110,8 +118,8 @@ pub fn reload(_: *const Location, frame: *Frame) !void {
     return frame.scheduleNavigation(frame.url, .{ .reason = .script, .kind = .reload }, .{ .script = frame });
 }
 
-pub fn toString(self: *const Location, exec: *const js.Execution) ![:0]const u8 {
-    return self._url.toString(exec);
+pub fn toString(self: *const Location, frame: *Frame) [:0]const u8 {
+    return self.liveRaw(frame);
 }
 
 pub const JsApi = struct {

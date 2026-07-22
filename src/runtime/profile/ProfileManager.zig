@@ -79,7 +79,9 @@ pub fn loadLocalState(allocator: Allocator, user_data_dir: []const u8) !LocalSta
     };
     defer allocator.free(bytes);
 
-    const parsed = std.json.parseFromSliceLeaky(LocalState, allocator, bytes, .{
+    var parse_arena = std.heap.ArenaAllocator.init(allocator);
+    defer parse_arena.deinit();
+    const parsed = std.json.parseFromSliceLeaky(LocalState, parse_arena.allocator(), bytes, .{
         .ignore_unknown_fields = true,
     }) catch return try emptyLocalState(allocator);
     return try sanitizeLocalState(allocator, parsed);
@@ -257,7 +259,8 @@ pub fn createProfile(
         .template_version = template_version,
     });
 
-    _ = try syncLocalState(allocator, user_data_dir);
+    var state = try syncLocalState(allocator, user_data_dir);
+    defer freeLocalState(allocator, &state);
     try recordLastUsed(allocator, user_data_dir, name);
 
     log.info(.app, "profile_manager.create", .{ .name = name, .template = template, .dir = paths.profile_dir });
@@ -320,7 +323,8 @@ pub fn importCookies(
     try std.fs.cwd().makePath(paths.profile_dir);
     try std.fs.cwd().copyFile(from_path, std.fs.cwd(), cookies_path, .{});
 
-    _ = try syncLocalState(allocator, user_data_dir);
+    var state = try syncLocalState(allocator, user_data_dir);
+    defer freeLocalState(allocator, &state);
     log.info(.app, "profile_manager.import_cookies", .{ .name = name, .from = from_path, .to = cookies_path });
 }
 
@@ -374,7 +378,8 @@ pub fn ensureFirstRun(allocator: Allocator, user_data_dir: []const u8) !void {
     defer default_paths.deinit();
     try default_paths.ensureProfileReadyWithTemplate("velora");
 
-    _ = try syncLocalState(allocator, user_data_dir);
+    var state = try syncLocalState(allocator, user_data_dir);
+    defer freeLocalState(allocator, &state);
 }
 
 fn writePreferences(path: []const u8, prefs: ProfilePaths.Preferences) !void {

@@ -17,6 +17,7 @@ const FIXTURE_DIR = __dirname;
 
 const fixtures = readdirSync(FIXTURE_DIR)
   .filter((f) => f.startsWith("el-") && f.endsWith(".html"))
+  .filter((f) => !f.includes("-cdp-"))
   .sort();
 
 function freePort() {
@@ -39,6 +40,8 @@ async function serveAndRun() {
       const body = readFileSync(path);
       const ct = name.endsWith(".html")
         ? "text/html; charset=utf-8"
+        : name.endsWith(".js")
+          ? "application/javascript; charset=utf-8"
         : name.endsWith(".txt")
           ? "text/plain; charset=utf-8"
           : "application/octet-stream";

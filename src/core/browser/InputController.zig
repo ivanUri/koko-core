@@ -46,15 +46,34 @@ pub fn dispatchActivationOnElement(element: *Element, frame: *Frame) !void {
     try dispatchActivationOnTarget(hit);
 }
 
-/// Fast activation for LP.clickNode — synthetic click only (no pointer/focus path).
-/// Full pointer activation can deadlock Runtime.evaluate on the CDP transport thread.
+/// Fast activation for LP.clickNode / automation.
+///
+/// Uses a **trusted** `click` (not `HTMLElement.click()`, which is untrusted).
+/// Fluent/React on signup.live.com ignore untrusted clicks on primary Next.
+///
+/// Intentionally not the full pointerdown/up chain: that path can deadlock the
+/// CDP transport when nested in evaluate/submit. Trusted click still runs
+/// default actions via EventManager (`handleClick` → form submit).
+///
+/// **Must not** call `makeHitForElement` / `getActivationBoundingClientRect`.
+/// Fluent SPA trees make hit-test origin walks pathologically expensive
+/// (`computeLayoutOriginForHitTestDepth` + sibling visibility), blocking the
+/// CDP thread for tens of seconds so `Runtime.evaluate` times out after
+/// `LP.clickNode` returns. Click default actions only need the target element;
+/// clientX/Y are immaterial for form submit / React handlers.
 pub fn dispatchActivationOnElementFast(element: *Element, frame: *Frame) !void {
-    if (element.is(Element.Html)) |html| {
-        try html.click(frame);
-        return;
+    const hit = Frame.InputHit{
+        .element = element,
+        .frame = frame,
+        .client_x = 0,
+        .client_y = 0,
+    };
+    if (shouldFocusOnActivation(hit.element, hit.frame)) {
+        hit.element.focus(hit.frame) catch {};
     }
-    const hit = resolveEffectiveHit(makeHitForElement(element, frame));
-    try dispatchMouseEvent(hit, comptime .wrap("click"), baseEventOpts(hit));
+    var click_opts = baseEventOpts(hit);
+    click_opts.detail = 1;
+    try dispatchMouseEvent(hit, comptime .wrap("click"), click_opts);
 }
 
 /// Press half of a primary-button activation (CDP `mousePressed`).
@@ -173,17 +192,24 @@ fn waitForActivationHit(root_frame: *Frame, x: f64, y: f64, timeout_ms: u32) !?F
     const fast = timeout_ms <= cdp_ready_timeout_ms;
     // CDP split press/release must not block the transport on widget polling.
     if (fast) {
+        var raw_hit: ?Frame.InputHit = null;
         if (try resolveHitOnce(root_frame, x, y, true)) |hit| {
             if (isActionableHit(hit, root_frame)) {
                 logActivation(hit);
                 return hit;
             }
+            raw_hit = hit;
         }
-        if (try resolveCaptchaCheckboxFallback(root_frame, x, y)) |hit| {
-            logActivation(hit);
-            return hit;
+        // CAPTCHA fallback performs extra iframe/layout work. Only pay that
+        // cost when this browsing-context tree actually contains a supported
+        // challenge frame; on large SPAs an unconditional scan can be O(n²).
+        if (containsCaptchaWidgetFrame(root_frame, 0)) {
+            if (try resolveCaptchaCheckboxFallback(root_frame, x, y)) |hit| {
+                logActivation(hit);
+                return hit;
+            }
         }
-        if (try resolveHitOnce(root_frame, x, y, true)) |hit| {
+        if (raw_hit) |hit| {
             logActivation(hit);
             return hit;
         }
@@ -300,6 +326,18 @@ fn refineInputHitDepth(hit: Frame.InputHit, fast: bool, depth: u8) !Frame.InputH
         }
     }
 
+    // elementFromPoint commonly returns a span/svg inside a button. Walking a
+    // handful of ancestors is deterministic and cheap, and avoids a full DOM
+    // activation scan for ordinary SPA controls.
+    if (findActivationAncestor(hit.element, hit.frame)) |ancestor| {
+        return centerHitOnElement(.{
+            .element = ancestor,
+            .frame = hit.frame,
+            .client_x = hit.client_x,
+            .client_y = hit.client_y,
+        });
+    }
+
     if (isCaptchaWidgetFrame(hit.frame)) {
         if (findWidgetCheckboxTarget(hit.frame, hit.client_x, hit.client_y)) |widget| {
             return centerHitOnElement(.{
@@ -370,6 +408,17 @@ fn isCaptchaWidgetFrame(frame: *Frame) bool {
     if (std.mem.indexOf(u8, frame.url, "challenges.cloudflare.com") != null) return true;
     if (std.mem.indexOf(u8, frame.url, "google.com/recaptcha") != null) return true;
     if (std.mem.indexOf(u8, frame.url, "recaptcha.net") != null) return true;
+    if (std.mem.indexOf(u8, frame.url, "arkoselabs.com") != null) return true;
+    if (std.mem.indexOf(u8, frame.url, "funcaptcha.com") != null) return true;
+    return false;
+}
+
+fn containsCaptchaWidgetFrame(frame: *Frame, depth: u8) bool {
+    if (depth > 8) return false;
+    if (isCaptchaWidgetFrame(frame)) return true;
+    for (frame.child_frames.items) |child_frame| {
+        if (containsCaptchaWidgetFrame(child_frame, depth + 1)) return true;
+    }
     return false;
 }
 
@@ -441,6 +490,7 @@ fn refineIframeHit(hit: Frame.InputHit) !?Frame.InputHit {
 }
 
 fn resolveCaptchaCheckboxFallback(root_frame: *Frame, x: f64, y: f64) !?Frame.InputHit {
+    if (!containsCaptchaWidgetFrame(root_frame, 0)) return null;
     const raw = (try root_frame.hitTestForInput(x, y)) orelse {
         return findCaptchaWidgetAtPoint(root_frame, x, y);
     };
@@ -491,6 +541,7 @@ fn findCaptchaWidgetInFrame(frame: *Frame, coord_frame: *Frame, x: f64, y: f64, 
     }
 
     for (frame.child_frames.items) |child_frame| {
+        if (!containsCaptchaWidgetFrame(child_frame, depth + 1)) continue;
         const iframe_el = child_frame.iframe orelse continue;
         const rect = iframe_el.asElement().getActivationBoundingClientRect(coord_frame);
         if (x < rect.getLeft() or x > rect.getRight() or
@@ -533,6 +584,19 @@ fn isStructuralContainer(element: *Element) bool {
 fn isActivationTarget(element: *Element, frame: *Frame) bool {
     if (isStructuralContainer(element)) return false;
     return isInteractiveActivationTarget(element, frame);
+}
+
+fn findActivationAncestor(element: *Element, frame: *Frame) ?*Element {
+    var node = element.asNode()._parent;
+    var depth: u8 = 0;
+    while (node) |current| : (depth += 1) {
+        if (depth >= 16) return null;
+        if (current.is(Element)) |ancestor| {
+            if (isActivationTarget(ancestor, frame)) return ancestor;
+        }
+        node = current._parent;
+    }
+    return null;
 }
 
 fn isInteractiveActivationTarget(element: *Element, frame: *Frame) bool {
