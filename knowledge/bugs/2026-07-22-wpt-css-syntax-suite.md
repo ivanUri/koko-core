@@ -19,9 +19,31 @@ Full machine report and failure lists: [`code-check/wpt-css-results/REPORT.md`](
 | Charset subdirectory red | Encoding / `@charset` / BOM pipeline incomplete or not applied to stylesheet loads |
 | Some files incomplete even after harness wait | Timeout / no progress (5–30s) — may be hang or missing feature mid-test |
 
-## Solution (harness only — this pass)
+## Core fix (2026-07-22 follow-up) — An+B / `selectorText`
 
-No CSS engine fixes in this pass. Tooling only:
+**Root cause:** `CSSStyleRule.setSelectorText` stored the author string as-is. WPT `anb-parsing` / `anb-serialization` round-trip via:
+
+```js
+rule.selectorText = `:nth-child(${str})`;
+return rule.selectorText.slice(11, -1);
+```
+
+Without parse + CSS Syntax serialization, Velora returned `"1n + 1"` / `"odd"` instead of `"n+1"` / `"2n+1"`, and invalid An+B still overwrote the previous selector.
+
+**Fix:**
+
+| File | Change |
+|------|--------|
+| `CSSStyleRule.zig` | Parse with `SelectorParser.parseList`; on failure leave prior `selectorText`; on success store **serialized** form |
+| `Selector.NthPattern.serialize` | Spec An+B (`a==0` → integer; `a==±1` → `n`/`-n`; no spaces; omit `b==0`) |
+| `Selector.Compound.format` | Real pseudo-class names + `:nth-*(An+B)` |
+| `Parser.parseNthPattern` | Case-insensitive `odd`/`even`/`n`; stricter keyword boundaries |
+
+Local fixture: 29/29 An+B cases from the two WPT files.
+
+## Solution (harness only — original baseline pass)
+
+No CSS engine fixes in the first WSL harness pass. Tooling only:
 
 | Piece | Role |
 |-------|------|

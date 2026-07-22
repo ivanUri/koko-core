@@ -204,6 +204,31 @@ pub const NthPattern = struct {
     // even: a=2, b=0
     // 3n+1: a=3, b=1
     // 5: a=0, b=5
+
+    /// CSS Syntax § Serializing <an+b>
+    /// https://drafts.csswg.org/css-syntax/#serializing-anb
+    pub fn serialize(self: NthPattern, writer: *std.Io.Writer) error{WriteFailed}!void {
+        const a = self.a;
+        const b = self.b;
+        if (a == 0) {
+            try writer.print("{d}", .{b});
+            return;
+        }
+        if (a == 1) {
+            try writer.writeByte('n');
+        } else if (a == -1) {
+            try writer.writeAll("-n");
+        } else {
+            try writer.print("{d}n", .{a});
+        }
+        if (b == 0) return;
+        if (b > 0) {
+            try writer.print("+{d}", .{b});
+        } else {
+            // Negative b already includes '-'.
+            try writer.print("{d}", .{b});
+        }
+    }
 };
 
 // Combinator represents the relationship between two compound selectors
@@ -232,16 +257,115 @@ pub const Compound = struct {
             .tag => |val| try writer.writeAll(@tagName(val)),
             .tag_name => |val| try writer.writeAll(val),
             .universal => try writer.writeByte('*'),
-            .pseudo_class => |val| {
+            .pseudo_class => |pc| {
                 try writer.writeByte(':');
-                try writer.writeAll(@tagName(val));
+                try formatPseudoClass(pc, writer);
             },
-            .attribute => {
-                try writer.writeAll("TODO");
+            .attribute => |attr| {
+                try writer.writeByte('[');
+                try writer.writeAll(attr.name.str());
+                switch (attr.matcher) {
+                    .presence => {},
+                    .exact => |v| try writer.print("=\"{s}\"", .{v}),
+                    .word => |v| try writer.print("~=\"{s}\"", .{v}),
+                    .prefix_dash => |v| try writer.print("|=\"{s}\"", .{v}),
+                    .starts_with => |v| try writer.print("^=\"{s}\"", .{v}),
+                    .ends_with => |v| try writer.print("$=\"{s}\"", .{v}),
+                    .substring => |v| try writer.print("*=\"{s}\"", .{v}),
+                }
+                if (attr.case_insensitive) try writer.writeAll(" i");
+                try writer.writeByte(']');
             },
         };
     }
 };
+
+fn formatPseudoClass(pc: PseudoClass, writer: *std.Io.Writer) error{WriteFailed}!void {
+    switch (pc) {
+        .modal => try writer.writeAll("modal"),
+        .checked => try writer.writeAll("checked"),
+        .disabled => try writer.writeAll("disabled"),
+        .enabled => try writer.writeAll("enabled"),
+        .indeterminate => try writer.writeAll("indeterminate"),
+        .valid => try writer.writeAll("valid"),
+        .invalid => try writer.writeAll("invalid"),
+        .required => try writer.writeAll("required"),
+        .optional => try writer.writeAll("optional"),
+        .in_range => try writer.writeAll("in-range"),
+        .out_of_range => try writer.writeAll("out-of-range"),
+        .placeholder_shown => try writer.writeAll("placeholder-shown"),
+        .read_only => try writer.writeAll("read-only"),
+        .read_write => try writer.writeAll("read-write"),
+        .default => try writer.writeAll("default"),
+        .hover => try writer.writeAll("hover"),
+        .active => try writer.writeAll("active"),
+        .focus => try writer.writeAll("focus"),
+        .focus_within => try writer.writeAll("focus-within"),
+        .focus_visible => try writer.writeAll("focus-visible"),
+        .link => try writer.writeAll("link"),
+        .visited => try writer.writeAll("visited"),
+        .any_link => try writer.writeAll("any-link"),
+        .target => try writer.writeAll("target"),
+        .root => try writer.writeAll("root"),
+        .scope => try writer.writeAll("scope"),
+        .empty => try writer.writeAll("empty"),
+        .first_child => try writer.writeAll("first-child"),
+        .last_child => try writer.writeAll("last-child"),
+        .only_child => try writer.writeAll("only-child"),
+        .first_of_type => try writer.writeAll("first-of-type"),
+        .last_of_type => try writer.writeAll("last-of-type"),
+        .only_of_type => try writer.writeAll("only-of-type"),
+        .defined => try writer.writeAll("defined"),
+        .nth_child => |p| {
+            try writer.writeAll("nth-child(");
+            try p.serialize(writer);
+            try writer.writeByte(')');
+        },
+        .nth_last_child => |p| {
+            try writer.writeAll("nth-last-child(");
+            try p.serialize(writer);
+            try writer.writeByte(')');
+        },
+        .nth_of_type => |p| {
+            try writer.writeAll("nth-of-type(");
+            try p.serialize(writer);
+            try writer.writeByte(')');
+        },
+        .nth_last_of_type => |p| {
+            try writer.writeAll("nth-last-of-type(");
+            try p.serialize(writer);
+            try writer.writeByte(')');
+        },
+        .lang => |l| try writer.print("lang({s})", .{l}),
+        .not => |sels| {
+            try writer.writeAll("not(");
+            try formatSelectorList(sels, writer);
+            try writer.writeByte(')');
+        },
+        .is => |sels| {
+            try writer.writeAll("is(");
+            try formatSelectorList(sels, writer);
+            try writer.writeByte(')');
+        },
+        .where => |sels| {
+            try writer.writeAll("where(");
+            try formatSelectorList(sels, writer);
+            try writer.writeByte(')');
+        },
+        .has => |sels| {
+            try writer.writeAll("has(");
+            try formatSelectorList(sels, writer);
+            try writer.writeByte(')');
+        },
+    }
+}
+
+fn formatSelectorList(sels: []const Selector, writer: *std.Io.Writer) error{WriteFailed}!void {
+    for (sels, 0..) |sel, i| {
+        if (i > 0) try writer.writeAll(", ");
+        try sel.format(writer);
+    }
+}
 
 // A segment represents a compound selector with the combinator that precedes it
 pub const Segment = struct {

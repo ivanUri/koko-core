@@ -3,6 +3,7 @@ const js = @import("../../js/js.zig");
 const Frame = @import("../../browser/Frame.zig");
 const CSSRule = @import("CSSRule.zig");
 const CSSStyleProperties = @import("CSSStyleProperties.zig");
+const SelectorParser = @import("../selector/Parser.zig");
 
 const CSSStyleRule = @This();
 
@@ -22,8 +23,24 @@ pub fn getSelectorText(self: *const CSSStyleRule) []const u8 {
     return self._selector_text;
 }
 
+/// CSSOM: parse the selector; on failure leave the previous value unchanged.
+/// On success store the serialized form (An+B normalization, etc.).
 pub fn setSelectorText(self: *CSSStyleRule, text: []const u8, frame: *Frame) !void {
-    self._selector_text = try frame.dupeString(text);
+    const trimmed = std.mem.trim(u8, text, &std.ascii.whitespace);
+    if (trimmed.len == 0) return;
+
+    const selectors = SelectorParser.parseList(frame.call_arena, trimmed) catch {
+        // Invalid selector → attribute must not change.
+        return;
+    };
+    if (selectors.len == 0) return;
+
+    var buf = std.Io.Writer.Allocating.init(frame.call_arena);
+    for (selectors, 0..) |sel, i| {
+        if (i > 0) try buf.writer.writeAll(", ");
+        try sel.format(&buf.writer);
+    }
+    self._selector_text = try frame.dupeString(buf.written());
 }
 
 pub fn getStyle(self: *CSSStyleRule, frame: *Frame) !*CSSStyleProperties {

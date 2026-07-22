@@ -622,18 +622,24 @@ fn pseudoClass(self: *Parser, arena: Allocator) !Selector.PseudoClass {
     return error.UnknownPseudoClass;
 }
 
+fn nthKeywordBoundary(start: []const u8, kw_len: usize) bool {
+    if (start.len == kw_len) return true;
+    const c = start[kw_len];
+    // Keyword must not continue as an identifier.
+    return !std.ascii.isAlphanumeric(c) and c != '-' and c != '_';
+}
+
 fn parseNthPattern(self: *Parser) !Selector.NthPattern {
     _ = self.skipSpaces();
 
     const start = self.input;
 
-    // Check for special keywords
-    if (std.mem.startsWith(u8, start, "odd")) {
+    // odd | even (ASCII case-insensitive), complete keyword only
+    if (start.len >= 3 and std.ascii.eqlIgnoreCase(start[0..3], "odd") and nthKeywordBoundary(start, 3)) {
         self.input = start[3..];
         return .{ .a = 2, .b = 1 };
     }
-
-    if (std.mem.startsWith(u8, start, "even")) {
+    if (start.len >= 4 and std.ascii.eqlIgnoreCase(start[0..4], "even") and nthKeywordBoundary(start, 4)) {
         self.input = start[4..];
         return .{ .a = 2, .b = 0 };
     }
@@ -643,7 +649,8 @@ fn parseNthPattern(self: *Parser) !Selector.NthPattern {
     var b: i32 = 0;
     var has_n = false;
 
-    // Try to parse coefficient 'a'
+    // Optional leading sign for a / bare integer b.
+    // '+'? n is allowed; '+ ' n (space after +) is not — reject by failing has_n.
     var p = self.peek();
     const sign_a: i32 = if (p == '-') blk: {
         self.input = self.input[1..];
@@ -655,12 +662,12 @@ fn parseNthPattern(self: *Parser) !Selector.NthPattern {
 
     p = self.peek();
     if (p == 'n' or p == 'N') {
-        // Just 'n' means a=1
+        // Just 'n' / 'N' means |a|=1
         a = sign_a;
         has_n = true;
         self.input = self.input[1..];
     } else {
-        // Parse numeric coefficient
+        // Parse numeric coefficient or bare integer
         var num: i32 = 0;
         var digit_count: usize = 0;
         p = self.peek();
@@ -678,12 +685,12 @@ fn parseNthPattern(self: *Parser) !Selector.NthPattern {
                 has_n = true;
                 self.input = self.input[1..];
             } else {
-                // Just a number, no 'n', so this is 'b'
+                // Bare <integer> (optional leading + already consumed as sign_a)
                 b = sign_a * num;
                 return .{ .a = 0, .b = b };
             }
         } else if (sign_a != 1) {
-            // We had a sign but no number and no 'n'
+            // Sign without number and without immediately following n (e.g. "+ n")
             return error.InvalidNthPattern;
         }
     }
@@ -692,7 +699,8 @@ fn parseNthPattern(self: *Parser) !Selector.NthPattern {
         return error.InvalidNthPattern;
     }
 
-    // Parse offset 'b'
+    // Optional B: signed-integer, or ['+'|'-'] <signless-integer>
+    // Also handles <ndashdigit> forms like "n-5" / "5n-5" (no space after '-').
     _ = self.skipSpaces();
     p = self.peek();
     if (p == '+' or p == '-') {
@@ -711,6 +719,7 @@ fn parseNthPattern(self: *Parser) !Selector.NthPattern {
         }
 
         if (digit_count == 0) {
+            // e.g. "5n-", "5n- +5", "n- -5"
             return error.InvalidNthPattern;
         }
 
