@@ -125,26 +125,43 @@ pub fn linkAddedCallback(self: *Link, frame: *Frame) !void {
 }
 
 fn fetchPreloadImage(self: *Link, frame: *Frame, href: []const u8) !void {
+    // Same arena ownership rules as Image.load: early-return / err paths must
+    // release, and after http_client.request the PreloadLoad callbacks own it.
+    // Shein (and other image-heavy sites) fire many <link rel=preload as=image>;
+    // returning on a duplicate URL without releaseArena left Link.preload
+    // arenas leaked → Debug ArenaPool panic on browser teardown.
     const scratch = try frame.getArena(.small, "Link.preload");
+    var caller_owns_scratch = true;
+    errdefer if (caller_owns_scratch) frame.releaseArena(scratch);
+
     const resolved = try URL.resolve(scratch, frame.base(), href, .{ .encoding = frame.charset });
     const owned_url = try frame.arena.dupeZ(u8, resolved);
 
     if (self._preload_loading) {
         if (self._preload_url) |prev| {
-            if (std.mem.eql(u8, prev, owned_url)) return;
+            if (std.mem.eql(u8, prev, owned_url)) {
+                frame.releaseArena(scratch);
+                caller_owns_scratch = false;
+                return;
+            }
         }
     } else if (self._preload_url) |prev| {
-        if (std.mem.eql(u8, prev, owned_url)) return;
+        if (std.mem.eql(u8, prev, owned_url)) {
+            frame.releaseArena(scratch);
+            caller_owns_scratch = false;
+            return;
+        }
     }
 
     self._preload_loading = true;
     self._preload_url = owned_url;
 
-    const load = try scratch.create(PreloadLoad);
+    const arena = scratch;
+    const load = try arena.create(PreloadLoad);
     load.* = .{
         .link = self,
         .frame = frame,
-        .arena = scratch,
+        .arena = arena,
         .guard = LoadGuard.Guard.init(&frame.js.execution),
     };
 
@@ -156,6 +173,8 @@ fn fetchPreloadImage(self: *Link, frame: *Frame, href: []const u8) !void {
         .resource_type = .image,
     });
 
+    // Handoff before entering the async client (may call errorCallback sync).
+    caller_owns_scratch = false;
     try http_client.request(.{
         .ctx = load,
         .params = .{
@@ -208,17 +227,20 @@ const PreloadLoad = struct {
 
     fn shutdownCallback(ctx: *anyopaque) void {
         const self: *PreloadLoad = @ptrCast(@alignCast(ctx));
+        // Always clear loading + release arena; do not require deliverable.
+        if (self.link._preload_loading) self.link._preload_loading = false;
         self.finish();
     }
 
     fn doneCallback(ctx: *anyopaque) !void {
         const self: *PreloadLoad = @ptrCast(@alignCast(ctx));
         defer self.finish();
+        // Settle flag even when the realm is going away so a later same-URL
+        // preload does not think a fetch is still in flight.
+        self.link._preload_loading = false;
         if (!self.deliverable()) return;
 
-        self.link._preload_loading = false;
         const ok = self.status >= 200 and self.status <= 299;
-
         if (ok) {
             try self.frame.queueLoad(self.link._proto);
         } else {
@@ -229,17 +251,15 @@ const PreloadLoad = struct {
     fn errorCallback(ctx: *anyopaque, _: anyerror) void {
         const self: *PreloadLoad = @ptrCast(@alignCast(ctx));
         defer self.finish();
-        if (!self.deliverable()) return;
         self.link._preload_loading = false;
+        if (!self.deliverable()) return;
         self.dispatchError() catch {};
     }
 
     fn dispatchError(self: *PreloadLoad) !void {
-        const html = self.link._proto;
-        if (html.hasAttributeFunction(.onerror, self.frame)) {
-            const event = try Event.initTrusted(comptime .wrap("error"), .{}, self.frame._page);
-            try self.frame._event_manager.dispatch(html.asEventTarget(), event);
-        }
+        // Always fire for listeners (property or addEventListener), like Image.
+        const event = try Event.initTrusted(comptime .wrap("error"), .{}, self.frame._page);
+        try self.frame._event_manager.dispatch(self.link._proto.asEventTarget(), event);
     }
 
     fn finish(self: *PreloadLoad) void {

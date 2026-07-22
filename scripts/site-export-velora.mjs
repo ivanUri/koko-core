@@ -224,6 +224,8 @@ try {
   let priorSignature = "";
   let snapshot = null;
   let lastSerializedHtml = null;
+  let lastSavedScore = 0;
+  let incrementalWrites = 0;
   let lastScrollAt = 0;
   // Soft preview only: SPA often writes --padding-top: NaN% mid-layout; forcing
   // height:0 + that var collapses whole cards. Prefer max-width + aspect-ratio
@@ -241,6 +243,28 @@ try {
       ? html.replace(/<head(?:\\s[^>]*)?>/i, match => match + inject)
       : html.replace(/<html(?:\\s[^>]*)?>/i, match => match + '<head>' + inject + '</head>');
   })()`;
+
+  /** Score a snapshot so we keep the richest DOM (html length + images with src). */
+  const snapshotScore = (snap, imagesWithSrc) =>
+    (Number(snap.htmlLength) || 0) + (Number(imagesWithSrc) || 0) * 10_000;
+
+  /** Persist best HTML immediately so a later CDP/browser crash still leaves a dump. */
+  const persistHtml = (serialized, snap, imagesWithSrc, reason) => {
+    if (!serialized || typeof serialized !== "string") return false;
+    const score = snapshotScore(snap || {}, imagesWithSrc);
+    // Prefer longer HTML; allow equal length if score improved (more image srcs).
+    if (lastSerializedHtml && serialized.length < lastSerializedHtml.length) return false;
+    if (serialized.length === (lastSerializedHtml?.length || 0) && score <= lastSavedScore) return false;
+    lastSerializedHtml = serialized;
+    lastSavedScore = Math.max(lastSavedScore, score);
+    writeFileSync(opts.output, `<!doctype html>\n${serialized}\n`);
+    incrementalWrites += 1;
+    if (opts.trace) {
+      console.error(`[export] incremental write #${incrementalWrites} (${reason}) html=${serialized.length} imgs=${snap?.imageCount ?? "?"} src=${imagesWithSrc}`);
+    }
+    return true;
+  };
+
   while (Date.now() < deadline) {
     await sleep(500);
     if (opts.scroll && Date.now() - lastScrollAt >= 1_500) {
@@ -287,14 +311,19 @@ try {
       // Prefer waiting until SPA image loaders have committed real src URLs
       // (not only empty <img> stubs), unless the page truly has no images.
       (opts.minImages === 0 || imagesWithSrc >= Math.min(opts.minImages, snapshot.imageCount));
-    // Refresh serialized HTML whenever readiness improves (more images with src).
-    // Media players can later monopolize the event loop — keep last good dump.
-    if (readinessMet) {
+
+    // Incremental capture: dump whenever DOM grew past the last saved best, even
+    // before full readiness (Shein-style SPA keeps hydrating for tens of seconds).
+    // Always flush to disk so teardown crashes do not lose the best snapshot.
+    const score = snapshotScore(snapshot, imagesWithSrc);
+    const shouldCapture = readinessMet ||
+      (snapshot.htmlLength >= 5_000 && score > lastSavedScore) ||
+      (lastSerializedHtml === null && snapshot.htmlLength >= 5_000 && elapsedMs >= Math.min(opts.minWaitMs, 3_000));
+    if (shouldCapture) {
       const serialized = await evaluate(cdp, sessionId, serializeExpression, 15_000).catch(() => null);
-      if (serialized && (!lastSerializedHtml || serialized.length >= (lastSerializedHtml?.length || 0))) {
-        lastSerializedHtml = serialized;
-      }
+      persistHtml(serialized, snapshot, imagesWithSrc, readinessMet ? "ready" : "growth");
     }
+
     const signature = `${snapshot.href}|${snapshot.readyState}|${snapshot.htmlLength}|${snapshot.textLength}|${snapshot.elementCount}|${imagesWithSrc}|${snapshot.imageComplete}`;
     if (signature === priorSignature) {
       if (!stableSince) stableSince = Date.now();
@@ -305,16 +334,23 @@ try {
     }
   }
 
-  const html = await evaluate(cdp, sessionId, serializeExpression, 30_000).catch(error => {
-    if (lastSerializedHtml !== null) return lastSerializedHtml;
-    throw error;
-  });
+  // Final pass: try one more dump; fall back to last incremental write.
+  const html = await evaluate(cdp, sessionId, serializeExpression, 30_000).catch(() => null);
+  if (html) {
+    const imagesWithSrc = (snapshot?.images || []).filter((image) => image.src).length;
+    persistHtml(html, snapshot, imagesWithSrc, "final");
+  }
+  if (!lastSerializedHtml) {
+    throw new Error("export failed: no HTML captured (page never produced a dumpable documentElement.outerHTML)");
+  }
+
   const meaningfulInflight = [...inflight.values()].filter(request => request.type !== "Ping");
   const report = {
     requestedUrl: opts.url,
     exportedAt: new Date().toISOString(),
     elapsedMs: Date.now() - started,
     stable: stableSince > 0 && Date.now() - stableSince >= opts.quietMs,
+    incrementalWrites,
     readiness: {
       minWaitMs: opts.minWaitMs,
       minImages: opts.minImages,
@@ -326,8 +362,10 @@ try {
     exceptions,
     stderrSignals: stripAnsi(stderr).split(/\n\s*\n/).filter(record => /error|warn|not_implemented|leak|fatal/i.test(record)).slice(0, 100),
     output: opts.output,
+    htmlBytes: lastSerializedHtml.length,
   };
-  writeFileSync(opts.output, `<!doctype html>\n${html}\n`);
+  // Ensure disk matches best in-memory capture (idempotent if already written).
+  writeFileSync(opts.output, `<!doctype html>\n${lastSerializedHtml}\n`);
   writeFileSync(opts.report, `${JSON.stringify(report, null, 2)}\n`);
   console.log(JSON.stringify(report, null, 2));
   console.log(`HTML: ${opts.output}`);
