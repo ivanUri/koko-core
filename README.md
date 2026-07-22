@@ -281,3 +281,5 @@ Velora builds upon prior browser-engine and runtime work from the open-source ec
 ## License
 
 See `LICENSE` and `LICENSING.md`.
+
+<!-- push connectivity check 2026-07-22 16:39 -->
