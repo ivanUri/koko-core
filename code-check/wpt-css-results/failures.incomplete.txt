@@ -1,6 +1,0 @@
-/css/css-syntax/charset/page-windows-1251-css-no-decl.html
-/css/css-syntax/charset/page-windows-1252-http-windows-1251-css-utf8-bom.html
-/css/css-syntax/ident-three-code-points.html
-/css/css-syntax/inclusive-ranges.html
-/css/css-syntax/serialize-escape-identifiers.html
-/css/css-syntax/var-with-blocks.html

@@ -194,7 +194,7 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
             // The main frame hasn't started/finished navigating.
             // There's no JS to run, and no reason to run the scheduler.
             // Include queue/ready_queue: SPA inject mid-callback parks transfers
-            // there before http_active bumps (Lightpanda pending_queue gate).
+
             // HostIdle queues (not raw http_active alone).
             if (HostIdle.isNetworkIdle(http_client) and (comptime is_cdp) == false) {
                 // Deferred HTML parse is scheduled from the HTTP callback; without
@@ -310,7 +310,6 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
 
             // `met` resolves the wait goal. Otherwise, if the page is fully
             // idle (`is_done`) there is nothing left to wait on — resolve rather
-            // than spin forever (same as Lightpanda Runner._tick).
             if (met or is_done) {
                 if (comptime is_cdp) {
                     // CDP event loop keeps ticking for commands; only leave when

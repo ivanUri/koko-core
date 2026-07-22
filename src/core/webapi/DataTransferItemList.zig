@@ -1,4 +1,3 @@
-// Copyright (C) 2023-2026  Lightpanda (Selecy SAS)
 //
 // Adapted for Velora architecture.
 

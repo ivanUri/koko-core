@@ -93,7 +93,7 @@ pub fn build(b: *Build) !void {
                 .flags = &.{},
             });
         } else if (target.result.os.tag == .linux) {
-            // Older lightpanda prebuilt libc_v8.a lacks a few C wrappers present in
+
             // vendor/v8-wrapper binding.cpp. Shims only; macOS / full V8 builds unchanged.
             if (fileExists(b, "vendor/v8_missing_shims.c")) {
                 mod.addCSourceFile(.{

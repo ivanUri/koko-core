@@ -178,7 +178,6 @@ pub fn addFromElement(self: *ScriptManager, comptime from_parser: bool, script_e
     script_element._executed = true;
     const is_inline = source == .@"inline";
 
-    // Mode selection matches Lightpanda ScriptManager.addFromElement / HTML:
     // - module → defer
     // - explicit defer / async attributes honored
     // - dynamically inserted scripts default to async ("force async") until
@@ -232,7 +231,7 @@ pub fn addFromElement(self: *ScriptManager, comptime from_parser: bool, script_e
         frame._document_parse_active and
         frame._parse_mode == .document and
         is_inline;
-    // Lightpanda: once staticScriptsDone drained defer, non-blocking scripts
+
     // inserted later must still be queued (remote) or run immediately (inline).
     const run_immediately = !force_queue_during_document_parse and
         (is_blocking or (self.base.static_scripts_done and remote_url == null));
@@ -342,7 +341,6 @@ pub fn addFromElement(self: *ScriptManager, comptime from_parser: bool, script_e
         return;
     }
 
-    // Nested when dynamically added from another script (Lightpanda).
     const was_evaluating = self.base.is_evaluating;
     self.base.is_evaluating = true;
     defer {

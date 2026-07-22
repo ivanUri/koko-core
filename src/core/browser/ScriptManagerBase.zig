@@ -249,7 +249,7 @@ is_evaluating: bool,
 
 // evaluate() arrived while is_evaluating (or while unsafe for V8/curl). Retry
 // when the outer window ends or via scheduleDeferredEvaluate — never drop SPA
-// async chunks (Lightpanda evaluate_pending pattern; dovihome /login soft-nav).
+ .
 evaluate_pending: bool = false,
 
 // True while a DeferEvaluateCallback is scheduled (debounce; avoid 0-delay
@@ -630,7 +630,7 @@ pub fn waitForImport(self: *ScriptManagerBase, url: [:0]const u8) !ModuleSource 
     defer self.endEvaluationWindow(was_evaluating);
 
     var client = self.client;
-    // Lightpanda re-looks up the map entry every iteration: client.tick can
+
     // mutate imported_modules (grow/rehash), invalidating a cached Entry pointer
     // and stranding the wait on a stale `.loading` view (ebay.com module hang).
     // Cap total wait so a stuck fetch cannot freeze the isolate (and CDP) forever.
@@ -857,7 +857,7 @@ fn hasPendingEvaluateWork(self: *const ScriptManagerBase) bool {
 
 /// True while classic/module scripts still need evaluation (or evaluate is
 /// deferred). Runner `.done` / network-idle must not resolve while SPA chunks
-/// sit complete-but-unevaluated (Lightpanda waits on macrotasks that re-enter
+ 
 /// evaluate; Velora can have a gap if only evaluate_pending is set).
 pub fn hasPendingJsWork(self: *const ScriptManagerBase) bool {
     return self.evaluate_pending or
@@ -870,8 +870,6 @@ pub fn hasPendingJsWork(self: *const ScriptManagerBase) bool {
 
 /// True when it is safe to run Script.eval (V8 central stack).
 /// Must NOT gate DCL/tailHook — only individual script bodies.
-///
-/// Lightpanda has no transfer-callback gate; defer lifecycle runs from HTTP
 /// doneCallback → evaluate() in processMessages. Blocking inTransferCallback
 /// left parsed DOM without DCL (go.dev/netlify). Nested curl uses HttpClient
 /// ready_queue; only block when V8 is on-stack.
@@ -1012,8 +1010,7 @@ pub fn drainOrderedAsyncScripts(self: *ScriptManagerBase) void {
 }
 
 /// Script evaluation + DOMContentLoaded (tailHook).
-///
-/// Architecture (HTML task queue + Lightpanda doneCallback re-entry):
+ 
 /// - Run **at most one** script body per evaluate() invoke, then hop via
 ///   delay-0 scheduler / Runner. That matches browsers treating each script
 ///   as a separate task and keeps Zig+V8 stack shallow (prevents V8_Fatal
@@ -1461,7 +1458,7 @@ pub const Script = struct {
     pub fn doneCallback(self: *Script) !void {
         if (self.guard.isFinished() or self.manager.shutdown) return;
 
-        // Always mark complete first (Lightpanda does). Previously `deliverable()`
+ 
         // false (navigationCritical / draining) returned BEFORE complete=true, so
         // defer heads stayed incomplete forever → readyState stuck `loading`, no DCL.
         self.complete = true;
@@ -1507,7 +1504,7 @@ pub const Script = struct {
         // While HTML parse / frameDoneCallback is still unwinding, queue
         // completions only — staticScriptsDone will drain ready/defer/async.
         if (!manager.static_scripts_done) return;
-        // Lightpanda: evaluate() directly from HTTP doneCallback so defer heads
+
         // resume in the same processMessages chain (go.dev / netlify DCL).
         manager.evaluate();
     }
@@ -1572,7 +1569,7 @@ pub const Script = struct {
             // on a head that will never complete. Use scheduleDeferredEvaluate
             // (not immediate evaluate) to avoid re-entering V8 from the HTTP tick
             // when unsafe — same safety goal as the old early-return, without
-            // dropping the lifecycle. Lightpanda calls evaluate() here directly.
+ 
             .frame => {
                 self.deinit();
                 if (!manager.shutdown) manager.scheduleDeferredEvaluate();
@@ -1600,7 +1597,7 @@ pub const Script = struct {
 
     /// Wall-clock watchdog: terminate isolate if a single script eval runs too long.
     /// eBay discoveryplatform modules have been observed to spin forever in V8,
-    /// freezing CDP. Thread-safe terminate matches Lightpanda's multi-thread
+ 
     /// TerminateExecution usage.
     const ScriptEvalWatchdog = struct {
         thread: ?std.Thread = null,

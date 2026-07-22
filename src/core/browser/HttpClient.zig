@@ -541,7 +541,6 @@ pub fn hasInFlightTransfersForFrame(self: *const Client, frame_id: u32) bool {
 
 /// Transfers waiting on a free handle/connection, or connections parked until
 /// curl_multi_perform / transfer callbacks unwind. These are NOT counted in
-/// `http_active` yet — Lightpanda's `pending_queue` / `ready_queue` idle gate.
 pub fn hasQueuedHttpWork(self: *const Client) bool {
     return self.queue.first != null or
         self.ready_queue.first != null or
@@ -559,7 +558,6 @@ pub fn totalHttpActivity(self: *const Client) usize {
 }
 
 /// Full network quiet: no inflight HTTP/WS/RTC, no intercept, no queues.
-/// Matches Lightpanda Runner `network_idle` (pending_queue + ready_queue).
 pub fn isNetworkIdle(self: *const Client) bool {
     return self.http_active == 0 and
         self.ws_active == 0 and

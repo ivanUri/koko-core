@@ -1,4 +1,3 @@
-// Copyright (C) 2023-2026  Lightpanda (Selecy SAS)
 //
 // Adapted for Velora: FileList is a lightweight stub surface; DataTransfer
 // keeps the public JS API (items/files/types/getData/setData/clearData) without

@@ -192,7 +192,7 @@ _to_load_2: std.ArrayList(*Element.Html) = .{},
 _to_load: *std.ArrayList(*Element.Html) = undefined,
 
 // iframe `load` events deferred to the next macrotask so sibling inline
-// scripts can register handlers first (Lightpanda PR #2753 pattern).
+
 _iframe_load_1: std.ArrayList(*IFrame) = .{},
 _iframe_load_2: std.ArrayList(*IFrame) = .{},
 _iframe_load: *std.ArrayList(*IFrame) = undefined,
@@ -4134,7 +4134,6 @@ pub fn deliverSlotchangeEvents(self: *Frame) void {
 
 /// Run network-idle notification checks for this frame and, recursively, its
 /// child frames. CDP clients (e.g. puppeteer networkidle0) expect lifecycle
-/// events on every frame like Chrome, not only the root. Lightpanda port.
 pub fn checkIdleNotifications(self: *Frame, total_http_activity: usize) void {
     switch (self._parse_state) {
         .html, .complete => {

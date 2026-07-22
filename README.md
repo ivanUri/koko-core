@@ -148,13 +148,7 @@ See `velora-sdk/README.md` for launch profiles, semantic tree, NodeHandle, and C
 
 ### Fingerprint probes
 
-| Probe | Command |
-|-------|---------|
-| Profile CDP smoke | `npm run test:profile -- --profile chrome-local-huys-macbook-pro` |
-| Microbench | `npm run bench:compare:publish` |
-| Wikipedia crawl | `npm run bench:crawl:wikipedia:fair:publish` |
-
-Google SERP (`google-search` policy) uses real Chrome network via `scripts/chrome-google-transport.mjs` — see `docs/tls-impersonate.md`. Cookie warmup: [`knowledge/captcha/detection/google-search-investigation-journey.md`](knowledge/captcha/detection/google-search-investigation-journey.md).
+Probe / bench npm scripts were removed with `scripts/` — rebuild runners under a fresh layout when needed. TLS notes: `docs/tls-impersonate.md`.
 
 ## Use Cases
 
@@ -191,13 +185,10 @@ src/
   support/      # Shared utilities
   testing/      # Isolated test infrastructure
 
-code-check/
-  lifecycle/    # Browser lifecycle and realm correctness tests
-  suite/        # Fingerprint / bot-detection regression suite
-  local/        # Offline HTML fixtures (CreepJS, engine probe, …)
-  sites/        # Per-site integration scripts
-  features/     # Per-engine feature checks (canvas, webgl, worker)
+knowledge/     # Architecture notes and bug write-ups
 ```
+
+WPT runs use an external tree (`~/Desktop/wpt-spa-tests`) — see `knowledge/architecture/wpt-spa-workflow.md`.
 
 This structure keeps engine internals isolated, runtime services explicit, automation protocols modular, public APIs stable, and browser execution embeddable.
 

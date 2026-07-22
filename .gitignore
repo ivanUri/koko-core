@@ -23,14 +23,16 @@ node_modules/.lp-cache/
 .velora-cache
 curl-impersonate/
 node_modules
-code-check/tmp
-code-check/wpt-fetch/results/
+
+# Ephemeral probes / export dumps (do not accumulate in repo)
+/artifacts/
+/tmp/
+
 logs-demo/
 logs-test/
 wpt/
 google-search-debug/tmp/
 Kameleo-decode/
-wpt-lightpanda-fork-backup/
 *.log
 diff.txt
 .clinerules

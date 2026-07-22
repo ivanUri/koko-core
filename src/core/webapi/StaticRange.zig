@@ -1,8 +1,3 @@
-// Copyright (C) 2023-2025  Lightpanda (Selecy SAS)
-//
-// Francis Bouvier <francis@lightpanda.io>
-// Pierre Tachoire <pierre@lightpanda.io>
-//
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Affero General Public License as
 // published by the Free Software Foundation, either version 3 of the

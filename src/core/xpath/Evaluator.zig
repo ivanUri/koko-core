@@ -1,7 +1,3 @@
-// Copyright (C) 2023-2026  Lightpanda (Selecy SAS)
-//
-// Francis Bouvier <francis@lightpanda.io>
-// Pierre Tachoire <pierre@lightpanda.io>
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Affero General Public License as
@@ -46,7 +42,7 @@ pub const Error = error{
     WriteFailed,
     // Surfaces from Attribute materialization (`Entry.toAttribute` →
     // `String.dupe` enforces a length limit). The polyfill never hits
-    // this since JS strings are unbounded, but Lightpanda's `String`
+
     // type caps at u32::MAX bytes — propagate so callers can surface
     // a DOM exception.
     StringTooLarge,
@@ -783,7 +779,6 @@ fn lessThanDocOrder(_: void, a: *Node, b: *Node) bool {
 
 // ---------------------------------------------------------------------
 // Tests — pure-logic only. DOM-dependent evaluation lands as HTML
-// fixtures in Phase 9 (tests/xpath/*.html); Lightpanda has no in-Zig
 // way to construct a Frame + Document tree without the JS runtime.
 // ---------------------------------------------------------------------
 

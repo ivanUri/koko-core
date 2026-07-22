@@ -79,7 +79,7 @@ cd /Users/huydev/Desktop/velora && zig build -Doptimize=ReleaseSafe
 # CDP multi-nav (was crash after search)
 node /tmp/velora-probe-fails.mjs \
   "https://www.google.com/" \
-  "https://www.google.com/search?q=lightpanda" \
+  "https://www.google.com/search?q=velora" \
   "https://www.bing.com/" \
   "https://www.wikipedia.org/" \
   "https://duckduckgo.com/" \

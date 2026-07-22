@@ -12,7 +12,7 @@ const Allocator = std.mem.Allocator;
 
 const BUFFER_SIZE = 1024;
 const MAX_BODY_SIZE = 500 * 1024; // 500KB server limit
-const URL = "https://telemetry.lightpanda.io";
+const URL = "https://telemetry.velora.io";
 
 const Velora = @This();
 
