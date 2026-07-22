@@ -3966,11 +3966,15 @@ fn dispatchLoad(self: *Frame) !void {
     else
         &self._to_load_1;
 
+    // Always dispatch resource `load` (not only when an onload property exists).
+    // React/SPAs use addEventListener('load') and re-check complete after the
+    // event; skipping the dispatch leaves images unpainted. EventManager is
+    // cheap with zero listeners. has_dom_load_listener remains a useful signal
+    // for page-level readiness heuristics elsewhere.
+    _ = has_dom_load_listener;
     for (to_process.items) |html_element| {
-        if (has_dom_load_listener or html_element.hasAttributeFunction(.onload, self)) {
-            const event = try Event.initTrusted(comptime .wrap("load"), .{}, self._page);
-            try self._event_manager.dispatch(html_element.asEventTarget(), event);
-        }
+        const event = try Event.initTrusted(comptime .wrap("load"), .{}, self._page);
+        try self._event_manager.dispatch(html_element.asEventTarget(), event);
     }
 
     to_process.clearRetainingCapacity();

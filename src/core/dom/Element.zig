@@ -1855,9 +1855,56 @@ fn resolveElementDimensions(self: *Element, frame: *Frame, depth: usize) LayoutS
                 height = std.fmt.parseFloat(f64, h) catch height;
             }
         }
+        // Loaded intrinsic (or 300×150 post-load fallback) before CSS default object size.
+        if (tag == .img) {
+            if (self.is(Element.Html.Image)) |image| {
+                if (width == layout_default_size and image._natural_width > 0) {
+                    width = @floatFromInt(image._natural_width);
+                }
+                if (height == layout_default_size and image._natural_height > 0) {
+                    height = @floatFromInt(image._natural_height);
+                }
+            }
+        }
+        // Cover the media containing block for hero/card layers:
+        // Nike-style trees are media[--padding-top] > wrapper > div[100%] > img,
+        // so the immediate parent is often only 100%-of-empty (height ~20). Walk
+        // ancestors for an aspect-ratio / --padding-top box before giving up.
+        // Do not blindly fill any wide parent — that made every thumb viewport-sized.
+        if (tag == .img) {
+            if (mediaContainingBlockSize(self, frame)) |box| {
+                width = box.width;
+                height = box.height;
+            } else {
+                const pos_kind = layoutPositionKind(self, frame);
+                const pct_fill = widthLooksLikePercentFill(self, frame) or heightLooksLikePercentFill(self, frame);
+                if (pos_kind == .absolute or pos_kind == .fixed or pct_fill) {
+                    if (parent_size.width > layout_default_size) width = parent_size.width;
+                    if (parent_size.height > replaced_default_height) {
+                        height = parent_size.height;
+                    } else if (width > replaced_default_width) {
+                        height = @max(width * 0.5, replaced_default_height);
+                    }
+                }
+            }
+        }
         // Default object size when still unresolved (attr/CSS/intrinsic missing).
         if (width == layout_default_size) width = replaced_default_width;
         if (height == layout_default_size) height = replaced_default_height;
+        // Honor max-width / max-height so percentage widths and defaults do not
+        // blow past the containing block (common with width:100% + max-width:100%).
+        if (layoutDimensionFromProperty(self, frame, "max-width", .width)) |mw| {
+            if (mw > 0 and width > mw) {
+                if (height > 0 and width > 0) height = height * (mw / width);
+                width = mw;
+            }
+        }
+        if (layoutDimensionFromProperty(self, frame, "max-height", .height)) |mh| {
+            if (mh > 0 and height > mh) {
+                if (width > 0 and height > 0) width = width * (mh / height);
+                height = mh;
+            }
+        }
     } else if (tag == .svg) {
         if (width == layout_default_size) {
             if (self.getAttributeSafe(comptime .wrap("width"))) |w| {
@@ -1877,12 +1924,18 @@ fn resolveElementDimensions(self: *Element, frame: *Frame, depth: usize) LayoutS
         height = googleSerpFlowHeight(self, frame);
     } else if (isBlockLevel(self, frame)) {
         if (width == layout_default_size) width = parent_size.width;
+        // Aspect-ratio / padding-top media boxes (heroes, cards): height comes
+        // from width × ratio, not empty children (which would stay ~20px).
         if (height == layout_default_size) {
-            const child_height = childrenBlockFlowHeight(self, frame, depth);
-            height = if (child_height > layout_leaf_block_height)
-                child_height
-            else
-                estimateHeightFromFontSize(self, frame) orelse child_height;
+            if (aspectRatioBoxHeight(self, frame, width)) |ah| {
+                height = ah;
+            } else {
+                const child_height = childrenBlockFlowHeight(self, frame, depth);
+                height = if (child_height > layout_leaf_block_height)
+                    child_height
+                else
+                    estimateHeightFromFontSize(self, frame) orelse child_height;
+            }
         }
     } else if (tag == .input or tag == .button or tag == .select or tag == .textarea) {
         // Replaced form controls: without CSS, layout_default_size (5px) collapses
@@ -1965,7 +2018,13 @@ fn elementLayoutSizeShallowForHitTest(self: *Element, frame: *Frame) LayoutSize 
         if (height == layout_default_size) height = replaced_default_height;
     } else if (isBlockLevel(self, frame)) {
         if (width == layout_default_size) width = parent_size.width;
-        if (height == layout_default_size) height = layout_leaf_block_height;
+        if (height == layout_default_size) {
+            if (aspectRatioBoxHeight(self, frame, width)) |ah| {
+                height = ah;
+            } else {
+                height = layout_leaf_block_height;
+            }
+        }
     }
 
     return .{ .width = @max(width, 0), .height = @max(height, 0) };
@@ -2164,6 +2223,156 @@ fn parseLayoutDimension(value: []const u8, parent_size: f64) ?f64 {
     return CSS.parseDimension(trimmed);
 }
 
+fn widthLooksLikePercentFill(self: *Element, frame: *Frame) bool {
+    const raw = readLayoutPropertyRaw(self, frame, "width") orelse return false;
+    const trimmed = std.mem.trim(u8, raw, &std.ascii.whitespace);
+    if (std.mem.eql(u8, trimmed, "100%")) return true;
+    if (std.mem.endsWith(u8, trimmed, "%")) {
+        const num = std.fmt.parseFloat(f64, trimmed[0 .. trimmed.len - 1]) catch return false;
+        return num >= 95.0;
+    }
+    return false;
+}
+
+fn heightLooksLikePercentFill(self: *Element, frame: *Frame) bool {
+    const raw = readLayoutPropertyRaw(self, frame, "height") orelse return false;
+    const trimmed = std.mem.trim(u8, raw, &std.ascii.whitespace);
+    if (std.mem.eql(u8, trimmed, "100%")) return true;
+    if (std.mem.endsWith(u8, trimmed, "%")) {
+        const num = std.fmt.parseFloat(f64, trimmed[0 .. trimmed.len - 1]) catch return false;
+        return num >= 95.0;
+    }
+    return false;
+}
+
+/// Parse a CSS custom property value from an element's style attribute, e.g.
+/// `--padding-top: 105.1%` or `--aspect-ratio: 0.95`.
+fn inlineCssVar(self: *const Element, name: []const u8) ?[]const u8 {
+    const style = self.getAttributeSafe(comptime .wrap("style")) orelse return null;
+    var search_buf: [64]u8 = undefined;
+    if (name.len + 1 > search_buf.len) return null;
+    @memcpy(search_buf[0..name.len], name);
+    // Match `name:` after optional whitespace.
+    var i: usize = 0;
+    while (i + name.len < style.len) : (i += 1) {
+        if (!std.mem.startsWith(u8, style[i..], name)) continue;
+        var j = i + name.len;
+        while (j < style.len and std.ascii.isWhitespace(style[j])) : (j += 1) {}
+        if (j >= style.len or style[j] != ':') continue;
+        j += 1;
+        while (j < style.len and std.ascii.isWhitespace(style[j])) : (j += 1) {}
+        const start = j;
+        while (j < style.len and style[j] != ';' and style[j] != '!') : (j += 1) {}
+        const val = std.mem.trim(u8, style[start..j], &std.ascii.whitespace);
+        if (val.len > 0) return val;
+    }
+    return null;
+}
+
+/// Cap aspect-box height so a bad % (or page-tall ancestor) cannot produce
+/// multi-thousand-px images that push the rest of the page off-screen.
+const media_box_max_height_factor: f64 = 2.5;
+
+fn finitePositive(n: f64) bool {
+    return n > 0 and !std.math.isNan(n) and !std.math.isInf(n);
+}
+
+/// Height of a classic aspect-ratio media box:
+/// padding-top %, CSS aspect-ratio, or inline `--padding-top` / `--aspect-ratio`.
+fn aspectRatioBoxHeight(self: *Element, frame: *Frame, width: f64) ?f64 {
+    if (!finitePositive(width)) return null;
+
+    if (readLayoutPropertyRaw(self, frame, "padding-top")) |pt| {
+        if (percentPaddingHeight(pt, width)) |h| return h;
+    }
+    if (inlineCssVar(self, "--padding-top")) |pt| {
+        if (percentPaddingHeight(pt, width)) |h| return h;
+    }
+    if (readLayoutPropertyRaw(self, frame, "aspect-ratio")) |ar| {
+        if (parseAspectRatio(ar)) |ratio| {
+            if (finitePositive(ratio)) {
+                const h = width / ratio;
+                if (finitePositive(h)) return @min(h, width * media_box_max_height_factor);
+            }
+        }
+    }
+    if (inlineCssVar(self, "--aspect-ratio")) |ar| {
+        if (parseAspectRatio(ar)) |ratio| {
+            if (finitePositive(ratio)) {
+                const h = width / ratio;
+                if (finitePositive(h)) return @min(h, width * media_box_max_height_factor);
+            }
+        }
+    }
+    return null;
+}
+
+fn percentPaddingHeight(raw: []const u8, width: f64) ?f64 {
+    const trimmed = std.mem.trim(u8, raw, &std.ascii.whitespace);
+    if (!std.mem.endsWith(u8, trimmed, "%")) return null;
+    const num = std.fmt.parseFloat(f64, trimmed[0 .. trimmed.len - 1]) catch return null;
+    // Reject NaN%/0%/absurd ratios (SPA sometimes writes --padding-top: NaN%).
+    if (!finitePositive(num) or num < 5.0 or num > 250.0) return null;
+    const h = width * num / 100.0;
+    if (!finitePositive(h)) return null;
+    return @min(h, width * media_box_max_height_factor);
+}
+
+fn parseAspectRatio(raw: []const u8) ?f64 {
+    const trimmed = std.mem.trim(u8, raw, &std.ascii.whitespace);
+    if (trimmed.len == 0) return null;
+    // SPA bugs write "NaN" into custom props — never treat as a ratio.
+    if (std.ascii.eqlIgnoreCase(trimmed, "nan")) return null;
+    if (std.mem.indexOfScalar(u8, trimmed, '/')) |slash| {
+        const a = std.fmt.parseFloat(f64, std.mem.trim(u8, trimmed[0..slash], &std.ascii.whitespace)) catch return null;
+        const b = std.fmt.parseFloat(f64, std.mem.trim(u8, trimmed[slash + 1 ..], &std.ascii.whitespace)) catch return null;
+        if (!finitePositive(a) or !finitePositive(b)) return null;
+        return a / b;
+    }
+    const n = std.fmt.parseFloat(f64, trimmed) catch return null;
+    if (!finitePositive(n)) return null;
+    return n;
+}
+
+/// Walk ancestors for a *real* padding-top / aspect-ratio media frame only.
+/// Nested 100%-height wrappers sit under these boxes; we must NOT accept a
+/// merely large ancestor (e.g. full page column) or thumbs become 1280×5000+.
+fn mediaContainingBlockSize(self: *Element, frame: *Frame) ?LayoutSize {
+    var current: ?*Element = self.asNode().parentElement();
+    var guard: u8 = 0;
+    while (current) |el| : (guard += 1) {
+        if (guard > 12) break;
+        // Only nodes that declare an aspect/padding ratio qualify.
+        const has_ratio_hint = inlineCssVar(el, "--padding-top") != null or
+            inlineCssVar(el, "--aspect-ratio") != null or
+            readLayoutPropertyRaw(el, frame, "aspect-ratio") != null or
+            blk: {
+                if (readLayoutPropertyRaw(el, frame, "padding-top")) |pt| {
+                    break :blk std.mem.endsWith(u8, std.mem.trim(u8, pt, &std.ascii.whitespace), "%");
+                }
+                break :blk false;
+            };
+        if (!has_ratio_hint) {
+            current = el.asNode().parentElement();
+            continue;
+        }
+
+        var size = elementLayoutSizeShallow(el, frame);
+        if (size.width <= layout_default_size and isBlockLevel(el, frame)) {
+            size.width = parentLayoutSize(el, frame).width;
+        }
+        if (size.width <= replaced_default_width) {
+            current = el.asNode().parentElement();
+            continue;
+        }
+        if (aspectRatioBoxHeight(el, frame, size.width)) |ah| {
+            return .{ .width = size.width, .height = ah };
+        }
+        current = el.asNode().parentElement();
+    }
+    return null;
+}
+
 fn getMarginInset(self: *Element, frame: *Frame) struct { top: f64, left: f64 } {
     var top: f64 = 0;
     var left: f64 = 0;
@@ -2249,7 +2458,13 @@ fn elementLayoutSizeShallow(self: *Element, frame: *Frame) LayoutSize {
         if (height == layout_default_size) height = replaced_default_height;
     } else if (isBlockLevel(self, frame)) {
         if (width == layout_default_size) width = parent_size.width;
-        if (height == layout_default_size) height = layout_leaf_block_height;
+        if (height == layout_default_size) {
+            if (aspectRatioBoxHeight(self, frame, width)) |ah| {
+                height = ah;
+            } else {
+                height = layout_leaf_block_height;
+            }
+        }
     }
 
     return .{ .width = @max(width, 0), .height = @max(height, 0) };

@@ -8,6 +8,7 @@ const Event = @import("../../Event.zig");
 const Node = @import("../../../dom/Node.zig");
 const Element = @import("../../../dom/Element.zig");
 const HtmlElement = @import("../Html.zig");
+const String = @import("../../../../support/string.zig").String;
 
 const Image = @This();
 _proto: *HtmlElement,
@@ -78,9 +79,24 @@ pub fn setName(self: *Image, value: []const u8, frame: *Frame) !void {
     try self.asElement().setAttributeSafe(comptime .wrap("name"), .wrap(value), frame);
 }
 
-pub fn getWidth(self: *const Image) u32 {
-    const attr = self.asConstElement().getAttributeSafe(comptime .wrap("width")) orelse return 0;
-    return std.fmt.parseUnsigned(u32, attr, 10) catch 0;
+/// HTML: rendered CSS-pixel width when laid out; else density-corrected
+/// intrinsic width; else 0. Content-attribute alone is not enough — SPAs
+/// gate visible images on `img.width > 0` after load.
+pub fn getWidth(self: *const Image, frame: *Frame) u32 {
+    const el_const = self.asConstElement();
+    if (el_const.getAttributeSafe(comptime .wrap("width"))) |raw| {
+        if (std.fmt.parseUnsigned(u32, raw, 10) catch null) |w| {
+            if (w > 0) return w;
+        }
+    }
+    // Prefer live layout box when connected.
+    if (el_const.asConstNode().isConnected()) {
+        const el = @constCast(self).asElement();
+        const rect = el.getBoundingClientRect(frame);
+        if (rect._width > 0.5) return @intFromFloat(@round(rect._width));
+    }
+    if (self._natural_width > 0) return self._natural_width;
+    return 0;
 }
 
 pub fn setWidth(self: *Image, value: u32, frame: *Frame) !void {
@@ -88,9 +104,20 @@ pub fn setWidth(self: *Image, value: u32, frame: *Frame) !void {
     try self.asElement().setAttributeSafe(comptime .wrap("width"), .wrap(str), frame);
 }
 
-pub fn getHeight(self: *const Image) u32 {
-    const attr = self.asConstElement().getAttributeSafe(comptime .wrap("height")) orelse return 0;
-    return std.fmt.parseUnsigned(u32, attr, 10) catch 0;
+pub fn getHeight(self: *const Image, frame: *Frame) u32 {
+    const el_const = self.asConstElement();
+    if (el_const.getAttributeSafe(comptime .wrap("height"))) |raw| {
+        if (std.fmt.parseUnsigned(u32, raw, 10) catch null) |h| {
+            if (h > 0) return h;
+        }
+    }
+    if (el_const.asConstNode().isConnected()) {
+        const el = @constCast(self).asElement();
+        const rect = el.getBoundingClientRect(frame);
+        if (rect._height > 0.5) return @intFromFloat(@round(rect._height));
+    }
+    if (self._natural_height > 0) return self._natural_height;
+    return 0;
 }
 
 pub fn setHeight(self: *Image, value: u32, frame: *Frame) !void {
@@ -261,29 +288,44 @@ const ImageLoad = struct {
 
     fn shutdownCallback(ctx: *anyopaque) void {
         const self: *ImageLoad = @ptrCast(@alignCast(ctx));
+        // Never leave the element stuck with complete=false — SPA image
+        // pipelines treat that as "still loading" and never paint.
+        if (self.image._loading) {
+            self.image._loading = false;
+            self.image._complete = true;
+            self.image._failed = true;
+            self.image._natural_width = 0;
+            self.image._natural_height = 0;
+        }
         self.finish();
     }
 
     fn doneCallback(ctx: *anyopaque) !void {
         const self: *ImageLoad = @ptrCast(@alignCast(ctx));
         defer self.finish();
-        if (!self.deliverable()) return;
 
+        // Always settle load state first. Skipping when !deliverable left
+        // images with complete=false forever (Nike/etc. keep opacity 0).
         const ok = self.status >= 200 and self.status <= 299;
         self.image._loading = false;
         self.image._complete = true;
         self.image._failed = !ok;
-
         if (ok) {
             // Headless does not decode pixels; still expose a non-zero intrinsic
             // size so scripts relying on naturalWidth/Height after load work.
             const dims = self.image.resolveNaturalDimensions();
             self.image._natural_width = dims.w;
             self.image._natural_height = dims.h;
-            try self.frame.queueLoad(self.image._proto);
         } else {
             self.image._natural_width = 0;
             self.image._natural_height = 0;
+        }
+
+        if (!self.deliverable()) return;
+
+        if (ok) {
+            try self.frame.queueLoad(self.image._proto);
+        } else {
             try self.dispatchError();
         }
     }
@@ -291,21 +333,19 @@ const ImageLoad = struct {
     fn errorCallback(ctx: *anyopaque, _: anyerror) void {
         const self: *ImageLoad = @ptrCast(@alignCast(ctx));
         defer self.finish();
-        if (!self.deliverable()) return;
         self.image._loading = false;
         self.image._complete = true;
         self.image._failed = true;
         self.image._natural_width = 0;
         self.image._natural_height = 0;
+        if (!self.deliverable()) return;
         self.dispatchError() catch {};
     }
 
     fn dispatchError(self: *ImageLoad) !void {
-        const html = self.image._proto;
-        if (html.hasAttributeFunction(.onerror, self.frame)) {
-            const event = try Event.initTrusted(comptime .wrap("error"), .{}, self.frame._page);
-            try self.frame._event_manager.dispatch(html.asEventTarget(), event);
-        }
+        // Always fire error for listeners (property or addEventListener).
+        const event = try Event.initTrusted(comptime .wrap("error"), .{}, self.frame._page);
+        try self.frame._event_manager.dispatch(self.image._proto.asEventTarget(), event);
     }
 
     fn finish(self: *ImageLoad) void {
@@ -342,6 +382,14 @@ pub const JsApi = struct {
 pub const Build = struct {
     pub fn created(node: *Node, frame: *Frame) !void {
         const self = node.as(Image);
+        return self.imageAddedCallback(frame);
+    }
+
+    /// React/DOM often set src via setAttribute rather than the IDL setter.
+    /// Without this, attributes update but no network load / complete ever runs.
+    pub fn attributeChange(element: *Element, name: String, _: String, frame: *Frame) !void {
+        if (!name.eql(comptime .wrap("src"))) return;
+        const self = element.as(Image);
         return self.imageAddedCallback(frame);
     }
 };

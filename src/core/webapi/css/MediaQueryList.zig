@@ -42,10 +42,14 @@ fn colorSchemeFromProfile(frame: *Frame) MediaQueryEval.Viewport.ColorScheme {
 }
 
 pub fn getMatches(self: *const MediaQueryList, frame: *Frame) bool {
-    const screen = frame.identityProfile().screen;
+    const profile = frame.identityProfile();
+    const screen = profile.screen;
+    // CSS media `width`/`height` are the *viewport* (window.inner*), not the
+    // monitor (screen.*). Using screen width (e.g. 1680) while the layout
+    // viewport is 1440 breaks responsive branches and SSR/client hydration.
     const vp: MediaQueryEval.Viewport = .{
-        .width_px = screen.width,
-        .height_px = screen.height,
+        .width_px = profile.window.inner_width,
+        .height_px = profile.window.inner_height,
         .device_width_px = screen.width,
         .device_height_px = screen.height,
         .device_pixel_ratio = screen.device_pixel_ratio,

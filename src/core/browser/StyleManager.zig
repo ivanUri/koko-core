@@ -100,12 +100,14 @@ fn parseSheet(self: *StyleManager, sheet: *CSSStyleSheet) !void {
 }
 
 fn mediaViewport(self: *StyleManager) MediaQueryEval.Viewport {
-    const screen = self.frame.identityProfile().screen;
+    const profile = self.frame.identityProfile();
+    const screen = profile.screen;
     const scheme = self.frame.loadedProfile().http.prefers_color_scheme;
     const color_scheme: MediaQueryEval.Viewport.ColorScheme = if (std.ascii.eqlIgnoreCase(scheme, "dark")) .dark else .light;
+    // Match MediaQueryList: continuous-media width is the layout viewport.
     return .{
-        .width_px = screen.width,
-        .height_px = screen.height,
+        .width_px = profile.window.inner_width,
+        .height_px = profile.window.inner_height,
         .device_width_px = screen.width,
         .device_height_px = screen.height,
         .device_pixel_ratio = screen.device_pixel_ratio,

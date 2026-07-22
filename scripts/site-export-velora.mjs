@@ -225,12 +225,21 @@ try {
   let snapshot = null;
   let lastSerializedHtml = null;
   let lastScrollAt = 0;
+  // Soft preview only: SPA often writes --padding-top: NaN% mid-layout; forcing
+  // height:0 + that var collapses whole cards. Prefer max-width + aspect-ratio
+  // when the var is a real number; leave the rest to site CSS.
   const serializeExpression = `(() => {
     const html = document.documentElement?.outerHTML || '';
     const base = '<base href="' + String(location.href).replace(/&/g, '&amp;').replace(/"/g, '&quot;') + '">';
+    const preview = '<style data-velora-export-preview>' +
+      'img,video{max-width:100%;height:auto}' +
+      '[style*="--aspect-ratio"]{width:100%;aspect-ratio:var(--aspect-ratio);max-height:90vh;overflow:hidden}' +
+      '[style*="--aspect-ratio"] img,[style*="--aspect-ratio"] video{width:100%;height:100%;object-fit:cover;max-width:none}' +
+      '</style>';
+    const inject = base + preview;
     return /<head(?:\\s[^>]*)?>/i.test(html)
-      ? html.replace(/<head(?:\\s[^>]*)?>/i, match => match + base)
-      : html.replace(/<html(?:\\s[^>]*)?>/i, match => match + '<head>' + base + '</head>');
+      ? html.replace(/<head(?:\\s[^>]*)?>/i, match => match + inject)
+      : html.replace(/<html(?:\\s[^>]*)?>/i, match => match + '<head>' + inject + '</head>');
   })()`;
   while (Date.now() < deadline) {
     await sleep(500);
@@ -271,16 +280,22 @@ try {
     })()`, 10_000).catch(() => null);
     if (!snapshot) continue;
     const elapsedMs = Date.now() - started;
+    const imagesWithSrc = (snapshot.images || []).filter((image) => image.src).length;
     const readinessMet = elapsedMs >= opts.minWaitMs &&
       snapshot.imageCount >= opts.minImages &&
-      snapshot.elementCount >= opts.minElements;
-    // Preserve the first content-complete DOM. Media players and analytics can
-    // later monopolize a headless event loop; a final Runtime.evaluate timeout
-    // must not discard a snapshot that already met the caller's thresholds.
-    if (readinessMet && lastSerializedHtml === null) {
-      lastSerializedHtml = await evaluate(cdp, sessionId, serializeExpression, 15_000).catch(() => null);
+      snapshot.elementCount >= opts.minElements &&
+      // Prefer waiting until SPA image loaders have committed real src URLs
+      // (not only empty <img> stubs), unless the page truly has no images.
+      (opts.minImages === 0 || imagesWithSrc >= Math.min(opts.minImages, snapshot.imageCount));
+    // Refresh serialized HTML whenever readiness improves (more images with src).
+    // Media players can later monopolize the event loop — keep last good dump.
+    if (readinessMet) {
+      const serialized = await evaluate(cdp, sessionId, serializeExpression, 15_000).catch(() => null);
+      if (serialized && (!lastSerializedHtml || serialized.length >= (lastSerializedHtml?.length || 0))) {
+        lastSerializedHtml = serialized;
+      }
     }
-    const signature = `${snapshot.href}|${snapshot.readyState}|${snapshot.htmlLength}|${snapshot.textLength}|${snapshot.elementCount}`;
+    const signature = `${snapshot.href}|${snapshot.readyState}|${snapshot.htmlLength}|${snapshot.textLength}|${snapshot.elementCount}|${imagesWithSrc}|${snapshot.imageComplete}`;
     if (signature === priorSignature) {
       if (!stableSince) stableSince = Date.now();
       if (readinessMet && Date.now() - stableSince >= opts.quietMs) break;
