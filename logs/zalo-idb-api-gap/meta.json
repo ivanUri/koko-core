@@ -1,0 +1,9 @@
+{
+  "version": "1.0.2",
+  "pid": 26559,
+  "mode": "fetch",
+  "log_level": "debug",
+  "started_at": 1784873296813,
+  "browser_profile": "chrome-local-huys-macbook-pro",
+  "run_dir": "logs/zalo-idb-api-gap"
+}

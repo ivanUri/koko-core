@@ -1283,7 +1283,14 @@ fn process(self: *Client, transfer: *Transfer) !void {
 
     if (!reentrant) {
         if (self.network.getConnection()) |conn| {
-            return self.makeRequest(conn, transfer);
+            // makeRequest owns the Transfer once a connection is supplied. A
+            // synchronous start failure is still an asynchronous request's
+            // terminal result: makeRequest notifies the request owner and
+            // destroys the Transfer before returning the diagnostic error.
+            self.makeRequest(conn, transfer) catch |err| {
+                log.warn(.http, "transfer start", .{ .err = err });
+            };
+            return;
         }
     }
 
@@ -1501,7 +1508,16 @@ fn makeRequest(self: *Client, conn: *http.Connection, transfer: *Transfer) anyer
             self.releaseConn(conn);
         }
 
-        try transfer.configureConn(conn);
+        transfer.configureConn(conn) catch |err| {
+            // A request can fail before curl accepts its handle (unsupported
+            // scheme, malformed URL, header setup, etc.). It has nevertheless
+            // crossed the ownership boundary into HttpClient, so its owner
+            // must receive exactly one terminal callback before cleanup.
+            transfer._performing = true;
+            transfer.requestFailed(err, true);
+            transfer._performing = false;
+            return err;
+        };
     }
 
     // As soon as this is called, our "perform" loop is responsible for
@@ -1511,12 +1527,18 @@ fn makeRequest(self: *Client, conn: *http.Connection, transfer: *Transfer) anyer
     // perform to pickup the failure and cleanup.
     self.trackConn(conn) catch |err| {
         transfer._conn = null;
+        transfer._performing = true;
+        transfer.requestFailed(err, true);
+        transfer._performing = false;
         transfer.deinit();
         return err;
     };
 
     if (transfer.req.start_callback) |cb| {
         cb(Response.fromTransfer(transfer)) catch |err| {
+            transfer._performing = true;
+            transfer.requestFailed(err, true);
+            transfer._performing = false;
             transfer.deinit();
             return err;
         };

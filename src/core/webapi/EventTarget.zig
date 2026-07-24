@@ -57,6 +57,9 @@ pub const Type = union(enum) {
     shared_worker: *@import("shared_worker.zig").SharedWorker,
     media_source: *@import("media/MediaSource.zig"),
     source_buffer: *@import("media/SourceBuffer.zig"),
+    idb_request: *@import("idb.zig").IDBRequest,
+    idb_open_db_request: *@import("idb.zig").IDBOpenDBRequest,
+    idb_transaction: *@import("idb.zig").IDBTransaction,
 };
 
 pub fn init(page: *Page) !*EventTarget {
@@ -69,6 +72,9 @@ fn ownerFrameForTarget(target: *EventTarget, entry: *Frame) *Frame {
     return switch (target._type) {
         .node => |n| n.ownerFrame(entry),
         .window => |w| w._frame,
+        .idb_request => |request| request._frame,
+        .idb_open_db_request => |request| request._frame,
+        .idb_transaction => |transaction| transaction._frame,
         else => entry,
     };
 }
@@ -218,6 +224,9 @@ pub fn format(self: *EventTarget, writer: *std.Io.Writer) !void {
         .shared_worker => writer.writeAll("<SharedWorker>"),
         .media_source => writer.writeAll("<MediaSource>"),
         .source_buffer => writer.writeAll("<SourceBuffer>"),
+        .idb_request => writer.writeAll("<IDBRequest>"),
+        .idb_open_db_request => writer.writeAll("<IDBOpenDBRequest>"),
+        .idb_transaction => writer.writeAll("<IDBTransaction>"),
     };
 }
 
@@ -251,6 +260,9 @@ pub fn toString(self: *EventTarget) []const u8 {
         .shared_worker => return "[object SharedWorker]",
         .media_source => return "[object MediaSource]",
         .source_buffer => return "[object SourceBuffer]",
+        .idb_request => return "[object IDBRequest]",
+        .idb_open_db_request => return "[object IDBOpenDBRequest]",
+        .idb_transaction => return "[object IDBTransaction]",
     };
 }
 

@@ -1358,42 +1358,23 @@ fn resolveT(comptime T: type, value: *T) Resolved {
                     const identity_finalizer: *FinalizerCallback.Identity = @ptrCast(@alignCast(ptr));
 
                     // Identity is allocated from pool, so it's valid even after frame reset.
-                    const page = identity_finalizer.page;
                     const session = identity_finalizer.session;
                     const resolved_ptr_id = identity_finalizer.resolved_ptr_id;
                     defer session.fc_identity_pool.destroy(identity_finalizer);
 
-                    // V8 requires resetting the Global in the first weak-callback pass,
-                    // even when teardown already marked this node done.
+                    // `done` is the terminal retired-page state. Page teardown
+                    // removes this key from the identity map before releasing
+                    // its arenas, so a late V8 callback must only reset its
+                    // session-owned Global copy. In particular, it must never
+                    // dereference identity_finalizer.page: that Page may
+                    // already have been returned to page_pool.
                     if (identity_finalizer.done) {
                         var global = identity_finalizer.js_global;
                         v8.v8__Global__Reset(&global);
-                        // js_global is a copy of the identity_map Global (same V8 node).
-                        // Drop the map entry so Page.identity.deinit does not Reset again
-                        // (V8 fatal: GlobalHandles::Free IsInUse after double Reset).
-                        page.queueIdentityRemoval(resolved_ptr_id);
-                        // Page teardown may have marked done without unlinking. If the
-                        // FC is still registered and still points at this node, unlink
-                        // so detachFinalizer cannot walk a destroyed Identity.
-                        if (page.finalizer_callbacks.get(identity_finalizer.finalizer_ptr_id)) |fc| {
-                            if (fc.identities == identity_finalizer) {
-                                fc.identities = identity_finalizer.next;
-                            } else {
-                                var id = fc.identities;
-                                while (id) |node| {
-                                    if (node.next == identity_finalizer) {
-                                        node.next = identity_finalizer.next;
-                                        break;
-                                    }
-                                    id = node.next;
-                                }
-                            }
-                            if (fc.identity_count > 0) fc.identity_count -= 1;
-                        }
-                        identity_finalizer.next = null;
                         return;
                     }
 
+                    const page = identity_finalizer.page;
                     // V8 requires resetting the Global in the first weak-callback pass.
                     // Only defer identity_map removal — mutating the hash table here
                     // can re-enter while getOrPut is active (CreepJS audio path).

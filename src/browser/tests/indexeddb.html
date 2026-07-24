@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+
+<body>pending</body>
+<script>
+  const order = [];
+  const openRequest = indexedDB.open("velora-regression", 1);
+  if (openRequest instanceof Promise) throw new Error("open returned Promise");
+  if (openRequest.readyState !== "pending") throw new Error("request was not pending");
+
+  openRequest.onupgradeneeded = () => {
+    order.push("upgrade");
+    const store = openRequest.result.createObjectStore("records");
+    if (!openRequest.result.objectStoreNames.contains("records")) {
+      throw new Error("objectStoreNames is not a live DOMStringList");
+    }
+    store.put({ value: 42 }, "key");
+  };
+
+  openRequest.onsuccess = () => {
+    order.push("success");
+    if (order.join(",") !== "upgrade,success") throw new Error("wrong event order");
+    const request = openRequest.result.transaction("records").objectStore("records").get("key");
+    request.onsuccess = () => {
+      if (request.result.value !== 42) throw new Error("structured value did not round-trip");
+      document.body.textContent = "indexeddb-pass";
+      document.body.id = "indexeddb-pass";
+    };
+  };
+</script>

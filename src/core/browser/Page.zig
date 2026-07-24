@@ -217,6 +217,12 @@ pub fn deinit(self: *Page) void {
             fc_ptr.*.identity_count = 0;
             while (id) |identity| {
                 const next = identity.next;
+                // The weak callback owns the copied Global once this node is
+                // marked done. Remove the map entry without Reset while both
+                // the Identity and its allocator are still alive. A callback
+                // arriving after Page.deinit can then finish without touching
+                // this retired Page or its released identity_arena.
+                _ = identity.identity.identity_map.remove(identity.resolved_ptr_id);
                 identity.next = null;
                 identity.done = true;
                 id = next;
@@ -312,6 +318,7 @@ pub fn detachFinalizer(self: *Page, finalizer_ptr_id: usize) void {
     fc.identity_count = 0;
     while (id) |identity| {
         const next = identity.next;
+        _ = identity.identity.identity_map.remove(identity.resolved_ptr_id);
         identity.next = null;
         identity.done = true;
         id = next;

@@ -46,6 +46,25 @@ pub const ScheduleOpts = struct {
     mode: Mode = .normal,
 };
 
+/// Timer nesting rules belong to the HTML timers algorithm. Rendering and idle
+/// callbacks are separate task sources: re-registering requestAnimationFrame
+/// from inside its callback must target a future rendering opportunity, never
+/// be collapsed into the current scheduler turn.
+fn effectiveScheduleDelay(delay_ms: u32, mode: Mode, timer_nesting_level: u16, call_depth: usize) u32 {
+    if (mode != .normal) return delay_ms;
+
+    var effective_delay = delay_ms;
+    if (timer_nesting_level >= 5 and effective_delay < 4) {
+        effective_delay = 4;
+    }
+    // Nested Zig DOM / host API (call_depth): coerce short HTML timers to 0 so
+    // the deferred macrotask pump / wait-edge spin can run them soon.
+    if (call_depth > 0 and effective_delay > 0 and effective_delay <= 10) {
+        effective_delay = 0;
+    }
+    return effective_delay;
+}
+
 pub fn schedule(
     self: *Timers,
     exec: *js.Execution,
@@ -66,18 +85,12 @@ pub fn schedule(
     const timer_id = self._timer_id +% 1;
     self._timer_id = timer_id;
 
-    var effective_delay = delay_ms;
-    if (exec.timer_nesting_level >= 5 and effective_delay < 4) {
-        effective_delay = 4;
-    }
-    // Nested Zig DOM / host API (call_depth): coerce short delays to 0 so the
-    // deferred macrotask pump / wait-edge spin can run them soon (agent-style
-    // setTimeout(10) readyState polls after appendChild).
-    // Use call_depth only — mustQueueAsTask is true for any page JS (V8 stack)
-    // and would zero every short timer scheduled from script.
-    if (exec.context.call_depth > 0 and effective_delay > 0 and effective_delay <= 10) {
-        effective_delay = 0;
-    }
+    const effective_delay = effectiveScheduleDelay(
+        delay_ms,
+        opts.mode,
+        exec.timer_nesting_level,
+        exec.context.call_depth,
+    );
     exec.timer_nesting_level +%= 1;
 
     var persisted_params: []js.Value.Temp = &.{};
@@ -115,7 +128,7 @@ pub fn schedule(
 
     // Nested host stack: never pumpDueTimersNow (IsOnCentralStack / iframe race).
     // JsEntryGate owns “must queue”; EventLoop.spin on wait edges runs due timers.
-    if (effective_delay <= 10 and js.JsEntryGate.mustQueueAsTask(exec)) {
+    if (opts.mode == .normal and effective_delay <= 10 and js.JsEntryGate.mustQueueAsTask(exec)) {
         switch (exec.context.global) {
             .frame => |frame| {
                 js.EventLoop.drainMicrotasksNested(exec);
@@ -140,6 +153,13 @@ pub fn schedule(
     }
 
     return timer_id;
+}
+
+test "Timers: nested HTML timers do not collapse rendering callbacks" {
+    try std.testing.expectEqual(@as(u32, 0), effectiveScheduleDelay(5, .normal, 0, 1));
+    try std.testing.expectEqual(@as(u32, 4), effectiveScheduleDelay(0, .normal, 5, 0));
+    try std.testing.expectEqual(@as(u32, 5), effectiveScheduleDelay(5, .animation_frame, 8, 1));
+    try std.testing.expectEqual(@as(u32, 5), effectiveScheduleDelay(5, .idle, 8, 1));
 }
 
 pub fn clear(self: *Timers, id: u32) void {

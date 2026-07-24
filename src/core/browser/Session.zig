@@ -1024,6 +1024,7 @@ pub const FinalizerCallback = struct {
         self.identity_count = 0;
         while (id) |identity| {
             const next = identity.next;
+            _ = identity.identity.identity_map.remove(identity.resolved_ptr_id);
             identity.next = null;
             identity.done = true;
             id = next;
