@@ -62,6 +62,7 @@ pub fn waitCDP(self: *Runner, opts: WaitOpts) !CDPWaitResult {
 
 fn _wait(self: *Runner, comptime is_cdp: bool, opts: WaitOpts) !CDPWaitResult {
     var timer = try std.time.Timer.start();
+    var done_confirmations: u8 = 0;
 
     const tick_opts = TickOpts{
         .ms = 200,
@@ -73,7 +74,8 @@ fn _wait(self: *Runner, comptime is_cdp: bool, opts: WaitOpts) !CDPWaitResult {
     // alive for seconds while running heavy JS accumulates wrappers and
     // external-ref'd Zig allocations V8 has no reason to drop. `.moderate`
     // speeds up incremental GC without stalling the tick.
-    const gc_hint_period_ns: u64 = std.time.ns_per_s;
+    // Every 1s put too much pressure on V8 (high CPU on complex pages); 5s is enough.
+    const gc_hint_period_ns: u64 = std.time.ns_per_s * 5;
     var gc_hint_timer = std.time.Timer.start() catch unreachable;
 
     while (true) {
@@ -106,9 +108,26 @@ fn _wait(self: *Runner, comptime is_cdp: bool, opts: WaitOpts) !CDPWaitResult {
 
         const next_ms = switch (tick_result) {
             .ok => |next_ms| next_ms,
-            .done => return .done,
+            .done => blk: {
+                // A network callback may settle the last transfer and enqueue
+                // its DOM event at the same idle edge. Require a short stable
+                // quiescence window so load/error handlers and their immediate
+                // microtasks are reflected in an HTML snapshot.
+                if (!is_cdp and opts.until == .done and done_confirmations < 2) {
+                    done_confirmations += 1;
+                    const js_mod = @import("../js/js.zig");
+                    js_mod.EventLoop.spin(&self.frame.js.execution, .{
+                        .max_tasks = 48,
+                        .stop_when_idle = true,
+                    });
+                    self.session.browser.env.runMicrotasks(.macrotask_loop);
+                    break :blk 5;
+                }
+                return .done;
+            },
             .cdp_socket => if (comptime is_cdp) return .cdp_socket else unreachable,
         };
+        if (tick_result != .done) done_confirmations = 0;
 
         const ms_elapsed: u32 = @intCast(timer.read() / std.time.ns_per_ms);
         if (ms_elapsed >= opts.ms) {
@@ -291,6 +310,9 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
             const ms_to_next_macrotask = browser.msToNextMacrotask();
             const script_pending = live_frame._script_manager.base.hasPendingJsWork();
             const is_done = HostIdle.isFullyIdle(http_client, live_frame, browser);
+            const immediate_host_work =
+                js_mod.EventLoop.hasReadyWork(&live_frame.js.execution) or
+                (ms_to_next_macrotask != null and ms_to_next_macrotask.? == 0);
 
             live_frame.checkIdleNotifications(total_http_activity);
 
@@ -310,7 +332,7 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
 
             // `met` resolves the wait goal. Otherwise, if the page is fully
             // idle (`is_done`) there is nothing left to wait on — resolve rather
-            if (met or is_done) {
+            if ((met and !immediate_host_work) or is_done) {
                 if (comptime is_cdp) {
                     // CDP event loop keeps ticking for commands; only leave when
                     // the explicit wait condition is met (not is_done alone for
@@ -341,6 +363,12 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
             const http_result = try http_client.tick(@intCast(@min(opts.ms, ms_to_wait)));
             if ((comptime is_cdp) and http_result == .cdp_socket) {
                 return .cdp_socket;
+            }
+            // HttpClient.tick may no-op when there is nothing to poll (I/O idle,
+            // only macrotasks pending). Returning .ok=0 would spin the wait loop;
+            // instead sleep until the next scheduled task (LP #2999).
+            if ((comptime is_cdp) == false and http_result == .idle) {
+                return .{ .ok = @intCast(ms_to_wait) };
             }
             return .{ .ok = 0 };
         },

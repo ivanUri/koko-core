@@ -14,7 +14,7 @@ Headless Velora has no compositor timeline. When Fluent (signup.live.com) swaps 
 
 Hotmail register automation (`scripts/hotmail-register-velora.mjs --probe-email-step`):
 
-1. Email filled; trusted `LP.clickNode` Next succeeds.
+1. Email filled; trusted `Velora.clickNode` Next succeeds.
 2. `CheckAvailableSigninNames` → **200** + `isAvailable: true`.
 3. UI never showed `input[type=password]`.
 
@@ -66,7 +66,7 @@ In a real browser, the compositor fires `animationend` when the class animation 
 Probe (Debug binary, 2026-07-22):
 
 ```text
-[click] Next (email) via LP.clickNode text="Next"
+[click] Next (email) via Velora.clickNode text="Next"
 [page:response] CheckAvailableSigninNames … 200
 [1/4] password field visible
 Email-step probe passed: Microsoft rendered the password step.

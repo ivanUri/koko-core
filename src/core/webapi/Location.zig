@@ -89,17 +89,18 @@ pub fn setHash(_: *const Location, hash: []const u8, frame: *Frame) !void {
     const normalized_hash = blk: {
         if (hash.len == 0) {
             const old_url = frame.url;
-
-            break :blk if (std.mem.indexOfScalar(u8, old_url, '#')) |index|
-                old_url[0..index]
-            else
-                old_url;
+            // Already no fragment: no-op. Falling through with the same URL
+            // would schedule a full reload (not a fragment nav) and hang tests /
+            // SPA code that clears hash when it is already empty.
+            const hash_idx = std.mem.indexOfScalar(u8, old_url, '#') orelse return;
+            break :blk old_url[0..hash_idx];
         } else if (hash[0] == '#')
             break :blk hash
         else
             break :blk try std.fmt.allocPrint(frame.call_arena, "#{s}", .{hash});
     };
 
+    // Fragment-only / clear-hash updates are same-document navigations.
     return frame.scheduleNavigation(normalized_hash, .{
         .reason = .script,
         .kind = .{ .replace = null },

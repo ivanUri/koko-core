@@ -1,4 +1,4 @@
-const lp = @import("velora");
+const v = @import("velora");
 
 //
 // This program is free software: you can redistribute it and/or modify
@@ -18,11 +18,11 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
-const log = lp.log;
-const App = lp.App;
-const Config = lp.Config;
+const log = v.log;
+const App = v.App;
+const Config = v.Config;
 const SigHandler = @import("Sighandler.zig");
-pub const panic = lp.crash_handler.panic;
+pub const panic = v.crash_handler.panic;
 
 pub fn main() !void {
     // Raise soft stack limit toward hard (macOS default soft ~8MB). V8 module
@@ -70,7 +70,7 @@ fn run(allocator: Allocator, main_arena: Allocator) !void {
 
     switch (config.mode) {
         .profile => |opts| {
-            lp.profile_cmd.run(main_arena, .{
+            v.profile_cmd.run(main_arena, .{
                 .action = opts.action,
                 .name = opts.name,
                 .template = opts.template,
@@ -93,7 +93,7 @@ fn run(allocator: Allocator, main_arena: Allocator) !void {
         },
         .version => {
             var stdout = std.fs.File.stdout().writer(&.{});
-            try stdout.interface.print("{s}\n", .{lp.build_config.version});
+            try stdout.interface.print("{s}\n", .{v.build_config.version});
             config.deinit(allocator);
             allocator.destroy(config);
             return std.process.cleanExit();
@@ -121,7 +121,7 @@ fn run(allocator: Allocator, main_arena: Allocator) !void {
             .no_combined = config.logNoCombined(),
             .cdp_trace = config.logCdpTrace(),
             .channel_levels = config.logChannelLevels(),
-            .version = lp.build_config.version,
+            .version = v.build_config.version,
             .mode = config.runModeName(),
             .profile = config.browserProfile(),
             .log_level = level_name,
@@ -142,7 +142,7 @@ fn run(allocator: Allocator, main_arena: Allocator) !void {
     defer allocator.destroy(config);
     defer config.deinit(allocator);
 
-    try sighandler.on(lp.Network.stop, .{&app.network});
+    try sighandler.on(v.Network.stop, .{&app.network});
 
     app.telemetry.record(.{ .run = {} });
 
@@ -154,7 +154,7 @@ fn run(allocator: Allocator, main_arena: Allocator) !void {
                 return config.printUsageAndExit(false);
             };
 
-            var server = lp.Server.init(app, address) catch |err| {
+            var server = v.Server.init(app, address) catch |err| {
                 if (err == error.AddressInUse) {
                     log.fatal(.app, "address already in use", .{
                         .host = opts.host,
@@ -169,7 +169,7 @@ fn run(allocator: Allocator, main_arena: Allocator) !void {
             };
             defer server.deinit();
 
-            try sighandler.on(lp.Server.shutdown, .{server});
+            try sighandler.on(v.Server.shutdown, .{server});
 
             app.network.run();
         },
@@ -177,7 +177,7 @@ fn run(allocator: Allocator, main_arena: Allocator) !void {
             const url = opts.url;
             log.debug(.app, "startup", .{ .mode = "fetch", .dump_mode = opts.dump, .url = url, .snapshot = app.snapshot.fromEmbedded() });
 
-            var fetch_opts = lp.FetchOpts{
+            var fetch_opts = v.FetchOpts{
                 .wait_ms = opts.wait_ms,
                 .wait_until = opts.wait_until orelse .done,
                 .wait_script = opts.wait_script,
@@ -220,14 +220,14 @@ fn run(allocator: Allocator, main_arena: Allocator) !void {
 
             log.opts.format = .logfmt;
 
-            var cdp_server: ?*lp.Server = null;
+            var cdp_server: ?*v.Server = null;
             if (opts.cdp_port) |port| {
                 const address = std.net.Address.parseIp("127.0.0.1", port) catch |err| {
                     log.fatal(.mcp, "invalid cdp address", .{ .err = err, .port = port });
                     return;
                 };
-                cdp_server = try lp.Server.init(app, address);
-                try sighandler.on(lp.Server.shutdown, .{cdp_server.?});
+                cdp_server = try v.Server.init(app, address);
+                try sighandler.on(v.Server.shutdown, .{cdp_server.?});
             }
             defer if (cdp_server) |s| s.deinit();
 
@@ -242,9 +242,9 @@ fn run(allocator: Allocator, main_arena: Allocator) !void {
 
 const FetchTerminator = struct {
     mutex: std.Thread.Mutex = .{},
-    browser: ?*lp.Browser = null,
+    browser: ?*v.Browser = null,
 
-    fn storeBrowser(self: *FetchTerminator, browser: *lp.Browser) void {
+    fn storeBrowser(self: *FetchTerminator, browser: *v.Browser) void {
         self.mutex.lock();
         defer self.mutex.unlock();
         self.browser = browser;
@@ -267,17 +267,17 @@ const FetchTerminator = struct {
     }
 };
 
-fn fetchThread(app: *App, ft: *FetchTerminator, url: [:0]const u8, fetch_opts: lp.FetchOpts) void {
+fn fetchThread(app: *App, ft: *FetchTerminator, url: [:0]const u8, fetch_opts: v.FetchOpts) void {
     defer app.network.stop();
 
-    var browser: lp.Browser = undefined;
+    var browser: v.Browser = undefined;
     browser.init(app, .{}, null) catch |err| {
         log.fatal(.app, "browser init error", .{ .err = err });
         return;
     };
     defer browser.deinit();
 
-    const notification = lp.Notification.init(app.allocator) catch |err| {
+    const notification = v.Notification.init(app.allocator) catch |err| {
         log.fatal(.app, "notification init error", .{ .err = err });
         return;
     };
@@ -287,7 +287,7 @@ fn fetchThread(app: *App, ft: *FetchTerminator, url: [:0]const u8, fetch_opts: l
         log.fatal(.app, "session init error", .{ .err = err });
         return;
     };
-    lp.profile_session.bootstrapCookies(session, app.config);
+    v.profile_session.bootstrapCookies(session, app.config);
 
     ft.storeBrowser(&browser);
     // if this exits normally, we want to disarm the FetchTerminator so that
@@ -295,18 +295,18 @@ fn fetchThread(app: *App, ft: *FetchTerminator, url: [:0]const u8, fetch_opts: l
     // process-of) shutting down browser/env
     defer ft.releaseBrowser();
 
-    lp.fetch(app, &browser, url, fetch_opts) catch |err| {
+    v.fetch(app, &browser, url, fetch_opts) catch |err| {
         log.fatal(.app, "fetch error", .{ .err = err, .url = url });
     };
 
-    lp.profile_session.persistCookies(session, app.config);
+    v.profile_session.persistCookies(session, app.config);
 }
 
 fn mcpThread(allocator: std.mem.Allocator, app: *App) void {
     defer app.network.stop();
 
     var stdout = std.fs.File.stdout().writer(&.{});
-    var mcp_server: *lp.mcp.Server = lp.mcp.Server.init(allocator, app, &stdout.interface) catch |err| {
+    var mcp_server: *v.mcp.Server = v.mcp.Server.init(allocator, app, &stdout.interface) catch |err| {
         log.fatal(.mcp, "mcp init error", .{ .err = err });
         return;
     };
@@ -314,7 +314,7 @@ fn mcpThread(allocator: std.mem.Allocator, app: *App) void {
 
     var stdin_buf: [64 * 1024]u8 = undefined;
     var stdin = std.fs.File.stdin().reader(&stdin_buf);
-    lp.mcp.router.processRequests(mcp_server, &stdin.interface) catch |err| {
+    v.mcp.router.processRequests(mcp_server, &stdin.interface) catch |err| {
         log.fatal(.mcp, "mcp error", .{ .err = err });
     };
 }

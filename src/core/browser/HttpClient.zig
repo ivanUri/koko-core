@@ -1243,7 +1243,7 @@ pub fn syncRequest(self: *Client, allocator: Allocator, params: RequestParams) !
                 const cdp = self.cdp_client.?;
                 _ = cdp.blocking_read(cdp.ctx);
             },
-            .normal => continue,
+            .normal, .idle => continue,
         }
     }
 
@@ -1527,6 +1527,9 @@ fn makeRequest(self: *Client, conn: *http.Connection, transfer: *Transfer) anyer
 pub const PerformStatus = enum {
     cdp_socket,
     normal,
+    /// Nothing was polled/waited and no messages were processed. Callers that
+    /// only have delayed macrotasks left should sleep rather than spin.
+    idle,
 };
 
 fn perform(self: *Client, timeout_ms: c_int) anyerror!PerformStatus {
@@ -1581,6 +1584,9 @@ fn perform(self: *Client, timeout_ms: c_int) anyerror!PerformStatus {
     }
 
     var status = PerformStatus.normal;
+    // Poll only when something can produce events. With nothing in flight,
+    // poll would just burn timeout_ms; return .idle so Runner can sleep until
+    // the next macrotask instead (LP runner-tick-signal).
     const should_poll = self.cdp_client != null or active > 0 or self.http_active > 0 or self.native_ws.first != null;
     if (should_poll) {
         if (self.cdp_client) |cdp_client| {
@@ -1608,6 +1614,8 @@ fn perform(self: *Client, timeout_ms: c_int) anyerror!PerformStatus {
                 return .normal;
             }
         }
+    } else {
+        status = .idle;
     }
 
     _ = try self.processMessages();

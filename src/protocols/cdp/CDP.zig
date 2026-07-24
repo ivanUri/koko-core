@@ -153,11 +153,14 @@ pub fn blockingReadStop(ctx: *anyopaque) bool {
 pub fn readSocket(self: *CDP) bool {
     const n = self.ws.read() catch |err| {
         log.warn(.app, "CDP read", .{ .err = err });
+        // Peer is gone: SHUT_RDWR unblocks a worker stuck in send().
+        self.ws.shutdownPeer();
         return false;
     };
 
     if (n == 0) {
         log.info(.app, "CDP disconnect", .{});
+        self.ws.shutdownPeer();
         return false;
     }
 
@@ -220,8 +223,8 @@ pub fn tick(self: *CDP) !bool {
         session.drainDeferredCommit();
     }
 
-    // Liveness is enforced by TCP keepalive configured in
-    // Network.acceptConnections; the wakeup lets V8 run or terminate.
+    // Liveness is enforced by TCP keepalive (+ Linux TCP_USER_TIMEOUT)
+    // configured in Network.acceptConnections; the wakeup lets V8 run or terminate.
     const wait_ms: u32 = 1000; // 1s
 
     const result = self.pageWait(wait_ms) catch |wait_err| switch (wait_err) {
@@ -328,10 +331,6 @@ fn dispatchCommand(command: *Command, method: []const u8) !void {
     };
 
     switch (domain.len) {
-        2 => switch (@as(u16, @bitCast(domain[0..2].*))) {
-            asUint(u16, "LP") => return @import("domains/lp.zig").processMessage(command),
-            else => {},
-        },
         3 => switch (@as(u24, @bitCast(domain[0..3].*))) {
             asUint(u24, "DOM") => return @import("domains/dom.zig").processMessage(command),
             asUint(u24, "Log") => return @import("domains/log.zig").processMessage(command),
@@ -350,6 +349,7 @@ fn dispatchCommand(command: *Command, method: []const u8) !void {
         6 => switch (@as(u48, @bitCast(domain[0..6].*))) {
             asUint(u48, "Target") => return @import("domains/target.zig").processMessage(command),
             asUint(u48, "Audits") => return @import("domains/audits.zig").processMessage(command),
+            asUint(u48, "Velora") => return @import("domains/velora.zig").processMessage(command),
             else => {},
         },
         7 => switch (@as(u56, @bitCast(domain[0..7].*))) {

@@ -39,7 +39,7 @@ const Fetch = @This();
 
 _exec: *const Execution,
 _task_owner: RealmLifecycleKernel.TaskOwner,
-_url: []const u8,
+_url: [:0]const u8,
 _buf: std.ArrayList(u8),
 _response: *Response,
 _resolver: js.PromiseResolver.Global,
@@ -115,7 +115,7 @@ pub fn init(input: Input, options: ?InitOpts, exec: *const Execution) !js.Promis
         ._exec = exec,
         ._task_owner = exec.captureTaskOwner(),
         ._buf = .empty,
-        ._url = try arena.dupe(u8, request._url),
+        ._url = try arena.dupeZ(u8, request._url),
         ._resolver = try resolver.persist(),
         ._response = response,
         ._owns_response = true,
@@ -128,7 +128,7 @@ pub fn init(input: Input, options: ?InitOpts, exec: *const Execution) !js.Promis
 
     const session = exec.context.page.session;
     const http_client = &session.browser.http_client;
-    const headers = try FetchRedirectState.buildWireHeaders(redirect_state, request._url, request._body, method_name);
+    var headers = try FetchRedirectState.buildWireHeaders(redirect_state, request._url, request._body, method_name);
 
     if (comptime IS_DEBUG) {
         log.debug(.http, "fetch", .{ .url = request._url });
@@ -144,6 +144,35 @@ pub fn init(input: Input, options: ?InitOpts, exec: *const Execution) !js.Promis
 
     const raw_post_body = request._body != null and request._body_content_type == null;
     const curl_default_headers = !raw_post_body;
+    const credentials = request._credentials;
+    const cross_origin = !exec.isSameOrigin(request._url);
+    const needs_preflight = request._mode == .cors and cross_origin and
+        needsCorsPreflight(method_name, req_headers, exec);
+
+    // Cross-origin CORS: always send Origin (including GET/HEAD).
+    if (cross_origin and request._mode == .cors) {
+        try appendCorsOriginHeader(exec, arena, &headers);
+    }
+
+    if (needs_preflight) {
+        try startCorsPreflight(.{
+            .fetch = fetch,
+            .http_client = http_client,
+            .session = session,
+            .redirect_state = redirect_state,
+            .method_name = method_name,
+            .http_method = http_method,
+            .custom_method = custom_method,
+            .main_headers = headers,
+            .cookie_jar = cookie_jar,
+            .raw_post_body = raw_post_body,
+            .curl_default_headers = curl_default_headers,
+            .body = request._body,
+            .credentials = credentials,
+            .req_headers = req_headers,
+        });
+        return resolver.promise();
+    }
 
     try http_client.request(.{
         .ctx = fetch,
@@ -175,6 +204,282 @@ pub fn init(input: Input, options: ?InitOpts, exec: *const Execution) !js.Promis
         .shutdown_callback = httpShutdownCallback,
     });
     return resolver.promise();
+}
+
+// --- CORS preflight (Fetch §4.3) ---------------------------------------------
+
+fn appendCorsOriginHeader(exec: *const Execution, arena: std.mem.Allocator, headers: *HttpClient.Headers) !void {
+    const origin = (try URL.getOrigin(arena, exec.url.*)) orelse "null";
+    const origin_hdr = try std.fmt.allocPrintSentinel(arena, "Origin: {s}", .{origin}, 0);
+    try headers.add(origin_hdr);
+}
+
+fn isCorsSafelistedMethod(method: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(method, "GET") or
+        std.ascii.eqlIgnoreCase(method, "HEAD") or
+        std.ascii.eqlIgnoreCase(method, "POST");
+}
+
+fn isCorsSafelistedRequestHeader(name: []const u8, value: []const u8) bool {
+    if (std.ascii.eqlIgnoreCase(name, "accept") or
+        std.ascii.eqlIgnoreCase(name, "accept-language") or
+        std.ascii.eqlIgnoreCase(name, "content-language"))
+    {
+        return true;
+    }
+    if (std.ascii.eqlIgnoreCase(name, "content-type")) {
+        // application/x-www-form-urlencoded, multipart/form-data, text/plain
+        // (ignore parameters)
+        const semi = std.mem.indexOfScalar(u8, value, ';') orelse value.len;
+        const mime = std.mem.trim(u8, value[0..semi], &std.ascii.whitespace);
+        return std.ascii.eqlIgnoreCase(mime, "application/x-www-form-urlencoded") or
+            std.ascii.eqlIgnoreCase(mime, "multipart/form-data") or
+            std.ascii.eqlIgnoreCase(mime, "text/plain");
+    }
+    return false;
+}
+
+fn needsCorsPreflight(method: []const u8, headers: *Headers, exec: *const Execution) bool {
+    if (!isCorsSafelistedMethod(method)) return true;
+    // Walk Headers entries (combined not required — any non-simple name triggers).
+    for (headers._list._entries.items) |entry| {
+        const name = entry.name.str();
+        const value = entry.value.str();
+        if (!isCorsSafelistedRequestHeader(name, value)) return true;
+    }
+    _ = exec;
+    return false;
+}
+
+const PreflightStart = struct {
+    fetch: *Fetch,
+    http_client: *HttpClient,
+    session: *Session,
+    redirect_state: *FetchRedirectState.State,
+    method_name: []const u8,
+    http_method: http.Method,
+    custom_method: ?[:0]const u8,
+    main_headers: HttpClient.Headers,
+    cookie_jar: ?*CookieJar,
+    raw_post_body: bool,
+    curl_default_headers: bool,
+    body: ?[]const u8,
+    credentials: Request.Credentials,
+    req_headers: *Headers,
+};
+
+const CookieJar = @import("../storage/Cookie.zig").Jar;
+const Session = @import("../../browser/Session.zig");
+const Headers = @import("Headers.zig");
+
+const PreflightCtx = struct {
+    fetch: *Fetch,
+    http_client: *HttpClient,
+    session: *Session,
+    redirect_state: *FetchRedirectState.State,
+    method_name: []const u8,
+    http_method: http.Method,
+    custom_method: ?[:0]const u8,
+    main_headers: HttpClient.Headers,
+    cookie_jar: ?*CookieJar,
+    raw_post_body: bool,
+    curl_default_headers: bool,
+    body: ?[]const u8,
+    credentials_include: bool,
+    /// Comma-separated non-safelisted header names sent in ACRH (lowercase).
+    request_headers_list: []const u8,
+    acao: ?[]const u8 = null,
+    acam: ?[]const u8 = null,
+    acah: ?[]const u8 = null,
+    acac: bool = false,
+    status: u16 = 0,
+};
+
+fn startCorsPreflight(opts: PreflightStart) !void {
+    const fetch = opts.fetch;
+    const exec = fetch._exec;
+    const arena = fetch._response._arena;
+
+    // Build Access-Control-Request-Headers from non-safelisted names.
+    var acrh_buf: std.ArrayList(u8) = .empty;
+    for (opts.req_headers._list._entries.items) |entry| {
+        const name = entry.name.str();
+        const value = entry.value.str();
+        if (isCorsSafelistedRequestHeader(name, value)) continue;
+        if (acrh_buf.items.len > 0) try acrh_buf.appendSlice(arena, ",");
+        try acrh_buf.appendSlice(arena, name);
+    }
+    const acrh = try arena.dupe(u8, acrh_buf.items);
+
+    const pctx = try arena.create(PreflightCtx);
+    pctx.* = .{
+        .fetch = fetch,
+        .http_client = opts.http_client,
+        .session = opts.session,
+        .redirect_state = opts.redirect_state,
+        .method_name = try arena.dupe(u8, opts.method_name),
+        .http_method = opts.http_method,
+        .custom_method = opts.custom_method,
+        .main_headers = opts.main_headers,
+        .cookie_jar = opts.cookie_jar,
+        .raw_post_body = opts.raw_post_body,
+        .curl_default_headers = opts.curl_default_headers,
+        .body = opts.body,
+        .credentials_include = opts.credentials == .include,
+        .request_headers_list = acrh,
+    };
+
+    var pf_headers = try opts.http_client.newHeaders();
+    try appendCorsOriginHeader(exec, arena, &pf_headers);
+    // ACR-Method
+    const acrm = try std.fmt.allocPrintSentinel(arena, "Access-Control-Request-Method: {s}", .{opts.method_name}, 0);
+    try pf_headers.add(acrm);
+    if (acrh.len > 0) {
+        const acrh_hdr = try std.fmt.allocPrintSentinel(arena, "Access-Control-Request-Headers: {s}", .{acrh}, 0);
+        try pf_headers.add(acrh_hdr);
+    }
+
+    if (comptime IS_DEBUG) {
+        log.debug(.http, "cors preflight", .{ .url = fetch._url, .method = opts.method_name });
+    }
+
+    try opts.http_client.request(.{
+        .ctx = pctx,
+        .params = .{
+            .url = fetch._url,
+            .method = .OPTIONS,
+            .frame_id = exec.frameId(),
+            .loader_id = exec.loaderId(),
+            .body = null,
+            .headers = pf_headers,
+            .resource_type = .fetch,
+            .cookie_jar = null, // preflight is non-credentialed by default unless... still omit cookies
+            .cookie_origin = exec.url.*,
+            .top_level_cookie_url = exec.topLevelCookieUrl(),
+            .notification = opts.session.notification,
+            .curl_default_headers = true,
+            .raw_post_body = false,
+            .keepalive = false,
+            .attribution_frame = exec.attributionFrame(),
+            // Do not follow redirects for preflight
+            // (HttpClient default may follow — check)
+        },
+        .header_callback = preflightHeaderCallback,
+        .data_callback = preflightDataCallback,
+        .done_callback = preflightDoneCallback,
+        .error_callback = preflightErrorCallback,
+        .shutdown_callback = preflightShutdownCallback,
+    });
+}
+
+fn preflightHeaderCallback(response: HttpClient.Response) !bool {
+    const pctx: *PreflightCtx = @ptrCast(@alignCast(response.ctx));
+    pctx.status = response.status() orelse 0;
+    var it = response.headerIterator();
+    while (it.next()) |hdr| {
+        if (std.ascii.eqlIgnoreCase(hdr.name, "access-control-allow-origin")) {
+            pctx.acao = try pctx.fetch._response._arena.dupe(u8, hdr.value);
+        } else if (std.ascii.eqlIgnoreCase(hdr.name, "access-control-allow-methods")) {
+            pctx.acam = try pctx.fetch._response._arena.dupe(u8, hdr.value);
+        } else if (std.ascii.eqlIgnoreCase(hdr.name, "access-control-allow-headers")) {
+            pctx.acah = try pctx.fetch._response._arena.dupe(u8, hdr.value);
+        } else if (std.ascii.eqlIgnoreCase(hdr.name, "access-control-allow-credentials")) {
+            pctx.acac = std.ascii.eqlIgnoreCase(std.mem.trim(u8, hdr.value, &std.ascii.whitespace), "true");
+        }
+    }
+    return true;
+}
+
+fn preflightDataCallback(_: HttpClient.Response, _: []const u8) !void {}
+
+fn corsTokenListContains(list: []const u8, needle: []const u8) bool {
+    var it = std.mem.splitScalar(u8, list, ',');
+    while (it.next()) |part| {
+        const t = std.mem.trim(u8, part, &std.ascii.whitespace);
+        if (t.len == 1 and t[0] == '*') return true;
+        if (std.ascii.eqlIgnoreCase(t, needle)) return true;
+    }
+    return false;
+}
+
+fn preflightAllows(pctx: *PreflightCtx) bool {
+    if (pctx.status < 200 or pctx.status >= 300) return false;
+    const acao = pctx.acao orelse return false;
+    if (pctx.credentials_include) {
+        if (std.mem.eql(u8, acao, "*")) return false;
+        if (!pctx.acac) return false;
+    }
+    // Origin match: * or exact (we don't re-parse request Origin string here;
+    // server echoed ACAO is enough when not * for credentialed, and * for simple).
+    const acam = pctx.acam orelse return false;
+    if (!corsTokenListContains(acam, pctx.method_name)) return false;
+    if (pctx.request_headers_list.len > 0) {
+        const acah = pctx.acah orelse return false;
+        var hit = std.mem.splitScalar(u8, pctx.request_headers_list, ',');
+        while (hit.next()) |name| {
+            if (name.len == 0) continue;
+            if (!corsTokenListContains(acah, name)) return false;
+        }
+    }
+    return true;
+}
+
+fn preflightDoneCallback(ctx: *anyopaque) !void {
+    const pctx: *PreflightCtx = @ptrCast(@alignCast(ctx));
+    const fetch = pctx.fetch;
+    if (fetchJsUnavailable(fetch)) return;
+
+    if (!preflightAllows(pctx)) {
+        try rejectFetchNetworkError(fetch);
+        return;
+    }
+
+    const exec = fetch._exec;
+    const session = pctx.session;
+    try pctx.http_client.request(.{
+        .ctx = fetch,
+        .params = .{
+            .url = fetch._url,
+            .method = pctx.http_method,
+            .custom_method = pctx.custom_method,
+            .frame_id = exec.frameId(),
+            .loader_id = exec.loaderId(),
+            .body = pctx.body,
+            .headers = pctx.main_headers,
+            .resource_type = .fetch,
+            .cookie_jar = pctx.cookie_jar,
+            .cookie_origin = exec.url.*,
+            .top_level_cookie_url = exec.topLevelCookieUrl(),
+            .notification = session.notification,
+            .curl_default_headers = pctx.curl_default_headers,
+            .raw_post_body = pctx.raw_post_body,
+            .redirect_refresh_ctx = pctx.redirect_state,
+            .redirect_header_rebuild = FetchRedirectState.rebuildHeaders,
+            .keepalive = fetch._keepalive,
+            .attribution_frame = exec.attributionFrame(),
+        },
+        .start_callback = httpStartCallback,
+        .header_callback = httpHeaderDoneCallback,
+        .data_callback = httpDataCallback,
+        .done_callback = httpDoneCallback,
+        .error_callback = httpErrorCallback,
+        .shutdown_callback = httpShutdownCallback,
+    });
+}
+
+fn preflightErrorCallback(ctx: *anyopaque, err: anyerror) void {
+    const pctx: *PreflightCtx = @ptrCast(@alignCast(ctx));
+    const fetch = pctx.fetch;
+    if (fetchJsUnavailable(fetch)) return;
+    log.debug(.http, "cors preflight error", .{ .err = err, .url = fetch._url });
+    rejectFetchNetworkError(fetch) catch {};
+}
+
+fn preflightShutdownCallback(ctx: *anyopaque) void {
+    const pctx: *PreflightCtx = @ptrCast(@alignCast(ctx));
+    const fetch = pctx.fetch;
+    if (fetchJsUnavailable(fetch)) return;
+    rejectFetchNetworkError(fetch) catch {};
 }
 
 fn handleBlobUrl(request: *Request, resolver: js.PromiseResolver, exec: *const Execution) !js.Promise {

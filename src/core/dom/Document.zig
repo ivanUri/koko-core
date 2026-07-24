@@ -178,7 +178,11 @@ pub fn getCurrentScript(self: *const Document) ?*Element.Html.Script {
 }
 
 pub fn getURL(self: *const Document, frame: *const Frame) [:0]const u8 {
-    return self._url orelse frame.url;
+    // Prefer this document's own browsing-context URL. The injected `frame`
+    // is the caller's realm (parent when reading iframe.contentDocument.URL).
+    if (self._url) |u| return u;
+    if (self._frame) |doc_frame| return doc_frame.url;
+    return frame.url;
 }
 
 pub fn getContentType(self: *const Document) []const u8 {
@@ -609,7 +613,7 @@ pub fn evaluate(
     result: ?*XPathResult,
     frame: *Frame,
 ) !*XPathResult {
-    // Namespace resolver / result reuse are no-ops in HTML mode (LP decision #2).
+    // Namespace resolver / result reuse are no-ops in HTML mode (Velora decision #2).
     _ = resolver;
     _ = result;
     return XPathResult.fromExpression(
@@ -653,10 +657,15 @@ pub fn getReadyState(self: *const Document) []const u8 {
 }
 
 /// Active browsing context for this document, if any. Detached documents (e.g.
-/// after iframe navigation) have `_frame == null` or `frame.document != self`.
+/// after iframe navigation/remove) have `_frame == null`, or the frame is
+/// draining/dead / no longer owns this document.
 pub fn activeBrowsingContext(self: *const Document) ?*Frame {
     const frame = self._frame orelse return null;
     if (frame.document != self) return null;
+    // Departing realms must not be used for document.open/write/close.
+    if (frame._detach_pending) return null;
+    if (frame._realm_state != .active) return null;
+    if (frame.isGoingAway()) return null;
     return frame;
 }
 
@@ -875,19 +884,25 @@ fn looksLikeNewDocument(html: []const u8) bool {
         std.ascii.startsWithIgnoreCase(trimmed, "<html");
 }
 
-fn frameForDocument(self: *Document, executing: *Frame) *Frame {
-    return self._frame orelse executing;
+/// Document's own live browsing context only. Never fall back to the caller's
+/// frame: `document.open()` on a stale iframe Document used to wipe the
+/// *parent* page (UAF / incorrect-alignment process death).
+fn frameForDocument(self: *Document, executing: *Frame) ?*Frame {
+    _ = executing;
+    return self.activeBrowsingContext();
 }
 
 pub fn write(self: *Document, text: []const []const u8, frame: *Frame) !void {
-    return self.writeInternal(text, false, self.frameForDocument(frame));
+    const doc_frame = self.frameForDocument(frame) orelse return;
+    return self.writeInternal(text, false, doc_frame);
 }
 
 // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-document-writeln
 // `writeln(...text)` runs the document write steps with `text` followed by a
 // U+000A LINE FEED character.
 pub fn writeln(self: *Document, text: []const []const u8, frame: *Frame) !void {
-    return self.writeInternal(text, true, self.frameForDocument(frame));
+    const doc_frame = self.frameForDocument(frame) orelse return;
+    return self.writeInternal(text, true, doc_frame);
 }
 
 fn writeInternal(self: *Document, text: []const []const u8, append_newline: bool, frame: *Frame) !void {
@@ -998,13 +1013,20 @@ fn writeInternal(self: *Document, text: []const []const u8, append_newline: bool
 }
 
 pub fn open(self: *Document, executing: *Frame) !*Document {
-    const frame = self.frameForDocument(executing);
+    // Only the document's own live browsing context. Falling back to `executing`
+    // cleared the *caller* (parent) page when iframe docs had a stale `_frame`.
+    const frame = self.frameForDocument(executing) orelse return self;
     if (self._type == .xml) {
         return error.InvalidStateError;
     }
 
     if (self._throw_on_dynamic_markup_insertion_counter > 0) {
         return error.InvalidStateError;
+    }
+
+    // Non-active / dead document: return without mutating.
+    if (frame._realm_state == .dead or frame._realm_state == .draining or frame.isGoingAway()) {
+        return self;
     }
 
     if (frame._load_state == .parsing) {
@@ -1018,12 +1040,25 @@ pub fn open(self: *Document, executing: *Frame) !*Document {
     // If we aren't parsing, then open clears the document.
     const doc_node = self.asNode();
 
+    // Snapshot children first — removeNode mutates the list and invalidates
+    // a live childrenIterator (iframe teardown mid-iteration).
     {
-        // Remove all children from document
+        var to_remove: std.ArrayList(*Node) = .empty;
         var it = doc_node.childrenIterator();
         while (it.next()) |child| {
+            try to_remove.append(frame.call_arena, child);
+        }
+        for (to_remove.items) |child| {
+            // Child detach can drain realms; re-check between removes.
+            if (frame._realm_state != .active or frame.isGoingAway()) {
+                return self;
+            }
             frame.removeNode(doc_node, child, .{ .will_be_reconnected = false });
         }
+    }
+
+    if (frame._realm_state != .active or frame.isGoingAway()) {
+        return self;
     }
 
     // reset the document
@@ -1032,6 +1067,24 @@ pub fn open(self: *Document, executing: *Frame) !*Document {
     self._style_sheets = null;
     self._implementation = null;
     self._ready_state = .loading;
+
+    // HTML: if document is fully active, set URL to the entry settings object's
+    // API base URL. Parent scripts call iframe.contentDocument.open() — the
+    // method may run with the child's realm as `executing`, so use entry/incumbent
+    // (caller) rather than the document's own about:blank URL.
+    if (frame._realm_state == .active and !frame.isGoingAway() and frame.document == self) {
+        const entry_url = blk: {
+            if (executing.js.getEntryFrame()) |entry| break :blk entry.url;
+            // Incumbent = calling script's window when cross-realm method call.
+            break :blk executing.js.getIncumbent().url;
+        };
+        if (!std.mem.eql(u8, frame.url, entry_url)) {
+            frame.url = try frame.arena.dupeZ(u8, entry_url);
+            frame.window._location = try Location.init(frame.url, frame);
+        }
+        // Prefer frame.url over a stale document._url (DOMImplementation blank).
+        self._url = null;
+    }
 
     self._script_created_parser = Parser.Streaming.init(frame.arena, doc_node, frame);
     try self._script_created_parser.?.start();
@@ -1053,7 +1106,9 @@ pub fn cancelStreamingParser(self: *Document) void {
 }
 
 pub fn close(self: *Document, executing: *Frame) !void {
-    const frame = self.frameForDocument(executing);
+    // Detached / stale document: no live browsing context — do not touch
+    // the caller's frame (same UAF class as open/write parent wipe).
+    const frame = self.frameForDocument(executing) orelse return;
     if (self._type == .xml) {
         return error.InvalidStateError;
     }

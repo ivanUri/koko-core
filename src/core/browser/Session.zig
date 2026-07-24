@@ -491,10 +491,19 @@ fn processFrameNavigation(self: *Session, frame: *Frame, qn: *QueuedNavigation) 
 
     const old_window_ptr: ?usize = if (iframe._window) |w| @intFromPtr(w) else null;
 
+    // Snapshot before deinit — qn lives in qn.arena which we release below.
+    // If a prior deinit already released that arena, skip this frame (stale).
+    if (frame._deinit_done) {
+        // Arena was released with the frame; drop the queued entry only.
+        return;
+    }
+    const nav_url = qn.url;
+    const nav_opts = qn.opts;
+    const qn_arena = qn.arena;
     frame._queued_navigation = null;
     // Commit-time suppression — see processRootQueuedNavigation.
     frame.suppressScheduler(.teardown);
-    defer self.releaseArena(qn.arena);
+    defer self.releaseArena(qn_arena);
 
     errdefer iframe._window = null;
 
@@ -506,6 +515,9 @@ fn processFrameNavigation(self: *Session, frame: *Frame, qn: *QueuedNavigation) 
 
     const frame_id = frame._frame_id;
     const page = self.currentPage().?;
+    // Fire unload/pagehide on the departing document before tear-down so
+    // navigations started from unload handlers are ignored (_unload_running).
+    Frame.fireUnloadForNavigation(frame);
     frame.deinit();
     frame.* = undefined;
 
@@ -542,7 +554,7 @@ fn processFrameNavigation(self: *Session, frame: *Frame, qn: *QueuedNavigation) 
         );
     }
 
-    frame.navigate(qn.url, qn.opts) catch |err| {
+    frame.navigate(nav_url, nav_opts) catch |err| {
         log.err(.browser, "queued frame navigation error", .{ .err = err });
         return err;
     };

@@ -100,7 +100,7 @@ pub const Duplex = enum {
     pub const js_enum_from_string = true;
 };
 
-const Credentials = enum {
+pub const Credentials = enum {
     omit,
     include,
     @"same-origin",

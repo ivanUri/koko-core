@@ -112,6 +112,10 @@ _realm_epoch: RealmLifecycleKernel.Epoch = 0,
 _realm_state: RealmLifecycleKernel.State = .initializing,
 _realm_has_window: bool = false,
 _realm_has_js: bool = false,
+/// True after `deinit` finishes teardown. Guards deferred iframe deinit +
+/// recursive parent deinit from double-freeing ScriptManager hash maps
+/// (`incorrect alignment` in clearImportedModules).
+_deinit_done: bool = false,
 /// Set to true when runaway microtask execution is detected (circuit breaker).
 /// Once suppressed, the scheduler will reject further microtask checkpoints.
 _scheduler_suppressed: bool = false,
@@ -361,14 +365,20 @@ _cdp_mouse_pending_x: f64 = 0,
 _cdp_mouse_pending_y: f64 = 0,
 _cdp_mouse_release_x: f64 = 0,
 _cdp_mouse_release_y: f64 = 0,
-/// Element pending LP/MCP click — activation runs on next scheduler tick.
-_lp_pending_activation: ?*Element = null,
+/// Element pending Velora/MCP click — activation runs on next scheduler tick.
+_velora_pending_activation: ?*Element = null,
 
 // Cached hosting `<iframe>` client size for child-frame hit-test layout.
 _hosting_iframe_layout_size: ?struct { width: f64, height: f64 } = null,
 
-// Per-element layout dimensions cache (key = @intFromPtr(element)). Invalidated on domChanged.
-_element_layout_cache: std.AutoHashMapUnmanaged(usize, struct { width: f64, height: f64 }) = .empty,
+// Per-element layout dimensions cache (key = @intFromPtr(element)).
+// Entries carry their DOM generation so invalidation never requires clearing
+// the HashMap from parser/HTTP threads.
+_element_layout_cache: std.AutoHashMapUnmanaged(usize, struct {
+    width: f64,
+    height: f64,
+    version: usize,
+}) = .empty,
 _layout_cache_dom_version: usize = 0,
 
 // Layout hot-path caches (visibility + document position). Invalidated via version on domChanged.
@@ -389,6 +399,9 @@ _pending_loads: u32,
 
 _parent_notified: bool = false,
 _detach_pending: bool = false,
+/// True while firing unload/pagehide for this frame (or ancestors). Navigations
+/// started from unload handlers must be ignored (HTML navigating-across-documents).
+_unload_running: bool = false,
 
 _type: enum { root, frame }, // only used for logs right now
 _req_id: u32 = 0,
@@ -512,10 +525,19 @@ pub fn realmReadyForExternalObservers(self: *const Frame) bool {
     return self._realm_state == .active and self._realm_has_js and self._realm_has_window and self.document._frame == self;
 }
 
+/// Public entry for iframe re-navigation (processFrameNavigation) so unload
+/// handlers run with `_unload_running` and cannot schedule a competing nav.
+pub fn fireUnloadForNavigation(self: *Frame) void {
+    fireUnloadLifecycleEvents(self);
+}
+
 fn fireUnloadLifecycleEvents(child_frame: *Frame) void {
     for (child_frame.child_frames.items) |nested| {
         fireUnloadLifecycleEvents(nested);
     }
+
+    child_frame._unload_running = true;
+    defer child_frame._unload_running = false;
 
     const doc = child_frame.document;
     const doc_target = doc.asEventTarget();
@@ -566,11 +588,19 @@ const DeferIframeChildDeinitCallback = struct {
 
     fn cancelled(ctx: *anyopaque) void {
         const self: *DeferIframeChildDeinitCallback = @ptrCast(@alignCast(ctx));
+        // Skip if already torn down, re-init'd, or processFrameNavigation owns it.
+        if (self.child_frame._deinit_done) return;
+        if (!self.child_frame._detach_pending) return;
+        if (self.child_frame._queued_navigation != null) return;
         self.child_frame.deinit();
     }
 
     fn run(ctx: *anyopaque) !?u32 {
         const self: *DeferIframeChildDeinitCallback = @ptrCast(@alignCast(ctx));
+        if (self.child_frame._deinit_done) return null;
+        if (!self.child_frame._detach_pending) return null;
+        // Queued re-nav owns teardown + qn.arena (processFrameNavigation).
+        if (self.child_frame._queued_navigation != null) return null;
         self.child_frame.deinit();
         return null;
     }
@@ -595,6 +625,10 @@ fn detachChildFrameForIframe(self: *Frame, iframe: *IFrame) void {
     iframe._window = null;
     child_frame._detach_pending = true;
     child_frame._parent_notified = true;
+    // Detach Document↔Frame immediately (before deferred deinit). JS may still
+    // hold the old Document and call document.open()/write()/close(); those
+    // must not use a departing browsing context (UAF / incorrect alignment).
+    child_frame.document._frame = null;
     self.removePendingIframeLoad(iframe);
     for (self.child_frames.items, 0..) |frame, i| {
         if (frame == child_frame) {
@@ -707,6 +741,9 @@ fn enterRealmDraining(self: *Frame) void {
 /// - script manager rejects late HTTP script callbacks
 pub fn prepareForOutgoingAbort(self: *Frame) void {
     self.enterRealmDraining();
+    // Break Document → Frame before further teardown so retained JS Document
+    // objects cannot open/write into this departing context.
+    self.document._frame = null;
     self._script_manager.base.shutdown = true;
     self.document.cancelStreamingParser();
     self._document_parse_active = false;
@@ -783,11 +820,18 @@ fn enterRealmDead(self: *Frame) void {
 }
 
 pub fn deinit(self: *Frame) void {
+    // Deferred iframe deinit + recursive parent deinit + processFrameNavigation
+    // can all target the same Frame*. Second pass must no-op (hash map UAF).
+    if (self._deinit_done) return;
+    self._deinit_done = true;
+
     for (self.child_frames.items) |frame| {
         frame.deinit();
     }
 
     self.enterRealmDraining();
+    // Idempotent if prepareForOutgoingAbort / detach already cleared it.
+    self.document._frame = null;
     self.closeRtcPeerConnections();
     self.document.cancelStreamingParser();
 
@@ -807,6 +851,7 @@ pub fn deinit(self: *Frame) void {
 
     if (self._queued_navigation) |qn| {
         page.releaseArena(qn.arena);
+        self._queued_navigation = null;
     }
 
     // Drain async DOM queues before releasing observer references; the
@@ -1372,6 +1417,8 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
         self.window._location = try Location.init(self.url, self);
 
         const inherited_origin: ?[]const u8 = blk: {
+            // Network-error style about:srcdoc block → unique opaque origin.
+            if (opts.opaque_about_error) break :blk null;
             if (is_blob) {
                 break :blk try URL.getOrigin(self.arena, request_url[5.. :0]);
             }
@@ -1625,9 +1672,75 @@ pub fn scheduleNavigation(self: *Frame, request_url: []const u8, opts: NavigateO
     if (self.canScheduleNavigation(std.meta.activeTag(nt)) == false) {
         return;
     }
+    // HTML: navigations started during unload/pagehide must be ignored.
+    if (self._unload_running or self.isUnloadRunningInChain()) {
+        return;
+    }
+    // about:srcdoc is only valid via the srcdoc="" attribute path — never
+    // via location / window.open targeting (network-error → opaque page).
+    if (isAboutSrcdocNavigationUrl(request_url)) {
+        return self.scheduleOpaqueAboutSrcdocError(request_url);
+    }
     const arena = try self._session.getArena(.small, "scheduleNavigation");
     errdefer self._session.releaseArena(arena);
     return self.scheduleNavigationWithArena(arena, request_url, opts, nt);
+}
+
+fn isUnloadRunningInChain(self: *const Frame) bool {
+    var f: ?*const Frame = self;
+    while (f) |cur| {
+        if (cur._unload_running) return true;
+        f = cur.parent;
+    }
+    return false;
+}
+
+fn isAboutSrcdocNavigationUrl(url: []const u8) bool {
+    // about:srcdoc or about:srcdoc?...
+    if (!std.mem.startsWith(u8, url, "about:srcdoc")) return false;
+    if (url.len == "about:srcdoc".len) return true;
+    return url["about:srcdoc".len] == '?' or url["about:srcdoc".len] == '#';
+}
+
+/// Navigate to a network-error style opaque document for blocked about:srcdoc.
+fn scheduleOpaqueAboutSrcdocError(self: *Frame, request_url: []const u8) !void {
+    _ = request_url;
+    // Reuse about:blank opaque-ish path: swap document, mark opaque origin,
+    // clear parent access (contentDocument null for cross-origin).
+    if (self.iframe == null and self.parent != null) {
+        // Should still be iframe path for WPT.
+    }
+    const arena = try self._session.getArena(.small, "scheduleAboutSrcdocError");
+    errdefer self._session.releaseArena(arena);
+    // Force a navigation that yields an opaque document — use a dedicated
+    // about:blank re-nav with opaque origin flag via scheduleNavigationWithArena
+    // would recurse; navigate inline after queue like about:blank re-nav.
+    return self.scheduleNavigationWithArena(arena, "about:blank", .{
+        .reason = .script,
+        .kind = .{ .push = null },
+        .force = true,
+        .opaque_about_error = true,
+    }, .{ .script = self });
+}
+
+/// Named child browsing context for Window named access (iframe name / window.name).
+/// Only direct children — nested names are not visible on ancestors.
+pub fn findNamedChildWindow(self: *Frame, name: []const u8) ?*@import("../webapi/Window.zig") {
+    if (name.len == 0) return null;
+    for (self.child_frames.items) |child| {
+        if (child._detach_pending or child._deinit_done) continue;
+        // Prefer live window.name, then iframe name attribute.
+        if (child.window._name.len > 0 and std.mem.eql(u8, child.window._name, name)) {
+            return child.window;
+        }
+        if (child.iframe) |iframe| {
+            const attr = iframe.asElement().getAttributeSafe(comptime .wrap("name")) orelse "";
+            if (attr.len > 0 and std.mem.eql(u8, attr, name)) {
+                return child.window;
+            }
+        }
+    }
+    return null;
 }
 
 // Don't name the first parameter "self", because the target of this navigation
@@ -1676,9 +1789,16 @@ fn scheduleNavigationWithArena(originator: *Frame, arena: Allocator, request_url
     };
 
     const session = target._session;
-    // Short-circuit only true fragment-only navigations (same path/query, different
-    // fragment). Identical URLs fall through and trigger a real reload.
-    const is_fragment_navigation = !std.mem.eql(u8, target.url, resolved_url) and URL.eqlDocument(target.url, resolved_url);
+    // Same URL (including identical fragment): no-op unless forced reload.
+    // SPA code often sets location.hash to its current value; treating that as
+    // a full navigation hangs the load pipeline and WPT harness.
+    if (!opts.force and std.mem.eql(u8, target.url, resolved_url)) {
+        session.releaseArena(arena);
+        return;
+    }
+    // Short-circuit true fragment-only navigations (same path/query, different
+    // fragment). Keeps history/location SPA updates off the network path.
+    const is_fragment_navigation = URL.eqlDocument(target.url, resolved_url);
     if (!opts.force and is_fragment_navigation) {
         target.url = try target.arena.dupeZ(u8, resolved_url);
         target.window._location = try Location.init(target.url, target);
@@ -3111,12 +3231,11 @@ fn frameDoneCallback(ctx: *anyopaque) !void {
 
     log.debug(.frame, "navigate done", .{ .type = self._type, .url = self.url, .state = std.meta.activeTag(self._parse_state) });
 
+    // Empty body stays `.pre` and is handled in the switch below (blank HTML +
+    // documentIsComplete). Pending-root may retry once when HTML was expected.
     if (self._parse_state == .pre) {
         log.warn(.frame, "navigate empty document body", .{ .url = self.url, .type = self._type });
         if (self._page._state == .pending and retryPendingRootNavigation(self)) return;
-        completePendingCdpNavigateFailure(self, error.EmptyDocumentBody);
-        frameErrorCallback(ctx, error.EmptyDocumentBody);
-        return;
     }
 
     // Session Navigation is per browsing context (root only). Iframe loads must
@@ -3147,7 +3266,7 @@ fn frameDoneCallback(ctx: *anyopaque) !void {
         self.flushPendingFrameNavigatedObservers();
         if (!navDeliverable(self)) return;
 
-        // Small/medium documents: inline parse + staticScriptsDone (LP frameDoneCallback).
+        // Small/medium documents: inline parse + staticScriptsDone (Velora frameDoneCallback).
         // Large bootstraps (x.com __INITIAL_STATE__) defer to scheduler to avoid stack overflow.
         // x.com ~265KB wire HTML with 170KB+ inline bootstrap — still deferred.
         // go.dev ~64KB must stay inline (deferred path regressed DCL/crash).
@@ -3756,6 +3875,9 @@ pub fn domChanged(self: *Frame) void {
     self._intersection_check_scheduled = true;
     self._intersection_check_task_owner = self.js.execution.captureTaskOwner();
     self.js.queueIntersectionChecks() catch |err| {
+        // The flag represents an actually queued checkpoint.  If enqueueing
+        // fails, leave the observer eligible for the next DOM/layout change.
+        self._intersection_check_scheduled = false;
         log.err(.frame, "frame.schedIntersectChecks", .{ .err = err, .type = self._type, .url = self.url });
     };
 }
@@ -3995,6 +4117,7 @@ pub fn scheduleIntersectionDelivery(self: *Frame) !void {
         return;
     }
     self._intersection_delivery_scheduled = true;
+    errdefer self._intersection_delivery_scheduled = false;
     self._intersection_delivery_task_owner = self.js.execution.captureTaskOwner();
     try self.js.queueIntersectionDelivery();
 }
@@ -6283,6 +6406,8 @@ pub const NavigateOpts = struct {
     // scheduleNavigationWithArena copies the originator's origin here for Sec-Fetch-Site.
     prior_origin: ?[]const u8 = null,
     force: bool = false,
+    /// Blocked about:srcdoc navigations become an opaque-origin error document.
+    opaque_about_error: bool = false,
     kind: NavigationKind = .{ .push = null },
 };
 
@@ -6461,20 +6586,20 @@ pub fn scheduleCdpMousePress(self: *Frame, x: f64, y: f64) !void {
     }.run, 0, .{ .name = "input.mousePressed" });
 }
 
-/// Queue element activation after LP.clickNode CDP reply (avoids blocking transport).
+/// Queue element activation after Velora.clickNode CDP reply (avoids blocking transport).
 pub fn scheduleActivationOnElement(self: *Frame, element: *Element) !void {
-    self._lp_pending_activation = element;
+    self._velora_pending_activation = element;
     try self.js.scheduler.add(self, struct {
         fn run(ctx: *anyopaque) !?u32 {
             const frame: *Frame = @ptrCast(@alignCast(ctx));
-            const el = frame._lp_pending_activation orelse return null;
-            frame._lp_pending_activation = null;
+            const el = frame._velora_pending_activation orelse return null;
+            frame._velora_pending_activation = null;
             @import("InputController.zig").dispatchActivationOnElementFast(el, frame) catch |err| {
                 log.err(.frame, "scheduled activation failed", .{ .err = err });
             };
             return null;
         }
-    }.run, 0, .{ .name = "lp.clickNode" });
+    }.run, 0, .{ .name = "velora.clickNode" });
 }
 
 /// Queue mouseReleased independently; mousePressed has already established

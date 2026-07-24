@@ -107,7 +107,7 @@ pub fn registerTool(
         .signal = options.signal,
     };
 
-    // AbortSignal dependents for model-context tools are LP-specific; Velora's
+    // AbortSignal dependents for model-context tools are Velora-specific; Velora's
     // AbortSignal tracks signal→signal dependents only. We still store the
     // signal so findTool / markAborted can observe `_aborted`.
     _ = entry.signal;

@@ -17,9 +17,9 @@
 //! The structure does not clear the memory allocated in the arena,
 //! clear the entire arena when exiting the program.
 const std = @import("std");
-const lp = @import("velora");
+const v = @import("velora");
 
-const log = lp.log;
+const log = v.log;
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 

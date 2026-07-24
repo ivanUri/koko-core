@@ -331,8 +331,10 @@ pub fn deinit(self: *ScriptManagerBase) void {
     self.reset();
     self.reapOrphanedHttpCtxs();
     self.orphaned_http_ctxs.deinit(self.allocator);
+    self.orphaned_http_ctxs = .{};
 
     self.imported_modules.deinit(self.allocator);
+    self.imported_modules = .empty;
     // we don't deinit self.importmap b/c we use the owner's arena for its
     // allocations.
 }
@@ -347,6 +349,10 @@ fn freeImportedModuleKey(allocator: Allocator, key: []const u8) void {
 }
 
 fn clearImportedModules(self: *ScriptManagerBase) void {
+    // Empty map (never used / already cleared): iterator must not touch
+    // metadata — a double-deinit leaves a dangling metadata pointer and
+    // panics with "incorrect alignment" in HashMap.header().
+    if (self.imported_modules.metadata == null) return;
     var it = self.imported_modules.iterator();
     while (it.next()) |entry| {
         switch (entry.value_ptr.state) {

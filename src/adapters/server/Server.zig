@@ -1,4 +1,4 @@
-const lp = @import("velora");
+const v = @import("velora");
 
 //
 // This program is free software: you can redistribute it and/or modify
@@ -16,13 +16,13 @@ const lp = @import("velora");
 
 const std = @import("std");
 
-const App = lp.App;
+const App = v.App;
 const CDP = @import("../../protocols/cdp/CDP.zig");
-const Config = lp.Config;
+const Config = v.Config;
 const CDPClient = @import("../../core/browser/HttpClient.zig").CDPClient;
 const WsConnection = @import("../../runtime/network/WsConnection.zig");
 
-const log = lp.log;
+const log = v.log;
 const net = std.net;
 const posix = std.posix;
 const Allocator = std.mem.Allocator;

@@ -451,10 +451,12 @@ pub fn handshake(self: *WsConnection) !bool {
         }
         const read_bytes = self.read() catch |err| {
             log.warn(.app, "CDP read", .{ .err = err });
+            self.shutdownPeer();
             return false;
         };
         if (read_bytes == 0) {
             log.info(.app, "CDP disconnect", .{});
+            self.shutdownPeer();
             return false;
         }
         const result = self.processHttpRequest() catch return false;
@@ -715,6 +717,12 @@ pub fn sendClose(self: *WsConnection) void {
 
 pub fn shutdown(self: *WsConnection) void {
     posix.shutdown(self.socket, .recv) catch {};
+}
+
+/// Known-dead peer (EOF / read error / poll HUP). SHUT_RDWR unblocks a
+/// concurrent send() that would otherwise sit until TCP keepalive expires.
+pub fn shutdownPeer(self: *WsConnection) void {
+    posix.shutdown(self.socket, .both) catch {};
 }
 
 pub fn setBlocking(self: *WsConnection, blocking: bool) !void {

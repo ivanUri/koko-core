@@ -42,6 +42,10 @@ pub const CDP_MAX_MESSAGE_SIZE = 512 * 1024 + 14 + 140;
 pub const CDP_KEEPALIVE_IDLE_S: c_int = 4;
 pub const CDP_KEEPALIVE_INTVL_S: c_int = 2;
 pub const CDP_KEEPALIVE_CNT: c_int = 3;
+// Linux-only: abort when unacked writes (or silent peer) exceed this. Closes
+// the gap where keepalive probes do not fire while a send buffer is full of
+// unacked data (LP improve-dead-peer-detection).
+pub const CDP_TCP_USER_TIMEOUT_MS: c_int = 10_000;
 
 const Config = @This();
 

@@ -84,8 +84,14 @@ pub fn deinit(self: *StyleManager) void {
 fn parseSheet(self: *StyleManager, sheet: *CSSStyleSheet) !void {
     if (sheet._css_rules) |css_rules| {
         for (css_rules._rules.items) |rule| {
-            const style_rule = rule.is(CSSStyleRule) orelse continue;
-            try self.addRule(style_rule);
+            if (rule.is(CSSStyleRule)) |style_rule| {
+                try self.addRule(style_rule);
+            } else if (rule._raw_css_text) |at_rule| {
+                // CSSOM keeps grouping rules as typed CSSRule objects. Until
+                // nested CSSMediaRule is modeled, retain and parse their source
+                // here so responsive author rules participate in layout.
+                try self.parseStyleText(at_rule);
+            }
         }
     }
 
@@ -190,6 +196,7 @@ fn addRawRule(self: *StyleManager, selector_text: []const u8, block_text: []cons
         const val = decl.value;
         if (std.ascii.eqlIgnoreCase(name, "display")) {
             props.display_none = std.ascii.eqlIgnoreCase(val, "none");
+            props.display = try self.arena.dupe(u8, val);
         } else if (std.ascii.eqlIgnoreCase(name, "visibility")) {
             props.visibility_hidden = std.ascii.eqlIgnoreCase(val, "hidden") or std.ascii.eqlIgnoreCase(val, "collapse");
         } else if (std.ascii.eqlIgnoreCase(name, "opacity")) {
@@ -214,8 +221,8 @@ fn addRawRule(self: *StyleManager, selector_text: []const u8, block_text: []cons
             props.position = try self.arena.dupe(u8, val);
         } else if (std.ascii.eqlIgnoreCase(name, "flex-direction")) {
             props.flex_direction = try self.arena.dupe(u8, val);
-        } else if (std.ascii.eqlIgnoreCase(name, "display") and props.display == null) {
-            props.display = try self.arena.dupe(u8, val);
+        } else if (std.ascii.eqlIgnoreCase(name, "grid-template-columns")) {
+            props.grid_template_columns = try self.arena.dupe(u8, val);
         }
     }
 
@@ -268,6 +275,15 @@ pub fn sheetModified(self: *StyleManager) void {
 pub fn invalidateLayoutPropertyCache(self: *StyleManager) void {
     self._layout_prop_cache_gen +%= 1;
     self._layout_prop_cache_hit_gen = 0;
+}
+
+/// Freeze the current author-rule snapshot before a top-level layout read.
+/// Recursive layout may then perform read-only cascade lookups without
+/// rebuilding/resetting StyleManager storage in the middle of resolution.
+pub fn prepareForLayout(self: *StyleManager) void {
+    self.rebuildIfDirty() catch |err| {
+        log.err(.browser, "StyleManager prepareForLayout", .{ .err = err });
+    };
 }
 
 /// Rebuilds the rule list from all document stylesheets.
@@ -479,14 +495,6 @@ fn isElementHidden(self: *StyleManager, el: *Element, options: CheckVisibilityOp
         if (matchesUaDisplayNoneRule(el)) return true;
     }
 
-    // Bulk layout (offsetWidth/getBoundingClientRect) skips stylesheet cascade;
-    // matchesSelector is disabled while _layout_resolve_active.
-    if (self.frame.layoutResolveActive()) {
-        return (display_none orelse false) or
-            (visibility_hidden orelse false) or
-            (opacity_zero orelse false);
-    }
-
     if (display_priority == INLINE_PRIORITY and visibility_priority == INLINE_PRIORITY and opacity_priority == INLINE_PRIORITY) {
         return false;
     }
@@ -683,6 +691,13 @@ fn layoutPropertyCacheKey(el: *Element, property_name: []const u8) u64 {
 
 /// Resolves a layout property (width/height) from inline styles and stylesheets.
 pub fn getLayoutProperty(self: *StyleManager, el: *Element, property_name: []const u8) ?[]const u8 {
+    // Top-level layout calls prepareForLayout before entering recursive
+    // resolution. Non-layout callers still need a current cascade snapshot.
+    if (self.dirty) {
+        if (self.frame.layoutResolveActive()) return null;
+        self.rebuildIfDirty() catch return null;
+    }
+
     const cache_valid = self._layout_prop_cache_hit_gen == self._layout_prop_cache_gen;
     const cache_key = layoutPropertyCacheKey(el, property_name);
     if (cache_valid) {
@@ -708,8 +723,6 @@ fn resolveLayoutProperty(self: *StyleManager, el: *Element, property_name: []con
         const value = property._value.str();
         if (value.len > 0) return value;
     }
-
-    if (frame.layoutResolveActive()) return null;
 
     var result: ?[]const u8 = null;
     var best_priority: u64 = 0;
@@ -744,6 +757,8 @@ fn resolveLayoutProperty(self: *StyleManager, el: *Element, property_name: []con
                     props.flex_direction
                 else if (std.ascii.eqlIgnoreCase(prop, "display"))
                     props.display
+                else if (std.ascii.eqlIgnoreCase(prop, "grid-template-columns"))
+                    props.grid_template_columns
                 else
                     null;
                 if (value == null) continue;
@@ -900,6 +915,7 @@ fn extractVisibilityProperties(style: *CSSStyleProperties) VisibilityProperties 
 
     if (decl.findProperty(comptime .wrap("display"))) |property| {
         props.display_none = property._value.eql(comptime .wrap("none"));
+        props.display = property._value.str();
     }
 
     if (decl.findProperty(comptime .wrap("visibility"))) |property| {
@@ -940,6 +956,18 @@ fn extractVisibilityProperties(style: *CSSStyleProperties) VisibilityProperties 
 
     if (decl.findProperty(comptime .wrap("transform"))) |property| {
         props.transform = property._value.str();
+    }
+
+    if (decl.findProperty(comptime .wrap("position"))) |property| {
+        props.position = property._value.str();
+    }
+
+    if (decl.findProperty(.wrap("flex-direction"))) |property| {
+        props.flex_direction = property._value.str();
+    }
+
+    if (decl.findProperty(.wrap("grid-template-columns"))) |property| {
+        props.grid_template_columns = property._value.str();
     }
 
     return props;
@@ -998,9 +1026,6 @@ fn countCompoundSpecificity(compound: Selector.Compound, ids: *u32, classes: *u3
 }
 
 fn matchesSelector(el: *Element, selector: Selector.Selector, frame: *Frame) bool {
-    // Bulk layout (offsetWidth/getBoundingClientRect) uses inline + UA tag defaults only.
-    // Full stylesheet cascade runs outside layout via getComputedStyle paths.
-    if (frame.layoutResolveActive()) return false;
     const node = el.asNode();
     return SelectorList.matches(node, selector, node, frame);
 }
@@ -1020,6 +1045,7 @@ const VisibilityProperties = struct {
     position: ?[]const u8 = null,
     flex_direction: ?[]const u8 = null,
     display: ?[]const u8 = null,
+    grid_template_columns: ?[]const u8 = null,
 
     // return true if any field in VisibilityProperties is not null
     fn isRelevant(self: VisibilityProperties) bool {
@@ -1036,7 +1062,8 @@ const VisibilityProperties = struct {
             self.transform != null or
             self.position != null or
             self.flex_direction != null or
-            self.display != null;
+            self.display != null or
+            self.grid_template_columns != null;
     }
 };
 

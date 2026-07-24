@@ -671,17 +671,25 @@ pub fn notifyInspectorContextDestroyed(self: *Env, context: *Context) void {
 }
 
 pub fn destroyContext(self: *Env, context: *Context) void {
+    // Idempotent: document.open() / removeNode may tear down child iframe
+    // contexts, then parent frame.deinit() calls destroyContext again. Double
+    // deinit is UAF; panic("Tried to remove unknown context") took down the
+    // whole process during WPT dynamic-markup suites.
+    var found = false;
     for (self.contexts[0..self.context_count], 0..) |ctx, i| {
         if (ctx == context) {
             // Swap with last element and decrement count
             self.context_count -= 1;
             self.contexts[i] = self.contexts[self.context_count];
+            found = true;
             break;
         }
-    } else {
+    }
+    if (!found) {
         if (comptime IS_DEBUG) {
-            @panic("Tried to remove unknown context");
+            log.warn(.js, "destroyContext already removed", .{});
         }
+        return;
     }
 
     self.notifyInspectorContextDestroyed(context);

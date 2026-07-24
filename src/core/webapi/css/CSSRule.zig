@@ -26,6 +26,7 @@ pub const Type = union(enum) {
 };
 
 _type: Type,
+_raw_css_text: ?[]const u8 = null,
 
 pub fn as(self: *CSSRule, comptime T: type) *T {
     return self.is(T).?;
@@ -44,12 +45,19 @@ pub fn init(rule_type: Type, frame: *Frame) !*CSSRule {
     });
 }
 
+pub fn initRaw(rule_type: Type, raw_css_text: []const u8, frame: *Frame) !*CSSRule {
+    return frame._factory.create(CSSRule{
+        ._type = rule_type,
+        ._raw_css_text = try frame.dupeString(raw_css_text),
+    });
+}
+
 pub fn getType(self: *const CSSRule) u16 {
     return @as(u16, @intFromEnum(std.meta.activeTag(self._type))) + 1;
 }
 
-pub fn getCssText(_: *const CSSRule, _: *Frame) []const u8 {
-    return "";
+pub fn getCssText(self: *const CSSRule, _: *Frame) []const u8 {
+    return self._raw_css_text orelse "";
 }
 
 pub fn getParentRule(_: *const CSSRule) ?*CSSRule {

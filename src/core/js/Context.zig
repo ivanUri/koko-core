@@ -1287,7 +1287,15 @@ pub fn queueIntersectionChecks(self: *Context) !void {
                         frame._intersection_check_scheduled = false;
                         return;
                     }
-                    ctx.execution.validateJsEntry(.allow_draining, .intersection_check) catch return;
+                    // A scheduled bit must never survive a microtask that did
+                    // not perform its work.  Realm entry can be transiently
+                    // unavailable while a framework is mounting a subtree;
+                    // keeping the bit set would suppress every later
+                    // domChanged() intersection checkpoint.
+                    ctx.execution.validateJsEntry(.allow_draining, .intersection_check) catch {
+                        frame._intersection_check_scheduled = false;
+                        return;
+                    };
                     frame.performScheduledIntersectionChecks();
                 },
                 .worker => unreachable,
@@ -1314,7 +1322,10 @@ pub fn queueIntersectionDelivery(self: *Context) !void {
                         frame._intersection_delivery_scheduled = false;
                         return;
                     }
-                    ctx.execution.validateJsEntry(.allow_draining, .intersection_delivery) catch return;
+                    ctx.execution.validateJsEntry(.allow_draining, .intersection_delivery) catch {
+                        frame._intersection_delivery_scheduled = false;
+                        return;
+                    };
                     frame.deliverIntersections();
                 },
                 .worker => unreachable,

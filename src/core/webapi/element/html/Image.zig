@@ -158,8 +158,10 @@ pub fn getComplete(self: *const Image) bool {
     return self._complete and !self._loading;
 }
 
+const ImageDimensions = struct { w: u32, h: u32 };
+
 /// Prefer width/height content attributes; else CSS default object size 300×150.
-fn resolveNaturalDimensions(self: *const Image) struct { w: u32, h: u32 } {
+fn resolveNaturalDimensions(self: *const Image) ImageDimensions {
     var w: u32 = 0;
     var h: u32 = 0;
     if (self.asConstElement().getAttributeSafe(comptime .wrap("width"))) |raw| {
@@ -172,6 +174,123 @@ fn resolveNaturalDimensions(self: *const Image) struct { w: u32, h: u32 } {
     if (w == 0) w = 300;
     if (h == 0) h = 150;
     return .{ .w = w, .h = h };
+}
+
+fn readU16Be(bytes: []const u8, at: usize) ?u16 {
+    if (at + 2 > bytes.len) return null;
+    return (@as(u16, bytes[at]) << 8) | bytes[at + 1];
+}
+
+fn readU16Le(bytes: []const u8, at: usize) ?u16 {
+    if (at + 2 > bytes.len) return null;
+    return @as(u16, bytes[at]) | (@as(u16, bytes[at + 1]) << 8);
+}
+
+fn readU24Le(bytes: []const u8, at: usize) ?u32 {
+    if (at + 3 > bytes.len) return null;
+    return @as(u32, bytes[at]) |
+        (@as(u32, bytes[at + 1]) << 8) |
+        (@as(u32, bytes[at + 2]) << 16);
+}
+
+fn readU32Be(bytes: []const u8, at: usize) ?u32 {
+    if (at + 4 > bytes.len) return null;
+    return (@as(u32, bytes[at]) << 24) |
+        (@as(u32, bytes[at + 1]) << 16) |
+        (@as(u32, bytes[at + 2]) << 8) |
+        bytes[at + 3];
+}
+
+fn validDimensions(w: u32, h: u32) ?ImageDimensions {
+    if (w == 0 or h == 0) return null;
+    // Reject corrupt headers before their dimensions enter layout arithmetic.
+    if (w > 1_000_000 or h > 1_000_000) return null;
+    return .{ .w = w, .h = h };
+}
+
+/// Read dimensions from encoded image headers without decoding pixels.
+/// Supports the formats commonly delivered to browsers by image CDNs.
+fn encodedImageDimensions(bytes: []const u8) ?ImageDimensions {
+    // PNG: signature + IHDR width/height.
+    const png_signature = "\x89PNG\r\n\x1a\n";
+    if (bytes.len >= 24 and std.mem.eql(u8, bytes[0..8], png_signature)) {
+        return validDimensions(readU32Be(bytes, 16).?, readU32Be(bytes, 20).?);
+    }
+
+    // GIF87a / GIF89a logical screen dimensions.
+    if (bytes.len >= 10 and
+        (std.mem.eql(u8, bytes[0..6], "GIF87a") or std.mem.eql(u8, bytes[0..6], "GIF89a")))
+    {
+        return validDimensions(readU16Le(bytes, 6).?, readU16Le(bytes, 8).?);
+    }
+
+    // JPEG: scan marker segments until a Start Of Frame marker.
+    if (bytes.len >= 4 and bytes[0] == 0xff and bytes[1] == 0xd8) {
+        var pos: usize = 2;
+        while (pos + 3 < bytes.len) {
+            while (pos < bytes.len and bytes[pos] != 0xff) : (pos += 1) {}
+            while (pos < bytes.len and bytes[pos] == 0xff) : (pos += 1) {}
+            if (pos >= bytes.len) break;
+            const marker = bytes[pos];
+            pos += 1;
+            if (marker == 0xd8 or marker == 0xd9 or marker == 0x01 or
+                (marker >= 0xd0 and marker <= 0xd7))
+            {
+                continue;
+            }
+            const segment_len = readU16Be(bytes, pos) orelse break;
+            if (segment_len < 2 or pos + segment_len > bytes.len) break;
+            const is_sof = (marker >= 0xc0 and marker <= 0xc3) or
+                (marker >= 0xc5 and marker <= 0xc7) or
+                (marker >= 0xc9 and marker <= 0xcb) or
+                (marker >= 0xcd and marker <= 0xcf);
+            if (is_sof and segment_len >= 7) {
+                const h = readU16Be(bytes, pos + 3).?;
+                const w = readU16Be(bytes, pos + 5).?;
+                return validDimensions(w, h);
+            }
+            pos += segment_len;
+        }
+    }
+
+    // WebP extended, lossy, and lossless bitstream headers.
+    if (bytes.len >= 30 and
+        std.mem.eql(u8, bytes[0..4], "RIFF") and
+        std.mem.eql(u8, bytes[8..12], "WEBP"))
+    {
+        if (std.mem.eql(u8, bytes[12..16], "VP8X")) {
+            return validDimensions(readU24Le(bytes, 24).? + 1, readU24Le(bytes, 27).? + 1);
+        }
+        if (std.mem.eql(u8, bytes[12..16], "VP8 ") and
+            bytes[23] == 0x9d and bytes[24] == 0x01 and bytes[25] == 0x2a)
+        {
+            return validDimensions(
+                readU16Le(bytes, 26).? & 0x3fff,
+                readU16Le(bytes, 28).? & 0x3fff,
+            );
+        }
+        if (std.mem.eql(u8, bytes[12..16], "VP8L") and bytes[20] == 0x2f) {
+            const w = 1 + @as(u32, bytes[21]) + ((@as(u32, bytes[22]) & 0x3f) << 8);
+            const h = 1 +
+                (@as(u32, bytes[22]) >> 6) +
+                (@as(u32, bytes[23]) << 2) +
+                ((@as(u32, bytes[24]) & 0x0f) << 10);
+            return validDimensions(w, h);
+        }
+    }
+
+    // AVIF/HEIF stores the display dimensions in an Image Spatial Extents
+    // (`ispe`) box. Only accept a complete box with a version/flags field.
+    var at: usize = 4;
+    while (at + 16 <= bytes.len) : (at += 1) {
+        if (!std.mem.eql(u8, bytes[at .. at + 4], "ispe")) continue;
+        const box_start = at - 4;
+        const box_size = readU32Be(bytes, box_start) orelse continue;
+        if (box_size < 20 or box_start + box_size > bytes.len) continue;
+        return validDimensions(readU32Be(bytes, at + 8).?, readU32Be(bytes, at + 12).?);
+    }
+
+    return null;
 }
 
 /// Used in `Page.nodeIsReady`.
@@ -265,6 +384,9 @@ const ImageLoad = struct {
     arena: std.mem.Allocator,
     status: u16 = 0,
     guard: LoadGuard.Guard,
+    probe: std.ArrayList(u8) = .empty,
+
+    const max_probe_bytes = 512 * 1024;
 
     fn deliverable(self: *const ImageLoad) bool {
         const frame = self.frame;
@@ -284,7 +406,12 @@ const ImageLoad = struct {
         return true;
     }
 
-    fn dataCallback(_: HttpClient.Response, _: []const u8) !void {}
+    fn dataCallback(response: HttpClient.Response, data: []const u8) !void {
+        const self: *ImageLoad = @ptrCast(@alignCast(response.ctx));
+        if (self.probe.items.len >= max_probe_bytes) return;
+        const remaining = max_probe_bytes - self.probe.items.len;
+        try self.probe.appendSlice(self.arena, data[0..@min(data.len, remaining)]);
+    }
 
     fn shutdownCallback(ctx: *anyopaque) void {
         const self: *ImageLoad = @ptrCast(@alignCast(ctx));
@@ -311,11 +438,16 @@ const ImageLoad = struct {
         self.image._complete = true;
         self.image._failed = !ok;
         if (ok) {
-            // Headless does not decode pixels; still expose a non-zero intrinsic
-            // size so scripts relying on naturalWidth/Height after load work.
-            const dims = self.image.resolveNaturalDimensions();
+            // Header probing preserves the encoded image's aspect ratio without
+            // paying the cost of decoding pixels. Fall back to HTML/CSS defaults
+            // only for unsupported or malformed formats.
+            const dims = encodedImageDimensions(self.probe.items) orelse
+                self.image.resolveNaturalDimensions();
             self.image._natural_width = dims.w;
             self.image._natural_height = dims.h;
+            // Intrinsic size is an input to replaced-element layout. Any boxes
+            // cached before the response completed must be recomputed.
+            self.frame.domChanged();
         } else {
             self.image._natural_width = 0;
             self.image._natural_height = 0;
@@ -397,4 +529,43 @@ pub const Build = struct {
 const testing = @import("../../../../testing/testing.zig");
 test "WebApi: HTML.Image" {
     try testing.htmlRunner("element/html/image.html", .{});
+}
+
+test "Image: encoded dimensions PNG GIF JPEG WebP" {
+    const png = [_]u8{
+        0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n',
+        0,    0,   0,   13,  'I',  'H',  'D',  'R',
+        0,    0,   5,   0,   0,    0,    2,    208,
+    };
+    try std.testing.expectEqual(ImageDimensions{ .w = 1280, .h = 720 }, encodedImageDimensions(&png).?);
+
+    const gif = [_]u8{ 'G', 'I', 'F', '8', '9', 'a', 0x80, 0x02, 0xe0, 0x01 };
+    try std.testing.expectEqual(ImageDimensions{ .w = 640, .h = 480 }, encodedImageDimensions(&gif).?);
+
+    const jpeg = [_]u8{
+        0xff, 0xd8,
+        0xff, 0xe0,
+        0x00, 0x04,
+        0x00, 0x00,
+        0xff, 0xc0,
+        0x00, 0x0b,
+        0x08, 0x02,
+        0xd0, 0x05,
+        0x00, 0x03,
+        0x01,
+    };
+    try std.testing.expectEqual(ImageDimensions{ .w = 1280, .h = 720 }, encodedImageDimensions(&jpeg).?);
+
+    const webp_vp8x = [_]u8{
+        'R',  'I',  'F',  'F',  22,   0,    0, 0, 'W', 'E', 'B', 'P',
+        'V',  'P',  '8',  'X',  10,   0,    0, 0, 0,   0,   0,   0,
+        0xff, 0x04, 0x00, 0xcf, 0x02, 0x00,
+    };
+    try std.testing.expectEqual(ImageDimensions{ .w = 1280, .h = 720 }, encodedImageDimensions(&webp_vp8x).?);
+}
+
+test "Image: encoded dimensions reject malformed input" {
+    try std.testing.expect(encodedImageDimensions("") == null);
+    try std.testing.expect(encodedImageDimensions("\x89PNG\r\n\x1a\n") == null);
+    try std.testing.expect(encodedImageDimensions("not an image") == null);
 }

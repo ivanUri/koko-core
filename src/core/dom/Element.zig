@@ -1320,6 +1320,7 @@ fn layoutVisibilityCache(frame: *Frame) *StyleManager.VisibilityCache {
 
 fn withLayoutResolveActive(frame: *Frame, comptime func: anytype, args: anytype) @TypeOf(@call(.auto, func, args)) {
     frame.finishTopLevelLayoutResolve();
+    frame._style_manager.prepareForLayout();
     frame.beginLayoutResolve();
     defer frame.finishTopLevelLayoutResolve();
     return @call(.auto, func, args);
@@ -1735,6 +1736,7 @@ fn layoutCacheKey(self: *const Element) usize {
 fn readLayoutCache(self: *Element, frame: *Frame) ?LayoutSize {
     if (frame._layout_cache_dom_version != frame.version) return null;
     const cached = frame._element_layout_cache.get(layoutCacheKey(self)) orelse return null;
+    if (cached.version != frame.version) return null;
     return .{ .width = cached.width, .height = cached.height };
 }
 
@@ -1743,7 +1745,11 @@ fn writeLayoutCache(self: *Element, frame: *Frame, size: LayoutSize) void {
         frame._layout_cache_dom_version = frame.version;
     }
     const gop = frame._element_layout_cache.getOrPut(frame.arena, layoutCacheKey(self)) catch return;
-    gop.value_ptr.* = .{ .width = size.width, .height = size.height };
+    gop.value_ptr.* = .{
+        .width = size.width,
+        .height = size.height,
+        .version = frame.version,
+    };
 }
 
 fn estimateHeightFromFontSize(self: *Element, frame: *Frame) ?f64 {
@@ -1836,6 +1842,9 @@ fn resolveElementDimensions(self: *Element, frame: *Frame, depth: usize) LayoutS
 
     if (layoutDimensionFromProperty(self, frame, "width", .width)) |w| width = w;
     if (layoutDimensionFromProperty(self, frame, "height", .height)) |h| height = h;
+    if (width == layout_default_size) {
+        if (autoFlexItemWidth(self, frame, parent_size)) |item_width| width = item_width;
+    }
 
     const tag = self.getTag();
     if (tag == .html or tag == .body) {
@@ -2205,6 +2214,26 @@ fn parentLayoutSize(self: *Element, frame: *Frame) LayoutSize {
     return elementLayoutSizeShallow(parent, frame);
 }
 
+fn autoFlexItemWidth(self: *Element, frame: *Frame, parent_size: LayoutSize) ?f64 {
+    if (readLayoutPropertyRaw(self, frame, "width") != null) return null;
+    const parent = self.asNode().parentElement() orelse return null;
+    if (!parentUsesHorizontalFlow(parent, frame)) return null;
+
+    const parent_node = parent.asNode();
+    const limit: u32 = if (parent_node._children) |children| children.len() else 0;
+    var count: usize = 0;
+    var visited: u32 = 0;
+    var child = parent_node.firstChild();
+    while (child) |node| {
+        visited += 1;
+        if (visited > limit) break;
+        if (node.is(Element) != null) count += 1;
+        child = node.nextSibling();
+    }
+    if (count <= 1 or parent_size.width <= layout_default_size) return null;
+    return parent_size.width / @as(f64, @floatFromInt(count));
+}
+
 fn readLayoutPropertyRaw(self: *Element, frame: *Frame, property_name: []const u8) ?[]const u8 {
     if (self.getStyle(frame)) |style| {
         const value = style.asCSSStyleDeclaration().getPropertyValue(property_name, frame);
@@ -2434,6 +2463,9 @@ fn elementLayoutSizeShallow(self: *Element, frame: *Frame) LayoutSize {
     }
     if (readLayoutPropertyRaw(self, frame, "height")) |raw| {
         if (parseLayoutDimension(raw, parent_size.height)) |h| height = h;
+    }
+    if (width == layout_default_size) {
+        if (autoFlexItemWidth(self, frame, parent_size)) |item_width| width = item_width;
     }
 
     const tag = self.getTag();

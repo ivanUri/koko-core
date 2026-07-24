@@ -1,5 +1,5 @@
 const std = @import("std");
-const lp = @import("velora");
+const v = @import("velora");
 
 const Allocator = std.mem.Allocator;
 
@@ -31,24 +31,24 @@ pub fn main() !void {
         thrd.detach();
         wg.wait();
     }
-    lp.log.opts.level = .warn;
-    var config = try lp.Config.init(allocator, "legacy-test", .{ .serve = .{
+    v.log.opts.level = .warn;
+    var config = try v.Config.init(allocator, "legacy-test", .{ .serve = .{
         .insecure_disable_tls_host_verification = true,
         .user_agent_suffix = "internal-tester",
     } });
     defer config.deinit(allocator);
 
-    var app = try lp.App.init(allocator, &config);
+    var app = try v.App.init(allocator, &config);
     defer app.deinit();
 
     var test_arena = std.heap.ArenaAllocator.init(allocator);
     defer test_arena.deinit();
 
-    var browser: lp.Browser = undefined;
+    var browser: v.Browser = undefined;
     try browser.init(app, .{}, null);
     defer browser.deinit();
 
-    const notification = try lp.Notification.init(allocator);
+    const notification = try v.Notification.init(allocator);
     defer notification.deinit();
 
     const session = try browser.newSession(notification);
@@ -87,17 +87,17 @@ pub fn main() !void {
     }
 }
 
-pub fn run(allocator: Allocator, file: []const u8, session: *lp.Session) !void {
+pub fn run(allocator: Allocator, file: []const u8, session: *v.Session) !void {
     const url = try std.fmt.allocPrintSentinel(allocator, "http://localhost:9589/{s}", .{file}, 0);
 
     const frame = try session.createPage();
     defer session.removePage();
 
-    var ls: lp.js.Local.Scope = undefined;
+    var ls: v.js.Local.Scope = undefined;
     frame.js.localScope(&ls);
     defer ls.deinit();
 
-    var try_catch: lp.js.TryCatch = undefined;
+    var try_catch: v.js.TryCatch = undefined;
     try_catch.init(&ls.local);
     defer try_catch.deinit();
 

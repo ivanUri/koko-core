@@ -122,7 +122,7 @@ fn insertPlaceholderAtRule(self: *CSSStyleSheet, rule: []const u8, requested_ind
     log.debug(.not_implemented, "CSSStyleSheet.insertRule at-rule placeholder", .{});
     const rules = try self.getCssRules(frame);
     const index = clampInsertIndex(requested_index, rules.length());
-    const placeholder = try CSSRule.init(placeholderTypeForAtRule(rule), frame);
+    const placeholder = try CSSRule.initRaw(placeholderTypeForAtRule(rule), rule, frame);
     try rules.insert(index, placeholder, frame);
     ownerFrameFor(self, frame)._style_manager.sheetModified();
     return index;
@@ -201,7 +201,7 @@ pub fn replaceSync(self: *CSSStyleSheet, text: []const u8, frame: *Frame) CSSErr
             .at_rule => |at_text| {
                 // Keep cssRules length aligned with real browsers so callers that
                 // index into sheets (or round-trip insertRule/deleteRule) work.
-                const placeholder = try CSSRule.init(placeholderTypeForAtRule(at_text), frame);
+                const placeholder = try CSSRule.initRaw(placeholderTypeForAtRule(at_text), at_text, frame);
                 try rules.insert(index, placeholder, frame);
                 index += 1;
             },

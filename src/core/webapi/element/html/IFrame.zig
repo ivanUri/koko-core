@@ -65,10 +65,13 @@ pub fn getContentWindow(self: *const IFrame, frame: *Frame) ?Window.Access {
     return Window.Access.init(frame.window, frame_window);
 }
 
-pub fn getContentDocument(self: *const IFrame) ?*Document {
+pub fn getContentDocument(self: *const IFrame, frame: *Frame) ?*Document {
     const window = self._window orelse return null;
     if (!inlineChildReadyForAccess(window._frame)) return null;
     if (IFrameSandbox.usesOpaqueOrigin(IFrameSandbox.parse(@constCast(self)))) return null;
+    // Cross-origin / distinct-opaque browsing contexts: contentDocument null.
+    // Same-origin about:blank children share the parent Origin* pointer.
+    if (frame.js.origin != window._frame.js.origin) return null;
     return window._document;
 }
 
@@ -136,7 +139,7 @@ pub const JsApi = struct {
     pub const srcdoc = bridge.accessor(IFrame.getSrcdoc, IFrame.setSrcdoc, .{});
     pub const name = bridge.accessor(IFrame.getName, IFrame.setName, .{});
     pub const contentWindow = bridge.accessor(IFrame.getContentWindow, null, .{});
-    pub const contentDocument = bridge.accessor(IFrame.getContentDocument, null, .{});
+    pub const contentDocument = bridge.accessor(IFrame.getContentDocument, null, .{ .null_as_undefined = false });
     pub const sandbox = bridge.accessor(IFrame.getSandboxList, null, .{});
 };
 

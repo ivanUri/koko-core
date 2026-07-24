@@ -22,6 +22,7 @@ const v8 = js.v8;
 
 const Caller = @import("../js/Caller.zig");
 const Context = @import("../js/Context.zig");
+const TaggedOpaque = @import("../js/TaggedOpaque.zig");
 
 const IS_DEBUG = @import("builtin").mode == .Debug;
 
@@ -601,18 +602,39 @@ pub fn unknownWindowPropertyCallback(c_name: ?*const v8.Name, handle: ?*const v8
         return 0;
     };
 
-    // Only Page contexts have document.getElementById lookup
-    switch (local.ctx.global) {
-        .frame => |frame| {
-            const document = frame.document;
-            if (document.getElementById(property, frame)) |el| {
-                const js_val = local.zigValueToJs(el, .{}) catch return 0;
-                var pc = Caller.PropertyCallbackInfo{ .handle = handle.? };
-                pc.getReturnValue().set(js_val);
-                return 1;
+    // Prefer the creation context of `this` (contentWindow / nested global).
+    // GetCurrentContext is often the *caller* when parent reads frameW.x —
+    // must not look up names on the parent frame.
+    var pc = Caller.PropertyCallbackInfo{ .handle = handle.? };
+    const lookup_frame: ?*Frame = blk: {
+        const this_obj = pc.getThis();
+        if (v8.v8__Object__GetCreationContext(this_obj)) |creation| {
+            if (v8.v8__Context__GetAlignedPointerFromEmbedderData(creation, 1)) |ptr| {
+                const rctx: *Context = @ptrCast(@alignCast(ptr));
+                break :blk switch (rctx.global) {
+                    .frame => |f| f,
+                    .worker => null,
+                };
             }
-        },
-        .worker => {}, // no global lookup in a worker
+        }
+        break :blk switch (local.ctx.global) {
+            .frame => |f| f,
+            .worker => null,
+        };
+    };
+
+    if (lookup_frame) |frame| {
+        // HTML named access: direct child browsing contexts by name.
+        if (frame.findNamedChildWindow(property)) |child_win| {
+            const js_val = local.zigValueToJs(child_win, .{}) catch return 0;
+            pc.getReturnValue().set(js_val);
+            return 1;
+        }
+        if (frame.document.getElementById(property, frame)) |el| {
+            const js_val = local.zigValueToJs(el, .{}) catch return 0;
+            pc.getReturnValue().set(js_val);
+            return 1;
+        }
     }
 
     if (comptime IS_DEBUG) {
@@ -1048,7 +1070,7 @@ pub const PageJsApis = flattenTypes(&.{
     @import("../webapi/event/DragEvent.zig"),
     @import("../webapi/event/HashChangeEvent.zig"),
     @import("../webapi/event/ToggleEvent.zig"),
-    // CookieChangeEvent waits on CookieStore CookieListItem surface (LP parity).
+    // CookieChangeEvent waits on CookieStore CookieListItem surface (Velora parity).
     @import("../webapi/DataTransfer.zig"),
     @import("../webapi/MessageChannel.zig"),
     @import("../webapi/MessagePort.zig"),

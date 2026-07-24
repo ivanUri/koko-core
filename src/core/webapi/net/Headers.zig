@@ -32,6 +32,7 @@ pub fn init(opts_: ?InitOpts, exec: *const Execution) !*Headers {
 }
 
 pub fn append(self: *Headers, name: []const u8, value: []const u8, exec: *const Execution) !void {
+    if (!isValidHeaderName(name)) return error.TypeError;
     if (ForbiddenHeaders.shouldOmitRequestHeader(name, value, exec.buf, exec.call_arena)) return;
     const normalized_name = normalizeHeaderName(name, exec.buf);
     try self._list.append(exec.arena, normalized_name, value);
@@ -39,16 +40,19 @@ pub fn append(self: *Headers, name: []const u8, value: []const u8, exec: *const 
 
 /// Append a response header (Fetch forbidden-header rules apply to requests only).
 pub fn appendResponse(self: *Headers, name: []const u8, value: []const u8, exec: *const Execution) !void {
+    // Wire headers may be non-HTTP-token; still store them for get/iteration.
     const normalized_name = normalizeHeaderName(name, exec.buf);
     try self._list.append(exec.arena, normalized_name, value);
 }
 
-pub fn delete(self: *Headers, name: []const u8, exec: *const Execution) void {
+pub fn delete(self: *Headers, name: []const u8, exec: *const Execution) !void {
+    if (!isValidHeaderName(name)) return error.TypeError;
     const normalized_name = normalizeHeaderName(name, exec.buf);
     self._list.delete(normalized_name, null);
 }
 
 pub fn get(self: *const Headers, name: []const u8, exec: *const Execution) !?[]const u8 {
+    if (!isValidHeaderName(name)) return error.TypeError;
     const normalized_name = normalizeHeaderName(name, exec.buf);
     const all_values = try self._list.getAll(exec.call_arena, normalized_name);
 
@@ -61,27 +65,29 @@ pub fn get(self: *const Headers, name: []const u8, exec: *const Execution) !?[]c
     return try std.mem.join(exec.call_arena, ", ", all_values);
 }
 
-pub fn has(self: *const Headers, name: []const u8, exec: *const Execution) bool {
+pub fn has(self: *const Headers, name: []const u8, exec: *const Execution) !bool {
+    if (!isValidHeaderName(name)) return error.TypeError;
     const normalized_name = normalizeHeaderName(name, exec.buf);
     return self._list.has(normalized_name);
 }
 
 pub fn set(self: *Headers, name: []const u8, value: []const u8, exec: *const Execution) !void {
+    if (!isValidHeaderName(name)) return error.TypeError;
     if (ForbiddenHeaders.shouldOmitRequestHeader(name, value, exec.buf, exec.call_arena)) return;
     const normalized_name = normalizeHeaderName(name, exec.buf);
     try self._list.set(exec.arena, normalized_name, value);
 }
 
-pub fn keys(self: *Headers, exec: *const js.Execution) !*KeyValueList.KeyIterator {
-    return KeyValueList.KeyIterator.init(.{ .list = self, .kv = &self._list }, exec);
+pub fn keys(self: *Headers, exec: *const js.Execution) !*KeyValueList.CombinedKeyIterator {
+    return KeyValueList.CombinedKeyIterator.init(.{ .list = self, .kv = &self._list }, exec);
 }
 
-pub fn values(self: *Headers, exec: *const js.Execution) !*KeyValueList.ValueIterator {
-    return KeyValueList.ValueIterator.init(.{ .list = self, .kv = &self._list }, exec);
+pub fn values(self: *Headers, exec: *const js.Execution) !*KeyValueList.CombinedValueIterator {
+    return KeyValueList.CombinedValueIterator.init(.{ .list = self, .kv = &self._list }, exec);
 }
 
-pub fn entries(self: *Headers, exec: *const js.Execution) !*KeyValueList.EntryIterator {
-    return KeyValueList.EntryIterator.init(.{ .list = self, .kv = &self._list }, exec);
+pub fn entries(self: *Headers, exec: *const js.Execution) !*KeyValueList.CombinedEntryIterator {
+    return KeyValueList.CombinedEntryIterator.init(.{ .list = self, .kv = &self._list }, exec);
 }
 
 pub fn getSetCookie(self: *Headers, exec: *const Execution) js.Array {
@@ -89,12 +95,14 @@ pub fn getSetCookie(self: *Headers, exec: *const Execution) js.Array {
     return exec.context.local.?.newArray(0);
 }
 
-pub fn forEach(self: *Headers, cb_: js.Function, js_this_: ?js.Object) !void {
+pub fn forEach(self: *Headers, cb_: js.Function, js_this_: ?js.Object, exec: *const Execution) !void {
     const cb = if (js_this_) |js_this| try cb_.withThis(js_this) else cb_;
 
-    for (self._list._entries.items) |entry| {
+    // Spec: forEach sees combined values (same as iterator).
+    var it: KeyValueList.Iterator = .{ .index = 0, .kv = &self._list, .list = self };
+    while (it.nextCombined(exec)) |entry| {
         var caught: js.TryCatch.Caught = undefined;
-        cb.tryCall(void, .{ entry.value.str(), entry.name.str(), self }, &caught) catch {
+        cb.tryCall(void, .{ entry[1], entry[0], self }, &caught) catch {
             log.debug(.js, "forEach callback", .{ .caught = caught, .source = "headers" });
         };
     }
@@ -119,6 +127,21 @@ fn normalizeHeaderName(name: []const u8, buf: []u8) []const u8 {
     return std.ascii.lowerString(buf, name);
 }
 
+/// Fetch "valid header name" = HTTP token (RFC 9110 tchar). Non-ASCII (e.g. Ā)
+/// must throw TypeError on Headers API entry points.
+fn isValidHeaderName(name: []const u8) bool {
+    if (name.len == 0) return false;
+    for (name) |c| {
+        // tchar: !#$%&'*+-.^_`|~ DIGIT ALPHA
+        switch (c) {
+            '0'...'9', 'a'...'z', 'A'...'Z' => {},
+            '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~' => {},
+            else => return false,
+        }
+    }
+    return true;
+}
+
 pub const JsApi = struct {
     pub const bridge = js.Bridge(Headers);
 
@@ -138,6 +161,10 @@ pub const JsApi = struct {
     pub const keys = bridge.function(Headers.keys, .{});
     pub const values = bridge.function(Headers.values, .{});
     pub const entries = bridge.function(Headers.entries, .{});
+    // Fetch Headers is iterable (default iterator === entries). Without this,
+    // `for (const [k,v] of headers)` / `[...headers]` throw "headers is not iterable"
+    // and break real sites that iterate Response.headers.
+    pub const symbol_iterator = bridge.iterator(Headers.entries, .{});
     pub const forEach = bridge.function(Headers.forEach, .{});
 };
 

@@ -1,7 +1,7 @@
 //
 // Adapted for Velora: FileList is a lightweight stub surface; DataTransfer
 // keeps the public JS API (items/files/types/getData/setData/clearData) without
-// depending on LP-only FileList tracking.
+// depending on Velora-only FileList tracking.
 
 const std = @import("std");
 const RC = @import("../../support/rc.zig").RC;

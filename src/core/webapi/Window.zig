@@ -146,6 +146,8 @@ pub fn getWindow(self: *Window) *Window {
 
 pub fn getOpener(self: *Window, frame: *Frame) ?Access {
     const opener = self._opener orelse return null;
+    // Closed *opener* window is not exposed; our own closed flag does not
+    // clear opener until the discard task runs (WPT close-method).
     if (opener._closed) return null;
     return Access.init(frame.window, opener);
 }
@@ -155,10 +157,22 @@ pub fn getClosed(self: *const Window) bool {
 }
 
 pub fn getName(self: *const Window) []const u8 {
-    return self._name;
+    // Discarded browsing context (iframe removed / closed): name is "".
+    const frame = self._frame;
+    if (self._closed or frame._detach_pending or frame._deinit_done) return "";
+    if (frame.document._frame != frame and frame.iframe != null) return "";
+    if (self._name.len > 0) return self._name;
+    // Reflect iframe name attribute until script sets window.name.
+    if (frame.iframe) |iframe| {
+        return iframe.asElement().getAttributeSafe(comptime .wrap("name")) orelse "";
+    }
+    return "";
 }
 
 pub fn setName(self: *Window, name: []const u8, frame: *Frame) !void {
+    // After discard, sets are ignored (WPT name-attribute).
+    if (self._closed or frame._detach_pending or frame._deinit_done) return;
+    if (frame.document._frame != frame and frame.iframe != null) return;
     // Store in the Page's frame arena so the slice outlives any call_arena.
     self._name = try frame.arena.dupe(u8, name);
 }
@@ -741,25 +755,16 @@ pub fn close(self: *Window) void {
         }
     } else return;
 
+    // Spec: closed is true immediately; discard (and opener=null) is a task.
     self._closed = true;
+    // Clear browsing context name immediately so name targeting skips us.
+    self._name = "";
 
-    // Any live Window holding us as its opener must drop the reference —
-    // our Frame is about to go away, and a stale _frame deref on their
-    // side would crash.
-    for (page.popups.items) |popup| {
-        if (popup.window._opener == self) {
-            popup.window._opener = null;
-        }
-    }
-    if (page.frame.window._opener == self) {
-        page.frame.window._opener = null;
-    }
-
+    // Remove from name-targeting list immediately, but keep the Frame alive
+    // until a deferred task clears opener refs and tears down.
     _ = page.popups.swapRemove(popup_index);
 
-    // Drop any pending queued navigation for this frame. Frame.deinit will
-    // release the QueuedNavigation arena, but the entry in page.queued_navigation
-    // would otherwise have processQueuedNavigation re-deinit the popup.
+    // Drop any pending queued navigation for this frame.
     if (frame._queued_navigation != null) {
         for (page.queued_navigation.items, 0..) |f, i| {
             if (f == frame) {
@@ -771,14 +776,55 @@ pub fn close(self: *Window) void {
 
     frame.js.scheduler.reset();
 
-    // We can't tear the Frame down here — close() is invoked from JS still
-    // running on top of this Frame's V8 context, often deep inside a script
-    // eval whose parser is still holding the Frame. Destroying the context
-    // now leaves dangling pointers in the unwinding script eval (load event
-    // dispatch, runMacrotasks, etc.). Defer to Page.deinit instead.
+    // Fire pagehide/unload-ish path via deferred close: opener stays until
+    // after pagehide so WPT close-method can observe opener===self on pagehide.
     page.queued_close.append(page.frame_arena, frame) catch |err| {
         log.err(.frame, "queue popup close", .{ .err = err });
+        // Fallback: clear openers now so we don't leak.
+        clearOpenerRefs(self, page);
+        return;
     };
+
+    // Schedule a macrotask to clear opener and deinit (spec "queue a task to discard").
+    const ClearOpener = struct {
+        window: *Window,
+        frame: *Frame,
+        fn run(ctx: *anyopaque) !?u32 {
+            const self_cb: *@This() = @ptrCast(@alignCast(ctx));
+            const w = self_cb.window;
+            const page2 = self_cb.frame._page;
+            // pagehide already observed closed===true; now drop opener.
+            clearOpenerRefs(w, page2);
+            // Actual deinit stays in Page.cleanupClosedPopups / deinit.
+            return null;
+        }
+    };
+    const cb = page.frame_arena.create(ClearOpener) catch {
+        clearOpenerRefs(self, page);
+        return;
+    };
+    cb.* = .{ .window = self, .frame = frame };
+    // Prefer opener's scheduler if available so task runs in parent turn.
+    const sched_frame = if (self._opener) |op| op._frame else &page.frame;
+    sched_frame.js.scheduler.add(cb, ClearOpener.run, 0, .{
+        .name = "Window.close.discard",
+        .low_priority = false,
+    }) catch {
+        clearOpenerRefs(self, page);
+    };
+}
+
+fn clearOpenerRefs(closed_window: *Window, page: *@import("../browser/Page.zig")) void {
+    for (page.popups.items) |popup| {
+        if (popup.window._opener == closed_window) {
+            popup.window._opener = null;
+        }
+    }
+    if (page.frame.window._opener == closed_window) {
+        page.frame.window._opener = null;
+    }
+    // Also clear reverse: anyone still listing us.
+    closed_window._opener = null;
 }
 
 pub fn postMessage(self: *Window, message: js.Value.Temp, target_origin: ?[]const u8, transfer: ?[]js.Value, frame: *Frame) !void {
@@ -1119,8 +1165,10 @@ pub const Access = union(enum) {
             return .{ .window = accessing };
         }
 
+        // Origin* pointer equality: same tuple origin (including shared
+        // about:blank inheritance). Opaque origins are unique *Origin each
+        // so they never match (about:srcdoc network-error, sandbox).
         if (callee._frame.js.origin == accessing._frame.js.origin) {
-            // two different windows, but same origin, return the full window
             return .{ .window = accessing };
         }
 

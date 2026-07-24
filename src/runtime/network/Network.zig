@@ -641,6 +641,14 @@ fn acceptConnections(self: *Network) void {
             log.warn(.app, "TCP_KEEPCNT", .{ .err = err });
         };
 
+        // Keepalive alone can stall while there are unacked writes; USER_TIMEOUT
+        // forces the socket into an error state so a blocked send()/poll wakes.
+        if (builtin.os.tag == .linux) {
+            posix.setsockopt(socket, posix.IPPROTO.TCP, std.os.linux.TCP.USER_TIMEOUT, &std.mem.toBytes(Config.CDP_TCP_USER_TIMEOUT_MS)) catch |err| {
+                log.warn(.app, "TCP_USER_TIMEOUT", .{ .err = err });
+            };
+        }
+
         listener.onAccept(listener.ctx, socket);
     }
 }

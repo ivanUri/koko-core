@@ -1,10 +1,10 @@
-# LP.clickNode Fast Activation Hang (Layout Hit-Test)
+# Velora.clickNode Fast Activation Hang (Layout Hit-Test)
 
 > **Date:** 2026-07-22 · **Area:** InputController, CDP LP, Fluent/React signup · **Status:** Core hang fixed; Hotmail password step still open
 
 ## Summary
 
-`LP.clickNode` on Fluent **Next** (`signup.live.com`) returned immediately but then **blocked the CDP thread for tens of seconds**, so every subsequent `Runtime.evaluate` timed out. Sampling showed the stall was **not** form-submit navigation: it was `dispatchActivationOnElementFast` → `makeHitForElement` → `getActivationBoundingClientRect` → recursive `computeLayoutOriginForHitTestDepth` + sibling visibility walks on a deep Fluent tree.
+`Velora.clickNode` on Fluent **Next** (`signup.live.com`) returned immediately but then **blocked the CDP thread for tens of seconds**, so every subsequent `Runtime.evaluate` timed out. Sampling showed the stall was **not** form-submit navigation: it was `dispatchActivationOnElementFast` → `makeHitForElement` → `getActivationBoundingClientRect` → recursive `computeLayoutOriginForHitTestDepth` + sibling visibility walks on a deep Fluent tree.
 
 After skipping layout geometry in the fast path, trusted click + form `submit` complete in **0 ms**, React `preventDefault`s, and `CheckAvailableSigninNames` returns **200** with `isAvailable: true`. Password-step SPA transition is a separate remaining issue.
 
@@ -15,7 +15,7 @@ After skipping layout geometry in the fast path, trusted click + form `submit` c
 Hotmail register probe symptoms:
 
 1. Email field fill OK (local-part; Fluent strips `@domain` from display).
-2. `LP.clickNode` / CDP mouse on Next → **CDP timeout: Runtime.evaluate** forever after.
+2. `Velora.clickNode` / CDP mouse on Next → **CDP timeout: Runtime.evaluate** forever after.
 3. Pointer geometry was also wrong: Next `getBoundingClientRect` collapsed (~40×19 at x≈0); hit tests landed on **footer** / help divs.
 
 Native `sample` during hang:
@@ -38,15 +38,15 @@ Main thread sat in this path for the entire sample window — CDP transport coul
 
 `dispatchActivationOnElementFast` was documented as a **layout-light** trusted click for automation, but it still called `makeHitForElement`, which recomputes activation geometry via a **full flow-origin walk** over Fluent’s large DOM.
 
-That walk is O(depth × siblings × style lookups). On signup SPA trees it becomes pathologically expensive and runs **synchronously on the CDP connection thread** (scheduled activation after `LP.clickNode` reply), starving `Runtime.evaluate`.
+That walk is O(depth × siblings × style lookups). On signup SPA trees it becomes pathologically expensive and runs **synchronously on the CDP connection thread** (scheduled activation after `Velora.clickNode` reply), starving `Runtime.evaluate`.
 
 Secondary issues:
 
-| Issue | Effect |
-|-------|--------|
-| Form controls default to `layout_default_size` (5px) | Pointer centers miss buttons |
-| Hotmail script double-fired pointer + LP.clickNode | Wrong hit + hang |
-| New-email re-fill after prefill | Broke React state; blocked second CheckAvailable |
+| Issue                                                | Effect                                           |
+| ------------------------------------------------------| --------------------------------------------------|
+| Form controls default to `layout_default_size` (5px) | Pointer centers miss buttons                     |
+| Hotmail script double-fired pointer + Velora.clickNode   | Wrong hit + hang                                 |
+| New-email re-fill after prefill                      | Broke React state; blocked second CheckAvailable |
 
 ---
 
@@ -63,7 +63,7 @@ Do **not** call `makeHitForElement` / `getActivationBoundingClientRect`. Build a
 
 ### Script (`hotmail-register-velora.mjs`)
 
-- Prefer **LP.clickNode only**; pointer only if rect looks real (≥24×16).
+- Prefer **Velora.clickNode only**; pointer only if rect looks real (≥24×16).
 - On New-email step, **keep prefilled local-part** — do not re-fill full email or retype when already correct.
 - Drop `requestSubmit` / Enter after Next (historical hang sources).
 
@@ -74,13 +74,13 @@ Do **not** call `makeHitForElement` / `getActivationBoundingClientRect`. Build a
 ```bash
 cd /Users/huydev/Desktop/velora
 zig build
-# LP-only: trusted click on BUTTON, submit preventDefault, CheckAvailable 200
+# Velora-only: trusted click on BUTTON, submit preventDefault, CheckAvailable 200
 node scripts/_hotmail-s2-nofill.mjs   # or hotmail-register-velora.mjs --probe-email-step
 ```
 
 | Check | Result |
 |-------|--------|
-| LP.clickNode returns without CDP hang | **OK** (0 ms path) |
+| Velora.clickNode returns without CDP hang | **OK** (0 ms path) |
 | `click` isTrusted on BUTTON | **OK** |
 | `submit` preventDefault after React | **OK** |
 | First CheckAvailable → New email UI | **OK** |

@@ -16,6 +16,8 @@ const Frame = @import("Frame.zig");
 const Node = @import("../dom/Node.zig");
 const Slot = @import("../webapi/element/html/Slot.zig");
 const IFrame = @import("../webapi/element/html/IFrame.zig");
+const Style = @import("../webapi/element/html/Style.zig");
+const CSSStyleRule = @import("../webapi/css/CSSStyleRule.zig");
 
 const IS_DEBUG = @import("builtin").mode == .Debug;
 
@@ -60,7 +62,7 @@ pub fn root(doc: *Node.Document, opts: Opts, writer: *std.Io.Writer, frame: *Fra
         if (opts.with_base) {
             const parent = if (html_doc.getHead()) |head| head.asNode() else doc.asNode();
             const base = try doc.createElement("base", null, frame);
-            try base.setAttributeSafe(comptime .wrap("base"), .wrap(frame.base()), frame);
+            try base.setAttributeSafe(comptime .wrap("href"), .wrap(frame.base()), frame);
             _ = try parent.insertBefore(base.asNode(), parent.firstChild(), frame);
         }
     }
@@ -112,6 +114,22 @@ fn _deep(node: *Node, opts: Opts, comptime force_slot: bool, writer: *std.Io.Wri
 
             try el.format(writer);
 
+            if (!opts.strip.css and std.mem.eql(u8, el.getTagNameDump(), "head")) {
+                try dumpDocumentStylesheetSnapshot(writer, frame);
+            }
+
+            // CSS-in-JS libraries commonly create an empty <style> node and
+            // populate its sheet through CSSStyleSheet.insertRule(). CSSOM
+            // mutations do not create DOM text nodes, so a plain DOM
+            // serialization would emit an empty style element and the saved
+            // page would lose its rendered layout. Materialize the live CSSOM
+            // only into the snapshot stream; never mutate the source DOM.
+            if (el.is(Style)) |style| {
+                if (try dumpCssomOnlyStyle(style, writer, frame)) {
+                    return writer.writeAll("</style>");
+                }
+            }
+
             if (opts.shadow == .rendered) {
                 if (el.is(Slot)) |slot| {
                     try dumpSlotContent(slot, opts, writer, frame);
@@ -136,7 +154,9 @@ fn _deep(node: *Node, opts: Opts, comptime force_slot: bool, writer: *std.Io.Wri
 
             if (opts.with_frames and el.is(IFrame) != null) {
                 const iframe = el.as(IFrame);
-                if (iframe.getContentDocument()) |doc| {
+                // Dump internals: bypass same-origin contentDocument gate.
+                if (iframe._window) |win| {
+                    const doc = win._document;
                     // A frame's document should always ahave a frame, but
                     // I'm not willing to crash a release build on that assertion.
                     if (comptime IS_DEBUG) {
@@ -189,6 +209,62 @@ fn _deep(node: *Node, opts: Opts, comptime force_slot: bool, writer: *std.Io.Wri
             try writer.writeAll("");
         },
     }
+}
+
+fn writeCssRuleSnapshot(rule: *@import("../webapi/css/CSSRule.zig"), writer: *std.Io.Writer) error{WriteFailed}!bool {
+    if (rule.is(CSSStyleRule)) |style_rule| {
+        const props = style_rule._style orelse return false;
+        writer.writeAll(style_rule._selector_text) catch return error.WriteFailed;
+        writer.writeAll(" { ") catch return error.WriteFailed;
+        props.asCSSStyleDeclaration().format(writer) catch return error.WriteFailed;
+        writer.writeAll(" }\n") catch return error.WriteFailed;
+        return true;
+    }
+    if (rule._raw_css_text) |raw| {
+        writer.writeAll(raw) catch return error.WriteFailed;
+        writer.writeByte('\n') catch return error.WriteFailed;
+        return true;
+    }
+    return false;
+}
+
+fn dumpDocumentStylesheetSnapshot(writer: *std.Io.Writer, frame: *Frame) error{WriteFailed}!void {
+    const sheets = frame.document._style_sheets orelse return;
+    writer.writeAll("<style data-velora-cssom-snapshot=\"\">") catch return error.WriteFailed;
+    for (sheets._sheets.items) |sheet| {
+        if (sheet._disabled) continue;
+        const rules = sheet._css_rules orelse continue;
+        for (rules._rules.items) |rule| {
+            _ = try writeCssRuleSnapshot(rule, writer);
+        }
+    }
+    writer.writeAll("</style>") catch return error.WriteFailed;
+}
+
+fn dumpCssomOnlyStyle(style: *Style, writer: *std.Io.Writer, frame: *Frame) error{WriteFailed}!bool {
+    if (style.asNode().firstChild() != null) return false;
+    var sheet = style._sheet;
+    if (frame.document._style_sheets) |sheets| {
+        for (sheets._sheets.items) |candidate| {
+            if (candidate._owner_node != style.asElement()) continue;
+            if (candidate._css_rules) |candidate_rules| {
+                if (candidate_rules._rules.items.len > 0) {
+                    sheet = candidate;
+                    break;
+                }
+            }
+            if (sheet == null) sheet = candidate;
+        }
+    }
+    const resolved_sheet = sheet orelse return false;
+    const rules = resolved_sheet._css_rules orelse return false;
+    if (rules._rules.items.len == 0) return false;
+
+    var wrote_rule = false;
+    for (rules._rules.items) |rule| {
+        if (try writeCssRuleSnapshot(rule, writer)) wrote_rule = true;
+    }
+    return wrote_rule;
 }
 
 pub fn children(parent: *Node, opts: Opts, writer: *std.Io.Writer, frame: *Frame) !void {

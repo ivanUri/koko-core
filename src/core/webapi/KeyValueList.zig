@@ -26,6 +26,9 @@ pub fn registerTypes() []const type {
         KeyIterator,
         ValueIterator,
         EntryIterator,
+        CombinedKeyIterator,
+        CombinedValueIterator,
+        CombinedEntryIterator,
     };
 }
 
@@ -72,6 +75,17 @@ pub fn fromJsObject(arena: Allocator, js_obj: js.Object, comptime normalizer: ?N
 
         const js_value = try js_obj.get(key_str.handle);
         const name_slice = try key_str.toSliceWithAlloc(arena);
+        // Headers (and other HTTP maps) pass a normalizer; reject non-token names.
+        if (comptime normalizer != null) {
+            if (name_slice.len == 0) return error.TypeError;
+            for (name_slice) |c| {
+                switch (c) {
+                    '0'...'9', 'a'...'z', 'A'...'Z' => {},
+                    '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~' => {},
+                    else => return error.TypeError,
+                }
+            }
+        }
         const normalized = if (comptime normalizer) |n| n(name_slice, buf) else name_slice;
 
         try list.upsert(arena, normalized, try (try js_value.toString()).toSliceWithAlloc(arena));
@@ -92,6 +106,15 @@ pub fn fromArray(arena: Allocator, kvs: []const [2][]const u8, comptime normaliz
     try list.ensureTotalCapacity(arena, kvs.len);
 
     for (kvs) |pair| {
+        // Headers sequence ctor: reject empty / non-token names (Fetch).
+        if (pair[0].len == 0) return error.TypeError;
+        for (pair[0]) |c| {
+            switch (c) {
+                '0'...'9', 'a'...'z', 'A'...'Z' => {},
+                '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~' => {},
+                else => return error.TypeError,
+            }
+        }
         const normalized = if (comptime normalizer) |n| n(pair[0], buf) else pair[0];
 
         list._entries.appendAssumeCapacity(.{
@@ -569,6 +592,65 @@ pub const Iterator = struct {
         const e = &entries[index];
         return .{ e.name.str(), e.value.str() };
     }
+
+    /// Headers/Fetch "sort and combine": unique names sorted ascending (byte
+    /// order), values joined with ", " in append order. Not for URLSearchParams.
+    pub fn nextCombined(self: *Iterator, exec: *const Execution) ?Iterator.Entry {
+        const entries = self.kv._entries.items;
+        if (entries.len == 0) return null;
+
+        // Lazy: first call builds sorted unique name list into a side buffer.
+        // Re-scan each next() is fine (header maps are small on real sites).
+        var unique_count: u32 = 0;
+        // Max names: entries.len
+        var unique_first_idx: [64]u32 = undefined;
+        const max_u = @min(entries.len, unique_first_idx.len);
+
+        for (entries, 0..) |e, i| {
+            if (unique_count >= max_u) break;
+            const name = e.name.str();
+            var seen = false;
+            var u: u32 = 0;
+            while (u < unique_count) : (u += 1) {
+                if (entries[unique_first_idx[u]].name.eqlSlice(name)) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen) {
+                unique_first_idx[unique_count] = @intCast(i);
+                unique_count += 1;
+            }
+        }
+
+        // Insertion-sort unique names by byte order (Headers name is already lowercased).
+        var a: u32 = 1;
+        while (a < unique_count) : (a += 1) {
+            var b = a;
+            while (b > 0) {
+                const na = entries[unique_first_idx[b - 1]].name.str();
+                const nb = entries[unique_first_idx[b]].name.str();
+                if (std.mem.order(u8, na, nb) != .gt) break;
+                const tmp = unique_first_idx[b - 1];
+                unique_first_idx[b - 1] = unique_first_idx[b];
+                unique_first_idx[b] = tmp;
+                b -= 1;
+            }
+        }
+
+        if (self.index >= unique_count) return null;
+        const first_i = unique_first_idx[self.index];
+        self.index += 1;
+        const name = entries[first_i].name.str();
+
+        var combined: []const u8 = entries[first_i].value.str();
+        var k: usize = first_i + 1;
+        while (k < entries.len) : (k += 1) {
+            if (!entries[k].name.eqlSlice(name)) continue;
+            combined = std.mem.concat(exec.call_arena, u8, &.{ combined, ", ", entries[k].value.str() }) catch combined;
+        }
+        return .{ name, combined };
+    }
 };
 
 pub fn iterator(self: *const KeyValueList) Iterator {
@@ -579,6 +661,23 @@ const GenericIterator = @import("collections/iterator.zig").Entry;
 pub const KeyIterator = GenericIterator(Iterator, "0");
 pub const ValueIterator = GenericIterator(Iterator, "1");
 pub const EntryIterator = GenericIterator(Iterator, null);
+
+/// Headers-only: unique names, values joined with ", ".
+const CombinedInner = struct {
+    index: u32 = 0,
+    kv: *KeyValueList,
+    list: *anyopaque,
+
+    pub fn next(self: *CombinedInner, exec: *const Execution) ?Iterator.Entry {
+        var it: Iterator = .{ .index = self.index, .kv = self.kv, .list = self.list };
+        const e = it.nextCombined(exec) orelse return null;
+        self.index = it.index;
+        return e;
+    }
+};
+pub const CombinedKeyIterator = GenericIterator(CombinedInner, "0");
+pub const CombinedValueIterator = GenericIterator(CombinedInner, "1");
+pub const CombinedEntryIterator = GenericIterator(CombinedInner, null);
 
 const testing = @import("../../testing/testing.zig");
 
