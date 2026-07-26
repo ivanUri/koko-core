@@ -48,6 +48,13 @@ const Session = @import("Session.zig");
 
 const WebSocket = @import("../webapi/net/WebSocket.zig");
 
+test "Alt-Svc h3 max-age parsing" {
+    try std.testing.expectEqual(@as(?u64, 3600), altSvcMaxAge("h3=\":443\"; ma=3600"));
+    try std.testing.expectEqual(@as(?u64, 0), altSvcMaxAge("h3=\":443\"; ma=0"));
+    try std.testing.expectEqual(@as(?u64, 24 * 60 * 60), altSvcMaxAge("h3=\":443\""));
+    try std.testing.expectEqual(@as(?u64, null), altSvcMaxAge("h2=\":443\"; ma=3600"));
+}
+
 // This is loosely tied to a browser Page. Loading all the <scripts>, doing
 // XHR requests, and loading imports all happens through here. Sine the app
 // currently supports 1 browser and 1 frame at-a-time, we only have 1 Client and
@@ -135,6 +142,12 @@ use_proxy: bool,
 
 // Current TLS verification state, applied per-connection in makeRequest.
 tls_verify: bool = true,
+
+/// HTTP/3 capability learned from Alt-Svc, keyed by URL authority
+/// (host plus explicit port). Values are absolute Unix expiry seconds.
+/// This is derived transport state: response headers create/update it,
+/// `ma=0` invalidates it, and Client teardown releases it.
+alt_svc_h3: std.StringHashMapUnmanaged(u64) = .empty,
 
 obey_robots: bool,
 
@@ -251,8 +264,54 @@ pub fn deinit(self: *Client) void {
 
     self.transfer_pool.deinit();
     self.clearUserAgentOverride();
+    var alt_svc_it = self.alt_svc_h3.keyIterator();
+    while (alt_svc_it.next()) |authority| self.allocator.free(authority.*);
+    self.alt_svc_h3.deinit(self.allocator);
 
     self.robots_layer.deinit(self.allocator);
+}
+
+fn altSvcMaxAge(value: []const u8) ?u64 {
+    var parts = std.mem.splitScalar(u8, value, ';');
+    const alternative = std.mem.trim(u8, parts.next() orelse return null, " \t");
+    if (!std.ascii.startsWithIgnoreCase(alternative, "h3=")) return null;
+
+    while (parts.next()) |raw| {
+        const parameter = std.mem.trim(u8, raw, " \t");
+        if (parameter.len < 3 or !std.ascii.startsWithIgnoreCase(parameter, "ma=")) continue;
+        const digits = std.mem.trim(u8, parameter[3..], " \t\"");
+        return std.fmt.parseUnsigned(u64, digits, 10) catch null;
+    }
+    // RFC 7838 default when ma is omitted.
+    return 24 * 60 * 60;
+}
+
+fn observeAltSvc(self: *Client, url: []const u8, value: []const u8) !void {
+    const max_age = altSvcMaxAge(value) orelse return;
+    const authority = URL.getHost(url);
+    if (authority.len == 0) return;
+
+    if (max_age == 0) {
+        if (self.alt_svc_h3.fetchRemove(authority)) |removed| {
+            self.allocator.free(removed.key);
+        }
+        return;
+    }
+
+    const expires_at = std.math.add(u64, timestamp(.clock), max_age) catch std.math.maxInt(u64);
+    const gop = try self.alt_svc_h3.getOrPut(self.allocator, authority);
+    if (!gop.found_existing) gop.key_ptr.* = try self.allocator.dupe(u8, authority);
+    gop.value_ptr.* = expires_at;
+}
+
+fn originPrefersHttp3(self: *Client, url: []const u8) bool {
+    const authority = URL.getHost(url);
+    const expires_at = self.alt_svc_h3.get(authority) orelse return false;
+    if (expires_at > timestamp(.clock)) return true;
+    if (self.alt_svc_h3.fetchRemove(authority)) |removed| {
+        self.allocator.free(removed.key);
+    }
+    return false;
 }
 
 pub fn deinitSafe(self: ?*Client) void {
@@ -2291,22 +2350,13 @@ pub const Transfer = struct {
             // reintroduce chrome146 Sec-CH-first order and duplicate headers.
             const curl_default_headers = req.params.curl_default_headers and
                 !(req.params.resource_type == .document);
-            // prefer_http3 / force_fresh_connection: set by NavigationPlan or
-            // retry paths — no URL host/path specials here.
-            // Protocol selection belongs to per-origin transport state, not to
-            // the Fetch destination. Until Alt-Svc state is modeled, use the
-            // broadly negotiated H2 transport unless an explicit profile plan
-            // opts this request into H3. Forcing every subresource onto H3
-            // while documents use H2 creates two competing connection pools
-            // for the same origin and can strand a re-entrant iframe request.
-            // Chromium's connection pool is origin/protocol keyed. Once an
-            // origin advertises Alt-Svc, documents and subresources share its
-            // H3 session; choosing H2 solely because a response is a document
-            // creates a second pool and changes the browser's stream lifecycle.
-            // CURL_HTTP_VERSION_3 remains fallback-capable when QUIC is not
-            // available, so the profile keeps a standards-compatible fallback.
+            // Transport selection is request policy until per-origin Alt-Svc
+            // state is implemented. Never infer it from resource type or the
+            // browser identity: the TLS profile must describe the transport
+            // actually attempted. HTTP/3 remains an explicit opt-in; H2 is the
+            // safe negotiated default.
             const http_version: http.Connection.ProfileHttpVersion = if (req.params.prefer_http3 or
-                client.network.config.profile.isChromium())
+                client.originPrefersHttp3(req.params.url))
                 .h3
             else
                 .h2;
@@ -2626,6 +2676,12 @@ pub const Transfer = struct {
         defer transfer._header_done_called = true;
 
         try transfer.buildResponseHeader(conn);
+
+        if (conn.getResponseHeader("alt-svc", 0)) |alt_svc| {
+            transfer.client.observeAltSvc(transfer.url, alt_svc.value) catch |err| {
+                log.warn(.http, "Alt-Svc state", .{ .url = transfer.url, .err = err });
+            };
+        }
 
         if (transfer._wire_capture) |session| {
             const status = transfer.response_header.?.status;

@@ -294,6 +294,21 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
             // do not drain RTC (or read load/idle state) through a stale Frame ptr.
             self.frame = session.pendingOrCurrentFrame() orelse return .done;
             const live_frame = self.frame;
+
+            // Macrotasks and their microtask checkpoint may schedule a root or
+            // iframe navigation (location assignment, form submission, etc.).
+            // Re-check the queue before evaluating the current document's wait
+            // condition. Otherwise `wait_until=load` can report completion for
+            // the departing document and abandon the newly queued navigation.
+            if (session.currentPage()) |page| {
+                if (page.queued_navigation.items.len != 0) {
+                    try session.processQueuedNavigation();
+                    self.frame = session.pendingOrCurrentFrame() orelse session.currentFrame().?;
+                    _ = http_client.tick(0) catch {};
+                    return .{ .ok = 0 };
+                }
+            }
+
             // Single wait-edge spin (architecture v0.2): MessageChannel / delay-0
             // chains. Do not also spin inside Browser.runMacrotasks.
             const js_mod = @import("../js/js.zig");
@@ -303,6 +318,18 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
             });
             live_frame._script_manager.base.pumpDocumentLifecycle(live_frame);
             live_frame.drainRtcEvents();
+
+            // The wait-edge spin above is also script execution and can enqueue
+            // navigation. No completion decision is valid until that queue has
+            // been handed back to the Session navigation state machine.
+            if (session.currentPage()) |page| {
+                if (page.queued_navigation.items.len != 0) {
+                    try session.processQueuedNavigation();
+                    self.frame = session.pendingOrCurrentFrame() orelse session.currentFrame().?;
+                    _ = http_client.tick(0) catch {};
+                    return .{ .ok = 0 };
+                }
+            }
 
             // HostIdle: one formula for wait_until=done / networkIdle (queues included).
             const total_http_activity = HostIdle.totalHttpActivity(http_client);

@@ -32,6 +32,19 @@ const X25519 = @import("crypto/X25519.zig");
 const log = @import("../../support/log.zig");
 const String = @import("../../support/string.zig").String;
 
+const JsonWebKey = struct {
+    kty: []const u8,
+    k: []const u8,
+    alg: ?[]const u8 = null,
+    ext: ?bool = null,
+    key_ops: ?[]const []const u8 = null,
+};
+
+const KeyData = union(enum) {
+    bytes: []const u8,
+    jwk: JsonWebKey,
+};
+
 /// The SubtleCrypto interface of the Web Crypto API provides a number of low-level
 /// cryptographic functions.
 /// https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto
@@ -259,13 +272,29 @@ pub fn verify(
 pub fn importKey(
     _: *const SubtleCrypto,
     format: []const u8,
-    key_data: []const u8,
+    key_data: KeyData,
     algo: algorithm.Init,
     extractable: bool,
     key_usages: []const []const u8,
     exec: *const Execution,
 ) !js.Promise {
     const local = exec.context.local orelse return error.JsEntryIllegal;
+
+    if (std.mem.eql(u8, format, "jwk")) {
+        const jwk = switch (key_data) {
+            .jwk => |value| value,
+            else => return local.rejectPromise(.{ .type_error = "JWK keyData must be an object" }),
+        };
+        return switch (algo) {
+            .hmac_key_gen => |params| HMAC.importJwk(params, jwk.kty, jwk.k, jwk.alg, jwk.ext, jwk.key_ops, extractable, key_usages, exec),
+            else => local.rejectPromise(.{ .dom_exception = .{ .err = error.NotSupported } }),
+        };
+    }
+
+    const raw = switch (key_data) {
+        .bytes => |bytes| bytes,
+        else => return local.rejectPromise(.{ .type_error = "raw keyData must be a BufferSource" }),
+    };
 
     if (!std.mem.eql(u8, format, "raw")) {
         const is_unsupported = std.mem.eql(u8, format, "pkcs8") or
@@ -277,8 +306,8 @@ pub fn importKey(
     }
 
     return switch (algo) {
-        .aes_key_gen => |params| AES.importKey(params, key_data, extractable, key_usages, exec),
-        .hmac_key_gen => |params| HMAC.importKey(params, key_data, extractable, key_usages, exec),
+        .aes_key_gen => |params| AES.importKey(params, raw, extractable, key_usages, exec),
+        .hmac_key_gen => |params| HMAC.importKey(params, raw, extractable, key_usages, exec),
         // Stubs for algorithms we parse but do not fully import yet.
         else => importKeyStub(extractable, key_usages, exec),
     };
@@ -299,6 +328,20 @@ pub fn encrypt(
             log.warn(.not_implemented, "SubtleCrypto.encrypt", .{ .key_type = key._type });
             return local.rejectPromise(.{ .dom_exception = .{ .err = error.InvalidAccessError } });
         },
+    };
+}
+
+pub fn decrypt(
+    _: *const SubtleCrypto,
+    algo: algorithm.Encrypt,
+    key: *CryptoKey,
+    data: []const u8,
+    exec: *const Execution,
+) !js.Promise {
+    const local = exec.context.local orelse return error.JsEntryIllegal;
+    return switch (key._type) {
+        .aes => AES.decrypt(algo, key, data, exec),
+        else => local.rejectPromise(.{ .dom_exception = .{ .err = error.InvalidAccessError } }),
     };
 }
 
@@ -338,6 +381,7 @@ pub const JsApi = struct {
     pub const importKey = bridge.function(SubtleCrypto.importKey, .{ .dom_exception = true });
     pub const exportKey = bridge.function(SubtleCrypto.exportKey, .{ .dom_exception = true });
     pub const encrypt = bridge.function(SubtleCrypto.encrypt, .{ .dom_exception = true });
+    pub const decrypt = bridge.function(SubtleCrypto.decrypt, .{ .dom_exception = true });
     pub const sign = bridge.function(SubtleCrypto.sign, .{ .dom_exception = true });
     pub const verify = bridge.function(SubtleCrypto.verify, .{ .dom_exception = true });
     pub const deriveBits = bridge.function(SubtleCrypto.deriveBits, .{ .dom_exception = true });

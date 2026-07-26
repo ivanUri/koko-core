@@ -762,8 +762,13 @@ fn attachClass(comptime JsApi: type, isolate: *v8.Isolate, template: *const v8.F
         const js_name = v8.v8__Symbol__GetToStringTag(isolate);
         const tag = if (@hasDecl(JsApi.Meta, "to_string_tag")) JsApi.Meta.to_string_tag else JsApi.Meta.name;
         const js_value = v8.v8__String__NewFromUtf8(isolate, tag.ptr, v8.kNormal, @intCast(tag.len));
-        v8.v8__Template__Set(@ptrCast(prototype), js_name, js_value, v8.ReadOnly + v8.DontDelete);
-        v8.v8__Template__Set(@ptrCast(instance), js_name, js_value, v8.ReadOnly + v8.DontDelete);
+        // `Symbol.toStringTag` is a Web IDL brand property.  It is
+        // non-enumerable and read-only, but it remains configurable on web
+        // platform prototypes.  Marking it DontDelete makes it permanently
+        // non-configurable, so ordinary feature detection/polyfill code that
+        // defines the brand again throws "Cannot redefine property".
+        v8.v8__Template__Set(@ptrCast(prototype), js_name, js_value, v8.ReadOnly + v8.DontEnum);
+        v8.v8__Template__Set(@ptrCast(instance), js_name, js_value, v8.ReadOnly + v8.DontEnum);
     }
 
     if (comptime IS_DEBUG) {

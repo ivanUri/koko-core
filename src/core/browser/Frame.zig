@@ -903,6 +903,16 @@ pub fn deinit(self: *Frame) void {
         }
     }
 
+    // V8 weak callbacks are not guaranteed to run when a realm is torn down.
+    // Live Range objects are additionally linked from the frame for DOM
+    // mutation tracking, so release every remaining owner before destroying
+    // the context. This gives their arena and intrusive-list node one
+    // deterministic terminal path and prevents teardown ArenaPool leaks.
+    while (self._live_ranges.first) |link| {
+        const ar: *AbstractRange = @fieldParentPtr("_range_link", link);
+        ar._rc.forceDeinit(ar, page);
+    }
+
     const browser = page.session.browser;
     self.enterRealmDead();
 
@@ -996,7 +1006,18 @@ pub fn navigatorState(self: *const Frame) NavigatorState {
 }
 
 pub fn base(self: *const Frame) [:0]const u8 {
-    return self.base_url orelse self.url;
+    if (self.base_url) |url| return url;
+
+    // A srcdoc document has `about:srcdoc` as its document URL, but the HTML
+    // standard gives it the embedding document's fallback base URL. Relative
+    // scripts, styles, links and module specifiers must therefore resolve
+    // against the parent document until a <base href> inside the srcdoc
+    // establishes an explicit base URL.
+    if (std.mem.eql(u8, self.url, "about:srcdoc")) {
+        if (self.parent) |parent| return parent.base();
+    }
+
+    return self.url;
 }
 
 pub fn getTitle(self: *Frame) !?[]const u8 {
@@ -4767,7 +4788,7 @@ pub fn createElementNS(self: *Frame, namespace: Element.Namespace, name: []const
                         Element.Html.Dialog,
                         namespace,
                         attribute_iterator,
-                        .{ ._proto = undefined },
+                        .{ ._proto = undefined, ._is_modal = false },
                     ),
                     asUint("legend") => return self.createHtmlElementT(
                         Element.Html.Legend,

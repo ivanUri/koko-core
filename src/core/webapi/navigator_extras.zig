@@ -495,6 +495,15 @@ pub const ContactsManager = struct {
 pub const ServiceWorkerContainer = struct {
     _pad: bool = false,
 
+    // Service workers are not executed yet, but the container still follows
+    // EventTarget's surface contract.  Sites commonly subscribe to
+    // `updatefound`/`message` during bootstrap; omitting these methods turns a
+    // harmless unsupported feature into a fatal TypeError that tears down the
+    // application UI.
+    pub fn addEventListener(_: *ServiceWorkerContainer, _: []const u8, _: js.Value) void {}
+
+    pub fn removeEventListener(_: *ServiceWorkerContainer, _: []const u8, _: js.Value) void {}
+
     pub fn getController(self: *const ServiceWorkerContainer, frame: *Frame) !js.Promise {
         _ = self;
         const local = frame.js.local orelse return error.NotHandled;
@@ -539,6 +548,8 @@ pub const ServiceWorkerContainer = struct {
         pub const getRegistration = bridge.function(ServiceWorkerContainer.getRegistration, .{});
         pub const getRegistrations = bridge.function(ServiceWorkerContainer.getRegistrations, .{});
         pub const register = bridge.function(ServiceWorkerContainer.register, .{});
+        pub const addEventListener = bridge.function(ServiceWorkerContainer.addEventListener, .{});
+        pub const removeEventListener = bridge.function(ServiceWorkerContainer.removeEventListener, .{});
     };
 };
 

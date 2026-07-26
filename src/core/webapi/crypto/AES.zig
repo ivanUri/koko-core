@@ -225,6 +225,85 @@ pub fn encrypt(
     return resolver.promise();
 }
 
+pub fn decrypt(
+    algo: algorithm.Encrypt,
+    crypto_key: *const CryptoKey,
+    data: []const u8,
+    exec: *const Execution,
+) !js.Promise {
+    const local = exec.context.local orelse return error.JsEntryIllegal;
+    var resolver = local.createPromiseResolver();
+    const params = switch (algo) {
+        .aes_gcm => |p| p,
+        else => {
+            resolver.rejectError("AES.decrypt", .{ .dom_exception = .{ .err = error.NotSupported } });
+            return resolver.promise();
+        },
+    };
+    const tag_bits: u32 = params.tagLength orelse 128;
+    if (crypto_key._type != .aes or !crypto_key.canDecrypt() or !algo.isAesGcm()) {
+        resolver.rejectError("AES.decrypt", .{ .dom_exception = .{ .err = error.InvalidAccessError } });
+        return resolver.promise();
+    }
+    if (params.iv.values.len == 0 or tag_bits % 8 != 0 or tag_bits < 32 or tag_bits > 128) {
+        resolver.rejectError("AES.decrypt", .{ .dom_exception = .{ .err = error.OperationError } });
+        return resolver.promise();
+    }
+    const tag_len: usize = tag_bits / 8;
+    if (data.len < tag_len) {
+        resolver.rejectError("AES.decrypt", .{ .dom_exception = .{ .err = error.OperationError } });
+        return resolver.promise();
+    }
+    const cipher = cipherForKey(crypto_key._key.len) orelse {
+        resolver.rejectError("AES.decrypt", .{ .dom_exception = .{ .err = error.OperationError } });
+        return resolver.promise();
+    };
+    const ctx = crypto.EVP_CIPHER_CTX_new() orelse {
+        resolver.rejectError("AES.decrypt", .{ .dom_exception = .{ .err = error.OperationError } });
+        return resolver.promise();
+    };
+    defer crypto.EVP_CIPHER_CTX_free(ctx);
+    const iv = params.iv.values;
+    if (crypto.EVP_DecryptInit_ex(ctx, cipher, null, crypto_key._key.ptr, null) != 1 or
+        crypto.EVP_CIPHER_CTX_ctrl(ctx, crypto.EVP_CTRL_AEAD_SET_IVLEN, @intCast(iv.len), null) != 1 or
+        crypto.EVP_DecryptInit_ex(ctx, null, null, null, iv.ptr) != 1)
+    {
+        resolver.rejectError("AES.decrypt", .{ .dom_exception = .{ .err = error.OperationError } });
+        return resolver.promise();
+    }
+    if (params.additionalData) |aad| {
+        if (aad.values.len > 0) {
+            var ignored: c_int = 0;
+            if (crypto.EVP_DecryptUpdate(ctx, null, &ignored, aad.values.ptr, @intCast(aad.values.len)) != 1) {
+                resolver.rejectError("AES.decrypt", .{ .dom_exception = .{ .err = error.OperationError } });
+                return resolver.promise();
+            }
+        }
+    }
+    const ciphertext = data[0 .. data.len - tag_len];
+    const tag = data[ciphertext.len..];
+    const out = try exec.call_arena.alloc(u8, ciphertext.len);
+    var out_len: c_int = 0;
+    if (ciphertext.len > 0 and crypto.EVP_DecryptUpdate(ctx, out.ptr, &out_len, ciphertext.ptr, @intCast(ciphertext.len)) != 1) {
+        exec.call_arena.free(out);
+        resolver.rejectError("AES.decrypt", .{ .dom_exception = .{ .err = error.OperationError } });
+        return resolver.promise();
+    }
+    if (crypto.EVP_CIPHER_CTX_ctrl(ctx, crypto.EVP_CTRL_AEAD_SET_TAG, @intCast(tag_len), @constCast(tag.ptr)) != 1) {
+        exec.call_arena.free(out);
+        resolver.rejectError("AES.decrypt", .{ .dom_exception = .{ .err = error.OperationError } });
+        return resolver.promise();
+    }
+    var final_len: c_int = 0;
+    if (crypto.EVP_DecryptFinal_ex(ctx, out.ptr + @as(usize, @intCast(out_len)), &final_len) != 1) {
+        exec.call_arena.free(out);
+        resolver.rejectError("AES.decrypt", .{ .dom_exception = .{ .err = error.OperationError } });
+        return resolver.promise();
+    }
+    resolver.resolve("AES.decrypt", js.ArrayBuffer{ .values = out[0..@as(usize, @intCast(out_len + final_len))] });
+    return resolver.promise();
+}
+
 fn cipherForKey(key_len: usize) ?*const crypto.EVP_CIPHER {
     return switch (key_len) {
         16 => crypto.EVP_aes_128_gcm(),

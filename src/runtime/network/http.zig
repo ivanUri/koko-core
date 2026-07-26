@@ -706,6 +706,10 @@ pub const Connection = struct {
             libcurl.curlEasySetoptOptional(easy, .tls_signed_cert_timestamps, @as(c_long, 0));
             libcurl.curlEasySetoptOptional(easy, .tls_status_request, @as(c_long, 0));
         } else {
+            // Re-enable explicitly: a pooled handle that previously served an h3
+            // request left status_request (0005) / SCT (0012) disabled.
+            libcurl.curlEasySetoptOptional(easy, .tls_signed_cert_timestamps, @as(c_long, 1));
+            libcurl.curlEasySetoptOptional(easy, .tls_status_request, @as(c_long, 1));
             const use_mldsa = transport_target.usesChrome150SigAlgs();
             if (use_mldsa) {
                 // Prefer ML-DSA; if vendor rejects names, fall back to classic list.

@@ -1,18 +1,24 @@
 #!/usr/bin/env node
 
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
+const url = "https://grok.com";
 // Chỉ cần sửa cấu hình trong khối này.
 const CONFIG = {
-  url: "https://demo.fingerprint.com/playground",
-  output: "exports/single/fingerprint-playground.html",
-  log: "export-logs/fingerprint-playground.log",
-  // Isolate this runner from legacy profiles created with older schemas.
-  userDataDir: ".velora-single-profile",
-  profile: "Default",
+  url,
+  output: `exports/single/${new URL(url).hostname}.html`,
+  log: `export-logs/${new URL(url).hostname}.log`,
+
+  // Keep single-page exports isolated from profiles created by other runners.
+  // Point these two values at another profile explicitly when persistence is
+  // required; the exporter itself does not select an identity for a site.
+  userDataDir: path.join(os.homedir(), "Library", "Application Support", "velora"),
+  profile: "huynew",
   keepScripts: false,
+  includeFrames: true,
   waitUntil: "done",
   waitMs: 30_000,
   terminateMs: 30_000,
@@ -57,6 +63,28 @@ function normalizeTransientAnimationStyles(html) {
   );
 }
 
+function classifyExportState(html) {
+  const text = html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+
+  // These are generic browser-visible verification states. They mean the
+  // document is valid, but the site has not reached an authenticated/pass
+  // state yet; do not report the artifact as a successful page export.
+  const pendingMarkers = [
+    "performing security verification",
+    "checking your browser",
+    "verify you are human",
+    "security verification",
+  ];
+  return pendingMarkers.some((marker) => text.includes(marker))
+    ? "pending"
+    : "ready";
+}
+
 function validateConfig() {
   const url = new URL(CONFIG.url);
   if (url.protocol !== "http:" && url.protocol !== "https:") {
@@ -92,6 +120,9 @@ function main() {
     String(CONFIG.terminateMs),
     url.href,
   ];
+  if (CONFIG.includeFrames) {
+    args.splice(args.length - 1, 0, "--with-frames");
+  }
   if (CONFIG.waitScript) {
     args.splice(args.length - 1, 0, "--wait-script", CONFIG.waitScript);
   }
@@ -135,7 +166,7 @@ function main() {
       fs.copyFileSync(temporary, partialOutput);
       console.error(
         `Export failed${signal ? ` (${signal})` : ` (exit ${code})`}: incomplete HTML. ` +
-          `Partial output kept at ${partialOutput}.`,
+        `Partial output kept at ${partialOutput}.`,
       );
       fs.rmSync(temporary, { force: true });
       process.exitCode = 1;
@@ -153,6 +184,15 @@ function main() {
       console.log(`Removed ${result.removed} <script> element(s).`);
     }
     console.log(`Done: ${output} (${Buffer.byteLength(result.html)} bytes)`);
+
+    const exportState = classifyExportState(result.html);
+    if (exportState === "pending") {
+      console.warn(
+        "Warning: HTML is valid, but the page is still in a security-verification pending state.",
+      );
+      process.exitCode = 2;
+      return;
+    }
 
     if (code !== 0 || signal) {
       console.warn(

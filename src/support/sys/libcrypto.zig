@@ -269,6 +269,7 @@ pub const EVP_CIPHER_CTX = struct_evp_cipher_ctx_st;
 
 pub const EVP_CTRL_AEAD_SET_IVLEN: c_int = 0x9;
 pub const EVP_CTRL_AEAD_GET_TAG: c_int = 0x10;
+pub const EVP_CTRL_AEAD_SET_TAG: c_int = 0x11;
 
 pub extern fn EVP_aes_128_gcm() *const EVP_CIPHER;
 pub extern fn EVP_aes_192_gcm() *const EVP_CIPHER;
@@ -291,6 +292,25 @@ pub extern fn EVP_EncryptUpdate(
     in_len: c_int,
 ) c_int;
 pub extern fn EVP_EncryptFinal_ex(
+    ctx: ?*EVP_CIPHER_CTX,
+    out: ?[*]u8,
+    out_len: *c_int,
+) c_int;
+pub extern fn EVP_DecryptInit_ex(
+    ctx: ?*EVP_CIPHER_CTX,
+    cipher: ?*const EVP_CIPHER,
+    impl: ?*ENGINE,
+    key: ?[*]const u8,
+    iv: ?[*]const u8,
+) c_int;
+pub extern fn EVP_DecryptUpdate(
+    ctx: ?*EVP_CIPHER_CTX,
+    out: ?[*]u8,
+    out_len: *c_int,
+    in: ?[*]const u8,
+    in_len: c_int,
+) c_int;
+pub extern fn EVP_DecryptFinal_ex(
     ctx: ?*EVP_CIPHER_CTX,
     out: ?[*]u8,
     out_len: *c_int,

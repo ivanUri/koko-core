@@ -23,6 +23,59 @@ const Execution = js.Execution;
 const algorithm = @import("algorithm.zig");
 
 const CryptoKey = @import("../CryptoKey.zig");
+const common = @import("common.zig");
+
+pub fn importJwk(
+    params: algorithm.Init.HmacImport,
+    kty: []const u8,
+    encoded_key: []const u8,
+    alg: ?[]const u8,
+    ext: ?bool,
+    key_ops: ?[]const []const u8,
+    extractable: bool,
+    key_usages: []const []const u8,
+    exec: *const Execution,
+) !js.Promise {
+    const local = exec.context.local orelse return error.JsEntryIllegal;
+    if (!std.mem.eql(u8, kty, "oct") or (ext != null and !ext.? and extractable)) {
+        return local.rejectPromise(.{ .dom_exception = .{ .err = error.DataError } });
+    }
+    if (key_ops) |ops| {
+        for (key_usages) |usage| {
+            if (!contains(ops, usage)) {
+                return local.rejectPromise(.{ .dom_exception = .{ .err = error.DataError } });
+            }
+        }
+    }
+    if (alg) |name| {
+        const expected = expectedJwkAlgorithm(params) orelse {
+            return local.rejectPromise(.{ .dom_exception = .{ .err = error.NotSupported } });
+        };
+        if (!std.mem.eql(u8, name, expected)) {
+            return local.rejectPromise(.{ .dom_exception = .{ .err = error.DataError } });
+        }
+    }
+    const decoded = common.base64Decode(exec.call_arena, encoded_key) catch |err| {
+        return local.rejectPromise(.{ .dom_exception = .{ .err = err } });
+    };
+    return importKey(params, decoded, extractable, key_usages, exec);
+}
+
+fn contains(values: []const []const u8, needle: []const u8) bool {
+    for (values) |value| if (std.mem.eql(u8, value, needle)) return true;
+    return false;
+}
+
+fn expectedJwkAlgorithm(params: algorithm.Init.HmacImport) ?[]const u8 {
+    const hash = switch (params.hash) {
+        .string => |value| value,
+        .object => |value| value.name,
+    };
+    if (std.ascii.eqlIgnoreCase(hash, "SHA-256")) return "HS256";
+    if (std.ascii.eqlIgnoreCase(hash, "SHA-384")) return "HS384";
+    if (std.ascii.eqlIgnoreCase(hash, "SHA-512")) return "HS512";
+    return null;
+}
 
 pub fn init(
     params: algorithm.Init.HmacKeyGen,
