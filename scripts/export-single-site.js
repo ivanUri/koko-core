@@ -6,14 +6,19 @@ const { spawn } = require("node:child_process");
 
 // Chỉ cần sửa cấu hình trong khối này.
 const CONFIG = {
-  url: "https://grok.com/",
-  output: "exports/single/grok.html",
-  log: "export-logs/grok.log",
-  profile: "huynew",
+  url: "https://demo.fingerprint.com/playground",
+  output: "exports/single/fingerprint-playground.html",
+  log: "export-logs/fingerprint-playground.log",
+  // Isolate this runner from legacy profiles created with older schemas.
+  userDataDir: ".velora-single-profile",
+  profile: "Default",
   keepScripts: false,
-  waitUntil: "load",
-  waitMs: 20_000,
+  waitUntil: "done",
+  waitMs: 30_000,
   terminateMs: 30_000,
+  // Wait for finite presentation animations to settle before serializing.
+  // Infinite decorative animations are intentionally ignored.
+  waitScript: null,
 };
 
 const projectRoot = path.resolve(__dirname, "..");
@@ -42,6 +47,16 @@ function stripScriptElements(html) {
   return { html: result, removed };
 }
 
+function normalizeTransientAnimationStyles(html) {
+  // React animation libraries often serialize an initial hidden state when
+  // the DOM is captured immediately after load. Remove only that transient
+  // pair; preserve intentional display/visibility rules and all other CSS.
+  return html.replace(
+    /style="([^"]*?)opacity:\s*0(?:;)?\s*transform:\s*none;?([^"]*?)"/gi,
+    'style="$1$2"',
+  );
+}
+
 function validateConfig() {
   const url = new URL(CONFIG.url);
   if (url.protocol !== "http:" && url.protocol !== "https:") {
@@ -67,6 +82,8 @@ function main() {
     "--with-base",
     "--browser-profile",
     CONFIG.profile,
+    "--user-data-dir",
+    path.resolve(projectRoot, CONFIG.userDataDir),
     "--wait-until",
     CONFIG.waitUntil,
     "--wait-ms",
@@ -75,6 +92,9 @@ function main() {
     String(CONFIG.terminateMs),
     url.href,
   ];
+  if (CONFIG.waitScript) {
+    args.splice(args.length - 1, 0, "--wait-script", CONFIG.waitScript);
+  }
 
   console.log(`Exporting: ${url.href}`);
   console.log(`Output: ${output}`);
@@ -108,17 +128,24 @@ function main() {
 
     const rawHtml = fs.readFileSync(temporary, "utf8");
     if (!isCompleteHtml(rawHtml)) {
-      fs.rmSync(temporary, { force: true });
+      // Keep the partial artifact for diagnosis/recovery. A browser crash can
+      // happen during teardown after the serializer has already emitted most
+      // of the document; deleting it would hide useful output.
+      const partialOutput = `${output}.partial`;
+      fs.copyFileSync(temporary, partialOutput);
       console.error(
-        `Export failed${signal ? ` (${signal})` : ` (exit ${code})`}: incomplete HTML.`,
+        `Export failed${signal ? ` (${signal})` : ` (exit ${code})`}: incomplete HTML. ` +
+          `Partial output kept at ${partialOutput}.`,
       );
+      fs.rmSync(temporary, { force: true });
       process.exitCode = 1;
       return;
     }
 
+    const normalizedHtml = normalizeTransientAnimationStyles(rawHtml);
     const result = CONFIG.keepScripts
-      ? { html: rawHtml, removed: 0 }
-      : stripScriptElements(rawHtml);
+      ? { html: normalizedHtml, removed: 0 }
+      : stripScriptElements(normalizedHtml);
     fs.writeFileSync(temporary, result.html, "utf8");
     fs.renameSync(temporary, output);
 

@@ -337,6 +337,13 @@ fn appendChromeDocumentNavigationHeaders(
         const site_hdr = try std.fmt.allocPrintSentinel(allocator, "Sec-Fetch-Site: {s}", .{site}, 0);
         try headers.add(site_hdr);
 
+        // Chromium marks embedded documents that have the browsing context's
+        // storage-access grant active. This is a Fetch Metadata signal, not a
+        // site policy; it belongs alongside the iframe destination metadata.
+        if (ctx.navigation_destination == .iframe) {
+            try headers.add("Sec-Fetch-Storage-Access: active");
+        }
+
         if (ctx.navigation_destination == .top_level and !opts.omit_sec_fetch_user) {
             try headers.add("Sec-Fetch-User: ?1");
         }

@@ -830,6 +830,12 @@ pub fn deinit(self: *Frame) void {
     if (self._deinit_done) return;
     self._deinit_done = true;
 
+    // Worker callbacks are scheduled on this frame's realm.  They must be
+    // cancelled before the frame/context is torn down; otherwise a worker
+    // message can race deinit and dereference the stale frame from the
+    // scheduler callback.
+    self.terminateAllWorkers();
+
     for (self.child_frames.items) |frame| {
         frame.deinit();
     }
@@ -1143,7 +1149,10 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
                 // Referer is navigation provenance, independent of whether the
                 // navigation has transient user activation. In particular,
                 // child browsing-context navigations carry their embedder URL.
-                .referer_url = opts.referer,
+                // curl-impersonate's document headers carry Referer only for
+                // same-origin/in-session navigations. Cross-site iframe
+                // referrers are filtered by the document's referrer policy.
+                .referer_url = if (opts.omit_sec_fetch_user) opts.referer else null,
             };
             try HttpProfile.appendChromeHeaders(headers, hdr_alloc, identity, &static, ctx, chrome_opts);
             try self._session.browser.app.config.profile_runtime.appendHeaderPlugins(
@@ -1161,7 +1170,7 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
                 .brands = profile.http.brands,
                 .color_scheme = profile.http.prefers_color_scheme,
                 .omit_sec_fetch_user = opts.omit_sec_fetch_user,
-                .referer_url = opts.referer,
+                .referer_url = if (opts.omit_sec_fetch_user) opts.referer else null,
             };
             try HttpProfile.appendChromeHeaders(headers, hdr_alloc, identity, &static, ctx, chrome_opts);
             const referer_hdr = try refererHeaderForRequest(self, opts);

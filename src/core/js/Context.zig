@@ -227,12 +227,16 @@ pub fn deinit(self: *Context) void {
     const env = self.env;
     defer env.app.arena_pool.release(self.arena);
 
+    // Scheduler tasks own frame/worker arenas and must be finalized even when
+    // the V8 context can no longer be entered (for example after a stale
+    // iframe realm is detached during shutdown).  Returning before this
+    // cleanup leaves Window.postMessage callbacks tracked by ArenaPool and
+    // turns a recoverable teardown race into a debug panic.
+    self.scheduler.deinit();
+
     var hs: js.HandleScope = undefined;
     const entered = self.enter(&hs) orelse return;
     defer entered.exit();
-
-    // this can release objects
-    self.scheduler.deinit();
 
     for (self.global_modules.items) |*global| {
         v8.v8__Global__Reset(global);

@@ -1280,9 +1280,11 @@ fn perform(self: *Client, timeout_ms: c_int) anyerror!PerformStatus {
             }
         }
         if (!promoted) break :promote;
-        self.performing = true;
-        defer self.performing = false;
-        active = try self.handles.perform();
+        active = blk: {
+            self.performing = true;
+            defer self.performing = false;
+            break :blk try self.handles.perform();
+        };
         if (try self.processMessagesAndStartQueued()) {
             return .normal;
         }
@@ -1300,27 +1302,30 @@ fn perform(self: *Client, timeout_ms: c_int) anyerror!PerformStatus {
     // the next macrotask instead (LP runner-tick-signal).
     const should_poll = self.cdp_client != null or active > 0 or self.http_active > 0 or self.native_ws.first != null;
     if (should_poll) {
+        const poll_timeout_ms = networkFairPollTimeout(timeout_ms, self.http_active > 0);
         if (self.cdp_client) |cdp_client| {
             var wait_fds = [_]http.WaitFd{.{
                 .fd = cdp_client.socket,
                 .events = .{ .pollin = true },
                 .revents = .{},
             }};
-            try self.handles.poll(&wait_fds, timeout_ms);
+            try self.handles.poll(&wait_fds, poll_timeout_ms);
             if (wait_fds[0].revents.pollin or wait_fds[0].revents.pollpri or wait_fds[0].revents.pollout) {
                 status = .cdp_socket;
             }
         } else {
-            try self.handles.poll(&.{}, timeout_ms);
+            try self.handles.poll(&.{}, poll_timeout_ms);
         }
 
         // Network.zig does perform → poll → perform → completions. Without the
         // post-poll perform, newly added handles (e.g. Google sg_ss root nav)
         // never register sockets / receive headers before info_read.
         if (self.http_active > 0) {
-            self.performing = true;
-            defer self.performing = false;
-            _ = try self.handles.perform();
+            {
+                self.performing = true;
+                defer self.performing = false;
+                _ = try self.handles.perform();
+            }
             if (try self.processMessagesAndStartQueued()) {
                 return .normal;
             }
@@ -1332,6 +1337,15 @@ fn perform(self: *Client, timeout_ms: c_int) anyerror!PerformStatus {
     _ = try self.processMessagesAndStartQueued();
     try pollNativeWebSockets(self);
     return status;
+}
+
+/// A due-now JS task must not turn the network loop into repeated non-blocking
+/// curl polls. A one-millisecond I/O quantum preserves timer responsiveness
+/// while allowing socket readiness and the terminal CURLMSG_DONE transition to
+/// advance under a continuously runnable scheduler.
+fn networkFairPollTimeout(requested_ms: c_int, has_active_http: bool) c_int {
+    if (has_active_http and requested_ms <= 0) return 1;
+    return requested_ms;
 }
 
 pub fn trackNativeWebSocket(self: *Client, ws: *WebSocket) void {
@@ -2285,12 +2299,17 @@ pub const Transfer = struct {
             // opts this request into H3. Forcing every subresource onto H3
             // while documents use H2 creates two competing connection pools
             // for the same origin and can strand a re-entrant iframe request.
-            const http_version: http.Connection.ProfileHttpVersion = if (req.params.prefer_http3)
+            // Chromium's connection pool is origin/protocol keyed. Once an
+            // origin advertises Alt-Svc, documents and subresources share its
+            // H3 session; choosing H2 solely because a response is a document
+            // creates a second pool and changes the browser's stream lifecycle.
+            // CURL_HTTP_VERSION_3 remains fallback-capable when QUIC is not
+            // available, so the profile keeps a standards-compatible fallback.
+            const http_version: http.Connection.ProfileHttpVersion = if (req.params.prefer_http3 or
+                client.network.config.profile.isChromium())
                 .h3
-            else if (req.params.resource_type == .document)
-                .h2
             else
-                .h3;
+                .h2;
             if (req.params.force_fresh_connection) try conn.forceFreshConnection();
             try conn.applyProfileTransportVersion(client.network.config, curl_default_headers, http_version);
             if (comptime IS_DEBUG) {
@@ -2809,4 +2828,11 @@ test "curl mutations stay deferred throughout completion message processing" {
     try std.testing.expect(curlMutationBlocked(false, true, false));
     try std.testing.expect(curlMutationBlocked(false, false, true));
     try std.testing.expect(!curlMutationBlocked(false, false, false));
+}
+
+test "active HTTP receives an I/O fairness quantum at a due-now scheduler deadline" {
+    try std.testing.expectEqual(@as(c_int, 1), networkFairPollTimeout(0, true));
+    try std.testing.expectEqual(@as(c_int, 1), networkFairPollTimeout(-1, true));
+    try std.testing.expectEqual(@as(c_int, 0), networkFairPollTimeout(0, false));
+    try std.testing.expectEqual(@as(c_int, 25), networkFairPollTimeout(25, true));
 }
