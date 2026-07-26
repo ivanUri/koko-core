@@ -10,20 +10,22 @@ const MeasureTextIntelligent = @import("MeasureTextIntelligent.zig");
 const CanvasIntelligent = @import("CanvasIntelligent.zig");
 const WebGLParameters = @import("WebGLParameters.zig");
 const MathsNative = @import("MathsNative.zig");
-const ProfileSnapshot = @import("ProfileSnapshot.zig");
+const FingerprintStore = @import("FingerprintStore.zig");
 
-/// Base directory for relative asset paths in bundled fingerprints (profile snapshot / catalog).
-var g_asset_base: ?[]const u8 = null;
-
-fn resolveAssetPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+fn resolveAssetPath(allocator: std.mem.Allocator, root: []const u8, path: []const u8) ![]const u8 {
     if (path.len == 0) return error.EmptyPath;
-    if (std.fs.path.isAbsolute(path)) return try allocator.dupe(u8, path);
-    if (g_asset_base) |base| return try std.fs.path.join(allocator, &.{ base, path });
-    return try allocator.dupe(u8, path);
+    if (std.fs.path.isAbsolute(path) or std.mem.indexOfScalar(u8, path, '\\') != null) {
+        return error.AssetOutsideFingerprint;
+    }
+    var components = std.mem.splitScalar(u8, path, '/');
+    while (components.next()) |component| {
+        if (std.mem.eql(u8, component, "..")) return error.AssetOutsideFingerprint;
+    }
+    return try std.fs.path.join(allocator, &.{ root, path });
 }
 
-fn readAssetFile(allocator: std.mem.Allocator, path: []const u8, limit: usize) ![]u8 {
-    const resolved = try resolveAssetPath(allocator, path);
+fn readAssetFile(allocator: std.mem.Allocator, root: []const u8, path: []const u8, limit: usize) ![]u8 {
+    const resolved = try resolveAssetPath(allocator, root, path);
     defer allocator.free(resolved);
     return std.fs.cwd().readFileAlloc(allocator, resolved, limit);
 }
@@ -414,27 +416,21 @@ const JsonProfile = struct {
 };
 
 pub fn resolve(paths: *const ProfilePaths.ProfilePaths) !LoadedProfile {
-    var fp_src = try ProfileSnapshot.resolveFingerprintSource(
+    var fp_src = try FingerprintStore.resolve(
         std.heap.page_allocator,
         paths,
-        paths.snapshot_cli,
+        paths.fingerprint_override,
     );
-    defer ProfileSnapshot.freeFingerprintSource(std.heap.page_allocator, &fp_src);
+    defer fp_src.deinit(std.heap.page_allocator);
 
-    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, fp_src.path, 1024 * 1024) catch |err| switch (err) {
-        error.FileNotFound => {
-            var embedded = try fromEmbedded(fp_src.template_id);
-            applyProcessTimezone(&embedded);
-            return embedded;
-        },
-        else => return err,
-    };
+    const bytes = try std.fs.cwd().readFileAlloc(std.heap.page_allocator, fp_src.definition_path, 1024 * 1024);
     defer std.heap.page_allocator.free(bytes);
 
-    g_asset_base = fp_src.asset_base;
-    defer g_asset_base = null;
-
-    var loaded = try parseJson(bytes);
+    var loaded = try parseJson(bytes, fp_src.root);
+    if (fp_src.id.len > 0 and !std.mem.eql(u8, loaded.id, fp_src.id)) {
+        loaded.deinit();
+        return error.FingerprintIdMismatch;
+    }
     try applyHostEnvironment(&loaded);
     applyProcessTimezone(&loaded);
     return loaded;
@@ -494,8 +490,10 @@ fn fromEmbedded(name: ?[]const u8) !LoadedProfile {
     return profile;
 }
 
-fn parseJson(bytes: []const u8) !LoadedProfile {
-    var parsed = try std.json.parseFromSlice(JsonProfile, std.heap.page_allocator, bytes, .{});
+fn parseJson(bytes: []const u8, asset_root: []const u8) !LoadedProfile {
+    var parsed = try std.json.parseFromSlice(JsonProfile, std.heap.page_allocator, bytes, .{
+        .ignore_unknown_fields = true,
+    });
     defer parsed.deinit();
 
     const doc = parsed.value;
@@ -553,7 +551,7 @@ fn parseJson(bytes: []const u8) !LoadedProfile {
     profile.policies = try dupeStringList(allocator, doc.policies);
 
     profile.languages = try dupeStringList(allocator, doc.navigator.languages);
-    profile.fonts = try loadFonts(allocator, doc.fonts, doc.fontsFile);
+    profile.fonts = try loadFonts(allocator, asset_root, doc.fonts, doc.fontsFile);
     profile.webgl_extensions = try dupeStringList(allocator, doc.webgl.extensions);
     profile.webgl_extensions2 = if (doc.webgl.extensions2.len > 0)
         try dupeStringList(allocator, doc.webgl.extensions2)
@@ -659,26 +657,26 @@ fn parseJson(bytes: []const u8) !LoadedProfile {
         .fonts = profile.fonts,
     };
 
-    profile.canvas_probe_data_url = try loadCanvasProbe(allocator, doc.canvasProbe);
-    try loadCanvasProbes(allocator, doc.canvasProbe, &profile);
-    try loadAudioProbe(allocator, doc.audioProbe, &profile);
-    profile.speech_voices = try loadSpeechVoices(allocator, doc.speechVoicesFile);
-    profile.measure_text_baseline = try loadMeasureTextBaseline(allocator, doc.measureTextBaseline);
-    try loadWebGLProbe(allocator, doc.webglProbe, &profile);
-    profile.window_keys = try loadWindowKeys(allocator, doc.windowKeys);
-    profile.navigator_keys = try loadNavigatorKeys(allocator, doc.navigatorKeys);
-    profile.html_element_keys = try loadHtmlElementKeys(allocator, doc.htmlElementKeys);
-    try loadCssComputedKeys(allocator, doc.cssComputedKeys, &profile);
-    profile.maths_baseline = try loadMathsBaseline(allocator, doc.mathsBaseline);
-    try loadClientRectsBaseline(allocator, doc.clientRectsBaseline, &profile);
-    try loadSvgBaseline(allocator, doc.svgBaseline, &profile);
+    profile.canvas_probe_data_url = try loadCanvasProbe(allocator, asset_root, doc.canvasProbe);
+    try loadCanvasProbes(allocator, asset_root, doc.canvasProbe, &profile);
+    try loadAudioProbe(allocator, asset_root, doc.audioProbe, &profile);
+    profile.speech_voices = try loadSpeechVoices(allocator, asset_root, doc.speechVoicesFile);
+    profile.measure_text_baseline = try loadMeasureTextBaseline(allocator, asset_root, doc.measureTextBaseline);
+    try loadWebGLProbe(allocator, asset_root, doc.webglProbe, &profile);
+    profile.window_keys = try loadWindowKeys(allocator, asset_root, doc.windowKeys);
+    profile.navigator_keys = try loadNavigatorKeys(allocator, asset_root, doc.navigatorKeys);
+    profile.html_element_keys = try loadHtmlElementKeys(allocator, asset_root, doc.htmlElementKeys);
+    try loadCssComputedKeys(allocator, asset_root, doc.cssComputedKeys, &profile);
+    profile.maths_baseline = try loadMathsBaseline(allocator, asset_root, doc.mathsBaseline);
+    try loadClientRectsBaseline(allocator, asset_root, doc.clientRectsBaseline, &profile);
+    try loadSvgBaseline(allocator, asset_root, doc.svgBaseline, &profile);
 
     return profile;
 }
 
-fn loadMeasureTextBaseline(allocator: std.mem.Allocator, spec: JsonMeasureTextBaseline) ![]const MeasureTextIntelligent.Entry {
+fn loadMeasureTextBaseline(allocator: std.mem.Allocator, root: []const u8, spec: JsonMeasureTextBaseline) ![]const MeasureTextIntelligent.Entry {
     if (spec.dataFile.len == 0) return &.{};
-    const bytes = try readAssetFile(allocator, spec.dataFile, 32 * 1024 * 1024);
+    const bytes = try readAssetFile(allocator, root, spec.dataFile, 32 * 1024 * 1024);
     const parsed = try std.json.parseFromSlice([]const JsonMeasureTextEntry, allocator, bytes, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     const src = parsed.value;
@@ -701,9 +699,9 @@ fn loadMeasureTextBaseline(allocator: std.mem.Allocator, spec: JsonMeasureTextBa
     return out;
 }
 
-fn loadWebGLProbe(allocator: std.mem.Allocator, probe: JsonWebGLProbe, profile: *LoadedProfile) !void {
+fn loadWebGLProbe(allocator: std.mem.Allocator, asset_root: []const u8, probe: JsonWebGLProbe, profile: *LoadedProfile) !void {
     if (probe.dataFile.len == 0) return;
-    const bytes = readAssetFile(allocator, probe.dataFile, 4 * 1024 * 1024) catch return;
+    const bytes = readAssetFile(allocator, asset_root, probe.dataFile, 4 * 1024 * 1024) catch return;
     defer allocator.free(bytes);
 
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return;
@@ -762,32 +760,32 @@ fn jsonU8Slice(allocator: std.mem.Allocator, value: std.json.Value) ![]u8 {
     return out;
 }
 
-fn loadWindowKeys(allocator: std.mem.Allocator, spec: JsonWindowKeys) ![]const []const u8 {
+fn loadWindowKeys(allocator: std.mem.Allocator, root: []const u8, spec: JsonWindowKeys) ![]const []const u8 {
     if (spec.dataFile.len == 0) return &.{};
-    const bytes = try readAssetFile(allocator, spec.dataFile, 8 * 1024 * 1024);
+    const bytes = try readAssetFile(allocator, root, spec.dataFile, 8 * 1024 * 1024);
     const parsed = try std.json.parseFromSlice([]const []const u8, allocator, bytes, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     return dupeStringList(allocator, parsed.value);
 }
 
-fn loadNavigatorKeys(allocator: std.mem.Allocator, spec: JsonNavigatorKeys) ![]const []const u8 {
+fn loadNavigatorKeys(allocator: std.mem.Allocator, root: []const u8, spec: JsonNavigatorKeys) ![]const []const u8 {
     if (spec.dataFile.len == 0) return &.{};
-    const bytes = try readAssetFile(allocator, spec.dataFile, 8 * 1024 * 1024);
+    const bytes = try readAssetFile(allocator, root, spec.dataFile, 8 * 1024 * 1024);
     const parsed = try std.json.parseFromSlice([]const []const u8, allocator, bytes, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     return dupeStringList(allocator, parsed.value);
 }
 
-fn loadCssComputedKeys(allocator: std.mem.Allocator, spec: JsonCssComputedKeys, profile: *LoadedProfile) !void {
+fn loadCssComputedKeys(allocator: std.mem.Allocator, root: []const u8, spec: JsonCssComputedKeys, profile: *LoadedProfile) !void {
     if (spec.enumerableKeysFile.len > 0) {
-        const bytes = try readAssetFile(allocator, spec.enumerableKeysFile, 8 * 1024 * 1024);
+        const bytes = try readAssetFile(allocator, root, spec.enumerableKeysFile, 8 * 1024 * 1024);
         const parsed = try std.json.parseFromSlice(JsonCssEnumerableKeys, allocator, bytes, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
         profile.css_computed_indexed_keys = try dupeStringList(allocator, parsed.value.indexed);
         profile.css_computed_named_keys = try dupeStringList(allocator, parsed.value.named);
     }
     if (spec.dataFile.len > 0) {
-        const bytes = try readAssetFile(allocator, spec.dataFile, 8 * 1024 * 1024);
+        const bytes = try readAssetFile(allocator, root, spec.dataFile, 8 * 1024 * 1024);
         const parsed = try std.json.parseFromSlice([]const []const u8, allocator, bytes, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
         profile.css_computed_keys = try dupeStringList(allocator, parsed.value);
@@ -799,17 +797,17 @@ fn loadCssComputedKeys(allocator: std.mem.Allocator, spec: JsonCssComputedKeys, 
     }
 }
 
-fn loadHtmlElementKeys(allocator: std.mem.Allocator, spec: JsonHtmlElementKeys) ![]const []const u8 {
+fn loadHtmlElementKeys(allocator: std.mem.Allocator, root: []const u8, spec: JsonHtmlElementKeys) ![]const []const u8 {
     if (spec.dataFile.len == 0) return &.{};
-    const bytes = try readAssetFile(allocator, spec.dataFile, 8 * 1024 * 1024);
+    const bytes = try readAssetFile(allocator, root, spec.dataFile, 8 * 1024 * 1024);
     const parsed = try std.json.parseFromSlice([]const []const u8, allocator, bytes, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     return dupeStringList(allocator, parsed.value);
 }
 
-fn loadClientRectsBaseline(allocator: std.mem.Allocator, spec: JsonClientRectsBaseline, profile: *LoadedProfile) !void {
+fn loadClientRectsBaseline(allocator: std.mem.Allocator, asset_root: []const u8, spec: JsonClientRectsBaseline, profile: *LoadedProfile) !void {
     if (spec.dataFile.len == 0) return;
-    const bytes = readAssetFile(allocator, spec.dataFile, 8 * 1024 * 1024) catch return;
+    const bytes = readAssetFile(allocator, asset_root, spec.dataFile, 8 * 1024 * 1024) catch return;
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{ .ignore_unknown_fields = true }) catch return;
     defer parsed.deinit();
     const root = switch (parsed.value) {
@@ -858,9 +856,9 @@ fn loadClientRectsBaseline(allocator: std.mem.Allocator, spec: JsonClientRectsBa
     }
 }
 
-fn loadSvgBaseline(allocator: std.mem.Allocator, spec: JsonSvgBaseline, profile: *LoadedProfile) !void {
+fn loadSvgBaseline(allocator: std.mem.Allocator, asset_root: []const u8, spec: JsonSvgBaseline, profile: *LoadedProfile) !void {
     if (spec.dataFile.len == 0) return;
-    const bytes = readAssetFile(allocator, spec.dataFile, 8 * 1024 * 1024) catch return;
+    const bytes = readAssetFile(allocator, asset_root, spec.dataFile, 8 * 1024 * 1024) catch return;
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{ .ignore_unknown_fields = true }) catch return;
     defer parsed.deinit();
     const root = switch (parsed.value) {
@@ -925,9 +923,9 @@ fn jsonF64(value: ?std.json.Value, default: f64) f64 {
     };
 }
 
-fn loadMathsBaseline(allocator: std.mem.Allocator, spec: JsonMathsBaseline) ![]const MathsNative.Entry {
+fn loadMathsBaseline(allocator: std.mem.Allocator, root: []const u8, spec: JsonMathsBaseline) ![]const MathsNative.Entry {
     if (spec.dataFile.len == 0) return &.{};
-    const bytes = try readAssetFile(allocator, spec.dataFile, 8 * 1024 * 1024);
+    const bytes = try readAssetFile(allocator, root, spec.dataFile, 8 * 1024 * 1024);
     const parsed = try std.json.parseFromSlice([]const JsonMathsBaselineEntry, allocator, bytes, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     const src = parsed.value;
@@ -977,18 +975,18 @@ fn argsToJson(allocator: std.mem.Allocator, args: []std.json.Value) ![]const u8 
     return json.toOwnedSlice(allocator);
 }
 
-fn loadFonts(allocator: std.mem.Allocator, embedded: []const []const u8, file_path: []const u8) ![]const []const u8 {
+fn loadFonts(allocator: std.mem.Allocator, root: []const u8, embedded: []const []const u8, file_path: []const u8) ![]const []const u8 {
     if (embedded.len > 0) return dupeStringList(allocator, embedded);
     if (file_path.len == 0) return &.{};
-    const bytes = try readAssetFile(allocator, file_path, 4 * 1024 * 1024);
+    const bytes = try readAssetFile(allocator, root, file_path, 4 * 1024 * 1024);
     const parsed = try std.json.parseFromSlice([]const []const u8, allocator, bytes, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     return dupeStringList(allocator, parsed.value);
 }
 
-fn loadSpeechVoices(allocator: std.mem.Allocator, file_path: []const u8) ![]const SpeechVoiceSpec {
+fn loadSpeechVoices(allocator: std.mem.Allocator, root: []const u8, file_path: []const u8) ![]const SpeechVoiceSpec {
     if (file_path.len == 0) return &.{};
-    const bytes = try readAssetFile(allocator, file_path, 4 * 1024 * 1024);
+    const bytes = try readAssetFile(allocator, root, file_path, 4 * 1024 * 1024);
     const parsed = try std.json.parseFromSlice([]const JsonSpeechVoice, allocator, bytes, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     const src = parsed.value;
@@ -1009,9 +1007,9 @@ fn loadSpeechVoices(allocator: std.mem.Allocator, file_path: []const u8) ![]cons
     return out;
 }
 
-fn loadAudioProbe(allocator: std.mem.Allocator, probe: JsonAudioProbe, profile: *LoadedProfile) !void {
+fn loadAudioProbe(allocator: std.mem.Allocator, root: []const u8, probe: JsonAudioProbe, profile: *LoadedProfile) !void {
     if (probe.dataFile.len == 0) return;
-    const bytes = readAssetFile(allocator, probe.dataFile, 4 * 1024 * 1024) catch return;
+    const bytes = readAssetFile(allocator, root, probe.dataFile, 4 * 1024 * 1024) catch return;
     defer allocator.free(bytes);
 
     const parsed = std.json.parseFromSlice(JsonAudioBaseline, allocator, bytes, .{ .ignore_unknown_fields = true }) catch return;
@@ -1033,12 +1031,12 @@ fn loadAudioProbe(allocator: std.mem.Allocator, probe: JsonAudioProbe, profile: 
     }
 }
 
-fn loadCanvasProbe(allocator: std.mem.Allocator, probe: JsonCanvasProbe) !?[]const u8 {
+fn loadCanvasProbe(allocator: std.mem.Allocator, root: []const u8, probe: JsonCanvasProbe) !?[]const u8 {
     if (probe.dataUrl.len > 0) {
         return try allocator.dupe(u8, probe.dataUrl);
     }
     if (probe.dataUrlFile.len == 0) return null;
-    const bytes = readAssetFile(allocator, probe.dataUrlFile, 64 * 1024) catch return null;
+    const bytes = readAssetFile(allocator, root, probe.dataUrlFile, 64 * 1024) catch return null;
     return bytes;
 }
 
@@ -1053,9 +1051,9 @@ const JsonCanvasProbesFile = struct {
     canvas_2_low_entropy: []const f64 = &.{},
 };
 
-fn loadCanvasProbes(allocator: std.mem.Allocator, probe: JsonCanvasProbe, profile: *LoadedProfile) !void {
+fn loadCanvasProbes(allocator: std.mem.Allocator, root: []const u8, probe: JsonCanvasProbe, profile: *LoadedProfile) !void {
     if (probe.probesFile.len == 0) return;
-    const bytes = try readAssetFile(allocator, probe.probesFile, 2 * 1024 * 1024);
+    const bytes = try readAssetFile(allocator, root, probe.probesFile, 2 * 1024 * 1024);
     const parsed = try std.json.parseFromSlice(JsonCanvasProbesFile, allocator, bytes, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     const doc = parsed.value;
@@ -1200,6 +1198,18 @@ fn validateAntidetect(
 }
 
 const testing = @import("../../testing/testing.zig");
+
+test "ProfileStore: assets cannot escape fingerprint folder" {
+    const allocator = std.testing.allocator;
+    try testing.expectError(
+        error.AssetOutsideFingerprint,
+        resolveAssetPath(allocator, "/tmp/fingerprint", "../outside.json"),
+    );
+    try testing.expectError(
+        error.AssetOutsideFingerprint,
+        resolveAssetPath(allocator, "/tmp/fingerprint", "/tmp/outside.json"),
+    );
+}
 
 fn testPaths(allocator: std.mem.Allocator, profile_name: []const u8) !ProfilePaths.ProfilePaths {
     const base = try std.fmt.allocPrint(allocator, "/tmp/velora-profilestore-test-{s}", .{profile_name});

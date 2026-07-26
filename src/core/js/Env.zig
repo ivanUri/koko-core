@@ -784,11 +784,6 @@ pub fn runMicrotasks(self: *Env, source: TaskSource) void {
         return;
     }
 
-    // Google knitsail: timer probes (t20/t80) must not drain sg_ss microtasks early.
-    if (source == .timer_callback and self.anyFrameHoldsKnitsailMicrotasks()) {
-        return;
-    }
-
     if (builtin.mode == .Debug) {
         log.debug(.frame, "microtask.checkpoint.begin", .{
             .source = @tagName(source),
@@ -1089,7 +1084,12 @@ fn contextBlocksTimerPump(ctx: *Context) bool {
 /// Scheduler/timer pumps from nested stacks crash with V8 `IsOnCentralStack`.
 pub fn anyContextOnV8Stack(self: *const Env) bool {
     for (self.contexts[0..self.context_count]) |ctx| {
-        if (ctx.call_depth > 0) return true;
+        // call_depth covers active JS callbacks. ctx.local also covers the
+        // post-callback portion of a host dispatch: the callback has returned,
+        // but its V8 context/HandleScope is still entered while the caller
+        // performs the microtask checkpoint. Starting a macrotask from another
+        // realm in that window re-enters V8 with objects from the wrong context.
+        if (ctx.call_depth > 0 or ctx.local != null) return true;
     }
     return false;
 }
@@ -1098,18 +1098,6 @@ fn anyContextHasReadyTimers(self: *const Env) bool {
     for (self.contexts[0..self.context_count]) |ctx| {
         if (contextBlocksTimerPump(ctx)) continue;
         if (ctx.scheduler.hasReadyTasks()) return true;
-    }
-    return false;
-}
-
-fn anyFrameHoldsKnitsailMicrotasks(self: *const Env) bool {
-    for (self.contexts[0..self.context_count]) |ctx| {
-        switch (ctx.global) {
-            .frame => |frame| {
-                if (frame.holdsKnitsailMicrotasks()) return true;
-            },
-            .worker => {},
-        }
     }
     return false;
 }

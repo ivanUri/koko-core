@@ -1,4 +1,5 @@
 const std = @import("std");
+const RC = @import("../../../support/rc.zig").RC;
 const js = @import("../../js/js.zig");
 const Frame = @import("../../browser/Frame.zig");
 const Page = @import("../../browser/Page.zig");
@@ -7,6 +8,7 @@ const EventTarget = @import("../EventTarget.zig");
 
 const MediaSource = @This();
 
+_rc: RC(u8) = .{},
 _proto: *EventTarget,
 _ready_state: u16 = 0, // 0=closed, 1=open, 2=ended
 _duration: f64 = std.math.nan(f64),
@@ -26,6 +28,18 @@ pub fn init(exec: *js.Execution) !*MediaSource {
 
 pub fn asEventTarget(self: *MediaSource) *EventTarget {
     return self._proto;
+}
+
+pub fn deinit(self: *MediaSource, page: *Page) void {
+    page.releaseArena(self._arena);
+}
+
+pub fn releaseRef(self: *MediaSource, page: *Page) void {
+    self._rc.release(self, page);
+}
+
+pub fn acquireRef(self: *MediaSource) void {
+    self._rc.acquire();
 }
 
 pub fn getReadyState(self: *const MediaSource) u16 {

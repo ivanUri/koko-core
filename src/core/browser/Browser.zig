@@ -80,6 +80,12 @@ pub fn init(self: *Browser, app: *App, opts: InitOpts, cdp_client: ?HttpClient.C
 }
 
 pub fn deinit(self: *Browser) void {
+    // HTTP callbacks retain pointers into Page/Execution state. Terminate all
+    // transports while their owning storage is still alive, but first mark
+    // every realm terminal so shutdown callbacks cannot re-enter JavaScript
+    // and create new work during teardown.
+    if (self.session) |*session| session.prepareForBrowserShutdown();
+    self.http_client.abort();
     self.closeSession();
     self.env.deinit();
     self.page_pool.deinit();

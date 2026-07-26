@@ -106,9 +106,7 @@ pub fn csiPageT(
     navigation_start_ms: f64,
     start_e_ms: u64,
     epoch_now_ms: u64,
-    frozen_page_t: ?f64,
 ) f64 {
-    if (frozen_page_t) |frozen| return frozen;
     const nav_start: f64 = if (navigation_start_ms > 0)
         navigation_start_ms
     else if (start_e_ms > 0)
@@ -140,8 +138,7 @@ pub fn csi(self: *const Chrome, frame: *Frame) Csi {
     else
         now_ms;
 
-    var page_t = csiPageT(timing.navigation_start, self._start_e_ms, now_ms, perf.frozenNowMs());
-    if (perf.usesIntegerNowMs()) page_t = @round(page_t);
+    const page_t = csiPageT(timing.navigation_start, self._start_e_ms, now_ms);
 
     return .{
         .startE = start_e,
@@ -281,13 +278,8 @@ pub const ChromeAppRunningState = struct {
 const testing = @import("../../testing/testing.zig");
 
 test "Chrome.csiPageT: epoch delta matches Chromium GetCSI" {
-    const page_t = csiPageT(1_000_000.0, 0, 1_000_192, null);
+    const page_t = csiPageT(1_000_000.0, 0, 1_000_192);
     try testing.expectApproxEqAbs(@as(f64, 192.0), page_t, 0.001);
-}
-
-test "Chrome.csiPageT: frozen knitsail window wins over epoch delta" {
-    const page_t = csiPageT(1_000_000.0, 0, 1_000_303, 192.59999999403954);
-    try testing.expectApproxEqAbs(192.59999999403954, page_t, 0.0001);
 }
 
 pub const JsApi = struct {

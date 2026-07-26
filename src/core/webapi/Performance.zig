@@ -15,11 +15,6 @@ const Performance = @This();
 
 /// Monotonic microsecond anchor for performance.now() (reset on each navigation).
 _monotonic_origin_us: u64,
-/// When set, `now()` stays near this encode-window target (knitsail ~192.6ms)
-/// with micro-jitter; `frozenNowMs()` / `chrome.csi().pageT` use the exact value.
-_frozen_now_ms: ?f64 = null,
-/// Google Accounts identity telemetry encodes performance.now() as int32 ms.
-_integer_now_ms: bool = false,
 _entries: std.ArrayList(*Entry) = .{},
 _timing: PerformanceTiming = .{},
 _navigation: PerformanceNavigation = .{},
@@ -50,17 +45,7 @@ pub fn getTiming(self: *Performance) *PerformanceTiming {
 pub fn recordNavigationStart(self: *Performance) void {
     self._timing.recordNavigationStart();
     self._monotonic_origin_us = highResTimestamp();
-    self._frozen_now_ms = null;
-    self._integer_now_ms = false;
     self.clearEntriesByType("navigation");
-}
-
-pub fn setIntegerNowMs(self: *Performance, enabled: bool) void {
-    self._integer_now_ms = enabled;
-}
-
-pub fn usesIntegerNowMs(self: *const Performance) bool {
-    return self._integer_now_ms;
 }
 
 pub fn clearEntriesByType(self: *Performance, entry_type: []const u8) void {
@@ -94,18 +79,6 @@ pub fn recordDocumentComplete(self: *Performance) void {
 }
 
 pub fn now(self: *const Performance) f64 {
-    if (self._frozen_now_ms) |frozen| {
-        // Google Accounts identity encodes now() as int32 — keep exact freeze there.
-        if (self._integer_now_ms) return @round(frozen);
-        // Knitsail VM samples performance.now() many times while building SG_SS
-        // (SerpBase: timing *texture*, not a single scalar). A perfectly flat
-        // freeze is a synthetic-clock signal. Keep samples near the encode-window
-        // target (~192.6ms) but add sub-100μs jitter so the stream is not
-        // bit-identical. chrome.csi().pageT still uses frozenNowMs() unjittered.
-        const t = highResTimestamp();
-        const jitter_us = (t ^ (t >> 5) ^ (t >> 11) ^ (t >> 17)) % 83; // 0..82 μs
-        return frozen + @as(f64, @floatFromInt(jitter_us)) / 1000.0;
-    }
     const current = highResTimestamp();
     const origin = self._monotonic_origin_us;
     // Guard corrupted origins (UAF/slab reuse) — CreepJS logs use performance.now().
@@ -114,32 +87,7 @@ pub fn now(self: *const Performance) f64 {
     }
     const elapsed = current - origin;
     const ms = @as(f64, @floatFromInt(elapsed)) / 1000.0;
-    return if (self._integer_now_ms) @round(ms) else ms;
-}
-
-pub fn freezeNow(self: *Performance, target_ms: f64) void {
-    if (target_ms >= 0) self._frozen_now_ms = target_ms;
-}
-
-/// Advance `now()` by `delta_ms` without blocking (stretches j-event bandwidth deltas).
-pub fn advanceNowByMs(self: *Performance, delta_ms: f64) void {
-    if (delta_ms <= 0) return;
-    if (self._frozen_now_ms) |frozen| {
-        self._frozen_now_ms = frozen + delta_ms;
-        return;
-    }
-    const delta_us = @as(u64, @intFromFloat(delta_ms * 1000.0));
-    if (delta_us >= self._monotonic_origin_us) return;
-    self._monotonic_origin_us -= delta_us;
-}
-
-/// Knitsail freeze window — also applied to `chrome.csi().pageT` when set.
-pub fn frozenNowMs(self: *const Performance) ?f64 {
-    return self._frozen_now_ms;
-}
-
-pub fn unfreezeNow(self: *Performance) void {
-    self._frozen_now_ms = null;
+    return ms;
 }
 
 pub fn getTimeOrigin(self: *const Performance) f64 {
@@ -720,32 +668,10 @@ pub const PerformanceTiming = struct {
     }
 
     pub fn recordResponseStart(self: *PerformanceTiming) void {
-        const start = if (self.navigation_start > 0) self.navigation_start else epochMs() - 80;
-        const base = @as(i64, @intFromFloat(start));
-        // Fast-navigation deltas from Chroma baseline (knitsail reads during script run).
-        const rs_off: i64 = 17;
-        const re_off: i64 = 20;
-        const dl_off: i64 = 33; // rs + 16
-        const di_off: i64 = 34;
-        const dcs_off: i64 = 34;
-        const dce_off: i64 = 35; // dl + 2
-        const dc_off: i64 = 35;
-        const les_off: i64 = 35;
-        const lee_off: i64 = 35; // le - dc = 0
-
-        self.response_start = @floatFromInt(base + rs_off);
-        self.response_end = @floatFromInt(base + re_off);
-        self.dom_loading = @floatFromInt(base + dl_off);
-        if (self.dom_interactive == 0) self.dom_interactive = @floatFromInt(base + di_off);
-        if (self.dom_content_loaded_event_start == 0) {
-            self.dom_content_loaded_event_start = @floatFromInt(base + dcs_off);
-        }
-        if (self.dom_content_loaded_event_end == 0) {
-            self.dom_content_loaded_event_end = @floatFromInt(base + dce_off);
-        }
-        if (self.dom_complete == 0) self.dom_complete = @floatFromInt(base + dc_off);
-        if (self.load_event_start == 0) self.load_event_start = @floatFromInt(base + les_off);
-        if (self.load_event_end == 0) self.load_event_end = @floatFromInt(base + lee_off);
+        const t = epochMs();
+        if (self.response_start == 0) self.response_start = t;
+        if (self.response_end == 0) self.response_end = t;
+        if (self.dom_loading == 0) self.dom_loading = t;
     }
 
     pub fn recordDomInteractive(self: *PerformanceTiming) void {
@@ -764,8 +690,6 @@ pub const PerformanceTiming = struct {
     pub fn recordDocumentComplete(self: *PerformanceTiming) void {
         const t = epochMs();
         const start = if (self.navigation_start > 0) self.navigation_start else t - 300;
-        // recordResponseStart already stamped fast-nav timings (Google knitsail). Do not
-        // overwrite load_event_end with a real epoch that can precede domContentLoadedEventEnd.
         if (self.response_start > 0 and self.dom_content_loaded_event_end > 0) {
             const dce = @as(i64, @intFromFloat(self.dom_content_loaded_event_end));
             const load_end = @max(@as(i64, @intFromFloat(t)), dce);

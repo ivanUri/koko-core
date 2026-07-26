@@ -20,7 +20,6 @@ const HttpClient = @import("HttpClient.zig");
 const LoadGuard = @import("LoadGuard.zig");
 const ContentSecurityPolicy = @import("ContentSecurityPolicy.zig");
 const http = @import("../../runtime/network/http.zig");
-const GoogleSigninDebug = @import("GoogleSigninDebug.zig");
 
 const js = @import("../js/js.zig");
 const URL = @import("URL.zig");
@@ -1748,9 +1747,6 @@ pub const Script = struct {
                         if (jsCallLogEnabled()) {
                             break :blk2 instrumentClassicScript(frame.call_arena, content, url) catch break :blk false;
                         }
-                        if (self.manager.is_evaluating and GoogleSigninDebug.isBoqScript(url)) {
-                            break :blk2 GoogleSigninDebug.prependBoqEvalShim(frame.call_arena, content) catch break :blk false;
-                        }
                         break :blk2 content;
                     };
                     _ = local.eval(eval_content, url) catch |err| {
@@ -1791,12 +1787,8 @@ pub const Script = struct {
             // scripts before realmParseComplete. Native bindings only mark work
             // pending; they must never checkpoint while the JS stack is suspended.
             local.ctx.env.runMicrotasks(.after_evaluate);
-            const should_pump = frame.realmParseComplete() or Frame.isGoogleKnitsailHost(frame.url);
+            const should_pump = frame.realmParseComplete();
             if (should_pump) {
-                if (frame.isDocumentParsing() and Frame.isGoogleKnitsailHost(frame.url)) {
-                    frame.noteKnitsailParserScript();
-                    frame.tryPumpKnitsailDocumentLifecycle();
-                }
                 // After classic/module body: microtasks always; EventLoop.spin when
                 // not nested in lifecycle evaluate (nested re-entry → V8_Fatal).
                 // No site URL specials (host event architecture 2026-07-19).
@@ -1816,9 +1808,6 @@ pub const Script = struct {
         }
 
         if (success) {
-            if (fe.kind == .javascript and GoogleSigninDebug.isBoqScript(url) and GoogleSigninDebug.isAccountsGoogleUrl(frame.url)) {
-                _ = local.eval(GoogleSigninDebug.boq_zc_shim, "boq-zc-shim") catch {};
-            }
             self.executeCallback(comptime .wrap("load"));
             return;
         }

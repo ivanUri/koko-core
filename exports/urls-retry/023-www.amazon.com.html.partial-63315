@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en"><head><style data-velora-cssom-snapshot=""></style><base href="https://www.amazon.com/"></base>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title></title>
+    <style>
+        body {
+            font-family: "Arial";
+        }
+    </style>
+    <script type="text/javascript">
+    window.awsWafCookieDomainList = [];
+    window.gokuProps = {
+"key":"AQIDAHjcYu/GjX+QlghicBgQ/7bFaQZ+m5FKCMDnO+vTbNg96AEorSeBi6fq/m71I9PYWr0QAAAAfjB8BgkqhkiG9w0BBwagbzBtAgEAMGgGCSqGSIb3DQEHATAeBglghkgBZQMEAS4wEQQMp6nuA989gT7fuQQ0AgEQgDv1+BJdbvofcW2/SJybQlIwqWUBcAnffCaZ6DmbDKLKgY5XsupPgzazFT37RaZjbb2CFiaendvHVfLr2g==",
+          "iv":"A6wcbwFragAAHrDC",
+          "context":"o5aefuSV4ebcN1GEhHwpVsGUlXcUoTXdffs4m0QWdStChaHIP83WJzyxJSISB7uPwR4mWPLii43v0YVbn/tQhpQW2QWn5nAyD7zUJmAkVC/C/qKB2TIg/Y4AjhAov9BCBOP6pBicNokp5QijrkwKAW3HK+5Yd2Aug7aae4ABXFKkNCjRk7yCjLRKbiOY3d3kY22aND6dbbFIlg2MWrlZSxA6GFJMdcHy8Qjz6J1/jtRXiJKsSfiCiUnbYtskrNQShzJmidai+yUpkSuq6Vsd1ewCxYKf8yRiBug2x47HcofjV2DRLrNIN4aBhE8ALSQhYYZ9bfelTqIgLfAIHoIDmMKJD47Xx6ulFF+Yxvd1YwlJn+wTmLRXv+B/ConnvCydeOy5Cte5"
+};
+    </script>
+    <script src="https://1c5c1ecf7303.0b384439.ap-southeast-1.token.awswaf.com/1c5c1ecf7303/d6a7a58005ec/04c5ab18cd2d/challenge.js"></script>
+</head>
+<body>
+    <div id="challenge-container"></div>
+    <script type="text/javascript">
+        AwsWafIntegration.saveReferrer();
+        AwsWafIntegration.checkForceRefresh().then((forceRefresh) => {
+            if (forceRefresh) {
+                AwsWafIntegration.forceRefreshToken().then(() => {
+                    window.location.reload(true);
+                });
+            } else {
+                AwsWafIntegration.getToken().then(() => {
+                    window.location.reload(true);
+                });
+            }
+        });
+    </script>
+    <noscript>
+        <h1>JavaScript is disabled</h1>
+        In order to continue, we need to verify that you're not a robot.
+        This requires JavaScript. Enable JavaScript and then reload the page.
+    </noscript>
+
+</body></html>

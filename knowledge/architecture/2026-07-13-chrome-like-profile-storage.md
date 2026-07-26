@@ -2,27 +2,28 @@
 
 ## Summary
 
-Velora session state (cookies, localStorage, HTTP cache) now lives under a Chrome-style **user-data-dir** with sibling profile folders. Fingerprint templates remain read-only in `browser/templates/`.
+Velora session state (cookies, localStorage, HTTP cache) lives under a Chrome-style **user-data-dir** with sibling profile folders. Fingerprints are self-contained folders under `browser/fingerprints/`.
 
 ## Layout
 
 ```
 ~/Library/Application Support/velora/   # --user-data-dir (macOS default)
   Default/
-    Preferences.json    # { "template": "velora" }
+    Preferences.json    # { "version": 3, "fingerprint": "velora" }
     Cookies.json
     Local Storage/storage.json
     Cache/
   chrome-local-huys-macbook-pro/
-    Preferences.json    # { "template": "chrome-local-huys-macbook-pro" }
+    Preferences.json    # { "version": 3, "fingerprint": "chrome-local-huys-macbook-pro" }
     ...
 ```
 
 Repo (read-only):
 
 ```
-browser/templates/*.json      # fingerprint templates
-browser/templates/assets/     # probe baselines
+browser/fingerprints/<id>/
+  fingerprint.json
+  assets/
 browser/velora.json           # default template
 ```
 
@@ -32,7 +33,8 @@ browser/velora.json           # default template
 |--------|------|
 | `src/runtime/profile/ProfilePaths.zig` | user-data-dir, profile dir paths, first-run bootstrap |
 | `src/runtime/Config.zig` | `--user-data-dir`, derive cookie/cache paths |
-| `src/runtime/profile/ProfileStore.zig` | resolve fingerprint via `Preferences.template` |
+| `src/runtime/profile/ProfileStore.zig` | load a resolved fingerprint folder |
+| `src/runtime/profile/FingerprintStore.zig` | resolve explicit, embedded, or installed fingerprint folder |
 | `src/runtime/profile_session.zig` | load/save `Cookies.json` + `Local Storage/` |
 | `scripts/migrate-profile-layout.mjs` | migrate legacy `browser/*/sessions/` jars |
 

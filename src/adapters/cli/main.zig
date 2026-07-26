@@ -73,10 +73,9 @@ fn run(allocator: Allocator, main_arena: Allocator) !void {
             v.profile_cmd.run(main_arena, .{
                 .action = opts.action,
                 .name = opts.name,
-                .template = opts.template,
+                .fingerprint = opts.fingerprint,
                 .from = opts.from,
                 .to = opts.to,
-                .version = opts.version,
                 .user_data_dir = opts.user_data_dir,
             }) catch |err| {
                 log.fatal(.app, "profile command failed", .{ .err = err });

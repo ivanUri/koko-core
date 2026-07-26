@@ -31,10 +31,8 @@ pub const NavigationPlan = struct {
     omit_sec_fetch_user: bool = false,
     curl_defaults_only: bool = false,
     use_external_transport: bool = false,
-    /// Cold search first-hop documents prefer HTTP/3 (Chrome 150 CDP). Set here
-    /// so HttpClient does not substring-match host/path.
+    /// Transport preferences selected by an explicitly enabled policy.
     prefer_http3: bool = false,
-    /// In-session search hops (sei=/sg_ss=) need a fresh TCP/TLS path.
     force_fresh_connection: bool = false,
 };
 
@@ -80,10 +78,10 @@ fn defaultRefererFromPlan(allocator: Allocator, prior_url: []const u8, effective
 
 fn applyPolicy(allocator: Allocator, policy: *const PolicyRegistry.SitePolicy, ctx: NavigationContext) !NavigationPlan {
     const rules = policy.navigation;
-    const flow_prior_url = resolveFlowPriorUrl(ctx);
-    const first_hop = isFirstHop(flow_prior_url, ctx.request_url, ctx.reason);
-    const search_flow = isSearchFlow(flow_prior_url, ctx.request_url, ctx.reason);
-    const in_session = search_flow and !first_hop;
+    const flow_prior_url = resolveFlowPriorUrl(policy, ctx);
+    const first_hop = isFirstHop(policy, flow_prior_url, ctx.request_url, ctx.reason);
+    const policy_flow = isPolicyFlow(policy, flow_prior_url, ctx.request_url, ctx.reason);
+    const in_session = policy_flow and !first_hop;
 
     var effective_url: [:0]const u8 = ctx.request_url;
     var effective_url_owned = false;
@@ -102,14 +100,12 @@ fn applyPolicy(allocator: Allocator, policy: *const PolicyRegistry.SitePolicy, c
 
     var prior_origin = ctx.prior_origin;
     var referer = ctx.referer;
-    // Cold omnibox hop-1: Sec-Fetch-Site: none (no synthetic priorOrigin).
-    // In-session sei=/sg_ss=: same-origin via priorOrigin from policy.
     if (in_session) {
         if (rules.prior_origin) |origin| {
             if (prior_origin == null) prior_origin = try allocator.dupe(u8, origin);
         }
         if (rules.referer == .search_q_only) {
-            const ref_src = if (isSearchUrl(ctx.prior_url)) ctx.prior_url else effective_url;
+            const ref_src = if (policy.matchesNavigationUrl(ctx.prior_url)) ctx.prior_url else effective_url;
             referer = try searchQOnlyReferer(allocator, ref_src);
         }
     }
@@ -119,7 +115,7 @@ fn applyPolicy(allocator: Allocator, policy: *const PolicyRegistry.SitePolicy, c
     const use_external_transport = blk: {
         const transport = rules.external_transport orelse break :blk false;
         if (!ctx.external_transport_enabled) break :blk false;
-        if (!search_flow) break :blk false;
+        if (!policy_flow) break :blk false;
         break :blk switch (transport.when) {
             .first_hop_or_query_contains => first_hop or urlContainsAny(ctx.request_url, transport.query_contains),
             .query_contains => urlContainsAny(ctx.request_url, transport.query_contains),
@@ -136,11 +132,8 @@ fn applyPolicy(allocator: Allocator, policy: *const PolicyRegistry.SitePolicy, c
         .omit_sec_fetch_user = whenActive(rules.omit_sec_fetch_user, in_session, first_hop),
         .curl_defaults_only = whenActive(rules.curl_defaults_only, in_session, first_hop),
         .use_external_transport = use_external_transport,
-        // Cold omnibox / first search document hop: Chrome 150 uses h3. In-session
-        // sei=/sg_ss= hops stay h2 (prefer_http3=false when !first_hop).
-        .prefer_http3 = search_flow and first_hop,
-        // In-session search document hops: fresh TCP/TLS (was sg_ss= URL check).
-        .force_fresh_connection = in_session,
+        .prefer_http3 = whenActive(rules.prefer_http3, in_session, first_hop),
+        .force_fresh_connection = whenActive(rules.force_fresh_connection, in_session, first_hop),
     };
 }
 
@@ -153,34 +146,26 @@ fn whenActive(rule: PolicyRegistry.When, in_session: bool, first_hop: bool) bool
     };
 }
 
-fn resolveFlowPriorUrl(ctx: NavigationContext) []const u8 {
-    if (isSearchUrl(ctx.prior_url)) return ctx.prior_url;
+fn resolveFlowPriorUrl(policy: *const PolicyRegistry.SitePolicy, ctx: NavigationContext) []const u8 {
+    if (policy.matchesNavigationUrl(ctx.prior_url)) return ctx.prior_url;
     if (ctx.referer) |ref| {
-        if (isSearchUrl(ref)) return ref;
-        if (isSiteUrl(ref)) return ref;
+        if (policy.matchesNavigationUrl(ref)) return ref;
+        if (policy.matchesSiteUrl(ref)) return ref;
     }
     return ctx.prior_url;
 }
 
-fn isFirstHop(flow_prior_url: []const u8, request_url: []const u8, reason: Reason) bool {
-    return isSearchUrl(request_url) and
-        !isSearchUrl(flow_prior_url) and
+fn isFirstHop(policy: *const PolicyRegistry.SitePolicy, flow_prior_url: []const u8, request_url: []const u8, reason: Reason) bool {
+    return policy.matchesNavigationUrl(request_url) and
+        !policy.matchesNavigationUrl(flow_prior_url) and
         (reason == .address_bar or reason == .form);
 }
 
-fn isSearchFlow(flow_prior_url: []const u8, request_url: []const u8, reason: Reason) bool {
-    if (!isSearchUrl(request_url)) return false;
+fn isPolicyFlow(policy: *const PolicyRegistry.SitePolicy, flow_prior_url: []const u8, request_url: []const u8, reason: Reason) bool {
+    if (!policy.matchesNavigationUrl(request_url)) return false;
     if (reason == .address_bar) return true;
-    if (reason == .form and isSiteUrl(flow_prior_url)) return true;
-    return isSearchUrl(flow_prior_url);
-}
-
-fn isSearchUrl(url: []const u8) bool {
-    return std.mem.indexOf(u8, url, "google.com/search") != null;
-}
-
-fn isSiteUrl(url: []const u8) bool {
-    return std.mem.indexOf(u8, url, "google.com") != null;
+    if (reason == .form and policy.matchesSiteUrl(flow_prior_url)) return true;
+    return policy.matchesNavigationUrl(flow_prior_url);
 }
 
 fn urlContainsAny(url: []const u8, needles: []const []const u8) bool {
@@ -210,20 +195,22 @@ fn searchQOnlyReferer(allocator: Allocator, url: []const u8) ![:0]const u8 {
     const q_pos = std.mem.indexOf(u8, url, "q=") orelse return try allocator.dupeZ(u8, url);
     const q_start = q_pos + 2;
     const q_end = std.mem.indexOfPos(u8, url, q_start, "&") orelse url.len;
+    const base_end = std.mem.indexOfScalar(u8, url, '?') orelse url.len;
+    const base = url[0..base_end];
     if (std.mem.indexOf(u8, url, "hl=")) |hl_pos| {
         const hl_start = hl_pos + 3;
         const hl_end = std.mem.indexOfPos(u8, url, hl_start, "&") orelse url.len;
         return try std.fmt.allocPrintSentinel(
             allocator,
-            "https://www.google.com/search?q={s}&hl={s}",
-            .{ url[q_start..q_end], url[hl_start..hl_end] },
+            "{s}?q={s}&hl={s}",
+            .{ base, url[q_start..q_end], url[hl_start..hl_end] },
             0,
         );
     }
     return try std.fmt.allocPrintSentinel(
         allocator,
-        "https://www.google.com/search?q={s}",
-        .{url[q_start..q_end]},
+        "{s}?q={s}",
+        .{ base, url[q_start..q_end] },
         0,
     );
 }

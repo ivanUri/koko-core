@@ -182,7 +182,7 @@ fn resolveEffectiveHit(hit: Frame.InputHit) Frame.InputHit {
 }
 
 /// If the hit landed on a parent-frame iframe element, re-target the child
-/// browsing context (Turnstile / reCAPTCHA widget iframes).
+/// browsing context.
 fn redirectIframeHit(hit: Frame.InputHit) !Frame.InputHit {
     if (hit.element.getTag() != .iframe) return hit;
     return (try refineIframeHit(hit)) orelse hit;
@@ -199,15 +199,6 @@ fn waitForActivationHit(root_frame: *Frame, x: f64, y: f64, timeout_ms: u32) !?F
                 return hit;
             }
             raw_hit = hit;
-        }
-        // CAPTCHA fallback performs extra iframe/layout work. Only pay that
-        // cost when this browsing-context tree actually contains a supported
-        // challenge frame; on large SPAs an unconditional scan can be O(n²).
-        if (containsCaptchaWidgetFrame(root_frame, 0)) {
-            if (try resolveCaptchaCheckboxFallback(root_frame, x, y)) |hit| {
-                logActivation(hit);
-                return hit;
-            }
         }
         if (raw_hit) |hit| {
             logActivation(hit);
@@ -242,14 +233,8 @@ fn waitForActivationHit(root_frame: *Frame, x: f64, y: f64, timeout_ms: u32) !?F
 }
 
 fn resolveHitOnce(root_frame: *Frame, x: f64, y: f64, fast: bool) !?Frame.InputHit {
-    const raw = (try root_frame.hitTestForInput(x, y)) orelse {
-        return try resolveCaptchaCheckboxFallback(root_frame, x, y);
-    };
-    const pierced_iframe = raw.element.getTag() == .iframe or raw.frame != root_frame;
+    const raw = (try root_frame.hitTestForInput(x, y)) orelse return null;
     const refined = try refineInputHit(raw, fast);
-    if (pierced_iframe and refined.frame == root_frame and refined.element.getTag() != .iframe) {
-        return try resolveCaptchaCheckboxFallback(root_frame, x, y);
-    }
     return refined;
 }
 
@@ -284,14 +269,6 @@ fn logActivation(hit: Frame.InputHit) void {
     }
 }
 
-fn isDecorativeCaptchaBranding(element: *Element) bool {
-    if (element.getTag() == .svg) return true;
-    if (element.getAttributeSafe(comptime .wrap("role"))) |role| {
-        if (std.ascii.eqlIgnoreCase(role, "img")) return true;
-    }
-    return false;
-}
-
 fn refineInputHit(hit: Frame.InputHit, fast: bool) !Frame.InputHit {
     return refineInputHitDepth(hit, fast, 0);
 }
@@ -311,19 +288,8 @@ fn refineInputHitDepth(hit: Frame.InputHit, fast: bool, depth: u8) !Frame.InputH
         }, fast, depth);
     }
 
-    if (isCaptchaWidgetFrame(hit.frame) and isDecorativeCaptchaBranding(hit.element) and depth < 4) {
-        const shifted_x = @max(hit.client_x - 30.0, 2.0);
-        if (shifted_x + 1.0 < hit.client_x) {
-            if (try hit.frame.hitTestForInput(shifted_x, hit.client_y)) |shifted| {
-                return refineInputHitDepth(shifted, fast, depth + 1);
-            }
-        }
-    }
-
     if (isActivationTarget(hit.element, hit.frame) and !isStructuralContainer(hit.element)) {
-        if (!(isCaptchaWidgetFrame(hit.frame) and isDecorativeCaptchaBranding(hit.element))) {
-            return centerHitOnElement(hit);
-        }
+        return centerHitOnElement(hit);
     }
 
     // elementFromPoint commonly returns a span/svg inside a button. Walking a
@@ -336,30 +302,6 @@ fn refineInputHitDepth(hit: Frame.InputHit, fast: bool, depth: u8) !Frame.InputH
             .client_x = hit.client_x,
             .client_y = hit.client_y,
         });
-    }
-
-    if (isCaptchaWidgetFrame(hit.frame)) {
-        if (findWidgetCheckboxTarget(hit.frame, hit.client_x, hit.client_y)) |widget| {
-            return centerHitOnElement(.{
-                .element = widget,
-                .frame = hit.frame,
-                .client_x = hit.client_x,
-                .client_y = hit.client_y,
-            });
-        }
-        if (isDecorativeCaptchaBranding(hit.element)) {
-            if (try findBestActivationTarget(hit.frame, hit.client_x, hit.client_y)) |better| {
-                if (!isDecorativeCaptchaBranding(better)) {
-                    return centerHitOnElement(.{
-                        .element = better,
-                        .frame = hit.frame,
-                        .client_x = hit.client_x,
-                        .client_y = hit.client_y,
-                    });
-                }
-            }
-        }
-        if (isStructuralContainer(hit.element)) return hit;
     }
 
     if (!fast) {
@@ -404,61 +346,6 @@ fn findDescendantIframe(element: *Element, frame: *Frame) ?*Element {
     return null;
 }
 
-fn isCaptchaWidgetFrame(frame: *Frame) bool {
-    if (std.mem.indexOf(u8, frame.url, "challenges.cloudflare.com") != null) return true;
-    if (std.mem.indexOf(u8, frame.url, "google.com/recaptcha") != null) return true;
-    if (std.mem.indexOf(u8, frame.url, "recaptcha.net") != null) return true;
-    if (std.mem.indexOf(u8, frame.url, "arkoselabs.com") != null) return true;
-    if (std.mem.indexOf(u8, frame.url, "funcaptcha.com") != null) return true;
-    return false;
-}
-
-fn containsCaptchaWidgetFrame(frame: *Frame, depth: u8) bool {
-    if (depth > 8) return false;
-    if (isCaptchaWidgetFrame(frame)) return true;
-    for (frame.child_frames.items) |child_frame| {
-        if (containsCaptchaWidgetFrame(child_frame, depth + 1)) return true;
-    }
-    return false;
-}
-
-const WidgetCheckboxCtx = struct {
-    best: ?*Element = null,
-    best_priority: u8 = 0,
-};
-
-fn widgetCheckboxPriority(element: *Element, frame: *Frame) ?u8 {
-    if (isStructuralContainer(element)) return null;
-    if (!element.checkVisibilityCached(null, frame)) return null;
-
-    if (element.getAttributeSafe(comptime .wrap("role"))) |role| {
-        if (std.ascii.eqlIgnoreCase(role, "checkbox")) return 4;
-    }
-    if (element.getAttributeSafe(comptime .wrap("aria-label"))) |label| {
-        if (label.len > 0) return 3;
-    }
-    if (isWidgetLikeElement(element)) return 2;
-    if (hasPointerActivationListeners(element, frame)) return 1;
-    return null;
-}
-
-fn collectWidgetCheckboxTarget(element: *Element, frame: *Frame, ctx_ptr: *anyopaque) void {
-    const ctx: *WidgetCheckboxCtx = @ptrCast(@alignCast(ctx_ptr));
-    const priority = widgetCheckboxPriority(element, frame) orelse return;
-    if (priority > ctx.best_priority) {
-        ctx.best = element;
-        ctx.best_priority = priority;
-    }
-}
-
-fn findWidgetCheckboxTarget(frame: *Frame, x: f64, y: f64) ?*Element {
-    _ = x;
-    _ = y;
-    var ctx = WidgetCheckboxCtx{};
-    walkElements(frame, collectWidgetCheckboxTarget, &ctx, 120);
-    return ctx.best;
-}
-
 fn refineIframeHit(hit: Frame.InputHit) !?Frame.InputHit {
     const iframe = hit.element.asNode().is(IFrame) orelse return null;
     const child_window = iframe._window orelse return null;
@@ -476,84 +363,13 @@ fn refineIframeHit(hit: Frame.InputHit) !?Frame.InputHit {
     if (try child_frame.hitTestForInput(child_x, child_y)) |child_hit| {
         return child_hit;
     }
-    if (isCaptchaWidgetFrame(child_frame)) {
-        if (findWidgetCheckboxTarget(child_frame, child_x, child_y)) |widget| {
-            return centerHitOnElement(.{
-                .element = widget,
-                .frame = child_frame,
-                .client_x = child_x,
-                .client_y = child_y,
-            });
-        }
-    }
-    return null;
-}
-
-fn resolveCaptchaCheckboxFallback(root_frame: *Frame, x: f64, y: f64) !?Frame.InputHit {
-    if (!containsCaptchaWidgetFrame(root_frame, 0)) return null;
-    const raw = (try root_frame.hitTestForInput(x, y)) orelse {
-        return findCaptchaWidgetAtPoint(root_frame, x, y);
-    };
-    if (raw.element.getTag() == .iframe) {
-        if (try refineIframeHit(raw)) |child_hit| {
-            const refined = try refineInputHit(child_hit, true);
-            if (isActionableHit(refined, root_frame)) return refined;
-            if (isCaptchaWidgetFrame(refined.frame)) return refined;
-        }
-        if (raw.element.asNode().is(IFrame)) |iframe| {
-            if (iframe._window) |child_window| {
-                const child_frame = child_window._frame;
-                if (isCaptchaWidgetFrame(child_frame)) {
-                    const rect = raw.element.getActivationBoundingClientRect(raw.frame);
-                    const child_x = x - rect.getLeft();
-                    const child_y = y - rect.getTop();
-                    if (findWidgetCheckboxTarget(child_frame, child_x, child_y)) |widget| {
-                        return centerHitOnElement(.{
-                            .element = widget,
-                            .frame = child_frame,
-                            .client_x = child_x,
-                            .client_y = child_y,
-                        });
-                    }
-                }
-            }
-        }
-    }
-    return findCaptchaWidgetAtPoint(root_frame, x, y);
-}
-
-fn findCaptchaWidgetAtPoint(root_frame: *Frame, x: f64, y: f64) ?Frame.InputHit {
-    return findCaptchaWidgetInFrame(root_frame, root_frame, x, y, 0);
-}
-
-fn findCaptchaWidgetInFrame(frame: *Frame, coord_frame: *Frame, x: f64, y: f64, depth: u8) ?Frame.InputHit {
-    if (depth > 8) return null;
-
-    if (isCaptchaWidgetFrame(frame)) {
-        if (findWidgetCheckboxTarget(frame, x, y)) |widget| {
-            return centerHitOnElement(.{
-                .element = widget,
-                .frame = frame,
-                .client_x = x,
-                .client_y = y,
-            });
-        }
-    }
-
-    for (frame.child_frames.items) |child_frame| {
-        if (!containsCaptchaWidgetFrame(child_frame, depth + 1)) continue;
-        const iframe_el = child_frame.iframe orelse continue;
-        const rect = iframe_el.asElement().getActivationBoundingClientRect(coord_frame);
-        if (x < rect.getLeft() or x > rect.getRight() or
-            y < rect.getTop() or y > rect.getBottom())
-        {
-            continue;
-        }
-        const child_x = x - rect.getLeft();
-        const child_y = y - rect.getTop();
-        if (findCaptchaWidgetInFrame(child_frame, child_frame, child_x, child_y, depth + 1)) |hit| {
-            return hit;
-        }
+    if (try findBestActivationTarget(child_frame, child_x, child_y)) |target| {
+        return centerHitOnElement(.{
+            .element = target,
+            .frame = child_frame,
+            .client_x = child_x,
+            .client_y = child_y,
+        });
     }
     return null;
 }
@@ -622,34 +438,11 @@ fn isInteractiveActivationTarget(element: *Element, frame: *Frame) bool {
         if (label.len > 0) return true;
     }
 
-    if (isWidgetLikeElement(element)) return true;
-
     if (hasPointerActivationListeners(element, frame)) return true;
 
     // iframe tabindex defaults to 0 but activation must pierce into the child frame.
     if (html_el.getTabIndex() >= 0 and element.getTag() != .iframe) return true;
 
-    return false;
-}
-
-fn isWidgetLikeElement(element: *Element) bool {
-    if (element.getAttributeSafe(comptime .wrap("id"))) |id| {
-        if (containsWidgetToken(id)) return true;
-    }
-    if (element.getAttributeSafe(comptime .wrap("class"))) |class_attr| {
-        if (containsWidgetToken(class_attr)) return true;
-    }
-    return false;
-}
-
-fn containsWidgetToken(text: []const u8) bool {
-    var buf: [128]u8 = undefined;
-    if (text.len > buf.len) return false;
-    const lower = std.ascii.lowerString(&buf, text);
-    const tokens = [_][]const u8{ "checkbox", "ctp-", "cb-", "label", "turnstile", "recaptcha" };
-    for (tokens) |token| {
-        if (std.mem.indexOf(u8, lower, token) != null) return true;
-    }
     return false;
 }
 
@@ -771,7 +564,7 @@ fn findInteractiveElementAt(frame: *Frame, x: f64, y: f64) ?*Element {
 fn collectListenerAt(element: *Element, frame: *Frame, ctx_ptr: *anyopaque) void {
     const ctx: *CollectInteractiveCtx = @ptrCast(@alignCast(ctx_ptr));
     if (!element.checkVisibilityCached(null, frame)) return;
-    if (!hasPointerActivationListeners(element, frame) and !isWidgetLikeElement(element)) return;
+    if (!hasPointerActivationListeners(element, frame)) return;
 
     const rect = element.getActivationBoundingClientRect(frame);
     const w = @max(rect.getWidth(), 0);
@@ -834,7 +627,7 @@ fn findNearestInteractiveElement(frame: *Frame, x: f64, y: f64) ?*Element {
 fn collectNearestListener(element: *Element, frame: *Frame, ctx_ptr: *anyopaque) void {
     const ctx: *NearestInteractiveCtx = @ptrCast(@alignCast(ctx_ptr));
     if (!element.checkVisibilityCached(null, frame)) return;
-    if (!hasPointerActivationListeners(element, frame) and !isWidgetLikeElement(element)) return;
+    if (!hasPointerActivationListeners(element, frame)) return;
 
     const rect = element.getActivationBoundingClientRect(frame);
     const w = @max(rect.getWidth(), 1);

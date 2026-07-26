@@ -801,6 +801,7 @@ pub fn receiveMessage(
         .worker_scope = self,
         .arena = message_arena,
         .message_id = message_id,
+        .task_owner = self.js.execution.captureTaskOwner(),
     };
 
     const queue_len = self._debug_schedulerQueueLen(self.js.scheduler);
@@ -1365,6 +1366,7 @@ const ReceiveMessageCallback = struct {
     arena: Allocator,
     worker_scope: *WorkerGlobalScope,
     message_id: u64,
+    task_owner: RealmLifecycleKernel.TaskOwner,
 
     fn cancelled(ctx: *anyopaque) void {
         const self: *ReceiveMessageCallback = @ptrCast(@alignCast(ctx));
@@ -1381,6 +1383,15 @@ const ReceiveMessageCallback = struct {
         defer self.deinit();
 
         const worker_scope = self.worker_scope;
+        const exec = &worker_scope.js.execution;
+        if (exec.isTaskOwnerStale(self.task_owner) or
+            exec.realmState() != .active or
+            !exec.canEnterJs(.strict_active))
+        {
+            if (self.data) |d| d.release();
+            self.data = null;
+            return null;
+        }
         const target = worker_scope.asEventTarget();
 
         if (comptime IS_DEBUG) {

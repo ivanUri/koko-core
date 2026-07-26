@@ -51,7 +51,6 @@ const TrustedTypePolicyFactory = @import("trusted_types.zig").TrustedTypePolicyF
 const CookieStore = @import("cookie_store.zig").CookieStore;
 const TaskScheduler = @import("scheduler_api.zig").Scheduler;
 const Chrome = @import("Chrome.zig");
-const GoogleCompat = @import("GoogleCompat.zig");
 const ModelContext = @import("ModelContext.zig");
 const global_event_handlers = @import("global_event_handlers.zig");
 
@@ -91,7 +90,6 @@ _current_event: ?*Event = null,
 _location: *Location,
 _chrome: Chrome = .init,
 _external: Chrome.External = .{},
-_google: GoogleCompat = .init,
 _timers: Timers = .{},
 _custom_elements: CustomElementRegistry = .{},
 _indexed_db: IDBFactory = .{},
@@ -262,19 +260,6 @@ pub fn getChrome(self: *Window) ?*Chrome {
 
 pub fn getExternal(self: *Window) *Chrome.External {
     return &self._external;
-}
-
-pub fn getGoogle(self: *Window) ?*GoogleCompat {
-    const frame = self._frame;
-    if (GoogleCompat.shouldExpose(frame) or GoogleCompat.shouldExposeBootstrap(frame)) {
-        self._google.ensureBootstrapDefaults(frame);
-        return &self._google;
-    }
-    return null;
-}
-
-pub fn setGoogle(self: *Window, value: js.Value) void {
-    self._google.applyPlainObject(value, self._frame);
 }
 
 pub fn setLocation(self: *Window, url: [:0]const u8, frame: *Frame) !void {
@@ -459,6 +444,18 @@ pub fn flushPendingPostMessages(self: *Window) void {
     frame.scheduleDeferredMacrotaskPump(0) catch |err| {
         log.warn(.browser, "flush pending postMessage pump", .{ .err = err });
     };
+}
+
+/// Cancel messages owned by this Window that never became scheduler tasks.
+/// The scheduler finalizes queued tasks separately; once a callback moves into
+/// `_pending_post_messages`, the Window is its sole owner and must release it
+/// when the browsing context is discarded.
+pub fn cancelPendingPostMessages(self: *Window) void {
+    while (self._pending_post_messages.pop()) |pending| {
+        pending.message.release();
+        pending.deinit();
+    }
+    self._pending_post_messages = .empty;
 }
 
 fn queuePendingPostMessage(self: *Window, callback: *PostMessageCallback) !void {
@@ -862,6 +859,7 @@ pub fn postMessage(self: *Window, message: js.Value.Temp, target_origin: ?[]cons
         const cloned = try message.local(source_local).structuredCloneTo(&target_owned.local, null);
         break :blk try cloned.temp();
     };
+    errdefer cloned_message.release();
 
     // Origin follows the incumbent settings object, same as MessageEvent.source.
     const origin = try source_window._location.getOrigin(source_frame);
@@ -1302,7 +1300,6 @@ pub const JsApi = struct {
     pub const location = bridge.accessor(Window.getLocation, Window.setLocation, .{ .deletable = false });
     pub const chrome = bridge.accessor(Window.getChrome, null, .{ .null_as_undefined = true });
     pub const external = bridge.accessor(Window.getExternal, null, .{});
-    pub const google = bridge.accessor(Window.getGoogle, Window.setGoogle, .{ .null_as_undefined = true });
     pub const history = bridge.accessor(Window.getHistory, null, .{});
     pub const navigation = bridge.accessor(Window.getNavigation, null, .{});
     pub const crypto = bridge.accessor(Window.getCrypto, null, .{});

@@ -16,7 +16,6 @@ const RC = @import("../../../support/rc.zig").RC;
 const js = @import("../../js/js.zig");
 
 const HttpClient = @import("../../browser/HttpClient.zig");
-const GoogleSigninDebug = @import("../../browser/GoogleSigninDebug.zig");
 const http = @import("../../../runtime/network/http.zig");
 
 const URL = @import("../../browser/URL.zig");
@@ -262,16 +261,6 @@ pub fn send(self: *XMLHttpRequest, body_: ?[]const u8) !void {
         }
     }
 
-    if (GoogleSigninDebug.mi613eTraceEnabled() and std.mem.indexOf(u8, self._url, "rpcids=MI613e") != null) {
-        const b = self._request_body orelse &[_]u8{};
-        const prefix_len = @min(b.len, 512);
-        log.warn(.http, "signin.mi613e.trace", .{
-            .url = self._url,
-            .body_len = b.len,
-            .body_prefix = if (prefix_len > 0) b[0..prefix_len] else "",
-        });
-    }
-
     const exec = self._exec;
 
     if (std.mem.startsWith(u8, self._url, "blob:")) {
@@ -311,8 +300,7 @@ pub fn send(self: *XMLHttpRequest, body_: ?[]const u8) !void {
             .resource_type = .xhr,
             .timeout_ms = self._timeout,
             .notification = session.notification,
-            .protect_from_abort = batchexecuteProtectFromAbort(self._url),
-            // protect_from_abort still survives .normal scope aborts (batchexecute).
+            .protect_from_abort = false,
             .attribution_frame = exec.attributionFrame(),
         },
         .start_callback = httpStartCallback,
@@ -548,8 +536,7 @@ fn httpDataCallback(response: HttpClient.Response, data: []const u8) !void {
         .loaded = self._response_data.items.len,
     }, exec);
 
-    // Google batchexecute (rt=c) parses chunked bodies on readystatechange while
-    // readyState === LOADING (3). Re-dispatch so progressive responseText is visible.
+    // Progressive responseText becomes observable at each LOADING update.
     if (self._ready_state == .loading) {
         try self.dispatchReadyStateChange(exec);
     }
@@ -766,12 +753,6 @@ fn stateChanged(self: *XMLHttpRequest, state: ReadyState, exec: *const Execution
 
     self._ready_state = state;
     try self.dispatchReadyStateChange(exec);
-}
-
-/// Google Identity batchexecute (rt=c) must finish even when sign-in JS schedules
-/// a navigation from a LOADING readystatechange handler (MI613e → zKAP2e chain).
-fn batchexecuteProtectFromAbort(url: []const u8) bool {
-    return std.mem.indexOf(u8, url, "batchexecute") != null;
 }
 
 fn parseMethod(method: []const u8) !http.Method {

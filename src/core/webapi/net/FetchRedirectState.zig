@@ -29,6 +29,10 @@ pub fn buildWireHeaders(
     const alloc = state.arena;
     const http_client = &exec.context.page.session.browser.http_client;
     var headers = try http_client.newHeaders();
+    // curl_slist nodes are allocated outside the Zig arena. If any later
+    // header construction step fails, this function still owns and must free
+    // the partial list.
+    errdefer headers.deinit();
     const req_headers = state.request_headers;
     const is_get_or_head = std.mem.eql(u8, method_name, "GET") or std.mem.eql(u8, method_name, "HEAD");
 

@@ -1,0 +1,14 @@
+# Failed exports from scripts/urls-100.txt.
+# Format: original output filename<TAB>URL
+024-www.ebay.com.html	https://www.ebay.com/
+028-www.cloudflare.com.html	https://www.cloudflare.com/
+030-developer.mozilla.org.html	https://developer.mozilla.org/
+031-developer.mozilla.org-en-US-docs-Web-API-Fetch-API.html	https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API
+049-discord.com.html	https://discord.com/
+052-www.dropbox.com.html	https://www.dropbox.com/
+055-www.paypal.com.html	https://www.paypal.com/
+057-www.shopify.com.html	https://www.shopify.com/
+058-www.salesforce.com.html	https://www.salesforce.com/
+086-www.ikea.com.html	https://www.ikea.com/
+090-www.timeanddate.com.html	https://www.timeanddate.com/
+101-creepjs.com.html	https://creepjs.com/

@@ -58,10 +58,6 @@ pub fn deinit(self: *ScriptManager) void {
 pub fn reset(self: *ScriptManager) void {
     self.base.reset();
     self.frame_notified_of_completion = false;
-    self.frame._defer_knitsail_post_parse = false;
-    self.frame._knitsail_lifecycle_pumped = false;
-    self.frame._knitsail_parser_script_seen = false;
-    self.frame._knitsail_lifecycle_fallback_scheduled = false;
     self.frame._static_scripts_done_scheduled = false;
     self.frame._pending_post_parse_lifecycle = false;
 }
@@ -71,14 +67,6 @@ pub fn reset(self: *ScriptManager) void {
 pub fn tailHook(base: *ScriptManagerBase) void {
     const self: *ScriptManager = @fieldParentPtr("base", base);
     const frame = self.frame;
-
-    // Google knitsail: DCL fires from Frame.pumpPostParseTasks after pageT freeze.
-    // tailHook only marks post-parse microtask deferral; do not gate DCL on evaluate
-    // reaching tail_hook (defer scripts may still be in flight on /search bootstrap).
-    if (Frame.isGoogleKnitsailHost(frame.url)) {
-        frame._defer_knitsail_post_parse = true;
-        return;
-    }
 
     // When all scripts (normal and deferred) are done loading, the document
     // state changes (this ultimately triggers the DOMContentLoaded event).

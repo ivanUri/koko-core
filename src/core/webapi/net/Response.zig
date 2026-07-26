@@ -51,6 +51,7 @@ _status_text: []const u8,
 _url: [:0]const u8,
 _is_redirected: bool,
 _http_response: ?HttpClient.Response = null,
+_pending_fetch_page: ?*Page = null,
 
 const Body = union(enum) {
     empty,
@@ -152,11 +153,33 @@ pub fn init(body_: ?BodyInit, opts_: ?InitOpts, exec: *const Execution) !*Respon
 }
 
 pub fn deinit(self: *Response, page: *Page) void {
+    if (self._pending_fetch_page) |owner_page| {
+        owner_page.unregisterTerminalOwner(self);
+        self._pending_fetch_page = null;
+    }
     if (self._http_response) |resp| {
         resp.abort(error.Abort);
         self._http_response = null;
     }
     page.releaseArena(self._arena);
+}
+
+fn releasePendingFetch(ctx: *anyopaque, page: *Page) void {
+    const self: *Response = @ptrCast(@alignCast(ctx));
+    self._pending_fetch_page = null;
+    self.deinit(page);
+}
+
+pub fn trackPendingFetch(self: *Response, page: *Page) !void {
+    std.debug.assert(self._pending_fetch_page == null);
+    try page.registerTerminalOwner(self, releasePendingFetch);
+    self._pending_fetch_page = page;
+}
+
+pub fn transferPendingFetchToJs(self: *Response, page: *Page) void {
+    if (self._pending_fetch_page == null) return;
+    page.unregisterTerminalOwner(self);
+    self._pending_fetch_page = null;
 }
 
 pub fn releaseRef(self: *Response, page: *Page) void {

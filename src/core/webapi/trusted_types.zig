@@ -3,6 +3,7 @@
 // published by the Free Software Foundation, either version 3 of the
 // License, or (at your option) any later version.
 
+const std = @import("std");
 const js = @import("../js/js.zig");
 const Frame = @import("../browser/Frame.zig");
 const TaggedOpaque = @import("../js/TaggedOpaque.zig");
@@ -195,12 +196,9 @@ pub const TrustedTypePolicyFactory = struct {
             ._create_script = create_script,
             ._create_script_url = create_script_url,
         });
-        // CSP `trusted-types NAME default` makes NAME the default when created.
-        // Turnstile creates a stub `default` policy first, then `gIqNx7`; prefer the
-        // latter (both have createScript, but gIqNx7 is the real policy).
-        if (create_script != null) {
-            factory._default_policy = policy;
-        } else if (factory._default_policy == null) {
+        // The Trusted Types default policy is selected by its reserved name,
+        // not by callback shape or creation order.
+        if (std.mem.eql(u8, name, "default")) {
             factory._default_policy = policy;
         }
         return policy;

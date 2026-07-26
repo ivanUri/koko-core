@@ -53,6 +53,8 @@ pub const NavigationRules = struct {
     omit_cookies: When = .never,
     omit_sec_fetch_user: When = .never,
     curl_defaults_only: When = .never,
+    prefer_http3: When = .never,
+    force_fresh_connection: When = .never,
     external_transport: ?ExternalTransport = null,
 };
 
@@ -69,6 +71,14 @@ pub const SitePolicy = struct {
     path_contains: []const []const u8,
     navigation: NavigationRules,
     http: ?HttpRules = null,
+
+    pub fn matchesNavigationUrl(self: *const SitePolicy, url: []const u8) bool {
+        return policyMatchesUrl(self.host_suffixes, self.path_contains, url);
+    }
+
+    pub fn matchesSiteUrl(self: *const SitePolicy, url: []const u8) bool {
+        return policyMatchesUrl(self.host_suffixes, &.{}, url);
+    }
 };
 
 pub const PolicyRegistry = struct {
@@ -137,9 +147,10 @@ fn policyEnabled(enabled_policies: []const []const u8, policy_id: []const u8) bo
 }
 
 fn policyMatchesUrl(host_suffixes: []const []const u8, path_contains: []const []const u8, url: []const u8) bool {
+    const parts = parseUrlForPolicy(url) orelse return false;
     var host_ok = host_suffixes.len == 0;
     for (host_suffixes) |suffix| {
-        if (std.mem.indexOf(u8, url, suffix) != null) {
+        if (hostMatchesSuffix(parts.host, suffix)) {
             host_ok = true;
             break;
         }
@@ -148,9 +159,52 @@ fn policyMatchesUrl(host_suffixes: []const []const u8, path_contains: []const []
 
     if (path_contains.len == 0) return true;
     for (path_contains) |needle| {
-        if (std.mem.indexOf(u8, url, needle) != null) return true;
+        if (std.mem.indexOf(u8, parts.path_query, needle) != null) return true;
     }
     return false;
+}
+
+const PolicyUrlParts = struct {
+    host: []const u8,
+    path_query: []const u8,
+};
+
+fn parseUrlForPolicy(url: []const u8) ?PolicyUrlParts {
+    const scheme_end = std.mem.indexOf(u8, url, "://") orelse return null;
+    const authority_start = scheme_end + 3;
+    if (authority_start >= url.len) return null;
+    const authority_tail = url[authority_start..];
+    const authority_len = std.mem.indexOfAny(u8, authority_tail, "/?#") orelse authority_tail.len;
+    const authority = authority_tail[0..authority_len];
+    if (authority.len == 0) return null;
+
+    const host_port = if (std.mem.lastIndexOfScalar(u8, authority, '@')) |at|
+        authority[at + 1 ..]
+    else
+        authority;
+    if (host_port.len == 0) return null;
+
+    const host = if (host_port[0] == '[') blk: {
+        const close = std.mem.indexOfScalar(u8, host_port, ']') orelse return null;
+        break :blk host_port[0 .. close + 1];
+    } else if (std.mem.lastIndexOfScalar(u8, host_port, ':')) |colon|
+        host_port[0..colon]
+    else
+        host_port;
+    if (host.len == 0) return null;
+
+    const path_start = authority_start + authority_len;
+    return .{
+        .host = host,
+        .path_query = if (path_start < url.len) url[path_start..] else "/",
+    };
+}
+
+fn hostMatchesSuffix(host: []const u8, suffix: []const u8) bool {
+    if (suffix.len == 0 or host.len < suffix.len) return false;
+    const offset = host.len - suffix.len;
+    if (!std.ascii.eqlIgnoreCase(host[offset..], suffix)) return false;
+    return offset == 0 or host[offset - 1] == '.';
 }
 
 fn readPolicyFile(allocator: Allocator, path: []const u8) ![]const u8 {
@@ -180,6 +234,8 @@ const JsonNavigation = struct {
     omitCookies: []const u8 = "never",
     omitSecFetchUser: []const u8 = "never",
     curlDefaultsOnly: []const u8 = "never",
+    preferHttp3: []const u8 = "never",
+    forceFreshConnection: []const u8 = "never",
     externalTransport: ?JsonExternalTransport = null,
 };
 
@@ -238,6 +294,8 @@ fn parseSitePolicy(allocator: Allocator, bytes: []const u8) !SitePolicy {
         .omit_cookies = try parseWhen(nav.omitCookies),
         .omit_sec_fetch_user = try parseWhen(nav.omitSecFetchUser),
         .curl_defaults_only = try parseWhen(nav.curlDefaultsOnly),
+        .prefer_http3 = try parseWhen(nav.preferHttp3),
+        .force_fresh_connection = try parseWhen(nav.forceFreshConnection),
     };
 
     if (nav.priorOrigin) |origin| {
@@ -318,4 +376,11 @@ test "PolicyRegistry: http plugin matches any google.com URL" {
     const plugin = registry.matchHttpPlugin(.antidetect, &google_search_policy, "https://www.google.com/gen_204?x");
     try testing.expect(plugin != null);
     try testing.expectEqualStrings("x-browser", plugin.?);
+}
+
+test "PolicyRegistry: host suffix is matched on parsed hostname boundary" {
+    try testing.expect(policyMatchesUrl(&.{"example.com"}, &.{"/search"}, "https://www.example.com/search?q=x"));
+    try testing.expect(!policyMatchesUrl(&.{"example.com"}, &.{"/search"}, "https://example.com.attacker.test/search"));
+    try testing.expect(!policyMatchesUrl(&.{"example.com"}, &.{"/search"}, "https://attacker.test/?next=https://example.com/search"));
+    try testing.expect(!policyMatchesUrl(&.{"example.com"}, &.{"/search"}, "not a URL containing example.com/search"));
 }

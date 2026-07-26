@@ -661,12 +661,6 @@ pub fn unknownWindowPropertyCallback(c_name: ?*const v8.Name, handle: ?*const v8
             .{ "litElementPolyfillSupport", {} },
             .{ "reactiveElementVersions", {} },
 
-            .{ "recaptcha", {} },
-            .{ "grecaptcha", {} },
-            .{ "___grecaptcha_cfg", {} },
-            .{ "__recaptcha_api", {} },
-            .{ "__google_recaptcha_client", {} },
-
             .{ "CLOSURE_FLAGS", {} },
             .{ "__REACT_DEVTOOLS_GLOBAL_HOOK__", {} },
             .{ "ApplePaySession", {} },
@@ -919,7 +913,6 @@ pub const PageJsApis = flattenTypes(&.{
     @import("../webapi/collections.zig"),
     @import("../webapi/Console.zig"),
     @import("../webapi/Chrome.zig"),
-    @import("../webapi/GoogleCompat.zig"),
     @import("../webapi/Crypto.zig"),
     @import("../webapi/Permissions.zig"),
     @import("../webapi/MediaCapabilities.zig"),

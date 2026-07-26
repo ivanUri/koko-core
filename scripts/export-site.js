@@ -4,46 +4,17 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
-function usage() {
-  console.error(
-    "Usage: node scripts/export-site.js <url> [output.html] [--profile <name>] [--keep-scripts]",
-  );
-  console.error(
-    "Example: node scripts/export-site.js https://chat.zalo.me zalo.html --profile chrome-local-huys-macbook-pro",
-  );
-  console.error(
-    "By default, <script> elements are removed so the exported snapshot stays static.",
-  );
-}
-
-const cliArgs = process.argv.slice(2);
-const positional = [];
-let profile =
-  process.env.VELORA_BROWSER_PROFILE || "chrome-local-huys-macbook-pro";
-let keepScripts = false;
-
-for (let index = 0; index < cliArgs.length; index += 1) {
-  const argument = cliArgs[index];
-  if (argument === "--keep-scripts") {
-    keepScripts = true;
-    continue;
-  }
-  if (argument === "--profile") {
-    profile = cliArgs[index + 1];
-    if (!profile) {
-      console.error("--profile requires a profile name");
-      process.exit(1);
-    }
-    index += 1;
-    continue;
-  }
-  if (argument.startsWith("--")) {
-    console.error(`Unknown option: ${argument}`);
-    usage();
-    process.exit(1);
-  }
-  positional.push(argument);
-}
+// Chỉ sửa cấu hình trong khối này. Script không nhận command-line arguments.
+const CONFIG = {
+  profile: "huynew",
+  urlFile: "scripts/urls-100.txt",
+  outputDirectory: "exports/urls-retry",
+  logDirectory: "export-logs",
+  keepScripts: false,
+  waitUntil: "load",
+  waitMs: 2_000,
+  terminateMs: 30_000,
+};
 
 function stripScriptElements(html) {
   let removed = 0;
@@ -57,110 +28,323 @@ function stripScriptElements(html) {
   return { html: stripped, removed };
 }
 
-const input = positional[0];
-if (!input) {
-  usage();
-  process.exit(1);
+function outputNameForUrl(url, index) {
+  const urlPart = `${url.hostname}${url.pathname === "/" ? "" : url.pathname}`
+    .replace(/[^a-z0-9.-]+/gi, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 120);
+  const sequence = String(index + 1).padStart(3, "0");
+  return `${sequence}-${urlPart || "site"}.html`;
 }
 
-let site;
-try {
-  site = new URL(input);
-  if (site.protocol !== "http:" && site.protocol !== "https:") {
-    throw new Error("Only http:// and https:// URLs are supported");
+function validateSite(entry, index) {
+  if (!entry || entry.enabled === false) return null;
+
+  let url;
+  try {
+    url = new URL(entry.url);
+  } catch (error) {
+    throw new Error(
+      `${CONFIG.urlFile}:${index + 1} contains an invalid URL: ${error.message}`,
+    );
   }
-} catch (error) {
-  console.error(`Invalid URL: ${error.message}`);
-  process.exit(1);
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(
+      `${CONFIG.urlFile}:${index + 1} must use http:// or https://`,
+    );
+  }
+
+  return {
+    ...CONFIG,
+    ...entry,
+    url,
+    output: entry.output || outputNameForUrl(url, index),
+  };
 }
 
 const projectRoot = path.resolve(__dirname, "..");
 const velora = path.join(projectRoot, "zig-out", "bin", "velora");
-if (!fs.existsSync(velora)) {
-  console.error(`Velora binary not found: ${velora}`);
-  console.error("Build it first with: zig build");
-  process.exit(1);
-}
 
-const defaultName = `${site.hostname.replace(/[^a-z0-9.-]+/gi, "_")}.html`;
-const output = path.resolve(process.cwd(), positional[1] || defaultName);
-const temporary = `${output}.partial-${process.pid}`;
-
-fs.mkdirSync(path.dirname(output), { recursive: true });
-const outputFd = fs.openSync(temporary, "w");
-
-const args = [
-  "fetch",
-  "--dump",
-  "html",
-  "--with-base",
-  "--browser-profile",
-  profile,
-  "--wait-until",
-  "done",
-  "--wait-ms",
-  "30000",
-  "--terminate-ms",
-  "90000",
-  site.href,
-];
-
-console.log(`Exporting ${site.href}`);
-console.log(`Fingerprint profile: ${profile}`);
-console.log(`Scripts: ${keepScripts ? "preserved" : "removed (static snapshot)"}`);
-console.log(`Output: ${output}`);
-
-const child = spawn(velora, args, {
-  cwd: projectRoot,
-  stdio: ["ignore", outputFd, "inherit"],
-});
-
-child.on("error", (error) => {
-  fs.closeSync(outputFd);
-  fs.rmSync(temporary, { force: true });
-  console.error(`Could not start Velora: ${error.message}`);
-  process.exitCode = 1;
-});
-
-child.on("close", (code, signal) => {
-  fs.closeSync(outputFd);
-
-  let html = "";
-  try {
-    html = fs.readFileSync(temporary, "utf8");
-  } catch {
-    // Report the process failure below.
+function loadSitesFromFile(urlFile = CONFIG.urlFile) {
+  const inputPath = path.resolve(projectRoot, urlFile);
+  if (!fs.existsSync(inputPath)) {
+    throw new Error(`URL file not found: ${inputPath}`);
   }
 
-  const completeHtml =
-    /^\s*(?:<!doctype\s+html[^>]*>\s*)?<html[\s>]/i.test(html) &&
-    /<\/html>\s*$/i.test(html);
+  const entries = fs
+    .readFileSync(inputPath, "utf8")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("#"))
+    .map((line) => {
+      const tab = line.indexOf("\t");
+      if (tab === -1) return { enabled: true, url: line };
+      return {
+        enabled: true,
+        output: line.slice(0, tab).trim(),
+        url: line.slice(tab + 1).trim(),
+      };
+    });
 
-  if (!completeHtml) {
-    fs.rmSync(temporary, { force: true });
-    console.error(
-      `Export failed${signal ? ` (${signal})` : ` (exit ${code})`}: no complete HTML was produced.`,
+  if (entries.length === 0) {
+    throw new Error(`No URLs found in ${inputPath}`);
+  }
+  return entries;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function writeIndex(sites, states = new Map()) {
+  const outputDirectory = path.resolve(projectRoot, CONFIG.outputDirectory);
+  fs.mkdirSync(outputDirectory, { recursive: true });
+
+  const rows = sites
+    .map((site, index) => {
+      const outputPath = path.join(outputDirectory, site.output);
+      const hasArtifact = fs.existsSync(outputPath);
+      const state = states.get(site.output);
+      const status =
+        state === "failed"
+          ? "Lần chạy mới lỗi"
+          : state === "exported"
+            ? "Đã export"
+            : hasArtifact
+              ? "Có file"
+              : "Đang chờ";
+      const statusClass =
+        state === "failed"
+          ? "failed"
+          : hasArtifact || state === "exported"
+            ? "ready"
+            : "pending";
+      const pageLink = hasArtifact
+        ? `<a class="page-link" href="./${encodeURI(site.output)}">${escapeHtml(site.output)}</a>`
+        : `<span class="missing">${escapeHtml(site.output)}</span>`;
+
+      return `<tr>
+        <td>${index + 1}</td>
+        <td><a href="${escapeHtml(site.url.href)}" target="_blank" rel="noreferrer">${escapeHtml(site.url.href)}</a></td>
+        <td>${pageLink}</td>
+        <td><span class="status ${statusClass}">${status}</span></td>
+      </tr>`;
+    })
+    .join("\n");
+
+  const readyCount = sites.filter((site) =>
+    fs.existsSync(path.join(outputDirectory, site.output)),
+  ).length;
+  const summary = `${readyCount}/${sites.length} file đã sẵn sàng. Cập nhật: ${new Date().toLocaleString("vi-VN")}`;
+  const indexScript = `// Generated automatically by scripts/export-site.js.
+document.querySelector("#export-summary").textContent = ${JSON.stringify(summary)};
+document.querySelector("#export-rows").innerHTML = ${JSON.stringify(rows)};
+`;
+  const html = `<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Velora HTML exports</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { max-width: 1400px; margin: 0 auto; padding: 24px; }
+    h1 { margin-bottom: 6px; }
+    .summary { margin: 0 0 22px; color: #777; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 10px 12px; border-bottom: 1px solid #8885; text-align: left; vertical-align: top; }
+    th { position: sticky; top: 0; background: Canvas; }
+    td:first-child { width: 48px; text-align: right; color: #777; }
+    a { color: LinkText; overflow-wrap: anywhere; }
+    .page-link { font-weight: 650; }
+    .missing { color: #888; }
+    .status { display: inline-block; white-space: nowrap; padding: 3px 8px; border-radius: 999px; font-size: 12px; }
+    .ready { color: #08783e; background: #28c76f22; }
+    .pending { color: #806400; background: #ffc10722; }
+    .failed { color: #b42318; background: #f0443822; }
+    @media (max-width: 760px) {
+      body { padding: 12px; }
+      th:nth-child(2), td:nth-child(2) { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <h1>Velora HTML exports</h1>
+  <p class="summary" id="export-summary">Đang tải danh sách…</p>
+  <table>
+    <thead><tr><th>#</th><th>URL gốc</th><th>HTML export</th><th>Trạng thái</th></tr></thead>
+    <tbody id="export-rows"></tbody>
+  </table>
+  <script src="./index.js"></script>
+</body>
+</html>
+`;
+  fs.writeFileSync(path.join(outputDirectory, "index.html"), html, "utf8");
+  fs.writeFileSync(path.join(outputDirectory, "index.js"), indexScript, "utf8");
+}
+
+function exportSite(site, number, total) {
+  return new Promise((resolve) => {
+    const outputDirectory = path.resolve(projectRoot, site.outputDirectory);
+    const output = path.resolve(outputDirectory, site.output);
+    const temporary = `${output}.partial-${process.pid}`;
+    const runId = new Date().toISOString().replace(/[:.]/g, "-");
+    const logDirectory = path.resolve(projectRoot, site.logDirectory);
+    const logName = `${site.url.hostname}-${runId}.log`;
+    const logPath = path.join(logDirectory, logName);
+    fs.mkdirSync(path.dirname(output), { recursive: true });
+    fs.mkdirSync(logDirectory, { recursive: true });
+    const outputFd = fs.openSync(temporary, "w");
+    const logFd = fs.openSync(logPath, "w");
+
+    const args = [
+      "fetch",
+      "--dump",
+      "html",
+      "--with-base",
+      "--browser-profile",
+      site.profile,
+      "--wait-until",
+      site.waitUntil,
+      "--wait-ms",
+      String(site.waitMs),
+      "--terminate-ms",
+      String(site.terminateMs),
+    ];
+    args.push(site.url.href);
+
+    console.log(`\n[${number}/${total}] Exporting ${site.url.href}`);
+    console.log(`Profile: ${site.profile}`);
+    console.log(`Scripts: ${site.keepScripts ? "preserved" : "removed"}`);
+    console.log(`Output: ${output}`);
+    console.log(`Log: ${logPath}`);
+
+    const child = spawn(velora, args, {
+      cwd: projectRoot,
+      stdio: ["ignore", outputFd, "pipe"],
+    });
+    child.stderr.on("data", (chunk) => {
+      fs.writeSync(logFd, chunk);
+      process.stderr.write(chunk);
+    });
+
+    let spawnError = null;
+    child.once("error", (error) => {
+      spawnError = error;
+    });
+
+    child.once("close", (code, signal) => {
+      fs.closeSync(outputFd);
+      fs.closeSync(logFd);
+
+      if (spawnError) {
+        fs.rmSync(temporary, { force: true });
+        console.error(`Could not start Velora: ${spawnError.message}`);
+        resolve({ artifact: false, clean: false });
+        return;
+      }
+
+      let html = "";
+      try {
+        html = fs.readFileSync(temporary, "utf8");
+      } catch {
+        // The complete-document check below reports the failure.
+      }
+
+      const completeHtml =
+        /^\s*(?:<!doctype\s+html[^>]*>)?(?:\s|<!--[\s\S]*?-->)*<html[\s>]/i.test(
+          html,
+        ) &&
+        /<\/html>(?:\s|<!--[\s\S]*?-->)*$/i.test(html);
+
+      if (!completeHtml) {
+        fs.rmSync(temporary, { force: true });
+        console.error(
+          `Export failed${signal ? ` (${signal})` : ` (exit ${code})`}: no complete HTML was produced.`,
+        );
+        resolve({ artifact: false, clean: false });
+        return;
+      }
+
+      if (!site.keepScripts) {
+        const result = stripScriptElements(html);
+        html = result.html;
+        fs.writeFileSync(temporary, html, "utf8");
+        console.log(`Removed ${result.removed} <script> element(s).`);
+      }
+
+      fs.renameSync(temporary, output);
+      console.log(`Done: ${output} (${Buffer.byteLength(html)} bytes)`);
+
+      if (code !== 0 || signal) {
+        console.warn(
+          `Warning: HTML is valid, but Velora exited with ${signal || code} during teardown.`,
+        );
+      }
+      resolve({
+        artifact: true,
+        clean: code === 0 && signal === null,
+      });
+    });
+  });
+}
+
+async function main() {
+  if (process.argv.length > 2) {
+    throw new Error(
+      "This script no longer accepts arguments; edit CONFIG in export-site.js.",
     );
-    process.exitCode = code || 1;
+  }
+  if (!fs.existsSync(velora)) {
+    throw new Error(`Velora binary not found: ${velora}\nBuild it with: zig build`);
+  }
+
+  const indexSites = loadSitesFromFile(CONFIG.urlFile)
+    .map(validateSite)
+    .filter((site) => site !== null);
+  if (indexSites.length === 0) {
+    throw new Error(`No valid URLs found in ${CONFIG.urlFile}.`);
+  }
+
+  const batchUrlFile =
+    process.env.VELORA_EXPORT_URL_FILE || CONFIG.urlFile;
+  const sites =
+    batchUrlFile === CONFIG.urlFile
+      ? indexSites
+      : loadSitesFromFile(batchUrlFile)
+        .map(validateSite)
+        .filter((site) => site !== null);
+
+  const states = new Map();
+  writeIndex(indexSites, states);
+  if (process.env.VELORA_EXPORT_INDEX_ONLY === "1") {
+    console.log(
+      `Index: ${path.resolve(projectRoot, CONFIG.outputDirectory, "index.html")}`,
+    );
     return;
   }
 
-  if (!keepScripts) {
-    const result = stripScriptElements(html);
-    html = result.html;
-    fs.writeFileSync(temporary, html, "utf8");
-    console.log(`Removed ${result.removed} <script> element(s).`);
+  let artifactFailures = 0;
+  let coreFailures = 0;
+  for (const [index, site] of sites.entries()) {
+    const result = await exportSite(site, index + 1, sites.length);
+    states.set(site.output, result.artifact ? "exported" : "failed");
+    writeIndex(indexSites, states);
+    if (!result.artifact) artifactFailures += 1;
+    if (!result.clean) coreFailures += 1;
   }
 
-  fs.renameSync(temporary, output);
-  console.log(`Done: ${output} (${Buffer.byteLength(html)} bytes)`);
+  console.log(
+    `\nFinished: ${sites.length - artifactFailures} artifact(s), ${artifactFailures} export failure(s), ${coreFailures} core failure(s).`,
+  );
+  if (artifactFailures > 0 || coreFailures > 0) process.exitCode = 1;
+}
 
-  // Velora may currently report a teardown failure after stdout already
-  // contains a complete snapshot. Preserve that valid artifact, but do not
-  // hide the lifecycle error from the caller.
-  if (code !== 0 || signal) {
-    console.warn(
-      `Warning: HTML was exported, but Velora exited with ${signal || code} during teardown.`,
-    );
-  }
+main().catch((error) => {
+  console.error(error.message);
+  process.exitCode = 1;
 });

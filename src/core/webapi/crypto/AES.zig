@@ -75,21 +75,15 @@ pub fn importKey(
         return local.rejectPromise(.{ .dom_exception = .{ .err = error.NotSupported } });
     }
 
-    // reCAPTCHA passes `length: keyData.length` (bytes) instead of bits.
-    var length_bits = params.length;
-    if (length_bits == key_data.len and (length_bits == 16 or length_bits == 24 or length_bits == 32)) {
-        length_bits *= 8;
-    }
-
     const import_params: algorithm.Init.AesKeyGen = .{
         .name = params.name,
-        .length = length_bits,
+        .length = params.length,
     };
     validate(import_params, key_usages) catch |err| {
         return local.rejectPromise(.{ .dom_exception = .{ .err = err } });
     };
 
-    const expected_len = length_bits / 8;
+    const expected_len = params.length / 8;
     if (key_data.len != expected_len) {
         return local.rejectPromise(.{ .dom_exception = .{ .err = error.OperationError } });
     }

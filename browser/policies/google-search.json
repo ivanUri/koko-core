@@ -16,6 +16,8 @@
     "omitCookies": "never",
     "omitSecFetchUser": "in_session",
     "curlDefaultsOnly": "never",
+    "preferHttp3": "first_hop",
+    "forceFreshConnection": "in_session",
     "externalTransport": {
       "configFlag": "google_chrome_transport",
       "when": "first_hop_or_query_contains",

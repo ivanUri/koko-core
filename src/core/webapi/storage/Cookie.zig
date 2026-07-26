@@ -40,7 +40,7 @@ secure: bool = false,
 http_only: bool = false,
 same_site: SameSite = .none,
 /// Minimum `Jar.document_nav_generation` before this cookie is attached to HTTP
-/// requests. Normal cookies commit immediately; SG_SS is withheld longer.
+/// requests. Reserved for generic lifecycle-controlled cookie visibility.
 available_from_nav: u64 = 0,
 /// Origin that set this cookie (scheme + port binding).
 source_secure: bool = false,
@@ -589,13 +589,8 @@ pub const Jar = struct {
             };
             c.partition_site = try schemefulSiteKey(c.arena.allocator(), tl);
         }
-        // HTTP Set-Cookie is available immediately so same-page flows (e.g. Cloudflare
-        // Turnstile → cf_clearance fetch) can attach cookies before reload. SG_SS is
-        // withheld longer so it is not attached during sei=/sg_ss= redirect hops.
-        c.available_from_nav = if (std.mem.eql(u8, c.name, "SG_SS"))
-            self.document_nav_generation + 3
-        else
-            self.document_nav_generation;
+        // Set-Cookie takes effect as soon as the response is processed.
+        c.available_from_nav = self.document_nav_generation;
 
         const is_expired = isCookieExpired(&c, request_time);
         defer if (is_expired) {
@@ -697,11 +692,6 @@ pub const Jar = struct {
             if (opts.is_http and nav_generation < cookie.available_from_nav) {
                 continue;
             }
-            // Chromium does not attach SG_SS to document navigations (only XHR/beacon).
-            if (opts.is_http and opts.is_navigation and std.mem.eql(u8, cookie.name, "SG_SS")) {
-                continue;
-            }
-
             try matching.append(self.allocator, i);
         }
 
@@ -1110,14 +1100,14 @@ test "Jar: add limit" {
     }, now, true));
 }
 
-test "Jar: HTTP cookies commit immediately, SG_SS withheld" {
+test "Jar: HTTP and script cookies commit immediately for all names" {
     const now = std.time.timestamp();
     var jar = Jar.init(testing.allocator);
     defer jar.deinit();
 
     jar.beginDocumentNavigation(); // generation 1
     try jar.add(try Cookie.parse(testing.allocator, test_url, "AEC=1"), now, true);
-    try jar.add(try Cookie.parse(testing.allocator, test_url, "SG_SS=botflag"), now, false);
+    try jar.add(try Cookie.parse(testing.allocator, test_url, "session_state=value"), now, false);
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(testing.allocator);
@@ -1126,34 +1116,7 @@ test "Jar: HTTP cookies commit immediately, SG_SS withheld" {
         .is_navigation = true,
         .nav_generation = jar.document_nav_generation,
     });
-    try testing.expectEqualStrings("AEC=1", buf.items);
-
-    jar.beginDocumentNavigation(); // generation 2 — SG_SS still withheld
-    buf.clearRetainingCapacity();
-    try jar.forRequest(test_url, buf.writer(testing.allocator), .{
-        .is_http = true,
-        .is_navigation = false,
-        .nav_generation = jar.document_nav_generation,
-    });
-    try testing.expectEqualStrings("AEC=1", buf.items);
-
-    jar.beginDocumentNavigation(); // generation 3 — SG_SS still withheld
-    buf.clearRetainingCapacity();
-    try jar.forRequest(test_url, buf.writer(testing.allocator), .{
-        .is_http = true,
-        .is_navigation = false,
-        .nav_generation = jar.document_nav_generation,
-    });
-    try testing.expectEqualStrings("AEC=1", buf.items);
-
-    jar.beginDocumentNavigation(); // generation 4 — SG_SS committed for subresources
-    buf.clearRetainingCapacity();
-    try jar.forRequest(test_url, buf.writer(testing.allocator), .{
-        .is_http = true,
-        .is_navigation = false,
-        .nav_generation = jar.document_nav_generation,
-    });
-    try testing.expectEqualStrings("AEC=1; SG_SS=botflag", buf.items);
+    try testing.expectEqualStrings("AEC=1; session_state=value", buf.items);
 }
 
 test "Jar: forRequest" {

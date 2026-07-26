@@ -125,10 +125,15 @@ pub fn init(input: Input, options: ?InitOpts, exec: *const Execution) !js.Promis
         ._method = try arena.dupe(u8, method_name),
         ._keepalive = request._keepalive,
     };
+    try response.trackPendingFetch(exec.context.page);
 
     const session = exec.context.page.session;
     const http_client = &session.browser.http_client;
     var headers = try FetchRedirectState.buildWireHeaders(redirect_state, request._url, request._body, method_name);
+    // Ownership transfers either to the main HttpClient request or to
+    // PreflightCtx. Until that call succeeds, this stack frame owns the curl
+    // header list and must release it on every construction/start failure.
+    errdefer headers.deinit();
 
     if (comptime IS_DEBUG) {
         log.debug(.http, "fetch", .{ .url = request._url });
@@ -281,6 +286,7 @@ const PreflightCtx = struct {
     http_method: http.Method,
     custom_method: ?[:0]const u8,
     main_headers: HttpClient.Headers,
+    main_headers_owned: bool = true,
     cookie_jar: ?*CookieJar,
     raw_post_body: bool,
     curl_default_headers: bool,
@@ -330,6 +336,8 @@ fn startCorsPreflight(opts: PreflightStart) !void {
     };
 
     var pf_headers = try opts.http_client.newHeaders();
+    // HttpClient owns this list only after request() succeeds.
+    errdefer pf_headers.deinit();
     try appendCorsOriginHeader(exec, arena, &pf_headers);
     // ACR-Method
     const acrm = try std.fmt.allocPrintSentinel(arena, "Access-Control-Request-Method: {s}", .{opts.method_name}, 0);
@@ -427,16 +435,21 @@ fn preflightAllows(pctx: *PreflightCtx) bool {
 fn preflightDoneCallback(ctx: *anyopaque) !void {
     const pctx: *PreflightCtx = @ptrCast(@alignCast(ctx));
     const fetch = pctx.fetch;
-    if (fetchJsUnavailable(fetch)) return;
+    if (fetchJsUnavailable(fetch)) {
+        releasePreflightMainHeaders(pctx);
+        releaseFetchResponse(fetch);
+        return;
+    }
 
     if (!preflightAllows(pctx)) {
+        releasePreflightMainHeaders(pctx);
         try rejectFetchNetworkError(fetch);
         return;
     }
 
     const exec = fetch._exec;
     const session = pctx.session;
-    try pctx.http_client.request(.{
+    pctx.http_client.request(.{
         .ctx = fetch,
         .params = .{
             .url = fetch._url,
@@ -464,13 +477,21 @@ fn preflightDoneCallback(ctx: *anyopaque) !void {
         .done_callback = httpDoneCallback,
         .error_callback = httpErrorCallback,
         .shutdown_callback = httpShutdownCallback,
-    });
+    }) catch |err| {
+        releasePreflightMainHeaders(pctx);
+        return err;
+    };
+    pctx.main_headers_owned = false;
 }
 
 fn preflightErrorCallback(ctx: *anyopaque, err: anyerror) void {
     const pctx: *PreflightCtx = @ptrCast(@alignCast(ctx));
     const fetch = pctx.fetch;
-    if (fetchJsUnavailable(fetch)) return;
+    releasePreflightMainHeaders(pctx);
+    if (fetchJsUnavailable(fetch)) {
+        releaseFetchResponse(fetch);
+        return;
+    }
     log.debug(.http, "cors preflight error", .{ .err = err, .url = fetch._url });
     rejectFetchNetworkError(fetch) catch {};
 }
@@ -478,8 +499,18 @@ fn preflightErrorCallback(ctx: *anyopaque, err: anyerror) void {
 fn preflightShutdownCallback(ctx: *anyopaque) void {
     const pctx: *PreflightCtx = @ptrCast(@alignCast(ctx));
     const fetch = pctx.fetch;
-    if (fetchJsUnavailable(fetch)) return;
+    releasePreflightMainHeaders(pctx);
+    if (fetchJsUnavailable(fetch)) {
+        releaseFetchResponse(fetch);
+        return;
+    }
     rejectFetchNetworkError(fetch) catch {};
+}
+
+fn releasePreflightMainHeaders(pctx: *PreflightCtx) void {
+    if (!pctx.main_headers_owned) return;
+    pctx.main_headers_owned = false;
+    pctx.main_headers.deinit();
 }
 
 fn handleBlobUrl(request: *Request, resolver: js.PromiseResolver, exec: *const Execution) !js.Promise {
@@ -664,18 +695,15 @@ fn fetchLocalScope(self: *Fetch, ls: *js.Local.Scope) bool {
 
 fn releaseFetchResponse(self: *Fetch) void {
     if (!self._owns_response) return;
-    // If the initiating realm navigated away or is dead, Page.deinit has
-    // already released arenas (response._arena owns this Fetch). Drop
-    // ownership only — response.deinit would double-free / UAF (nytimes.com).
-    // Prefer task-owner stale over realmState: frame_id is reused across
-    // pending→active commit, so realmState can look "active" while this
-    // Fetch still points at torn-down memory.
-    if (self._exec.isTaskOwnerStale(self._task_owner) or self._exec.realmState() == .dead) {
-        self._owns_response = false;
-        return;
-    }
-    self._response.deinit(self._exec.context.page);
+    const response = self._response;
+    const page = self._exec.context.page;
+    // The Response arena, not the document arena, owns Fetch. Until the
+    // response is exposed to JS, Fetch retains that arena across navigation;
+    // stale-realm terminal paths must therefore release it too.
+    // Fetch itself is allocated in response._arena. Transfer ownership before
+    // destroying that arena; even writing the flag after deinit is a UAF.
     self._owns_response = false;
+    response.deinit(page);
 }
 
 fn rejectFetchIntegrity(self: *Fetch) !void {
@@ -689,8 +717,8 @@ fn rejectFetchIntegrity(self: *Fetch) !void {
     var ls: js.Local.Scope = undefined;
     if (!self._exec.context.tryLocalScope(&ls)) {
         if (self._owns_response) {
-            self._response.deinit(self._exec.context.page);
             self._owns_response = false;
+            self._response.deinit(self._exec.context.page);
         }
         return;
     }
@@ -702,8 +730,8 @@ fn rejectFetchIntegrity(self: *Fetch) !void {
         ls.toLocal(self._resolver).rejectError("fetch integrity", .{ .type_error = "Failed to fetch" });
     }
     if (self._owns_response) {
-        self._response.deinit(exec.context.page);
         self._owns_response = false;
+        self._response.deinit(exec.context.page);
     }
 }
 
@@ -721,16 +749,16 @@ fn resolveFetchAfterBody(self: *Fetch) !void {
         var ls: js.Local.Scope = undefined;
         if (!self._exec.context.tryLocalScope(&ls)) {
             if (self._owns_response) {
-                self._response.deinit(self._exec.context.page);
                 self._owns_response = false;
+                self._response.deinit(self._exec.context.page);
             }
             return;
         }
         defer ls.deinit();
         ls.toLocal(self._resolver).rejectError("fetch stale", .{ .type_error = "realm navigated" });
         if (self._owns_response) {
-            self._response.deinit(exec.context.page);
             self._owns_response = false;
+            self._response.deinit(exec.context.page);
         }
         return;
     }
@@ -739,15 +767,15 @@ fn resolveFetchAfterBody(self: *Fetch) !void {
         var ls: js.Local.Scope = undefined;
         if (!self._exec.context.tryLocalScope(&ls)) {
             if (self._owns_response) {
-                self._response.deinit(self._exec.context.page);
                 self._owns_response = false;
+                self._response.deinit(self._exec.context.page);
             }
             return;
         }
         defer ls.deinit();
         defer if (self._owns_response) {
-            self._response.deinit(exec.context.page);
             self._owns_response = false;
+            self._response.deinit(exec.context.page);
         };
         return ls.toLocal(self._resolver).rejectError("fetch same-origin redirect", .{ .type_error = "Failed to fetch" });
     }
@@ -755,8 +783,8 @@ fn resolveFetchAfterBody(self: *Fetch) !void {
     var ls: js.Local.Scope = undefined;
     if (!self._exec.context.tryLocalScope(&ls)) {
         if (self._owns_response) {
-            self._response.deinit(self._exec.context.page);
             self._owns_response = false;
+            self._response.deinit(self._exec.context.page);
         }
         return;
     }
@@ -764,6 +792,7 @@ fn resolveFetchAfterBody(self: *Fetch) !void {
 
     const js_val = try ls.local.zigValueToJs(self._response, .{});
     self._fetch_resolved = true;
+    self._response.transferPendingFetchToJs(exec.context.page);
     self._owns_response = false;
     ls.toLocal(self._resolver).resolve("fetch done", js_val);
 }
@@ -779,8 +808,8 @@ fn rejectFetchNetworkError(self: *Fetch) !void {
     var ls: js.Local.Scope = undefined;
     if (!self._exec.context.tryLocalScope(&ls)) {
         if (self._owns_response) {
-            self._response.deinit(self._exec.context.page);
             self._owns_response = false;
+            self._response.deinit(self._exec.context.page);
         }
         return;
     }
@@ -792,8 +821,8 @@ fn rejectFetchNetworkError(self: *Fetch) !void {
         ls.toLocal(self._resolver).rejectError("fetch error", .{ .type_error = "fetch error" });
     }
     if (self._owns_response) {
-        self._response.deinit(exec.context.page);
         self._owns_response = false;
+        self._response.deinit(exec.context.page);
     }
 }
 
@@ -819,16 +848,16 @@ fn resolveFetchOnHeaders(self: *Fetch) !void {
         var ls: js.Local.Scope = undefined;
         if (!self._exec.context.tryLocalScope(&ls)) {
             if (self._owns_response) {
-                self._response.deinit(self._exec.context.page);
                 self._owns_response = false;
+                self._response.deinit(self._exec.context.page);
             }
             return;
         }
         defer ls.deinit();
         ls.toLocal(self._resolver).rejectError("fetch stale", .{ .type_error = "realm navigated" });
         if (self._owns_response) {
-            self._response.deinit(exec.context.page);
             self._owns_response = false;
+            self._response.deinit(exec.context.page);
         }
         return;
     }
@@ -837,15 +866,15 @@ fn resolveFetchOnHeaders(self: *Fetch) !void {
         var ls: js.Local.Scope = undefined;
         if (!self._exec.context.tryLocalScope(&ls)) {
             if (self._owns_response) {
-                self._response.deinit(self._exec.context.page);
                 self._owns_response = false;
+                self._response.deinit(self._exec.context.page);
             }
             return;
         }
         defer ls.deinit();
         defer if (self._owns_response) {
-            self._response.deinit(exec.context.page);
             self._owns_response = false;
+            self._response.deinit(exec.context.page);
         };
         return ls.toLocal(self._resolver).rejectError("fetch same-origin redirect", .{ .type_error = "Failed to fetch" });
     }
@@ -853,8 +882,8 @@ fn resolveFetchOnHeaders(self: *Fetch) !void {
     var ls: js.Local.Scope = undefined;
     if (!self._exec.context.tryLocalScope(&ls)) {
         if (self._owns_response) {
-            self._response.deinit(self._exec.context.page);
             self._owns_response = false;
+            self._response.deinit(self._exec.context.page);
         }
         return;
     }
@@ -862,6 +891,7 @@ fn resolveFetchOnHeaders(self: *Fetch) !void {
 
     const js_val = try ls.local.zigValueToJs(self._response, .{});
     self._fetch_resolved = true;
+    self._response.transferPendingFetchToJs(exec.context.page);
     self._owns_response = false;
     ls.toLocal(self._resolver).resolve("fetch headers", js_val);
 }
@@ -999,16 +1029,16 @@ fn settleFetchDone(self: *Fetch) !void {
         var ls: js.Local.Scope = undefined;
         if (!self._exec.context.tryLocalScope(&ls)) {
             if (self._owns_response) {
-                self._response.deinit(self._exec.context.page);
                 self._owns_response = false;
+                self._response.deinit(self._exec.context.page);
             }
             return;
         }
         defer ls.deinit();
         ls.toLocal(self._resolver).rejectError("fetch stale", .{ .type_error = "realm navigated" });
         if (self._owns_response) {
-            response.deinit(exec.context.page);
             self._owns_response = false;
+            response.deinit(exec.context.page);
         }
         return;
     }
@@ -1017,8 +1047,8 @@ fn settleFetchDone(self: *Fetch) !void {
     if (!self._exec.context.tryLocalScope(&ls)) {
         scheduleDeferredFetchDone(self) catch {
             if (self._owns_response) {
-                self._response.deinit(self._exec.context.page);
                 self._owns_response = false;
+                self._response.deinit(self._exec.context.page);
             }
         };
         return;
@@ -1029,8 +1059,8 @@ fn settleFetchDone(self: *Fetch) !void {
     if (self._mode == .@"same-origin" and !isSameOriginResolved(exec, response._url)) {
         const resolver = self._resolver;
         defer if (self._owns_response) {
-            response.deinit(exec.context.page);
             self._owns_response = false;
+            response.deinit(exec.context.page);
         };
         return ls.toLocal(resolver).rejectError("fetch same-origin redirect", .{ .type_error = "Failed to fetch" });
     }
@@ -1041,8 +1071,8 @@ fn settleFetchDone(self: *Fetch) !void {
         if (!ok) {
             const resolver = self._resolver;
             defer if (self._owns_response) {
-                response.deinit(exec.context.page);
                 self._owns_response = false;
+                response.deinit(exec.context.page);
             };
             return ls.toLocal(resolver).rejectError("fetch integrity", .{ .type_error = "Failed to fetch" });
         }
@@ -1050,6 +1080,7 @@ fn settleFetchDone(self: *Fetch) !void {
 
     // Task path: resolve Promise then EventLoop.afterTask (not curl stack).
     const js_val = try ls.local.zigValueToJs(self._response, .{});
+    self._response.transferPendingFetchToJs(exec.context.page);
     self._owns_response = false;
     self._fetch_resolved = true;
 
@@ -1258,61 +1289,48 @@ fn httpShutdownCallback(ctx: *anyopaque) void {
         std.debug.assert(self._owns_response or self._fetch_resolved);
     }
 
-    // Frame kill / transfer.kill() used to only deinit the Response and leave
-    // the JS Promise pending forever. Fingerprint agent then waited on config
-    // GET until Client timeout (or skipped /api/event after a late identify).
-    // Always reject when possible — never resolve via settleFetchDone (no body).
+    // Transfer shutdown is terminal for Response ownership. Reject immediately
+    // when JS is enterable; otherwise detach a resolver-only task from Fetch so
+    // the Response arena can still be released exactly once.
     if (!self._fetch_resolved) {
-        const permanently_gone = self._exec.isTaskOwnerStale(self._task_owner) or
-            self._exec.realmState() == .dead;
-        if (!permanently_gone) {
-            rejectFetchShutdown(self);
+        if (!self._exec.isTaskOwnerStale(self._task_owner) and
+            self._exec.realmState() != .dead)
+        {
+            rejectFetchShutdownDetached(self);
         }
+        self._fetch_resolved = true;
     }
 
     if (self._owns_response) {
         var response = self._response;
         response._http_response = null;
-        // If reject deferred (JS gated), keep arena until DeferredFetchReject runs.
-        if (!self._fetch_resolved and !self._exec.isTaskOwnerStale(self._task_owner) and
-            self._exec.realmState() != .dead)
-        {
-            // Transfer is going away; still hold response for deferred reject.
-            return;
-        }
+        self._owns_response = false;
         response.deinit(self._exec.context.page);
         // Do not access `self` after this point: the Fetch struct was
         // allocated from response._arena which has been released.
     }
 }
 
-fn rejectFetchShutdown(self: *Fetch) void {
-    if (self._fetch_resolved) return;
-    if (fetchJsUnavailable(self)) {
-        scheduleDeferredFetchReject(self) catch {
-            // Last resort: try immediate scope anyway.
-        };
-        if (fetchJsUnavailable(self)) return;
-    }
+fn rejectFetchShutdownDetached(self: *Fetch) void {
     var ls: js.Local.Scope = undefined;
     if (!self._exec.context.tryLocalScope(&ls)) {
-        scheduleDeferredFetchReject(self) catch {};
+        scheduleDetachedFetchReject(self) catch {};
         return;
     }
     defer ls.deinit();
     ls.toLocal(self._resolver).rejectError("fetch shutdown", .{ .type_error = "Failed to fetch" });
-    self._fetch_resolved = true;
 }
 
-fn scheduleDeferredFetchReject(self: *Fetch) !void {
+fn scheduleDetachedFetchReject(self: *Fetch) !void {
     const exec = self._exec;
-    const callback = try exec.arena.create(DeferredFetchRejectCallback);
+    const callback = try exec.arena.create(DetachedFetchRejectCallback);
     callback.* = .{
-        .fetch = self,
+        .exec = exec,
+        .resolver = self._resolver,
         .task_owner = exec.captureTaskOwner(),
     };
-    try exec._scheduler.add(callback, DeferredFetchRejectCallback.run, 0, .{
-        .name = "Fetch.deferredReject",
+    try exec._scheduler.add(callback, DetachedFetchRejectCallback.run, 0, .{
+        .name = "Fetch.detachedReject",
         .low_priority = false,
     });
     switch (exec.context.global) {
@@ -1321,45 +1339,28 @@ fn scheduleDeferredFetchReject(self: *Fetch) !void {
     }
 }
 
-const DeferredFetchRejectCallback = struct {
-    fetch: *Fetch,
+const DetachedFetchRejectCallback = struct {
+    exec: *const Execution,
+    resolver: js.PromiseResolver.Global,
     task_owner: RealmLifecycleKernel.TaskOwner,
     attempts: u8 = 0,
 
     fn run(ctx: *anyopaque) !?u32 {
-        const self: *DeferredFetchRejectCallback = @ptrCast(@alignCast(ctx));
-        const fetch = self.fetch;
-        if (fetch._fetch_resolved) {
-            releaseFetchResponse(fetch);
-            return null;
-        }
-        if (fetch._exec.isTaskOwnerStale(self.task_owner) or fetch._exec.realmState() == .dead) {
-            releaseFetchResponse(fetch);
-            return null;
-        }
-        if (fetchJsUnavailable(fetch)) {
+        const self: *DetachedFetchRejectCallback = @ptrCast(@alignCast(ctx));
+        if (self.exec.isTaskOwnerStale(self.task_owner) or self.exec.realmState() == .dead) return null;
+        if (!self.exec.canEnterJs(.allow_draining)) {
             self.attempts +%= 1;
-            if (self.attempts > 64) {
-                releaseFetchResponse(fetch);
-                return null;
-            }
+            if (self.attempts > 64) return null;
             return 1;
         }
         var ls: js.Local.Scope = undefined;
-        if (!fetch._exec.context.tryLocalScope(&ls)) {
+        if (!self.exec.context.tryLocalScope(&ls)) {
             self.attempts +%= 1;
-            if (self.attempts > 64) {
-                releaseFetchResponse(fetch);
-                return null;
-            }
+            if (self.attempts > 64) return null;
             return 1;
         }
         defer ls.deinit();
-        if (!fetch._fetch_resolved) {
-            ls.toLocal(fetch._resolver).rejectError("fetch shutdown", .{ .type_error = "Failed to fetch" });
-            fetch._fetch_resolved = true;
-        }
-        releaseFetchResponse(fetch);
+        ls.toLocal(self.resolver).rejectError("fetch shutdown", .{ .type_error = "Failed to fetch" });
         return null;
     }
 };

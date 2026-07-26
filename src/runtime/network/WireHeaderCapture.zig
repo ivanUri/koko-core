@@ -14,68 +14,10 @@ fn outputPath() ?[:0]const u8 {
     return std.posix.getenv("VELORA_WIRE_HEADERS_FILE");
 }
 
-pub const SearchHop = enum {
-    initial,
-    sei,
-    sg_ss,
-
-    pub fn classify(url: []const u8) ?SearchHop {
-        if (std.mem.indexOf(u8, url, "google.") == null) return null;
-        if (std.mem.indexOf(u8, url, "/search") == null) return null;
-        if (std.mem.indexOf(u8, url, "sg_ss=") != null) return .sg_ss;
-        if (std.mem.indexOf(u8, url, "sei=") != null) return .sei;
-        return .initial;
-    }
-
-    pub fn label(self: SearchHop) []const u8 {
-        return switch (self) {
-            .initial => "initial",
-            .sei => "sei",
-            .sg_ss => "sg_ss",
-        };
-    }
-};
-
-pub fn matchesGoogleSearchHop1(url: []const u8, resource_type: HttpClient.RequestParams.ResourceType) bool {
-    return classifySearchDocument(url, resource_type) == .initial;
-}
-
-pub fn classifySearchDocument(url: []const u8, resource_type: HttpClient.RequestParams.ResourceType) ?SearchHop {
-    if (resource_type != .document) return null;
-    return SearchHop.classify(url);
-}
-
-pub const AccountsKind = enum {
-    document,
-    xhr,
-
-    pub fn classify(url: []const u8, resource_type: HttpClient.RequestParams.ResourceType) ?AccountsKind {
-        if (std.mem.indexOf(u8, url, "accounts.google.com") == null) return null;
-        return switch (resource_type) {
-            .document => .document,
-            .xhr, .fetch => .xhr,
-            else => null,
-        };
-    }
-
-    pub fn label(self: AccountsKind) []const u8 {
-        return switch (self) {
-            .document => "accounts_document",
-            .xhr => "accounts_xhr",
-        };
-    }
-};
-
-pub fn hopLabel(url: []const u8, resource_type: HttpClient.RequestParams.ResourceType) ?[]const u8 {
-    if (SearchHop.classify(url)) |hop| return hop.label();
-    if (AccountsKind.classify(url, resource_type)) |kind| return kind.label();
-    return null;
-}
-
 pub fn shouldCapture(url: []const u8, resource_type: HttpClient.RequestParams.ResourceType) bool {
-    if (!enabled()) return false;
-    if (classifySearchDocument(url, resource_type) != null) return true;
-    return AccountsKind.classify(url, resource_type) != null;
+    _ = url;
+    _ = resource_type;
+    return enabled();
 }
 
 pub const Session = struct {
@@ -139,15 +81,10 @@ pub const Session = struct {
 
         var out = try std.ArrayList(u8).initCapacity(self.arena, 4096);
         const w = out.writer(self.arena);
-        const hop = hopLabel(self.url, self.resource_type);
         try w.print("{{\"url\":", .{});
         try writeJsonString(w, self.url);
-        try w.print(",\"hop\":", .{});
-        if (hop) |label| {
-            try writeJsonString(w, label);
-        } else {
-            try w.writeAll("null");
-        }
+        try w.print(",\"resourceType\":", .{});
+        try writeJsonString(w, @tagName(self.resource_type));
         try w.print(",\"status\":", .{});
         if (status) |s| try w.print("{d}", .{s}) else try w.writeAll("null");
         try w.print(",\"protocol\":", .{});
@@ -228,28 +165,6 @@ pub fn debugCallback(
 }
 
 const testing = @import("../../testing/testing.zig");
-
-test "WireHeaderCapture: matchesGoogleSearchHop1" {
-    try testing.expect(matchesGoogleSearchHop1("https://www.google.com/search?q=test", .document));
-    try testing.expect(!matchesGoogleSearchHop1("https://www.google.com/search?q=test&sei=abc", .document));
-    try testing.expect(!matchesGoogleSearchHop1("https://www.google.com/search?q=test&sg_ss=x", .document));
-    try testing.expect(!matchesGoogleSearchHop1("https://www.google.com/search?q=test", .script));
-}
-
-test "WireHeaderCapture: shouldCapture all search document hops" {
-    try testing.expect(shouldCapture("https://www.google.com/search?q=test", .document));
-    try testing.expect(shouldCapture("https://www.google.com/search?q=test&sei=abc", .document));
-    try testing.expect(shouldCapture("https://www.google.com/search?q=test&sg_ss=x", .document));
-    try testing.expectEqual(SearchHop.sei, SearchHop.classify("https://www.google.com/search?q=t&sei=abc").?);
-}
-
-test "WireHeaderCapture: captures accounts.google.com document and xhr" {
-    try testing.expect(shouldCapture("https://accounts.google.com/signin/v2/identifier", .document));
-    try testing.expect(shouldCapture("https://accounts.google.com/_/IdentitySignInUi/data/batchexecute", .xhr));
-    try testing.expect(!shouldCapture("https://accounts.google.com/favicon.ico", .image));
-    try testing.expectEqualStrings("accounts_document", hopLabel("https://accounts.google.com/signin", .document).?);
-    try testing.expectEqualStrings("accounts_xhr", hopLabel("https://accounts.google.com/_/batchexecute", .xhr).?);
-}
 
 test "WireHeaderCapture: parseHeaderLine" {
     const parsed = parseHeaderLine("Accept-Language: en-US,en;q=0.9").?;

@@ -206,6 +206,18 @@ pub fn deinit(self: *Session) void {
     self.arena_pool.release(self.arena);
 }
 
+pub fn prepareForBrowserShutdown(self: *Session) void {
+    if (self._active) |page| page.prepareForBrowserShutdown();
+    if (self._pending) |page| page.prepareForBrowserShutdown();
+    for (self._zombie_pages.items) |page| page.prepareForBrowserShutdown();
+    for (self._zombie_pending_pages.items) |page| page.prepareForBrowserShutdown();
+
+    var it = self._shared_workers.valueIterator();
+    while (it.next()) |runtime| {
+        runtime.*.host._frame.prepareForBrowserShutdown();
+    }
+}
+
 // True iff there is an active Page. CDP / external callers should use this
 // (or `currentPage()`) rather than poking at the underlying field.
 pub fn hasPage(self: *const Session) bool {
@@ -398,6 +410,9 @@ pub fn upgradeIframeFromAboutBlank(self: *Session, parent: *Frame, iframe: *IFra
     };
     if (std.mem.startsWith(u8, parent.url, "http")) {
         nav_opts.referer = try arena.dupe(u8, parent.url);
+    }
+    if (parent.origin) |origin| {
+        nav_opts.prior_origin = try arena.dupe(u8, origin);
     }
 
     const qn = try arena.create(QueuedNavigation);

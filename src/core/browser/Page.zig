@@ -42,6 +42,11 @@ const IS_DEBUG = builtin.mode == .Debug;
 // For now, Session still holds a single Page.
 const Page = @This();
 
+const TerminalOwner = struct {
+    ctx: *anyopaque,
+    release: *const fn (*anyopaque, *Page) void,
+};
+
 session: *Session,
 
 // DOM object factory scoped to this Page's documents.
@@ -73,6 +78,11 @@ pending_identity_removals: std.ArrayList(usize) = .empty,
 // Session.fc_identity_pool so they outlive the Page for v8 weak-callback
 // safety.
 finalizer_callbacks: std.AutoHashMapUnmanaged(usize, *Session.FinalizerCallback) = .empty,
+
+/// Native owners whose storage outlives the transport but has not yet been
+/// transferred to a JS wrapper (for example a completed fetch waiting for its
+/// deferred Promise-settlement task).
+terminal_owners: std.AutoHashMapUnmanaged(usize, TerminalOwner) = .empty,
 
 // Tracked global v8 objects that need to be released when the Page tears down.
 globals: std.ArrayList(v8.Global) = .empty,
@@ -232,6 +242,10 @@ pub fn deinit(self: *Page) void {
 
     self.frame.deinit();
 
+    // Scheduler cancellation during frame teardown drops deferred callbacks.
+    // Release their native owners explicitly before page arenas disappear.
+    self.drainTerminalOwners();
+
     self.flushPendingIdentityRemovals();
     self.identity.deinit();
     self.identity = .{};
@@ -281,11 +295,71 @@ pub fn deinit(self: *Page) void {
     session.arena_pool.release(self.frame_arena);
 }
 
+fn drainTerminalOwners(self: *Page) void {
+    while (self.terminal_owners.count() > 0) {
+        var it = self.terminal_owners.iterator();
+        const entry = it.next() orelse break;
+        const key = entry.key_ptr.*;
+        const owner = entry.value_ptr.*;
+        _ = self.terminal_owners.remove(key);
+        owner.release(owner.ctx, self);
+    }
+}
+
 pub fn cleanupClosedPopups(self: *Page) void {
     for (self.queued_close.items) |popup| {
         popup.deinit();
     }
     self.queued_close = .empty;
+}
+
+pub fn prepareForBrowserShutdown(self: *Page) void {
+    self.frame.prepareForBrowserShutdown();
+    for (self.popups.items) |popup| popup.prepareForBrowserShutdown();
+    for (self.queued_close.items) |popup| popup.prepareForBrowserShutdown();
+}
+
+pub fn registerTerminalOwner(
+    self: *Page,
+    ctx: *anyopaque,
+    release: *const fn (*anyopaque, *Page) void,
+) !void {
+    try self.terminal_owners.put(self.identity_arena, @intFromPtr(ctx), .{
+        .ctx = ctx,
+        .release = release,
+    });
+}
+
+pub fn unregisterTerminalOwner(self: *Page, ctx: *anyopaque) void {
+    _ = self.terminal_owners.remove(@intFromPtr(ctx));
+}
+
+test "Page terminal owners release exactly once" {
+    const State = struct {
+        releases: usize = 0,
+
+        fn release(ctx: *anyopaque, _: *Page) void {
+            const state: *@This() = @ptrCast(@alignCast(ctx));
+            state.releases += 1;
+        }
+    };
+
+    var page: Page = undefined;
+    page.identity_arena = std.testing.allocator;
+    page.terminal_owners = .empty;
+    defer page.terminal_owners.deinit(std.testing.allocator);
+
+    var first: State = .{};
+    var second: State = .{};
+    try page.registerTerminalOwner(&first, State.release);
+    try page.registerTerminalOwner(&second, State.release);
+
+    page.drainTerminalOwners();
+    page.drainTerminalOwners();
+
+    try std.testing.expectEqual(@as(usize, 1), first.releases);
+    try std.testing.expectEqual(@as(usize, 1), second.releases);
+    try std.testing.expectEqual(@as(usize, 0), page.terminal_owners.count());
 }
 
 pub fn getArena(self: *Page, size_or_bucket: anytype, debug: []const u8) !Allocator {

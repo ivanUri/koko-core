@@ -1,7 +1,6 @@
 const std = @import("std");
 const ProfilePaths = @import("ProfilePaths.zig");
-const ProfileSnapshot = @import("ProfileSnapshot.zig");
-const BrowserRoot = @import("BrowserRoot.zig");
+const FingerprintStore = @import("FingerprintStore.zig");
 const log = @import("../../support/log.zig");
 
 const Allocator = std.mem.Allocator;
@@ -16,11 +15,11 @@ pub const LocalState = struct {
 
 pub const ProfileEntry = struct {
     name: []const u8,
-    template: []const u8,
+    fingerprint: []const u8,
     profile_dir: []const u8,
 };
 
-pub fn defaultTemplateForName(name: []const u8) []const u8 {
+pub fn defaultFingerprintForName(name: []const u8) []const u8 {
     if (std.mem.eql(u8, name, ProfilePaths.default_profile_name)) return "velora";
     return name;
 }
@@ -199,35 +198,15 @@ pub fn resolveActiveProfileName(
     return try allocator.dupe(u8, ProfilePaths.default_profile_name);
 }
 
-pub fn templateExists(template: []const u8, template_version: u32) !bool {
-    const path = try templateJsonPath(std.heap.page_allocator, template);
-    defer std.heap.page_allocator.free(path);
-    if (try templateFileExists(path)) return true;
-    const catalog = try ProfileSnapshot.catalogFingerprintPath(std.heap.page_allocator, template, template_version);
-    defer std.heap.page_allocator.free(catalog);
-    return try templateFileExists(catalog);
+pub fn fingerprintExists(id: []const u8) !bool {
+    const folder = FingerprintStore.installedFolder(std.heap.page_allocator, id) catch return false;
+    defer std.heap.page_allocator.free(folder);
+    const definition = try std.fs.path.join(std.heap.page_allocator, &.{ folder, FingerprintStore.definition_filename });
+    defer std.heap.page_allocator.free(definition);
+    return fileExists(definition);
 }
 
-pub fn templateJsonPath(allocator: Allocator, template: []const u8) ![]const u8 {
-    const root = try BrowserRoot.get(allocator);
-    if (std.mem.eql(u8, template, "velora")) {
-        return try BrowserRoot.joinPath(allocator, root, "browser/velora.json");
-    }
-    if (std.mem.indexOfScalar(u8, template, '/')) |_| {
-        return try allocator.dupe(u8, template);
-    }
-    const rel_templates = try std.fmt.allocPrint(allocator, "browser/templates/{s}.json", .{template});
-    defer allocator.free(rel_templates);
-    const templates = try BrowserRoot.joinPath(allocator, root, rel_templates);
-    if (try templateFileExists(templates)) return templates;
-    allocator.free(templates);
-
-    const rel_legacy = try std.fmt.allocPrint(allocator, "browser/profiles/{s}.json", .{template});
-    defer allocator.free(rel_legacy);
-    return try BrowserRoot.joinPath(allocator, root, rel_legacy);
-}
-
-fn templateFileExists(path: []const u8) !bool {
+fn fileExists(path: []const u8) !bool {
     std.fs.cwd().access(path, .{}) catch return false;
     return true;
 }
@@ -236,11 +215,10 @@ pub fn createProfile(
     allocator: Allocator,
     user_data_dir: []const u8,
     name: []const u8,
-    template: []const u8,
-    template_version: u32,
+    fingerprint: []const u8,
 ) !void {
     if (name.len == 0) return error.InvalidProfileName;
-    if (!try templateExists(template, template_version)) return error.UnknownTemplate;
+    if (!try fingerprintExists(fingerprint)) return error.UnknownFingerprint;
 
     var paths = try ProfilePaths.ProfilePaths.init(allocator, user_data_dir, name, null);
     defer paths.deinit();
@@ -248,22 +226,21 @@ pub fn createProfile(
     var prefs_buf: [512]u8 = undefined;
     const prefs_path = paths.preferencesPath(&prefs_buf) orelse return error.PathTooLong;
 
-    if (try templateFileExists(prefs_path)) return error.ProfileAlreadyExists;
+    if (try fileExists(prefs_path)) return error.ProfileAlreadyExists;
 
     try std.fs.cwd().makePath(paths.user_data_dir);
     try std.fs.cwd().makePath(paths.profile_dir);
     try writePreferences(prefs_path, .{
-        .version = 2,
+        .version = 3,
         .name = name,
-        .template = template,
-        .template_version = template_version,
+        .fingerprint = fingerprint,
     });
 
     var state = try syncLocalState(allocator, user_data_dir);
     defer freeLocalState(allocator, &state);
     try recordLastUsed(allocator, user_data_dir, name);
 
-    log.info(.app, "profile_manager.create", .{ .name = name, .template = template, .dir = paths.profile_dir });
+    log.info(.app, "profile_manager.create", .{ .name = name, .fingerprint = fingerprint, .dir = paths.profile_dir });
 }
 
 pub fn deleteProfile(allocator: Allocator, user_data_dir: []const u8, name: []const u8) !void {
@@ -311,10 +288,10 @@ pub fn importCookies(
 
     var prefs_buf: [512]u8 = undefined;
     const prefs_path = paths.preferencesPath(&prefs_buf) orelse return error.PathTooLong;
-    if (try templateFileExists(prefs_path)) {
-        try paths.ensureProfileReadyWithTemplate(defaultTemplateForName(name));
+    if (try fileExists(prefs_path)) {
+        try paths.ensureProfileReadyWithFingerprint(defaultFingerprintForName(name));
     } else {
-        try createProfile(allocator, user_data_dir, name, defaultTemplateForName(name), ProfileSnapshot.default_template_version);
+        try createProfile(allocator, user_data_dir, name, defaultFingerprintForName(name));
     }
 
     const cookies_path = try paths.cookiesPathAlloc();
@@ -343,17 +320,12 @@ pub fn listProfileEntries(allocator: Allocator, user_data_dir: []const u8) ![]Pr
         defer arena.deinit();
         const prefs = paths.readPreferences(arena.allocator()) catch ProfilePaths.Preferences{
             .name = name,
-            .template = defaultTemplateForName(name),
+            .fingerprint = defaultFingerprintForName(name),
         };
-
-        const template_label = if (prefs.template_version > 1)
-            try std.fmt.allocPrint(allocator, "{s}@{d}", .{ prefs.template, prefs.template_version })
-        else
-            try allocator.dupe(u8, prefs.template);
 
         try out.append(allocator, .{
             .name = try allocator.dupe(u8, name),
-            .template = template_label,
+            .fingerprint = try allocator.dupe(u8, prefs.fingerprint),
             .profile_dir = try allocator.dupe(u8, paths.profile_dir),
         });
     }
@@ -364,7 +336,7 @@ pub fn listProfileEntries(allocator: Allocator, user_data_dir: []const u8) ![]Pr
 pub fn freeProfileEntries(allocator: Allocator, entries: []ProfileEntry) void {
     for (entries) |e| {
         allocator.free(e.name);
-        allocator.free(e.template);
+        allocator.free(e.fingerprint);
         allocator.free(e.profile_dir);
     }
     allocator.free(entries);
@@ -372,11 +344,11 @@ pub fn freeProfileEntries(allocator: Allocator, entries: []ProfileEntry) void {
 
 pub fn ensureFirstRun(allocator: Allocator, user_data_dir: []const u8) !void {
     try std.fs.cwd().makePath(user_data_dir);
-    if (!try templateExists("velora", ProfileSnapshot.default_template_version)) return;
+    if (!try fingerprintExists("velora")) return;
 
     var default_paths = try ProfilePaths.ProfilePaths.init(allocator, user_data_dir, ProfilePaths.default_profile_name, null);
     defer default_paths.deinit();
-    try default_paths.ensureProfileReadyWithTemplate("velora");
+    try default_paths.ensureProfileReadyWithFingerprint("velora");
 
     var state = try syncLocalState(allocator, user_data_dir);
     defer freeLocalState(allocator, &state);
@@ -388,11 +360,9 @@ fn writePreferences(path: []const u8, prefs: ProfilePaths.Preferences) !void {
     var buf: [1024]u8 = undefined;
     var writer = file.writer(&buf);
     try std.json.Stringify.value(.{
-        .version = if (prefs.version > 0) prefs.version else 2,
+        .version = 3,
         .name = prefs.name,
-        .template = prefs.template,
-        .template_version = if (prefs.template_version > 0) prefs.template_version else 1,
-        .snapshot = prefs.snapshot,
+        .fingerprint = prefs.fingerprint,
         .created = prefs.created,
     }, .{}, &writer.interface);
     try writer.interface.writeByte('\n');
@@ -401,7 +371,7 @@ fn writePreferences(path: []const u8, prefs: ProfilePaths.Preferences) !void {
 
 const testing = @import("../../testing/testing.zig");
 
-test "ProfileManager: default template mapping" {
-    try testing.expectEqualStrings("velora", defaultTemplateForName("Default"));
-    try testing.expectEqualStrings("chrome-macos-sonoma", defaultTemplateForName("chrome-macos-sonoma"));
+test "ProfileManager: default fingerprint mapping" {
+    try testing.expectEqualStrings("velora", defaultFingerprintForName("Default"));
+    try testing.expectEqualStrings("chrome-macos-sonoma", defaultFingerprintForName("chrome-macos-sonoma"));
 }

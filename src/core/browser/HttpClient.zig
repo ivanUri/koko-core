@@ -44,7 +44,6 @@ pub const RobotsLayer = @import("../../runtime/network/layer/RobotsLayer.zig");
 pub const WebBotAuthLayer = @import("../../runtime/network/layer/WebBotAuthLayer.zig");
 pub const InterceptionLayer = @import("../../runtime/network/layer/InterceptionLayer.zig");
 const GoogleChromeTransport = @import("GoogleChromeTransport.zig");
-const CurlCliTransport = @import("CurlCliTransport.zig");
 const Session = @import("Session.zig");
 
 const WebSocket = @import("../webapi/net/WebSocket.zig");
@@ -86,6 +85,11 @@ dirty: std.DoublyLinkedList = .{},
 // Whether we're currently inside a curl_multi_perform call.
 performing: bool = false,
 
+// Whether curl completion messages are being drained. User callbacks invoked
+// from this phase may enqueue requests, but must not recursively enter
+// curl_multi_add_handle/curl_multi_perform before info_read unwinds.
+_processing_messages: bool = false,
+
 // Depth of user HTTP callbacks (header/data/done). Inbound CDP must not run
 // reentrantly while a callback is on the stack. Also blocks starting new
 // transfers (libcurl forbids multi_add from message/callback paths).
@@ -106,13 +110,6 @@ queue: std.DoublyLinkedList = .{},
 // we can unify the two queues. But HTTP is being changed a lot right now, and
 // I'm trying to minimize the surface area.
 ready_queue: std.DoublyLinkedList = .{},
-
-// Google sg_ss= document hops stall in curl-impersonate multi; queued here and
-// completed via blocking curl_easy_perform once performing == false.
-sync_easy_queue: std.DoublyLinkedList = .{},
-
-// Transfers with batchexecute body chunks waiting for post-perform delivery.
-deferred_delivery: std.DoublyLinkedList = .{},
 
 // Native WebSocket clients polled from tick() (not curl-impersonate).
 native_ws: std.DoublyLinkedList = .{},
@@ -346,8 +343,10 @@ pub fn getUserAgent(self: *const Client) [:0]const u8 {
     return self.user_agent_override orelse self.network.config.http_headers.user_agent;
 }
 
+const AbortScope = enum { normal, full };
+
 const AbortOpts = struct {
-    scope: enum { normal, full } = .normal,
+    scope: AbortScope = .normal,
     /// When true, in-flight `.document` transfers for the frame are left alone.
     /// Used when `location.href` is scheduled mid-parse: aborting the document
     /// transfer inside an HTTP data_callback cannot run frame done/error handlers
@@ -369,12 +368,18 @@ const AbortOpts = struct {
 };
 
 fn shouldAbortTransfer(params: *const RequestParams, opts: AbortOpts) bool {
-    if (params.keepalive) return false;
+    // Fetch keepalive survives document-level cancellation, but not an
+    // explicit full client/session shutdown.
+    if (keepaliveSurvivesAbort(params.keepalive, opts.scope)) return false;
     if (opts.scope != .full and params.protect_from_abort) return false;
     if (opts.skip_document and params.resource_type == .document) return false;
     if (opts.skip_xhr and params.resource_type == .xhr) return false;
     if (opts.skip_fetch and params.resource_type == .fetch) return false;
     return true;
+}
+
+fn keepaliveSurvivesAbort(keepalive: bool, scope: AbortScope) bool {
+    return keepalive and scope != .full;
 }
 
 pub fn abort(self: *Client) void {
@@ -395,7 +400,6 @@ pub fn abortTransfersAttributedTo(self: *Client, frame: *anyopaque, opts: AbortO
     abortConnectionsAttributed(self.in_use, frame, opts);
     abortConnectionsAttributed(self.ready_queue, frame, opts);
     abortTransferQueueAttributed(&self.queue, frame, opts);
-    abortTransferQueueAttributed(&self.sync_easy_queue, frame, opts);
 }
 
 fn requestAttributedTo(req: *const Request, frame: *anyopaque) bool {
@@ -486,25 +490,22 @@ pub fn clearProtectForFrame(self: *Client, frame_id: u32) void {
     clearProtectInConnList(self.in_use, frame_id);
     clearProtectInConnList(self.ready_queue, frame_id);
     clearProtectInTransferQueue(self.queue, frame_id);
-    clearProtectInTransferQueue(self.sync_easy_queue, frame_id);
 }
 
-/// True while a protected batchexecute XHR is still in flight for `frame_id`.
+/// True while a protected XHR is still in flight for `frame_id`.
 /// Excludes `.document` transfers (pending root nav carries `protect_from_abort`
 /// too; counting those would deadlock deferred commit).
 pub fn hasProtectedTransfersForFrame(self: *Client, frame_id: u32) bool {
     return protectedXhrInConnList(self.in_use, frame_id) or
         protectedXhrInConnList(self.ready_queue, frame_id) or
-        protectedXhrInQueue(self.queue, frame_id) or
-        protectedXhrInQueue(self.sync_easy_queue, frame_id);
+        protectedXhrInQueue(self.queue, frame_id);
 }
 
 /// True while any transfer still stores `ctx` (including aborted mid-perform).
 pub fn hasLiveTransferWithCtx(self: *const Client, ctx: *const anyopaque) bool {
     return transferWithCtxInConnList(self.in_use, ctx) or
         transferWithCtxInConnList(self.ready_queue, ctx) or
-        transferWithCtxInQueue(self.queue, ctx) or
-        transferWithCtxInQueue(self.sync_easy_queue, ctx);
+        transferWithCtxInQueue(self.queue, ctx);
 }
 
 fn transferWithCtxInQueue(list: std.DoublyLinkedList, ctx: *const anyopaque) bool {
@@ -535,17 +536,13 @@ pub fn hasInFlightTransfersForFrame(self: *const Client, frame_id: u32) bool {
     return transferInConnList(self.in_use, frame_id) or
         transferInConnList(self.ready_queue, frame_id) or
         transferInQueue(self.queue, frame_id) or
-        transferInQueue(self.sync_easy_queue, frame_id) or
         chromeJobForFrame(self, frame_id);
 }
 
 /// Transfers waiting on a free handle/connection, or connections parked until
 /// curl_multi_perform / transfer callbacks unwind. These are NOT counted in
 pub fn hasQueuedHttpWork(self: *const Client) bool {
-    return self.queue.first != null or
-        self.ready_queue.first != null or
-        self.sync_easy_queue.first != null or
-        self.deferred_delivery.first != null;
+    return self.queue.first != null or self.ready_queue.first != null;
 }
 
 /// Active HTTP + intercept holds + queued work not yet in `http_active`.
@@ -671,12 +668,10 @@ fn _abort(self: *Client, comptime abort_all: bool, frame_id: u32, opts: AbortOpt
     abortConnections(self.ready_queue, abort_all, frame_id, opts);
 
     abortTransferQueue(&self.queue, abort_all, frame_id, opts);
-    abortTransferQueue(&self.sync_easy_queue, abort_all, frame_id, opts);
 
     if (comptime abort_all) {
         self.queue = .{};
         self.ready_queue = .{};
-        self.sync_easy_queue = .{};
     }
 
     if (comptime IS_DEBUG and abort_all) {
@@ -739,218 +734,18 @@ fn abortConnections(list: std.DoublyLinkedList, comptime abort_all: bool, frame_
     }
 }
 
-fn isGoogleAccountsBatchExecute(url: []const u8) bool {
-    return std.mem.indexOf(u8, url, "accounts.google.") != null and
-        std.mem.indexOf(u8, url, "batchexecute") != null;
-}
-
-fn skipJsonComma(s: []const u8) []const u8 {
-    if (s.len > 0 and s[0] == ',') return s[1..];
-    return s;
-}
-
-fn skipJsonQuotedString(s: []const u8) []const u8 {
-    if (s.len == 0 or s[0] != '"') return s;
-    var i: usize = 1;
-    while (i < s.len) : (i += 1) {
-        if (s[i] == '\\') {
-            i += 1;
-            continue;
-        }
-        if (s[i] == '"') return s[i + 1 ..];
-    }
-    return s;
-}
-
-fn parseJsonUIntPrefix(s: []const u8) struct { val: u32, len: usize } {
-    var i: usize = 0;
-    var val: u32 = 0;
-    while (i < s.len and s[i] >= '0' and s[i] <= '9') : (i += 1) {
-        val = val * 10 + (s[i] - '0');
-    }
-    return .{ .val = val, .len = i };
-}
-
-/// Boost `af.httprm` RTT field (4th array slot) so `rib.sya` EMA crosses 250ms post-browserinfo.
-fn boostGoogleHttprmRttInChunk(arena: Allocator, chunk: []const u8, min_rtt: u32) ![]const u8 {
-    const tag = "[\"af.httprm\",";
-    var search_from: usize = 0;
-    var changed = false;
-    var out = try arena.alloc(u8, chunk.len + 32);
-    var out_len: usize = 0;
-    var last_copy: usize = 0;
-
-    while (std.mem.indexOfPos(u8, chunk, search_from, tag)) |pos| {
-        var cursor = chunk[pos + tag.len ..];
-        const di = parseJsonUIntPrefix(cursor);
-        if (di.len == 0) {
-            search_from = pos + tag.len;
-            continue;
-        }
-        cursor = skipJsonComma(cursor[di.len..]);
-        cursor = skipJsonQuotedString(cursor);
-        cursor = skipJsonComma(cursor);
-        const rtt = parseJsonUIntPrefix(cursor);
-        if (rtt.len == 0 or rtt.val >= min_rtt) {
-            search_from = pos + tag.len;
-            continue;
-        }
-
-        const tag_and_di_end = pos + tag.len + di.len;
-        const after_di = chunk[tag_and_di_end..];
-        const hash_field_len = after_di.len - skipJsonQuotedString(skipJsonComma(after_di)).len;
-        const rtt_start = tag_and_di_end + hash_field_len + 1;
-        const rtt_end = rtt_start + rtt.len;
-
-        std.mem.copyForwards(u8, out[out_len..], chunk[last_copy..rtt_start]);
-        out_len += rtt_start - last_copy;
-        const boosted = try std.fmt.bufPrint(out[out_len..], "{d}", .{min_rtt});
-        out_len += boosted.len;
-        last_copy = rtt_end;
-        search_from = rtt_end;
-        changed = true;
-    }
-
-    if (!changed) return chunk;
-    std.mem.copyForwards(u8, out[out_len..], chunk[last_copy..]);
-    out_len += chunk.len - last_copy;
-    return out[0..out_len];
-}
-
-const GoogleSigninDebug = @import("GoogleSigninDebug.zig");
-
-const SIGNIN_HTTPPRM_RTT_ENV = "VELORA_SIGNIN_HTTPPRM_RTT";
-const BATCHEXECUTE_SYNC_DELIVERY_ENV = "VELORA_BATCHEXECUTE_SYNC_DELIVERY";
-
-fn batchexecuteSyncDeliveryEnabled() bool {
-    const value = std.posix.getenv(BATCHEXECUTE_SYNC_DELIVERY_ENV) orelse return false;
-    return value.len > 0 and !std.mem.eql(u8, value, "0") and !std.mem.eql(u8, value, "false");
-}
-
-fn traceSigninHttprmDelivery(transfer: *Transfer, chunk: []const u8) void {
-    if (!GoogleSigninDebug.httprmTraceEnabled()) return;
-    if (std.mem.indexOf(u8, transfer.url, "accounts.google.") == null) return;
-    if (std.mem.indexOf(u8, chunk, "af.httprm") == null) return;
-    const tag = "[\"af.httprm\",";
-    var rtt: ?u32 = null;
-    if (std.mem.indexOf(u8, chunk, tag)) |pos| {
-        var cursor = chunk[pos + tag.len ..];
-        const di = parseJsonUIntPrefix(cursor);
-        if (di.len > 0) {
-            cursor = skipJsonComma(cursor[di.len..]);
-            cursor = skipJsonQuotedString(cursor);
-            cursor = skipJsonComma(cursor);
-            const parsed = parseJsonUIntPrefix(cursor);
-            if (parsed.len > 0) rtt = parsed.val;
-        }
-    }
-    log.warn(.http, "signin.httprm.delivery", .{
-        .url = transfer.url,
-        .chunk_len = chunk.len,
-        .rtt = rtt,
-    });
-}
-
-fn signinHttprmRttOverride() ?u32 {
-    const value = std.posix.getenv(SIGNIN_HTTPPRM_RTT_ENV) orelse return null;
-    if (value.len == 0 or std.mem.eql(u8, value, "0")) return null;
-    return std.fmt.parseInt(u32, value, 10) catch return null;
-}
-
-fn maybeBoostSigninHttprmChunk(transfer: *Transfer, chunk: []const u8) ![]const u8 {
-    if (std.mem.indexOf(u8, transfer.url, "accounts.google.") == null) return chunk;
-    if (std.mem.indexOf(u8, chunk, "af.httprm") == null) return chunk;
-
-    if (signinHttprmRttOverride()) |forced_rtt| {
-        // Parametric sweep: force browserinfo httprm RTT only (UEkKwb stays real).
-        if (std.mem.indexOf(u8, transfer.url, "browserinfo") != null and
-            std.mem.indexOf(u8, transfer.url, "UEkKwb") == null)
-        {
-            return boostGoogleHttprmRttInChunk(transfer.req.params.arena, chunk, forced_rtt);
-        }
-    }
-
-    // Keep UEkKwb RTT low for browserinfo `[0,2,2]`. Do not boost browserinfo — Chrome passes real RTT (~25ms).
-    if (std.mem.indexOf(u8, transfer.url, "UEkKwb") != null) return chunk;
-    if (std.mem.indexOf(u8, transfer.url, "browserinfo") != null) return chunk;
-    // Ablation: pass real httprm RTT on batchexecute/signinwithgoogleapps (Chrome does not boost to 800).
-    if (std.mem.indexOf(u8, transfer.url, "signinwithgoogleapps") != null) return chunk;
-    if (std.mem.indexOf(u8, transfer.url, "batchexecute") != null) return chunk;
-    return chunk;
-}
-
-fn stretchPerformanceForSigninChunk(transfer: *Transfer, delta_ms: f64) void {
-    _ = transfer;
-    _ = delta_ms;
-    // Ablation C: do not advance performance.now() on Google sign-in HTTP chunks.
-}
-
-fn stretchPerformanceForDeferredChunk(transfer: *Transfer) void {
-    stretchPerformanceForSigninChunk(transfer, 200);
-}
-
 fn deliverChunkToUser(transfer: *Transfer, chunk: []const u8) void {
-    if (isGoogleAccountsBatchExecute(transfer.url)) {
-        stretchPerformanceForSigninChunk(transfer, 120);
-    } else if (std.mem.indexOf(u8, transfer.url, "signinwithgoogleapps") != null) {
-        stretchPerformanceForSigninChunk(transfer, 30);
-    }
-    traceSigninHttprmDelivery(transfer, chunk);
-    const boosted = maybeBoostSigninHttprmChunk(transfer, chunk) catch |err| {
-        transfer._callback_error = err;
-        return;
-    };
     transfer.client.enterTransferCallback();
     defer transfer.client.leaveTransferCallback();
-    transfer.req.data_callback(Response.fromTransfer(transfer), boosted) catch |err| {
+    transfer.req.data_callback(Response.fromTransfer(transfer), chunk) catch |err| {
         transfer._callback_error = err;
         return;
     };
     if (!transfer.aborted) transfer._streamed_to_user = true;
 }
 
-fn flushDeferredChunksForTransfer(transfer: *Transfer, all: bool) void {
-    const deliver_one = struct {
-        fn run(t: *Transfer) void {
-            if (t.aborted or t._deferred_chunks.items.len == 0) return;
-            stretchPerformanceForDeferredChunk(t);
-            const chunk = t._deferred_chunks.items[0];
-            _ = t._deferred_chunks.orderedRemove(0);
-            deliverChunkToUser(t, chunk);
-        }
-    }.run;
-
-    if (all) {
-        transfer.client.deferred_delivery.remove(&transfer._deferred_node);
-        while (transfer._deferred_chunks.items.len > 0 and !transfer.aborted) {
-            deliver_one(transfer);
-        }
-        return;
-    }
-
-    deliver_one(transfer);
-    if (transfer._deferred_chunks.items.len == 0) {
-        transfer.client.deferred_delivery.remove(&transfer._deferred_node);
-    }
-}
-
-fn flushDeferredChunkDeliveries(self: *Client) void {
-    while (self.deferred_delivery.popFirst()) |node| {
-        const transfer: *Transfer = @fieldParentPtr("_deferred_node", node);
-        if (transfer.aborted or transfer._deferred_chunks.items.len == 0) continue;
-
-        flushDeferredChunksForTransfer(transfer, false);
-
-        if (transfer.aborted) continue;
-        if (transfer._deferred_chunks.items.len > 0) {
-            self.deferred_delivery.append(node);
-        }
-    }
-}
-
 pub fn tick(self: *Client, timeout_ms: u32) !PerformStatus {
     processChromeJobs(self);
-    drainSyncEasyQueue(self);
     try pollNativeWebSockets(self);
     tryStartQueuedTransfers(self);
     return self.perform(@intCast(timeout_ms));
@@ -997,6 +792,15 @@ pub fn request(self: *Client, req: Request) !void {
 
     const arena = try self.network.app.arena_pool.acquire(.small, "Request.arena");
     our_req.params.arena = arena;
+    // Requests may wait in the connection queue long after the caller's
+    // call-arena is reset. The transfer therefore owns its upload bytes until
+    // its terminal path releases Request.arena.
+    if (our_req.params.body) |body| {
+        our_req.params.body = arena.dupe(u8, body) catch |err| {
+            self.network.app.arena_pool.release(arena);
+            return err;
+        };
+    }
 
     // Ownership of `our_req` (including its curl_slist and arena) moves into
     // the layer chain at this call boundary.  The terminal layer either parks
@@ -1017,6 +821,12 @@ pub fn requestChromeTransport(self: *Client, req: Request) !void {
 
     const arena = try self.network.app.arena_pool.acquire(.small, "ChromeTransport.arena");
     our_req.params.arena = arena;
+    if (our_req.params.body) |body| {
+        our_req.params.body = arena.dupe(u8, body) catch |err| {
+            self.network.app.arena_pool.release(arena);
+            return err;
+        };
+    }
 
     const async_job = GoogleChromeTransport.AsyncJob.spawn(arena, our_req.params.url, our_req.params.headers) catch |err| {
         our_req.error_callback(our_req.ctx, err);
@@ -1267,20 +1077,11 @@ fn process(self: *Client, transfer: *Transfer) !void {
     // message handling and from transfer user callbacks. SPA/Next injects
     // <script> during script doneCallback → must queue, not start now
     // (else CURLM_RECURSIVE_API_CALL / CURLE_RECURSIVE_API_CALL).
-    const reentrant = self.performing or self.inTransferCallback();
-
-    if (shouldSyncEasyPerform(transfer)) {
-        if (reentrant) {
-            self.sync_easy_queue.append(&transfer._node);
-            return;
-        }
-        if (self.network.getConnection()) |conn| {
-            return self.makeSyncEasyRequest(conn, transfer);
-        }
-        self.queue.append(&transfer._node);
-        return;
-    }
-
+    const reentrant = curlMutationBlocked(
+        self.performing,
+        self._processing_messages,
+        self.inTransferCallback(),
+    );
     if (!reentrant) {
         if (self.network.getConnection()) |conn| {
             // makeRequest owns the Transfer once a connection is supplied. A
@@ -1300,21 +1101,10 @@ fn process(self: *Client, transfer: *Transfer) !void {
 /// Start transfers deferred because they were requested mid-callback/perform.
 /// Safe only when not inside curl multi perform or a user transfer callback.
 fn tryStartQueuedTransfers(self: *Client) void {
-    if (self.performing or self.inTransferCallback() or self._starting_queued) return;
+    if (curlMutationBlocked(self.performing, self._processing_messages, self.inTransferCallback()) or
+        self._starting_queued) return;
     self._starting_queued = true;
     defer self._starting_queued = false;
-
-    while (self.sync_easy_queue.popFirst()) |node| {
-        const transfer: *Transfer = @fieldParentPtr("_node", node);
-        const conn = self.network.getConnection() orelse {
-            self.sync_easy_queue.prepend(node);
-            break;
-        };
-        self.makeSyncEasyRequest(conn, transfer) catch |err| {
-            transfer.req.error_callback(transfer.req.ctx, err);
-            transfer.deinit();
-        };
-    }
 
     while (self.queue.popFirst()) |queue_node| {
         const conn = self.network.getConnection() orelse {
@@ -1393,108 +1183,7 @@ pub fn restoreOriginalProxy(self: *Client) !void {
     self.use_proxy = self.http_proxy != null;
 }
 
-fn shouldSyncEasyPerform(transfer: *const Transfer) bool {
-    if (comptime !build_config.curl_impersonate) return false;
-    const req = &transfer.req;
-    return req.params.resource_type == .document and
-        std.mem.indexOf(u8, req.params.url, "sg_ss=") != null;
-}
-
-fn drainSyncEasyQueue(self: *Client) void {
-    while (self.sync_easy_queue.popFirst()) |node| {
-        const transfer: *Transfer = @fieldParentPtr("_node", node);
-        const conn = self.network.getConnection() orelse {
-            self.sync_easy_queue.prepend(node);
-            break;
-        };
-        self.makeSyncEasyRequest(conn, transfer) catch |err| {
-            transfer.req.error_callback(transfer.req.ctx, err);
-            transfer.deinit();
-        };
-    }
-}
-
-fn makeSyncEasyRequest(self: *Client, conn: *http.Connection, transfer: *Transfer) !void {
-    defer self.releaseConn(conn);
-
-    if (comptime IS_DEBUG) {
-        log.debug(.http, "sg_ss curl cli transport", .{ .url = transfer.req.params.url });
-    }
-
-    if (transfer.req.start_callback) |cb| {
-        try cb(Response.fromTransfer(transfer));
-    }
-
-    const doc = CurlCliTransport.fetchSgSsDocument(
-        transfer.req.params.arena,
-        transfer.req.params.url,
-        transfer.req.params.headers,
-        self.getUserAgent(),
-    ) catch |err| {
-        transfer.requestFailed(err, true);
-        transfer.deinit();
-        return;
-    };
-
-    try completeCliDocument(transfer, doc);
-    transfer.deinit();
-}
-
-fn completeCliDocument(transfer: *Transfer, doc: CurlCliTransport.Document) !void {
-    const arena = transfer.req.params.arena;
-    transfer.url = doc.final_url;
-
-    const injected = try arena.alloc(http.Header, 1);
-    injected[0] = .{ .name = "content-type", .value = doc.content_type };
-
-    transfer.response_header = .{
-        .url = doc.final_url,
-        .status = doc.status,
-        .redirect_count = doc.redirect_count,
-        ._injected_headers = injected,
-    };
-    transfer._redirect_count = doc.redirect_count;
-    if (doc.protocol) |p| {
-        const len = @min(p.len, ResponseHead.MAX_PROTOCOL_LEN);
-        transfer.response_header.?._protocol_len = len;
-        @memcpy(transfer.response_header.?._protocol[0..len], p[0..len]);
-    }
-    const ct = doc.content_type;
-    const ct_len = @min(ct.len, ResponseHead.MAX_CONTENT_TYPE_LEN);
-    transfer.response_header.?._content_type_len = ct_len;
-    @memcpy(transfer.response_header.?._content_type[0..ct_len], ct[0..ct_len]);
-
-    transfer._performing = true;
-    defer transfer._performing = false;
-    transfer.client.enterTransferCallback();
-    defer transfer.client.leaveTransferCallback();
-
-    const proceed = transfer.req.header_callback(Response.fromTransfer(transfer)) catch |err| {
-        log.err(.http, "header_callback", .{ .err = err, .req = transfer });
-        return err;
-    };
-    if (!proceed or transfer.aborted) {
-        transfer.requestFailed(error.Abort, true);
-        return error.Abort;
-    }
-    transfer._header_done_called = true;
-
-    if (doc.body.len > 0) {
-        try transfer.req.data_callback(Response.fromTransfer(transfer), doc.body);
-        if (transfer.aborted) {
-            transfer.requestFailed(error.Abort, true);
-            return error.Abort;
-        }
-    }
-
-    try transfer.req.done_callback(transfer.req.ctx);
-}
-
 fn makeRequest(self: *Client, conn: *http.Connection, transfer: *Transfer) anyerror!void {
-    if (shouldSyncEasyPerform(transfer)) {
-        return self.makeSyncEasyRequest(conn, transfer);
-    }
-
     {
         // Reset per-response state for retries (auth challenge, queue).
         const auth = transfer._auth_challenge;
@@ -1594,14 +1283,14 @@ fn perform(self: *Client, timeout_ms: c_int) anyerror!PerformStatus {
         self.performing = true;
         defer self.performing = false;
         active = try self.handles.perform();
-        if (try self.processMessages()) {
+        if (try self.processMessagesAndStartQueued()) {
             return .normal;
         }
     }
 
     // We're potentially going to block for a while until we get data. Process
     // whatever messages we have waiting ahead of time.
-    if (try self.processMessages()) {
+    if (try self.processMessagesAndStartQueued()) {
         return .normal;
     }
 
@@ -1632,7 +1321,7 @@ fn perform(self: *Client, timeout_ms: c_int) anyerror!PerformStatus {
             self.performing = true;
             defer self.performing = false;
             _ = try self.handles.perform();
-            if (try self.processMessages()) {
+            if (try self.processMessagesAndStartQueued()) {
                 return .normal;
             }
         }
@@ -1640,10 +1329,8 @@ fn perform(self: *Client, timeout_ms: c_int) anyerror!PerformStatus {
         status = .idle;
     }
 
-    _ = try self.processMessages();
+    _ = try self.processMessagesAndStartQueued();
     try pollNativeWebSockets(self);
-    drainSyncEasyQueue(self);
-    flushDeferredChunkDeliveries(self);
     return status;
 }
 
@@ -1789,14 +1476,6 @@ fn processOneMessage(self: *Client, msg: http.Handles.MultiMessage, transfer: *T
         // callback now.
         const proceed = try transfer.headerDoneCallback(msg.conn);
         if (!proceed) {
-            transfer.requestFailed(error.Abort, true);
-            return true;
-        }
-    }
-
-    if (transfer._deferred_chunks.items.len > 0) {
-        flushDeferredChunksForTransfer(transfer, true);
-        if (transfer.aborted) {
             transfer.requestFailed(error.Abort, true);
             return true;
         }
@@ -1954,6 +1633,10 @@ pub fn serviceInboundCdpIfReadable(self: *Client) void {
 }
 
 fn processMessages(self: *Client) !bool {
+    if (self._processing_messages) return false;
+    self._processing_messages = true;
+    defer self._processing_messages = false;
+
     var processed = false;
     while (try self.handles.readMessage()) |msg| {
         switch (msg.conn.transport) {
@@ -1974,8 +1657,6 @@ fn processMessages(self: *Client) !bool {
                 if (done) {
                     const browser_session = transfer.req.params.browser_session;
                     transfer.deinit();
-                    // Start SPA scripts queued during doneCallback before macrotasks.
-                    tryStartQueuedTransfers(self);
                     if (browser_session) |session| {
                         session.reapZombiePages();
                         session.reapZombiePendingPages();
@@ -2001,7 +1682,17 @@ fn processMessages(self: *Client) !bool {
             .none => unreachable,
         }
     }
-    // Messages may have nested-queued more work after the last completion.
+    return processed;
+}
+
+/// Completion callbacks may initiate iframe/script/fetch requests. `process()`
+/// correctly parks those requests because libcurl forbids multi mutations
+/// while `multi_info_read` is active. Start them only after processMessages
+/// has fully unwound and cleared `_processing_messages`; attempting this from
+/// inside processMessages is necessarily a no-op and can strand a child
+/// navigation when no unrelated network event produces another runner tick.
+fn processMessagesAndStartQueued(self: *Client) !bool {
+    const processed = try self.processMessages();
     tryStartQueuedTransfers(self);
     return processed;
 }
@@ -2009,7 +1700,7 @@ fn processMessages(self: *Client) !bool {
 pub fn trackConn(self: *Client, conn: *http.Connection) !void {
     // Same reentrancy rule as process(): never multi_add while performing
     // *or* while a transfer user callback is on the stack.
-    if (self.performing or self.inTransferCallback()) {
+    if (curlMutationBlocked(self.performing, self._processing_messages, self.inTransferCallback())) {
         conn.in_use = false;
         self.ready_queue.append(&conn.node);
         return;
@@ -2398,10 +2089,6 @@ pub const Transfer = struct {
     // for when a Transfer is queued in the client.queue
     _node: std.DoublyLinkedList.Node = .{},
 
-    /// Copied batchexecute chunks delivered one per perform cycle (non-blocking RY skew).
-    _deferred_chunks: std.ArrayList([]const u8) = .{},
-    _deferred_node: std.DoublyLinkedList.Node = .{},
-
     fn releaseConn(self: *Transfer) void {
         if (self._conn) |conn| {
             self.client.removeConn(conn);
@@ -2592,6 +2279,12 @@ pub const Transfer = struct {
                 !(req.params.resource_type == .document);
             // prefer_http3 / force_fresh_connection: set by NavigationPlan or
             // retry paths — no URL host/path specials here.
+            // Protocol selection belongs to per-origin transport state, not to
+            // the Fetch destination. Until Alt-Svc state is modeled, use the
+            // broadly negotiated H2 transport unless an explicit profile plan
+            // opts this request into H3. Forcing every subresource onto H3
+            // while documents use H2 creates two competing connection pools
+            // for the same origin and can strand a re-entrant iframe request.
             const http_version: http.Connection.ProfileHttpVersion = if (req.params.prefer_http3)
                 .h3
             else if (req.params.resource_type == .document)
@@ -3013,9 +2706,7 @@ pub const Transfer = struct {
             return http.writefunc_error;
         }
 
-        // Deliver headers + incremental body while readyState === LOADING (Chrome
-        // parity). Google batchexecute (rt=c) parses chunked bodies on each
-        // readystatechange during LOADING.
+        // Deliver headers + incremental body while readyState === LOADING.
         if (!transfer._header_done_called) {
             const proceed = transfer.headerDoneCallback(conn) catch |err| {
                 transfer._callback_error = err;
@@ -3027,25 +2718,9 @@ pub const Transfer = struct {
         }
 
         if (chunk_len > 0) {
-            if (isGoogleAccountsBatchExecute(transfer.url) and !batchexecuteSyncDeliveryEnabled()) {
-                const arena = transfer.req.params.arena;
-                const copy = arena.alloc(u8, chunk_len) catch |err| {
-                    transfer._callback_error = err;
-                    return http.writefunc_error;
-                };
-                @memcpy(copy, chunk);
-                transfer._deferred_chunks.append(arena, copy) catch |err| {
-                    transfer._callback_error = err;
-                    return http.writefunc_error;
-                };
-                if (transfer._deferred_chunks.items.len == 1) {
-                    transfer.client.deferred_delivery.append(&transfer._deferred_node);
-                }
-            } else {
-                deliverChunkToUser(transfer, chunk);
-                if (transfer._callback_error != null or transfer.aborted) {
-                    return http.writefunc_error;
-                }
+            deliverChunkToUser(transfer, chunk);
+            if (transfer._callback_error != null or transfer.aborted) {
+                return http.writefunc_error;
             }
         }
 
@@ -3117,3 +2792,21 @@ const Noop = struct {
     fn doneCallback(_: *anyopaque) !void {}
     fn errorCallback(_: *anyopaque, _: anyerror) void {}
 };
+
+test "HTTP keepalive survives document abort but not client shutdown" {
+    try std.testing.expect(keepaliveSurvivesAbort(true, .normal));
+    try std.testing.expect(!keepaliveSurvivesAbort(true, .full));
+    try std.testing.expect(!keepaliveSurvivesAbort(false, .normal));
+    try std.testing.expect(!keepaliveSurvivesAbort(false, .full));
+}
+
+fn curlMutationBlocked(performing: bool, processing_messages: bool, in_callback: bool) bool {
+    return performing or processing_messages or in_callback;
+}
+
+test "curl mutations stay deferred throughout completion message processing" {
+    try std.testing.expect(curlMutationBlocked(true, false, false));
+    try std.testing.expect(curlMutationBlocked(false, true, false));
+    try std.testing.expect(curlMutationBlocked(false, false, true));
+    try std.testing.expect(!curlMutationBlocked(false, false, false));
+}

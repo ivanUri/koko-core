@@ -361,9 +361,8 @@ const CacheContext = struct {
             }
         }
 
-        // CLI document hops (Google sg_ss= via CurlCliTransport) never attach a
-        // curl Connection — only injected response headers. Skip conn-backed
-        // cache metadata and forward so completeCliDocument can finish.
+        // Alternate transports may not attach a curl Connection. Skip
+        // connection-backed cache metadata and forward their headers.
         const conn = transfer._conn orelse {
             return self.forward.forwardHeader(response);
         };

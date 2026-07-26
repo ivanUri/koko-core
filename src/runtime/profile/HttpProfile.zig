@@ -39,17 +39,23 @@ fn documentNetworkEstimates(opts: ChromeHeadersOpts) struct { downlink: f64, rtt
 }
 
 pub const RequestContext = struct {
+    pub const NavigationDestination = enum {
+        top_level,
+        iframe,
+    };
+
     request_url: [:0]const u8,
     resource_type: HttpClient.RequestParams.ResourceType,
     frame_origin: ?[]const u8 = null,
     prior_origin: ?[]const u8 = null,
     is_document_navigation: bool = false,
+    navigation_destination: NavigationDestination = .top_level,
     origin: ?[]const u8 = null,
 };
 
-pub fn secFetchDest(resource_type: HttpClient.RequestParams.ResourceType) []const u8 {
-    return switch (resource_type) {
-        .document => "document",
+pub fn secFetchDest(ctx: RequestContext) []const u8 {
+    return switch (ctx.resource_type) {
+        .document => if (ctx.navigation_destination == .iframe) "iframe" else "document",
         .script => "script",
         .worker => "worker",
         .image => "image",
@@ -320,7 +326,7 @@ fn appendChromeDocumentNavigationHeaders(
     {
         const site = secFetchSite(ctx);
         const mode = secFetchMode(ctx.resource_type);
-        const dest = secFetchDest(ctx.resource_type);
+        const dest = secFetchDest(ctx);
 
         const dest_hdr = try std.fmt.allocPrintSentinel(allocator, "Sec-Fetch-Dest: {s}", .{dest}, 0);
         try headers.add(dest_hdr);
@@ -331,12 +337,17 @@ fn appendChromeDocumentNavigationHeaders(
         const site_hdr = try std.fmt.allocPrintSentinel(allocator, "Sec-Fetch-Site: {s}", .{site}, 0);
         try headers.add(site_hdr);
 
-        if (!opts.omit_sec_fetch_user) {
+        if (ctx.navigation_destination == .top_level and !opts.omit_sec_fetch_user) {
             try headers.add("Sec-Fetch-User: ?1");
         }
     }
 
-    if (std.mem.startsWith(u8, ctx.request_url, "https://")) {
+    // Upgrade-Insecure-Requests is a top-level navigation hint. Chrome does
+    // not send it for embedded browsing contexts (iframe/object), where
+    // emitting it changes the Fetch Metadata/header contract.
+    if (ctx.navigation_destination == .top_level and
+        std.mem.startsWith(u8, ctx.request_url, "https://"))
+    {
         try headers.add("Upgrade-Insecure-Requests: 1");
     }
 
@@ -426,7 +437,7 @@ pub fn appendChromeHeaders(
 
     const site = secFetchSite(ctx);
     const mode = secFetchMode(ctx.resource_type);
-    const dest = secFetchDest(ctx.resource_type);
+    const dest = secFetchDest(ctx);
 
     const site_hdr = try std.fmt.allocPrintSentinel(allocator, "Sec-Fetch-Site: {s}", .{site}, 0);
     try headers.add(site_hdr);
@@ -485,10 +496,12 @@ fn appendNonChromiumHeaders(
     // Safari curl wrapper: sec-fetch-dest → user-agent → accept → sec-fetch-site/mode →
     // accept-language → priority → accept-encoding. Firefox: UA-first simpler set.
     if (family == .safari and is_document) {
-        try headers.add("Sec-Fetch-Dest: document");
+        const dest_hdr = try std.fmt.allocPrintSentinel(allocator, "Sec-Fetch-Dest: {s}", .{secFetchDest(ctx)}, 0);
+        try headers.add(dest_hdr);
         try headers.add(static.user_agent_header);
         try headers.add(safari_document_accept);
-        try headers.add("Sec-Fetch-Site: none");
+        const site_hdr = try std.fmt.allocPrintSentinel(allocator, "Sec-Fetch-Site: {s}", .{secFetchSite(ctx)}, 0);
+        try headers.add(site_hdr);
         try headers.add("Sec-Fetch-Mode: navigate");
         try headers.add(static.accept_language_header);
         try headers.add(document_priority);
@@ -496,7 +509,9 @@ fn appendNonChromiumHeaders(
         if (std.mem.startsWith(u8, ctx.request_url, "https://")) {
             try headers.add("Upgrade-Insecure-Requests: 1");
         }
-        try headers.add("Sec-Fetch-User: ?1");
+        if (ctx.navigation_destination == .top_level) {
+            try headers.add("Sec-Fetch-User: ?1");
+        }
         return;
     }
 
@@ -509,7 +524,7 @@ fn appendNonChromiumHeaders(
         try headers.add("Upgrade-Insecure-Requests: 1");
     }
 
-    const dest = secFetchDest(ctx.resource_type);
+    const dest = secFetchDest(ctx);
     const mode = secFetchMode(ctx.resource_type);
     const site = secFetchSite(ctx);
 
@@ -522,7 +537,7 @@ fn appendNonChromiumHeaders(
     const site_hdr = try std.fmt.allocPrintSentinel(allocator, "Sec-Fetch-Site: {s}", .{site}, 0);
     try headers.add(site_hdr);
 
-    if (is_document) {
+    if (is_document and ctx.navigation_destination == .top_level) {
         try headers.add("Sec-Fetch-User: ?1");
     }
 
@@ -575,7 +590,7 @@ pub fn appendFallbackHeaders(
         }
     }
 
-    const dest = secFetchDest(ctx.resource_type);
+    const dest = secFetchDest(ctx);
     const mode = secFetchMode(ctx.resource_type);
     const site = secFetchSite(ctx);
 
@@ -589,7 +604,9 @@ pub fn appendFallbackHeaders(
     try headers.add(site_hdr);
 
     if (is_document) {
-        try headers.add("Sec-Fetch-User: ?1");
+        if (ctx.navigation_destination == .top_level) {
+            try headers.add("Sec-Fetch-User: ?1");
+        }
         if (std.mem.startsWith(u8, ctx.request_url, "https://")) {
             try headers.add("Upgrade-Insecure-Requests: 1");
         }
@@ -732,6 +749,50 @@ test "HttpProfile: in-session document hop omits only Sec-Fetch-User" {
     try testing.expect(saw_mode);
     try testing.expect(saw_site);
     try testing.expect(saw_form_factors);
+}
+
+test "HttpProfile: iframe navigation uses iframe destination without user activation" {
+    const alloc = testing.allocator;
+    var headers = try HttpClient.Headers.initEmpty();
+    defer headers.deinit();
+
+    const identity = Profile.macos_catalina_intel;
+    const static = StaticHeaders{
+        .user_agent_header = "User-Agent: test\x00",
+        .sec_ch_ua_header = "Sec-Ch-Ua: \"Google Chrome\";v=\"149\"\x00",
+        .accept_language_header = "Accept-Language: en-US,en;q=0.9\x00",
+    };
+    const ctx = RequestContext{
+        .request_url = "https://widget.example/challenge\x00",
+        .resource_type = .document,
+        .prior_origin = "https://embedder.example",
+        .is_document_navigation = true,
+        .navigation_destination = .iframe,
+    };
+    try appendChromeHeaders(&headers, alloc, &identity, &static, ctx, .{
+        .full_client_hints = true,
+        .brands = &.{.{ .brand = "Google Chrome", .version = "149" }},
+    });
+
+    var dest: ?[]const u8 = null;
+    var mode: ?[]const u8 = null;
+    var site: ?[]const u8 = null;
+    var saw_user = false;
+    var saw_uir = false;
+    var it = headers.iterator();
+    while (it.next()) |hdr| {
+        if (std.mem.eql(u8, hdr.name, "Sec-Fetch-Dest")) dest = hdr.value;
+        if (std.mem.eql(u8, hdr.name, "Sec-Fetch-Mode")) mode = hdr.value;
+        if (std.mem.eql(u8, hdr.name, "Sec-Fetch-Site")) site = hdr.value;
+        if (std.mem.eql(u8, hdr.name, "Sec-Fetch-User")) saw_user = true;
+        if (std.mem.eql(u8, hdr.name, "Upgrade-Insecure-Requests")) saw_uir = true;
+    }
+
+    try testing.expectEqualStrings("iframe", dest.?);
+    try testing.expectEqualStrings("navigate", mode.?);
+    try testing.expectEqualStrings("cross-site", site.?);
+    try testing.expect(!saw_user);
+    try testing.expect(!saw_uir);
 }
 
 test "HttpProfile: brandFullVersion maps Not A Brand to x.0.0.0" {

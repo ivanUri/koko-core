@@ -56,7 +56,6 @@ const KeyboardEvent = @import("../webapi/event/KeyboardEvent.zig");
 const MouseEvent = @import("../webapi/event/MouseEvent.zig");
 
 const HttpClient = @import("HttpClient.zig");
-const GoogleSigninDebug = @import("GoogleSigninDebug.zig");
 const http = @import("../../runtime/network/http.zig");
 const build_config = @import("build_config");
 const FingerprintProfile = @import("../profile/types.zig");
@@ -90,6 +89,11 @@ pub var default_location: Location = Location{ ._url = &default_url };
 pub const BUF_SIZE = 1024;
 
 const Frame = @This();
+
+const QueuedElementLoad = struct {
+    element: *Element.Html,
+    task_owner: RealmLifecycleKernel.TaskOwner,
+};
 
 pub const InputHit = struct {
     element: *Element,
@@ -191,9 +195,9 @@ _blob_urls: std.StringHashMapUnmanaged(*Blob) = .{},
 /// A call to `documentIsComplete` (which calls `_documentIsComplete`) resets it.
 /// Double-buffered so that dispatching load events (which may trigger JS that
 /// creates new elements) doesn't invalidate the list while iterating.
-_to_load_1: std.ArrayList(*Element.Html) = .{},
-_to_load_2: std.ArrayList(*Element.Html) = .{},
-_to_load: *std.ArrayList(*Element.Html) = undefined,
+_to_load_1: std.ArrayList(QueuedElementLoad) = .{},
+_to_load_2: std.ArrayList(QueuedElementLoad) = .{},
+_to_load: *std.ArrayList(QueuedElementLoad) = undefined,
 
 // iframe `load` events deferred to the next macrotask so sibling inline
 
@@ -245,6 +249,7 @@ _slotchange_delivery_scheduled: bool = false,
 // transitions commit the next location only in onAnimationEnd).
 _css_anim_pending: std.AutoHashMapUnmanaged(*Element, void) = .{},
 _css_anim_delivery_scheduled: bool = false,
+_css_anim_delivery_task_owner: RealmLifecycleKernel.TaskOwner = .{ .realm_id = 0, .epoch = 0, .document_id = null },
 
 /// `TaskOwner` captured when each single-flight microtask was scheduled (epoch / realm legality).
 _mutation_delivery_task_owner: RealmLifecycleKernel.TaskOwner = .{ .realm_id = 0, .epoch = 0, .document_id = null },
@@ -289,13 +294,6 @@ _undefined_custom_elements: std.ArrayList(*Element.Html.Custom) = .{},
 _factory: *Factory,
 
 _load_state: LoadState = .waiting,
-/// Google sei: defer knitsail sg_ss microtasks until post-parse pump.
-_defer_knitsail_post_parse: bool = false,
-/// Knitsail timer milestones + pageT freeze + DCL fired for this navigation.
-_knitsail_lifecycle_pumped: bool = false,
-/// Parser-inserted script ran (bootstrap registered setTimeout probes).
-_knitsail_parser_script_seen: bool = false,
-_knitsail_lifecycle_fallback_scheduled: bool = false,
 _static_scripts_done_scheduled: bool = false,
 /// Inline parse finished inside frameDoneCallback; lifecycle starts at leaveTransferCallback.
 _pending_post_parse_lifecycle: bool = false,
@@ -748,12 +746,6 @@ pub fn prepareForOutgoingAbort(self: *Frame) void {
     self.document.cancelStreamingParser();
     self._document_parse_active = false;
     self._parser_text_cap = .empty;
-    // Knitsail lifecycle timers must not fire on a departing Google SERP realm
-    // after root re-nav (poisoned scheduler / heap pressure into next parse).
-    self._knitsail_lifecycle_pumped = false;
-    self._knitsail_parser_script_seen = false;
-    self._knitsail_lifecycle_fallback_scheduled = false;
-    self._defer_knitsail_post_parse = false;
     self._pending_post_parse_lifecycle = false;
     self._static_scripts_done_scheduled = false;
     // Drop deferred HTML parse / script-slice / timer pumps still on this
@@ -819,6 +811,19 @@ fn enterRealmDead(self: *Frame) void {
     }
 }
 
+/// Enter terminal browser shutdown without destroying storage yet. Network
+/// callbacks may still run during the following transport abort, so every
+/// realm must be visibly dead before any callback can attempt JS re-entry.
+pub fn prepareForBrowserShutdown(self: *Frame) void {
+    if (self._deinit_done) return;
+    for (self.child_frames.items) |child| {
+        child.prepareForBrowserShutdown();
+    }
+    self.suppressScheduler(.teardown);
+    self.prepareForOutgoingAbort();
+    self.enterRealmDead();
+}
+
 pub fn deinit(self: *Frame) void {
     // Deferred iframe deinit + recursive parent deinit + processFrameNavigation
     // can all target the same Frame*. Second pass must no-op (hash map UAF).
@@ -848,6 +853,10 @@ pub fn deinit(self: *Frame) void {
     self._parse_state.deinit(self);
 
     const page = self._page;
+
+    // postMessage callbacks that arrived before listener registration are no
+    // longer scheduler-owned. Window is their terminal owner.
+    self.window.cancelPendingPostMessages();
 
     if (self._queued_navigation) |qn| {
         page.releaseArena(qn.arena);
@@ -1001,6 +1010,8 @@ pub const HeadersForRequestOpts = struct {
     /// `is_document_navigation` is true.
     prior_origin: ?[]const u8 = null,
     is_document_navigation: bool = false,
+    /// Browsing-context destination for document Fetch Metadata.
+    navigation_destination: HttpProfile.RequestContext.NavigationDestination = .top_level,
     /// Site policy may omit Sec-Fetch-User (e.g. in-session search redirects).
     omit_sec_fetch_user: bool = false,
     /// Site policy may rely on curl-impersonate default_headers only (cold first hop).
@@ -1074,6 +1085,7 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
         .frame_origin = self.origin,
         .prior_origin = opts.prior_origin,
         .is_document_navigation = opts.is_document_navigation,
+        .navigation_destination = opts.navigation_destination,
         .origin = origin,
     };
 
@@ -1128,9 +1140,10 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
                 .brands = profile.http.brands,
                 .color_scheme = profile.http.prefers_color_scheme,
                 .omit_sec_fetch_user = opts.omit_sec_fetch_user,
-                // Referer on wire for in-search hops; cold omnibox keeps Sec-Fetch-Site:none
-                // via prior_origin null / first-hop policy (no synthetic referer here).
-                .referer_url = if (opts.omit_sec_fetch_user) opts.referer else null,
+                // Referer is navigation provenance, independent of whether the
+                // navigation has transient user activation. In particular,
+                // child browsing-context navigations carry their embedder URL.
+                .referer_url = opts.referer,
             };
             try HttpProfile.appendChromeHeaders(headers, hdr_alloc, identity, &static, ctx, chrome_opts);
             try self._session.browser.app.config.profile_runtime.appendHeaderPlugins(
@@ -1148,7 +1161,7 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
                 .brands = profile.http.brands,
                 .color_scheme = profile.http.prefers_color_scheme,
                 .omit_sec_fetch_user = opts.omit_sec_fetch_user,
-                .referer_url = if (opts.omit_sec_fetch_user) opts.referer else null,
+                .referer_url = opts.referer,
             };
             try HttpProfile.appendChromeHeaders(headers, hdr_alloc, identity, &static, ctx, chrome_opts);
             const referer_hdr = try refererHeaderForRequest(self, opts);
@@ -1357,32 +1370,15 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
     try self.swapActiveDocument();
     session.cookie_jar.beginDocumentNavigation();
     self._load_state = .parsing;
-    self._knitsail_lifecycle_pumped = false;
-    self._knitsail_parser_script_seen = false;
-    self._knitsail_lifecycle_fallback_scheduled = false;
-    self._defer_knitsail_post_parse = false;
     self._static_scripts_done_scheduled = false;
     self._pending_post_parse_lifecycle = false;
     self.terminateAllWorkers();
     self.bumpRealmNavigationEpoch();
     self._nav_task_owner = self.js.execution.captureTaskOwner();
     self.window._performance.recordNavigationStart();
-    self.window._performance.setIntegerNowMs(std.mem.indexOf(u8, request_url, "accounts.google.") != null);
     if (!self.loadedProfile().isFirefox()) {
         const nav_start = self.window._performance._timing.navigation_start;
         self.window._chrome.recordNavigationStart(nav_start);
-    }
-    if (isGoogleKnitsailHost(request_url) or std.mem.indexOf(u8, request_url, "accounts.google.") != null) {
-        self.window._google.ensureBootstrapDefaults(self);
-    }
-    if (isGoogleKnitsailHost(request_url)) {
-        self.scheduleKnitsailLifecycleFallback() catch |err| {
-            log.warn(.frame, "knitsail lifecycle fallback", .{ .err = err, .url = request_url });
-        };
-    }
-    if (GoogleSigninDebug.isAccountsGoogleUrl(request_url)) {
-        injectGoogleSigninClosureBusLog(self, request_url);
-        injectGoogleAccountsBioShim(self, request_url);
     }
     @import("../../runtime/profile/AutomationScrub.zig").applyOnce(self);
 
@@ -1560,6 +1556,7 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
             .referer = nav_referer,
             .prior_origin = prior_origin,
             .is_document_navigation = true,
+            .navigation_destination = if (self.parent == null) .top_level else .iframe,
             .omit_sec_fetch_user = nav_plan.omit_sec_fetch_user,
             .curl_defaults_only = nav_plan.curl_defaults_only,
         });
@@ -2039,8 +2036,6 @@ pub fn runPostParseScriptLifecycle(self: *Frame) void {
     self._script_manager.staticScriptsDone();
     self.pollCdpDuringLongWork();
     if (!navDeliverable(self)) return;
-    // Knitsail still needs post-parse microtask/sg_ss pump on this path.
-    if (isGoogleKnitsailHost(self.url)) self.pumpPostParseTasks();
     self.scheduleDeferredSyncIframeFlush() catch |err| {
         log.warn(.frame, "defer sync iframe flush", .{ .err = err, .url = self.url });
     };
@@ -2173,13 +2168,6 @@ const DeferDocumentParseCallback = struct {
 
         self.frame.pollCdpDuringLongWork();
         if (!navDeliverable(self.frame)) return null;
-        // Knitsail /search: pump DCL (pageT freeze) before staticScriptsDone.
-        // evaluate() can stall on incomplete defer heads; waiting for it blocked
-        // pumpPostParseTasks and CDP never saw Page.domContentEventFired.
-        const knitsail = isGoogleKnitsailHost(self.frame.url);
-        if (knitsail) {
-            self.frame.pumpPostParseTasks();
-        }
         self.frame.pollCdpDuringLongWork();
         if (!navDeliverable(self.frame)) return null;
         self.frame.runPostParseScriptLifecycle();
@@ -2530,157 +2518,21 @@ fn pendingLoadCompleted(self: *Frame) void {
     }
 }
 
-/// Knitsail reads chrome.csi().pageT during sg_ss encode; Chroma short-path ≈ 185–195ms.
-/// Use Blink-like float artifacts (integer ms is a bot signal).
-const knitsail_post_parse_target_page_t_ms: f64 = 192.59999999403954;
-/// Stagger deferred setTimeout probes (t20/t80/t200) before sg_ss microtasks.
-const knitsail_timer_milestones_ms = [_]f64{ 22.600000001490116, 82.39999999850988, 165.10000000149012 };
-
-pub fn isGoogleKnitsailHost(url: []const u8) bool {
-    if (std.mem.indexOf(u8, url, "google.") == null) return false;
-    // Knitsail sg_ss bootstrap is Google Search SERP only — not homepage, not Identity.
-    if (std.mem.indexOf(u8, url, "/search") == null) return false;
-    // Accounts Identity reads performance.now() as int32 ms — frozen 192.599… rejects.
-    if (std.mem.indexOf(u8, url, "accounts.google.") != null) return false;
-    if (std.mem.indexOf(u8, url, "myaccount.google.") != null) return false;
-    return true;
-}
-
-pub fn holdsKnitsailMicrotasks(self: *const Frame) bool {
-    return self._defer_knitsail_post_parse;
-}
-
-/// Parser-inserted script on a knitsail host (bootstrap setTimeout probes).
-pub fn noteKnitsailParserScript(self: *Frame) void {
-    if (!isGoogleKnitsailHost(self.url)) return;
-    self._knitsail_parser_script_seen = true;
-}
-
-/// SerpBase / Knitsail VM reads pageT (~192ms), readyState, timing during bootstrap.
-/// Fire DCL during HTML parse — do not wait for full 91KB parse + defer drain.
-pub fn tryPumpKnitsailDocumentLifecycle(self: *Frame) void {
-    if (self._knitsail_lifecycle_pumped) return;
-    if (!isGoogleKnitsailHost(self.url)) return;
-    if (self._load_state != .parsing) return;
-    if (!self._knitsail_parser_script_seen) return;
-
-    var ls: JS.Local.Scope = undefined;
-    self.js.localScope(&ls);
-    defer ls.deinit();
-    self.pumpKnitsailDocumentLifecycleWithScope(&ls);
-}
-
-fn pumpKnitsailDocumentLifecycleWithScope(self: *Frame, ls: *JS.Local.Scope) void {
-    self._knitsail_lifecycle_pumped = true;
-    // Hold sg_ss microtasks until post-parse pump; timer milestones use scheduler.runOne.
-    self._defer_knitsail_post_parse = true;
-    injectGoogleKnitsailBootstrapGlobals(self, ls);
-    pumpKnitsailTimerMilestones(self);
-    self.window._performance.freezeNow(knitsail_post_parse_target_page_t_ms);
-    self.documentIsLoaded();
-}
-
-fn scheduleKnitsailLifecycleFallback(self: *Frame) !void {
-    if (self._knitsail_lifecycle_fallback_scheduled) return;
-    self._knitsail_lifecycle_fallback_scheduled = true;
-    const callback = try self.arena.create(KnitsailLifecycleFallbackCallback);
-    callback.* = .{ .frame = self };
-    try self.js.scheduler.add(callback, KnitsailLifecycleFallbackCallback.run, 250, .{
-        .name = "Frame.knitsailLifecycleFallback",
-        .low_priority = false,
-    });
-}
-
-const KnitsailLifecycleFallbackCallback = struct {
-    frame: *Frame,
-
-    fn run(ctx: *anyopaque) !?u32 {
-        const self: *KnitsailLifecycleFallbackCallback = @ptrCast(@alignCast(ctx));
-        if (!navDeliverable(self.frame)) return null;
-        self.frame._knitsail_parser_script_seen = true;
-        self.frame.tryPumpKnitsailDocumentLifecycle();
-        return null;
-    }
-};
-
 /// Run timer/macrotask work deferred while the HTML parser was active.
 pub fn pumpPostParseTasks(self: *Frame) void {
     self.pumpPostParseTasksNow();
 }
 
-fn pumpKnitsailTimerMilestones(self: *Frame) void {
-    const perf = &self.window._performance;
-    for (knitsail_timer_milestones_ms) |ms| {
-        perf.freezeNow(ms);
-        _ = self.js.scheduler.runOne() catch |err| {
-            log.warn(.frame, "knitsail timer milestone", .{ .err = err, .ms = ms });
-        };
-    }
-}
-
-fn injectGoogleSigninClosureBusLog(self: *Frame, request_url: []const u8) void {
-    if (!GoogleSigninDebug.closureBusLogEnabled()) return;
-    if (!GoogleSigninDebug.isAccountsGoogleUrl(request_url)) return;
-    var ls: JS.Local.Scope = undefined;
-    self.js.localScope(&ls);
-    defer ls.deinit();
-    _ = ls.local.eval(GoogleSigninDebug.closure_bus_script, "google-signin-closure-bus") catch |err| {
-        log.warn(.frame, "google signin closure bus", .{ .err = err, .url = self.url });
-    };
-}
-
-fn injectGoogleAccountsBioShim(self: *Frame, request_url: []const u8) void {
-    if (!GoogleSigninDebug.bioShimEnabled()) return;
-    if (!GoogleSigninDebug.isAccountsGoogleUrl(request_url)) return;
-    var ls: JS.Local.Scope = undefined;
-    self.js.localScope(&ls);
-    defer ls.deinit();
-    _ = ls.local.eval(GoogleSigninDebug.bio_shim_script, "google-accounts-bio-shim") catch |err| {
-        log.warn(.frame, "google accounts bio shim", .{ .err = err, .url = self.url });
-    };
-}
-
-const google_knitsail_bootstrap_globals_script =
-    \\(function(){try{var g=globalThis.google;if(!g||typeof g!=='object'){g={};try{Object.defineProperty(globalThis,'google',{value:g,writable:true,configurable:true,enumerable:true});}catch(e){globalThis.google=g;}}if(!g.c)g.c={cap:0};if(g.sn==null||g.sn==='')g.sn='web';if(typeof g.tick!=='function'){g.tick=function(p,m,ms){try{if(ms==null&&globalThis.performance)ms=globalThis.performance.now();}catch(e){}};}var t=globalThis.performance&&globalThis.performance.timing;if(t){var td=globalThis.td||{};if(t.navigationStart)td.ns=t.navigationStart;if(t.responseStart)td.rs=t.responseStart;if(t.domLoading&&!td.qs)td.qs=t.domLoading;if(t.domComplete&&!td.fs)td.fs=t.domComplete;globalThis.td=td;}var m=/(?:\\?|&)sei=([^&]+)/.exec(globalThis.location.search);if(!m){var a=document.querySelector('noscript a[href*="sei="]');if(a)m=a.href.match(/sei=([^&]+)/);}if(m&&!g.kEI)g.kEI=decodeURIComponent(m[1]);}catch(e){}})();
-;
-
-fn injectGoogleKnitsailBootstrapGlobals(self: *Frame, ls: *JS.Local.Scope) void {
-    if (!isGoogleKnitsailHost(self.url)) return;
-    _ = ls.local.eval(google_knitsail_bootstrap_globals_script, "google-bootstrap-globals") catch |err| {
-        log.warn(.frame, "google bootstrap globals", .{ .err = err, .url = self.url });
-    };
-}
-
 fn pumpPostParseTasksNow(self: *Frame) void {
-    const knitsail = isGoogleKnitsailHost(self.url);
     var ls: JS.Local.Scope = undefined;
     self.js.localScope(&ls);
     defer ls.deinit();
-
-    if (knitsail) {
-        if (!self._knitsail_lifecycle_pumped) {
-            self._knitsail_parser_script_seen = true;
-            self.pumpKnitsailDocumentLifecycleWithScope(&ls);
-        }
-        self._defer_knitsail_post_parse = false;
-    } else if (self._defer_knitsail_post_parse) {
-        self._defer_knitsail_post_parse = false;
-    }
-
-    if (GoogleSigninDebug.isAccountsGoogleUrl(self.url)) {
-        injectGoogleSigninClosureBusLog(self, self.url);
-        injectGoogleAccountsBioShim(self, self.url);
-    }
 
     ls.local.ctx.env.runMicrotasks(.after_evaluate);
     ls.local.runMacrotasks();
     _ = self.js.scheduler.run() catch |err| {
         log.warn(.frame, "post-parse scheduler", .{ .err = err });
     };
-
-    if (knitsail) {
-        self._script_manager.notifyScriptsCompletedIfNeeded();
-    }
 }
 
 pub fn isDocumentParsing(self: *const Frame) bool {
@@ -2704,8 +2556,7 @@ pub fn documentIsComplete(self: *Frame) void {
 
     // documentIsComplete could be called directly, without first calling
     // documentIsLoaded, if there were _only_ async scripts.
-    // Knitsail /search: pumpPostParseTasks owns DCL (after pageT freeze).
-    if (self._load_state == .parsing and !isGoogleKnitsailHost(self.url)) {
+    if (self._load_state == .parsing) {
         self.documentIsLoaded();
     }
 
@@ -2848,6 +2699,7 @@ fn refreshDocumentRedirectRequest(
         .referer = nav_plan.referer,
         .prior_origin = nav_plan.prior_origin,
         .is_document_navigation = true,
+        .navigation_destination = if (live_frame.parent == null) .top_level else .iframe,
         .omit_sec_fetch_user = nav_plan.omit_sec_fetch_user,
         .curl_defaults_only = nav_plan.curl_defaults_only,
     });
@@ -2914,7 +2766,6 @@ fn frameHeaderDoneCallback(response: HttpClient.Response) !bool {
             .content_type = response.contentType(),
         });
     }
-
     if (comptime IS_DEBUG) {
         log.debug(.frame, "navigate header", .{
             .url = self.url,
@@ -3301,8 +3152,6 @@ fn frameDoneCallback(ctx: *anyopaque) !void {
             self.drainQueuedNavigationsAfterParse();
             self._parse_state = .{ .complete = {} };
 
-            const knitsail = isGoogleKnitsailHost(self.url);
-            if (knitsail) self.pumpPostParseTasks();
             // staticScriptsDone runs from HttpClient.leaveTransferCallback once
             // curl unwinds — evaluate() inside the callback deadlocks defer heads.
             self._pending_post_parse_lifecycle = true;
@@ -3367,19 +3216,48 @@ fn frameDoneCallback(ctx: *anyopaque) !void {
             self.documentIsComplete();
         },
         .err => |err| {
-            // Generate a pseudo HTML page indicating the failure.
-            const html = try std.mem.concat(parse_arena, u8, &.{
-                "<html><head><meta charset=\"utf-8\"></head><body><h1>Navigation failed</h1><p>Reason: ",
-                @errorName(err),
-                "</p></body></html>",
-            });
-
-            parser.parse(html);
+            // A network error is not an HTTP response body. Browsers create an
+            // internal error Document for it; feeding synthetic markup back
+            // through the response parser can reuse a partially initialized
+            // TreeSink and make html5ever ask for element data on the Document
+            // handle. Construct the internal document directly instead.
+            try self.buildNavigationErrorDocument(err);
             self._parse_state = .complete;
             self.documentIsComplete();
         },
         else => unreachable,
     }
+}
+
+fn buildNavigationErrorDocument(self: *Frame, err: anyerror) !void {
+    self.clearDocumentChildren();
+
+    const html = try self.createElementNS(.html, "html", null);
+    const head = try self.createElementNS(.html, "head", null);
+    const body = try self.createElementNS(.html, "body", null);
+    const heading = try self.createElementNS(.html, "h1", null);
+    const reason = try self.createElementNS(.html, "p", null);
+
+    try self.appendInternalDocumentNode(self.document.asNode(), html);
+    try self.appendInternalDocumentNode(html, head);
+    try self.appendInternalDocumentNode(html, body);
+    try self.appendInternalDocumentNode(body, heading);
+    try self.appendInternalDocumentNode(heading, try self.createTextNode("Navigation failed"));
+    try self.appendInternalDocumentNode(body, reason);
+    try self.appendInternalDocumentNode(reason, try self.createTextNode("Reason: "));
+    try self.appendInternalDocumentNode(reason, try self.createTextNode(@errorName(err)));
+
+    try self.nodeComplete(head);
+    try self.nodeComplete(heading);
+    try self.nodeComplete(reason);
+    try self.nodeComplete(body);
+    try self.nodeComplete(html);
+}
+
+fn appendInternalDocumentNode(self: *Frame, parent: *Node, child: *Node) !void {
+    try self._insertNodeRelative(true, parent, child, .append, .{
+        .child_already_connected = false,
+    });
 }
 
 fn completePendingCdpNavigateFailure(self: *Frame, err: anyerror) void {
@@ -3720,9 +3598,10 @@ pub fn iframeAddedCallback(self: *Frame, iframe: *IFrame) !void {
 
     new_frame.navigate(url, .{
         .reason = .initialFrameNavigation,
-        // Iframe's initial src request carries the parent's URL as Referer.
-        // Parent frame outlives this navigate() call, so the slice is safe.
+        // An iframe navigation is initiated by its embedder. Preserve both the
+        // serialized referrer and origin used by Fetch Metadata.
         .referer = if (std.mem.startsWith(u8, self.url, "http")) self.url else null,
+        .prior_origin = self.origin,
     }) catch |err| {
         log.warn(.frame, "iframe navigate failure", .{ .url = url, .err = err });
         self._pending_loads -= 1;
@@ -3884,7 +3763,7 @@ pub fn domChanged(self: *Frame) void {
 
 const ElementIdMaps = struct { lookup: *std.StringHashMapUnmanaged(*Element), removed_ids: *std.StringHashMapUnmanaged(void) };
 
-fn getElementIdMap(frame: *Frame, node: *Node) ElementIdMaps {
+fn getElementIdMap(node: *Node) ?ElementIdMaps {
     // Walk up the tree checking for ShadowRoot and tracking the root
     var current = node;
     while (true) {
@@ -3902,14 +3781,10 @@ fn getElementIdMap(frame: *Frame, node: *Node) ElementIdMaps {
                     .removed_ids = &current._type.document._removed_ids,
                 };
             }
-            // Detached nodes should not have IDs registered
-            if (IS_DEBUG) {
-                std.debug.assert(false);
-            }
-            return .{
-                .lookup = &frame.document._elements_by_id,
-                .removed_ids = &frame.document._removed_ids,
-            };
+            // Detached subtrees have no tree-scope ID map. Their IDs become
+            // visible when the subtree is connected to a Document or
+            // ShadowRoot and the insertion walk registers its descendants.
+            return null;
         };
 
         current = parent;
@@ -3917,7 +3792,7 @@ fn getElementIdMap(frame: *Frame, node: *Node) ElementIdMaps {
 }
 
 pub fn addElementId(self: *Frame, parent: *Node, element: *Element, id: []const u8) !void {
-    var id_maps = self.getElementIdMap(parent);
+    var id_maps = getElementIdMap(parent) orelse return;
     const gop = try id_maps.lookup.getOrPut(self.arena, id);
     if (!gop.found_existing) {
         gop.value_ptr.* = element;
@@ -3933,7 +3808,8 @@ pub fn addElementId(self: *Frame, parent: *Node, element: *Element, id: []const 
 
 pub fn removeElementId(self: *Frame, element: *Element, id: []const u8) void {
     const node = element.asNode();
-    self.removeElementIdWithMaps(self.getElementIdMap(node), id);
+    const id_maps = getElementIdMap(node) orelse return;
+    self.removeElementIdWithMaps(id_maps, id);
 }
 
 pub fn removeElementIdWithMaps(self: *Frame, id_maps: ElementIdMaps, id: []const u8) void {
@@ -4065,8 +3941,15 @@ pub fn checkIntersections(self: *Frame) !void {
     }
 }
 
+pub fn hasPendingResourceLoadEvents(self: *const Frame) bool {
+    return self._to_load_1.items.len != 0 or self._to_load_2.items.len != 0;
+}
+
 pub fn queueLoad(self: *Frame, html: *Element.Html) !void {
-    try self._to_load.append(self.arena, html);
+    try self._to_load.append(self.arena, .{
+        .element = html,
+        .task_owner = self.js.execution.captureTaskOwner(),
+    });
     if (self._to_load.items.len == 1) {
         try self.js.scheduler.add(self, struct {
             fn cleanup(ctx: *anyopaque) !?u32 {
@@ -4094,9 +3977,15 @@ fn dispatchLoad(self: *Frame) !void {
     // cheap with zero listeners. has_dom_load_listener remains a useful signal
     // for page-level readiness heuristics elsewhere.
     _ = has_dom_load_listener;
-    for (to_process.items) |html_element| {
+    for (to_process.items) |queued| {
+        // Resource completion can race a same-Frame document replacement.
+        // Elements are document-arena owned, so validate the captured realm /
+        // document generation before dereferencing the queued pointer.
+        if (self.js.execution.isTaskOwnerStale(queued.task_owner)) {
+            continue;
+        }
         const event = try Event.initTrusted(comptime .wrap("load"), .{}, self._page);
-        try self._event_manager.dispatch(html_element.asEventTarget(), event);
+        try self._event_manager.dispatch(queued.element.asEventTarget(), event);
     }
 
     to_process.clearRetainingCapacity();
@@ -5492,7 +5381,7 @@ pub fn removeNode(self: *Frame, parent: *Node, child: *Node, opts: RemoveNodeOpt
     // grab this before we null the parent
     const was_connected = child.isConnected();
     // Capture the ID map before disconnecting, so we can remove IDs from the correct document
-    const id_maps = if (was_connected) self.getElementIdMap(child) else null;
+    const id_maps = if (was_connected) getElementIdMap(child) else null;
 
     child._parent = null;
     child._child_link = .{};
@@ -5548,7 +5437,7 @@ pub fn removeNode(self: *Frame, parent: *Node, child: *Node, opts: RemoveNodeOpt
     var tw = @import("../dom/TreeWalker.zig").Full.Elements.init(child, .{});
     while (tw.next()) |el| {
         if (el.getAttributeSafe(comptime .wrap("id"))) |id| {
-            self.removeElementIdWithMaps(id_maps.?, id);
+            if (id_maps) |maps| self.removeElementIdWithMaps(maps, id);
         }
 
         Element.Html.Custom.invokeDisconnectedCallbackOnElement(el, self);
@@ -5858,9 +5747,18 @@ pub fn attributeChange(self: *Frame, element: *Element, name: String, value: Str
 
 /// Queue a synthetic CSS animationend/transitionend for `element` after class change.
 pub fn scheduleCssAnimationEnd(self: *Frame, element: *Element) !void {
+    const owner = self.js.execution.captureTaskOwner();
+    if (self._css_anim_delivery_scheduled and
+        RealmLifecycleKernel.taskOwnerIsStale(self._css_anim_delivery_task_owner, owner))
+    {
+        // The pending keys belong to a replaced document arena.
+        self._css_anim_pending.clearRetainingCapacity();
+        self._css_anim_delivery_scheduled = false;
+    }
     try self._css_anim_pending.put(self.arena, element, {});
     if (self._css_anim_delivery_scheduled) return;
     self._css_anim_delivery_scheduled = true;
+    self._css_anim_delivery_task_owner = owner;
     // Small delay approximates animation-duration (Fluent uses ~0.25s); 0 still
     // runs after the current task so React has committed onAnimationEnd props.
     try self.js.scheduler.add(self, struct {
@@ -5874,20 +5772,34 @@ pub fn scheduleCssAnimationEnd(self: *Frame, element: *Element) !void {
 
 fn deliverCssAnimationEnds(self: *Frame) void {
     self._css_anim_delivery_scheduled = false;
-    if (self._realm_state != .active) {
+    if (self._realm_state != .active or
+        self.js.execution.isTaskOwnerStale(self._css_anim_delivery_task_owner))
+    {
         self._css_anim_pending.clearRetainingCapacity();
         return;
     }
 
+    const delivery_owner = self._css_anim_delivery_task_owner;
+    const session = self._session;
+    const delivery_arena = session.getArena(.tiny, "Frame.cssAnimationDelivery") catch {
+        self._css_anim_pending.clearRetainingCapacity();
+        return;
+    };
+    defer session.releaseArena(delivery_arena);
+
+    // Event dispatch can execute arbitrary JS and reset Frame.call_arena.
+    // Keep the queue snapshot in an independent arena for the whole delivery.
     var elements: std.ArrayList(*Element) = .empty;
-    defer elements.deinit(self.call_arena);
     var it = self._css_anim_pending.keyIterator();
     while (it.next()) |key_ptr| {
-        elements.append(self.call_arena, key_ptr.*) catch continue;
+        elements.append(delivery_arena, key_ptr.*) catch continue;
     }
     self._css_anim_pending.clearRetainingCapacity();
 
     for (elements.items) |element| {
+        // An earlier handler may navigate and invalidate the remaining
+        // document-owned Element pointers.
+        if (self.js.execution.isTaskOwnerStale(delivery_owner)) break;
         // Fire both: Fluent uses CSS animation; some SPAs use transitions.
         for ([_][]const u8{ "animationend", "transitionend" }) |typ| {
             const event = Event.initTrusted(String.wrap(typ), .{ .bubbles = true }, self._page) catch |err| {
@@ -7030,11 +6942,4 @@ test "Page: isSameOrigin" {
     try testing.expectEqual(false, frame.isSameOrigin(""));
     try testing.expectEqual(false, frame.isSameOrigin("not-a-url"));
     try testing.expectEqual(false, frame.isSameOrigin("//origin.com/foo"));
-}
-
-test "Frame.isGoogleKnitsailHost: search yes, homepage/accounts no" {
-    try testing.expect(isGoogleKnitsailHost("https://www.google.com/search?q=test"));
-    try testing.expect(!isGoogleKnitsailHost("https://accounts.google.com/v3/signin/identifier"));
-    try testing.expect(!isGoogleKnitsailHost("https://myaccount.google.com/"));
-    try testing.expect(!isGoogleKnitsailHost("https://www.google.com/"));
 }

@@ -3,8 +3,6 @@ const std = @import("std");
 const Frame = @import("../../core/browser/Frame.zig");
 const js = @import("../../core/js/js.zig");
 
-const batch_size = 128;
-
 pub fn installOnDocument(frame: *Frame, context: *js.Context) void {
     const profile = frame.loadedProfile();
     if (profile.mode != .antidetect) return;
@@ -15,22 +13,10 @@ pub fn installOnDocument(frame: *Frame, context: *js.Context) void {
     context.localScope(&ls);
     defer ls.deinit();
 
-    var i: usize = 0;
-    while (i < keys.len) {
-        const end = @min(i + batch_size, keys.len);
-        const script = buildBatchScript(frame.arena, keys[i..end]) catch return;
-        ls.local.eval(script, "html-element-keys-install") catch |err| {
-            const log = @import("../../support/log.zig");
-            log.warn(.js, "html element keys install", .{ .err = err, .batch = i / batch_size });
-            return;
-        };
-        i = end;
-    }
-
-    const prune_script = buildPruneScript(frame.arena, keys) catch return;
-    ls.local.eval(prune_script, "html-element-keys-prune") catch |err| {
+    const script = buildPrototypeScript(frame.arena, keys) catch return;
+    ls.local.eval(script, "html-element-keys-install") catch |err| {
         const log = @import("../../support/log.zig");
-        log.warn(.js, "html element keys prune", .{ .err = err });
+        log.warn(.js, "html element keys install", .{ .err = err });
     };
 }
 
@@ -54,22 +40,32 @@ fn keysToJson(allocator: std.mem.Allocator, keys: []const []const u8) ![]const u
     return json.toOwnedSlice(allocator);
 }
 
-fn buildPruneScript(allocator: std.mem.Allocator, keys: []const []const u8) ![]const u8 {
+/// `html_element_keys` is the captured `for..in` surface of an HTML element:
+/// enumerable properties grouped by their owning prototype. It is not an
+/// own-property list for `document.documentElement`.
+///
+/// Shape only descriptors already supplied by the DOM implementation. Missing
+/// Web APIs must be implemented by their owning interface rather than replaced
+/// with `undefined` data properties here. Re-defining with a spread descriptor
+/// preserves accessor identity, setters and writable/value semantics.
+fn buildPrototypeScript(allocator: std.mem.Allocator, keys: []const []const u8) ![]const u8 {
     const keys_json = try keysToJson(allocator, keys);
     return std.fmt.allocPrint(
         allocator,
-        \\(function(){{const allowed=new Set({s});let proto=Object.getPrototypeOf(document.documentElement);while(proto){{for(const k of Object.getOwnPropertyNames(proto)){{if(allowed.has(k))continue;const d=Object.getOwnPropertyDescriptor(proto,k);if(d&&d.enumerable){{try{{Object.defineProperty(proto,k,{{...d,enumerable:false}})}}catch(e){{}}}}}}proto=Object.getPrototypeOf(proto)}}}})();
+        \\(function(){{const keys={s};const allowed=new Set(keys);const el=document.documentElement;let proto=Object.getPrototypeOf(el);while(proto&&proto!==Object.prototype){{const descs=Object.getOwnPropertyDescriptors(proto);const own=Object.getOwnPropertyNames(proto);for(const k of own){{const d=descs[k];if(!d||!d.configurable)continue;const enumerable=allowed.has(k);if(d.enumerable!==enumerable){{Object.defineProperty(proto,k,{{...d,enumerable}});descs[k]={{...d,enumerable}};}}}}const ordered=[];for(const k of keys){{if(Object.prototype.hasOwnProperty.call(descs,k)&&descs[k].configurable)ordered.push(k);}}for(const k of ordered)delete proto[k];for(const k of ordered)Object.defineProperty(proto,k,descs[k]);proto=Object.getPrototypeOf(proto);}}}})();
     ,
         .{keys_json},
     );
 }
 
-fn buildBatchScript(allocator: std.mem.Allocator, keys: []const []const u8) ![]const u8 {
-    const keys_json = try keysToJson(allocator, keys);
-    return std.fmt.allocPrint(
-        allocator,
-        \\(function(){{const keys={s};const el=document.documentElement;for(const k of keys){{let v=undefined;try{{if(k in el)v=el[k]}}catch(e){{}}try{{delete el[k]}}catch(e){{}}Object.defineProperty(el,k,{{value:v,enumerable:true,configurable:true,writable:true}});}}}})();
-    ,
-        .{keys_json},
-    );
+test "html element key shaping preserves prototype ownership and descriptors" {
+    const testing = std.testing;
+    const script = try buildPrototypeScript(testing.allocator, &.{ "clientWidth", "click" });
+    defer testing.allocator.free(script);
+
+    try testing.expect(std.mem.indexOf(u8, script, "Object.getPrototypeOf(el)") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "Object.getOwnPropertyDescriptors(proto)") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "{...d,enumerable}") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "Object.defineProperty(el,") == null);
+    try testing.expect(std.mem.indexOf(u8, script, "value:undefined") == null);
 }

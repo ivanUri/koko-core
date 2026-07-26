@@ -124,7 +124,7 @@ const CommonOptions = .{
     .{ .name = "google_chrome_transport", .type = bool },
     .{ .name = "cookie", .type = ?[]const u8 },
     .{ .name = "cookie_jar", .type = ?[]const u8 },
-    .{ .name = "profile_snapshot", .type = ?[]const u8 },
+    .{ .name = "fingerprint_folder", .type = ?[]const u8 },
     .{ .name = "storage_engine", .type = ?Storage.EngineType },
     .{ .name = "storage_sqlite_path", .type = ?[:0]const u8 },
 };
@@ -211,10 +211,9 @@ const Commands = cli.Builder(.{
         .positional = .{ .name = "action", .type = ?[]const u8 },
         .options = .{
             .{ .name = "name", .type = ?[]const u8 },
-            .{ .name = "template", .type = ?[]const u8 },
+            .{ .name = "fingerprint", .type = ?[]const u8 },
             .{ .name = "from", .type = ?[]const u8 },
             .{ .name = "to", .type = ?[]const u8 },
-            .{ .name = "version", .type = u32, .default = 1 },
             .{ .name = "user_data_dir", .type = ?[]const u8 },
         },
     },
@@ -257,7 +256,7 @@ pub fn initInPlace(self: *Config, allocator: Allocator, exec_name: []const u8, m
         allocator,
         self.userDataDir(),
         ProfilePaths.default_profile_name,
-        self.profileSnapshot(),
+        self.fingerprintFolder(),
     );
     defer bootstrap_paths.deinit();
     try ProfileManager.ensureFirstRun(allocator, bootstrap_paths.user_data_dir);
@@ -274,7 +273,7 @@ pub fn initInPlace(self: *Config, allocator: Allocator, exec_name: []const u8, m
         allocator,
         self.userDataDir(),
         active_name,
-        self.profileSnapshot(),
+        self.fingerprintFolder(),
     );
     errdefer self.profile_paths.deinit();
     try self.profile_paths.ensureProfileReady();
@@ -376,9 +375,21 @@ pub fn httpConnectTimeout(self: *const Config) u31 {
 
 pub fn httpTimeout(self: *const Config) u31 {
     return switch (self.mode) {
-        inline .serve, .fetch, .mcp => |opts| opts.http_timeout orelse 5000,
+        // Browser subresource requests and Fetch have no implicit five-second
+        // total timeout. A non-zero value is an explicit host policy; APIs
+        // such as XMLHttpRequest.timeout still override it per request.
+        inline .serve, .fetch, .mcp => |opts| opts.http_timeout orelse 0,
         else => unreachable,
     };
+}
+
+test "browser HTTP total timeout is opt-in" {
+    var config: Config = undefined;
+    config.mode = .{ .fetch = .{} };
+    try std.testing.expectEqual(@as(u31, 0), config.httpTimeout());
+
+    config.mode.fetch.http_timeout = 12_345;
+    try std.testing.expectEqual(@as(u31, 12_345), config.httpTimeout());
 }
 
 pub fn httpMaxRedirects(_: *const Config) u8 {
@@ -547,10 +558,10 @@ pub fn cookieJarFile(self: *const Config, buf: []u8) ?[]const u8 {
     return self.profile_paths.cookiesPath(buf);
 }
 
-/// Self-contained fingerprint bundle dir or fingerprint.json path (`--profile-snapshot`).
-pub fn profileSnapshot(self: *const Config) ?[]const u8 {
+/// Self-contained fingerprint folder (`--fingerprint-folder`).
+pub fn fingerprintFolder(self: *const Config) ?[]const u8 {
     return switch (self.mode) {
-        inline .serve, .fetch, .mcp => |opts| opts.profile_snapshot,
+        inline .serve, .fetch, .mcp => |opts| opts.fingerprint_folder,
         else => null,
     };
 }
@@ -840,21 +851,20 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\Example: {0s} profile list
         \\
         \\  profile list
-        \\  profile create --name <id> [--template <template-id>]
+        \\  profile create --name <id> [--fingerprint <fingerprint-id>]
         \\  profile delete --name <id>
         \\  profile import-cookies [--name <id>] --from <cookies.json>
-        \\  profile publish --template <id[@version]>
         \\  profile export --name <id> [--to <bundle-dir>]
         \\  profile import --name <id> --from <bundle-dir>
         \\
-        \\--profile-snapshot
+        \\--fingerprint-folder
         \\                Self-contained fingerprint bundle dir (SaaS / offline profile).
         \\
         \\
         \\--browser-profile
         \\                Profile folder name inside user-data-dir (default: Default).
         \\                On first use, creates the folder with Preferences.json pointing at
-        \\                a fingerprint template (e.g. chrome-macos-sonoma).
+        \\                a fingerprint folder id (e.g. chrome-macos-sonoma).
         \\
         \\--browser-profile-pool
         \\                Comma-separated profile folder names; picks one at random when

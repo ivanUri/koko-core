@@ -10,7 +10,6 @@ const Frame = @import("../../browser/Frame.zig");
 const EventTarget = @import("../EventTarget.zig");
 const Event = @import("../Event.zig");
 const OfflineAudioCompletionEvent = @import("../event/OfflineAudioCompletionEvent.zig");
-const FingerprintSeed = @import("../../../runtime/profile/FingerprintSeed.zig");
 const AudioIntelligent = @import("../../../runtime/profile/AudioIntelligent.zig");
 
 pub fn registerTypes() []const type {
@@ -359,15 +358,6 @@ const AnalyserNode = struct {
                 value.* = @max(@as(f32, @floatCast(self._min_decibels)), @as(f32, @floatCast(20.0 * std.math.log10(sample))));
             }
         }
-        const target_sum: f64 = 164537.64796829224;
-        for (0..6) |_| {
-            var sum: f64 = 0;
-            for (values) |v| sum += @abs(@as(f64, @floatCast(v)));
-            if (@abs(sum - target_sum) < 1e-6) break;
-            if (sum <= 0) break;
-            const factor: f32 = @floatCast(target_sum / sum);
-            for (values) |*v| v.* *= factor;
-        }
     }
 
     pub fn getFloatTimeDomainData(self: *const AnalyserNode, arr: js.TypedArray(f32)) void {
@@ -394,15 +384,6 @@ const AnalyserNode = struct {
         }
         for (values, 0..) |*value, i| {
             value.* = source[i % source_len];
-        }
-        const target_sum: f64 = 502.5999283068122;
-        for (0..6) |_| {
-            var sum: f64 = 0;
-            for (values) |v| sum += @abs(@as(f64, @floatCast(v)));
-            if (@abs(sum - target_sum) < 1e-6) break;
-            if (sum <= 0) break;
-            const factor: f32 = @floatCast(target_sum / sum);
-            for (values) |*v| v.* *= factor;
         }
     }
 
@@ -571,7 +552,7 @@ const DynamicsCompressorNode = struct {
     _threshold: *AudioParam,
     _knee: *AudioParam,
     _ratio: *AudioParam,
-    _reduction: f64 = -20.538288116455078,
+    _reduction: f64 = 0,
     _render_data: ?*AudioRenderData = null,
 
     pub fn getAttack(self: *const DynamicsCompressorNode) *AudioParam {
@@ -598,25 +579,63 @@ const DynamicsCompressorNode = struct {
         return self._reduction;
     }
 
+    fn transferGainDb(level_db: f64, threshold: f64, knee: f64, ratio: f64) f64 {
+        const safe_ratio = @max(1.0, ratio);
+        if (knee <= 0) {
+            if (level_db <= threshold) return 0;
+            const output_db = threshold + (level_db - threshold) / safe_ratio;
+            return output_db - level_db;
+        }
+
+        const lower = threshold - knee / 2.0;
+        const upper = threshold + knee / 2.0;
+        if (level_db <= lower) return 0;
+        if (level_db >= upper) {
+            const output_db = threshold + (level_db - threshold) / safe_ratio;
+            return output_db - level_db;
+        }
+
+        // Web Audio's soft knee is a quadratic interpolation between the
+        // identity and compressed transfer curves.
+        const x = level_db - lower;
+        return (1.0 / safe_ratio - 1.0) * x * x / (2.0 * knee);
+    }
+
+    fn smoothingCoefficient(seconds: f64, sample_rate: f64) f64 {
+        if (seconds <= 0 or sample_rate <= 0) return 0;
+        return std.math.exp(-1.0 / (seconds * sample_rate));
+    }
+
     fn render(self: *DynamicsCompressorNode, output: *AudioRenderData, sample_rate: f64) void {
-        _ = sample_rate;
         self._node._state.probe.recordCompressorThreshold(self._threshold.getValue());
         log.info(.js, "DynamicsCompressorNode.render.begin", .{ .threshold = self._threshold.getValue(), .ratio = self._ratio.getValue(), .attack = self._attack.getValue(), .has_input = self._node._input != null });
         self._node.renderInput(output, self._node._state.sample_rate);
-        const threshold = @as(f32, @floatCast(@abs(self._threshold.getValue()) / 100.0));
-        const ratio = @as(f32, @floatCast(self._ratio.getValue() / 20.0));
-        const attack = @as(f32, @floatCast(self._attack.getValue()));
-        log.info(.js, "DynamicsCompressorNode.render.input_processed", .{ .threshold_raw = self._threshold.getValue(), .threshold_scaled = threshold, .ratio_raw = self._ratio.getValue(), .ratio_scaled = ratio });
+
+        const threshold = self._threshold.getValue();
+        const knee = self._knee.getValue();
+        const ratio = self._ratio.getValue();
+        const attack_coeff = smoothingCoefficient(self._attack.getValue(), sample_rate);
+        const release_coeff = smoothingCoefficient(self._release.getValue(), sample_rate);
+        var reduction_db: f64 = 0;
+
         for (output.left, output.right) |*left, *right| {
-            const left_abs = @abs(left.*);
-            const right_abs = @abs(right.*);
-            if (left_abs > threshold) {
-                left.* *= 1.0 - @min(@as(f32, 0.85), ratio * 0.25 + attack * 0.1);
-            }
-            if (right_abs > threshold) {
-                right.* *= 1.0 - @min(@as(f32, 0.85), ratio * 0.25 + attack * 0.1);
-            }
+            // DynamicsCompressorNode is linked across channels. Detect from
+            // the loudest channel and apply one gain to preserve stereo image.
+            const peak = @max(
+                @abs(@as(f64, @floatCast(left.*))),
+                @abs(@as(f64, @floatCast(right.*))),
+            );
+            const target_db = if (peak > 0)
+                transferGainDb(20.0 * std.math.log10(peak), threshold, knee, ratio)
+            else
+                0;
+            const coeff = if (target_db < reduction_db) attack_coeff else release_coeff;
+            reduction_db = coeff * reduction_db + (1.0 - coeff) * target_db;
+            const gain: f32 = @floatCast(std.math.pow(f64, 10.0, reduction_db / 20.0));
+            left.* *= gain;
+            right.* *= gain;
         }
+        self._reduction = reduction_db;
         self._render_data = output;
         log.info(.js, "DynamicsCompressorNode.render.done", .{ .first_sample = output.left[0], .reduction = self._reduction });
     }
@@ -1003,75 +1022,6 @@ pub const AudioBuffer = struct {
     };
 };
 
-fn leadingUniqueSum(channel: []const f32, count: usize) f32 {
-    var unique: [100]f32 = undefined;
-    var unique_count: usize = 0;
-    for (channel[0..count]) |sample| {
-        var exists = false;
-        for (unique[0..unique_count]) |u| {
-            if (sample == u) {
-                exists = true;
-                break;
-            }
-        }
-        if (!exists and unique_count < unique.len) {
-            unique[unique_count] = sample;
-            unique_count += 1;
-        }
-    }
-    var sum: f32 = 0;
-    for (unique[0..unique_count]) |v| sum += v;
-    return sum;
-}
-
-fn renderDataIsSilent(render_data: *const AudioRenderData) bool {
-    for (render_data.left) |sample| {
-        if (sample != 0) return false;
-    }
-    return true;
-}
-
-fn applySessionAudioSeed(channel: []f32, count: usize, seed: u64) void {
-    if (count == 0) return;
-    channel[0] += FingerprintSeed.audioOffset(seed, 0);
-    if (count > 1) channel[1] += FingerprintSeed.audioOffset(seed, 1);
-}
-
-fn normalizeLeadingUniqueSum(channel: []f32, count: usize) void {
-    if (count == 0) return;
-
-    var unique: [100]f64 = undefined;
-    var unique_count: usize = 0;
-    for (channel[0..count]) |sample| {
-        const s = @as(f64, @floatCast(sample));
-        var exists = false;
-        for (unique[0..unique_count]) |u| {
-            if (s == u) {
-                exists = true;
-                break;
-            }
-        }
-        if (!exists and unique_count < unique.len) {
-            unique[unique_count] = s;
-            unique_count += 1;
-        }
-    }
-    var sum: f64 = 0;
-    for (unique[0..unique_count]) |v| sum += v;
-    if (sum == 0) return;
-
-    const pivot = @as(f32, @floatCast(unique[0]));
-    const adjusted = @as(f32, @floatCast(unique[0] - sum));
-    for (channel[0..count]) |*sample| {
-        if (sample.* == pivot) sample.* = adjusted;
-    }
-
-    // CreepJS uses `if (noise)` — any non-zero float (even 1e-7) is a lie.
-    if (leadingUniqueSum(channel, count) != 0) {
-        @memset(channel[0..count], 0);
-    }
-}
-
 fn typedArrayData(comptime T: type, handle: anytype) ?[]T {
     const v8 = js.v8;
     const view: *const v8.ArrayBufferView = @ptrCast(handle);
@@ -1217,61 +1167,9 @@ pub const AudioContext = struct {
         log.info(.js, "AudioContext.renderOffline.buffer_created", .{ .channels = channels, .length = length, .sample_rate = self._state.sample_rate });
 
         const buf_len: usize = @as(usize, length);
-        const tail_start: usize = if (length > 4500) 4500 else buf_len;
-        const target_sum: f64 = 124.04347527516074;
-
-        for (render_data.left[0..tail_start], buffer.channelSlice(0)[0..tail_start]) |sample, *out| {
-            out.* = sample;
-        }
+        @memcpy(buffer.channelSlice(0)[0..buf_len], render_data.left[0..buf_len]);
         if (channels > 1) {
-            for (render_data.right[0..tail_start], buffer.channelSlice(1)[0..tail_start]) |sample, *out| {
-                out.* = sample;
-            }
-        }
-
-        if (tail_start < buf_len) {
-            var tail_sum: f64 = 0;
-            for (render_data.left[tail_start..buf_len]) |sample| {
-                tail_sum += @abs(@as(f64, @floatCast(sample)));
-            }
-            const scale: f32 = if (tail_sum > 0) @floatCast(target_sum / tail_sum) else 1.0;
-            for (render_data.left[tail_start..buf_len], buffer.channelSlice(0)[tail_start..buf_len]) |sample, *out| {
-                out.* = sample * scale;
-            }
-            if (channels > 1) {
-                for (render_data.right[tail_start..buf_len], buffer.channelSlice(1)[tail_start..buf_len]) |sample, *out| {
-                    out.* = sample * scale;
-                }
-            }
-            for (0..12) |_| {
-                var actual_tail_sum: f64 = 0;
-                for (buffer.channelSlice(0)[tail_start..buf_len]) |sample| {
-                    actual_tail_sum += @abs(@as(f64, @floatCast(sample)));
-                }
-                const err = target_sum - actual_tail_sum;
-                if (@abs(err) < 1e-10) break;
-                if (actual_tail_sum <= 0) break;
-                const correction: f32 = @floatCast(target_sum / actual_tail_sum);
-                for (buffer.channelSlice(0)[tail_start..buf_len]) |*sample| {
-                    sample.* *= correction;
-                }
-            }
-            if (buf_len > tail_start) {
-                var residual: f64 = target_sum;
-                for (buffer.channelSlice(0)[tail_start..buf_len]) |sample| {
-                    residual -= @abs(@as(f64, @floatCast(sample)));
-                }
-                if (residual != 0) {
-                    const last = buf_len - 1;
-                    buffer.channelSlice(0)[last] += @floatCast(if (buffer.channelSlice(0)[last] >= 0) residual else -residual);
-                }
-            }
-        }
-
-        // CreepJS hasFakeAudio: disconnected OfflineAudioContext must stay all zeros.
-        if (!renderDataIsSilent(render_data)) {
-            applySessionAudioSeed(buffer.channelSlice(0), @min(buf_len, 100), frame._session.fingerprint_seed);
-            normalizeLeadingUniqueSum(buffer.channelSlice(0), @min(buf_len, 100));
+            @memcpy(buffer.channelSlice(1)[0..buf_len], render_data.right[0..buf_len]);
         }
 
         const buf_sample_100 = if (length > 100) buffer.channelSlice(0)[100] else 0;
@@ -1634,3 +1532,30 @@ pub const OfflineAudioContext = struct {
         pub const startRendering = bridge.function(OfflineAudioContext.startRendering, .{});
     };
 };
+
+test "DynamicsCompressor transfer curve follows threshold ratio and soft knee" {
+    const expectApproxEqAbs = std.testing.expectApproxEqAbs;
+
+    try expectApproxEqAbs(@as(f64, 0), DynamicsCompressorNode.transferGainDb(-60, -50, 0, 12), 1e-12);
+    try expectApproxEqAbs(
+        @as(f64, -45.833333333333336),
+        DynamicsCompressorNode.transferGainDb(0, -50, 0, 12),
+        1e-12,
+    );
+
+    const lower = DynamicsCompressorNode.transferGainDb(-70, -50, 40, 12);
+    const upper = DynamicsCompressorNode.transferGainDb(-30, -50, 40, 12);
+    try expectApproxEqAbs(@as(f64, 0), lower, 1e-12);
+    try expectApproxEqAbs(@as(f64, -18.333333333333332), upper, 1e-12);
+}
+
+test "DynamicsCompressor time constants are sample-rate based" {
+    try std.testing.expectEqual(
+        @as(f64, 0),
+        DynamicsCompressorNode.smoothingCoefficient(0, 44100),
+    );
+    const fast = DynamicsCompressorNode.smoothingCoefficient(0.003, 44100);
+    const slow = DynamicsCompressorNode.smoothingCoefficient(0.25, 44100);
+    try std.testing.expect(fast < slow);
+    try std.testing.expect(fast > 0 and slow < 1);
+}

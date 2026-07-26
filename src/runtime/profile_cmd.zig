@@ -2,17 +2,15 @@ const std = @import("std");
 const BrowserRoot = @import("profile/BrowserRoot.zig");
 const ProfileManager = @import("profile/ProfileManager.zig");
 const ProfilePaths = @import("profile/ProfilePaths.zig");
-const ProfileSnapshot = @import("profile/ProfileSnapshot.zig");
 
 const Allocator = std.mem.Allocator;
 
 pub const Options = struct {
     action: ?[]const u8 = null,
     name: ?[]const u8 = null,
-    template: ?[]const u8 = null,
+    fingerprint: ?[]const u8 = null,
     from: ?[]const u8 = null,
     to: ?[]const u8 = null,
-    version: u32 = ProfileSnapshot.default_template_version,
     user_data_dir: ?[]const u8 = null,
 };
 
@@ -38,15 +36,9 @@ pub fn run(allocator: Allocator, opts: Options) !void {
             std.debug.print("error: --name required for profile create\n", .{});
             return error.MissingProfileName;
         };
-        const template_raw = opts.template orelse ProfileManager.defaultTemplateForName(name);
-        const ref = try ProfileSnapshot.parseTemplateRef(template_raw, allocator);
-        defer allocator.free(ref.id);
-        const version = if (opts.version > 0 and std.mem.indexOfScalar(u8, template_raw, '@') == null)
-            opts.version
-        else
-            ref.version;
-        try ProfileManager.createProfile(allocator, user_data_dir, name, ref.id, version);
-        std.debug.print("created profile '{s}' (template: {s}@{d})\n", .{ name, ref.id, version });
+        const fingerprint = opts.fingerprint orelse ProfileManager.defaultFingerprintForName(name);
+        try ProfileManager.createProfile(allocator, user_data_dir, name, fingerprint);
+        std.debug.print("created profile '{s}' (fingerprint: {s})\n", .{ name, fingerprint });
         return;
     }
     if (std.mem.eql(u8, action, "delete")) {
@@ -102,26 +94,6 @@ pub fn run(allocator: Allocator, opts: Options) !void {
         }, null);
         return;
     }
-    if (std.mem.eql(u8, action, "publish")) {
-        const template_raw = opts.template orelse {
-            std.debug.print("error: --template required for profile publish\n", .{});
-            return error.MissingTemplate;
-        };
-        const ref = try ProfileSnapshot.parseTemplateRef(template_raw, allocator);
-        defer allocator.free(ref.id);
-        const version = if (opts.version > 0) opts.version else ref.version;
-        var ver_buf: [16]u8 = undefined;
-        const ver_str = try std.fmt.bufPrint(&ver_buf, "{d}", .{version});
-        try runBundleScript(allocator, &.{
-            "publish",
-            "--template",
-            ref.id,
-            "--version",
-            ver_str,
-        }, null);
-        return;
-    }
-
     std.debug.print("error: unknown profile action '{s}'\n", .{action});
     try printUsage();
     return error.UnknownProfileAction;
@@ -169,10 +141,10 @@ fn runList(allocator: Allocator, user_data_dir: []const u8) !void {
 
     std.debug.print("user-data-dir: {s}\n", .{user_data_dir});
     std.debug.print("last-created: {s}\n\n", .{state.last_used});
-    std.debug.print("{s:<24} {s:<32} {s}\n", .{ "NAME", "TEMPLATE", "PATH" });
+    std.debug.print("{s:<24} {s:<32} {s}\n", .{ "NAME", "FINGERPRINT", "PATH" });
     for (entries) |e| {
         const marker = if (std.mem.eql(u8, e.name, state.last_used)) " *" else "";
-        std.debug.print("{s:<24} {s:<32} {s}{s}\n", .{ e.name, e.template, e.profile_dir, marker });
+        std.debug.print("{s:<24} {s:<32} {s}{s}\n", .{ e.name, e.fingerprint, e.profile_dir, marker });
     }
 }
 
@@ -185,10 +157,9 @@ fn printUsage() !void {
     try stdout.interface.writeAll(
         \\profile commands:
         \\  velora profile list
-        \\  velora profile create --name <id> [--template <id[@version]>] [--version N]
+        \\  velora profile create --name <id> [--fingerprint <id>]
         \\  velora profile delete --name <id>
         \\  velora profile import-cookies [--name <id>] --from <cookies.json>
-        \\  velora profile publish --template <id[@version]> [--version N]
         \\  velora profile export --name <id> [--to <bundle-dir>]
         \\  velora profile import --name <id> --from <bundle-dir>
         \\

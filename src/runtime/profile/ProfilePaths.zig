@@ -12,13 +12,9 @@ pub const local_storage_dirname = "Local Storage";
 pub const cache_dirname = "Cache";
 
 pub const Preferences = struct {
-    version: u32 = 1,
+    version: u32 = 3,
     name: []const u8,
-    template: []const u8,
-    /// Pinned catalog version for SaaS template registry (default 1).
-    template_version: u32 = 1,
-    /// Relative subdir under profile_dir containing fingerprint.json (e.g. "snapshot").
-    snapshot: []const u8 = "",
+    fingerprint: []const u8,
     created: []const u8 = "",
 };
 
@@ -27,14 +23,14 @@ pub const ProfilePaths = struct {
     user_data_dir: []const u8,
     profile_name: []const u8,
     profile_dir: []const u8,
-    /// CLI `--profile-snapshot` override (absolute path to fingerprint.json or bundle snapshot dir).
-    snapshot_cli: ?[]const u8 = null,
+    /// CLI override pointing to a self-contained fingerprint folder.
+    fingerprint_override: ?[]const u8 = null,
 
     pub fn init(
         allocator: Allocator,
         user_data_dir_cli: ?[]const u8,
         profile_name_cli: ?[]const u8,
-        snapshot_cli: ?[]const u8,
+        fingerprint_override: ?[]const u8,
     ) !ProfilePaths {
         const user_data_dir = if (user_data_dir_cli) |p|
             try allocator.dupe(u8, p)
@@ -48,19 +44,19 @@ pub const ProfilePaths = struct {
 
         const profile_dir = try std.fs.path.join(allocator, &.{ user_data_dir, profile_name });
 
-        const snapshot = if (snapshot_cli) |s| try allocator.dupe(u8, s) else null;
+        const override = if (fingerprint_override) |s| try allocator.dupe(u8, s) else null;
 
         return .{
             .allocator = allocator,
             .user_data_dir = user_data_dir,
             .profile_name = profile_name,
             .profile_dir = profile_dir,
-            .snapshot_cli = snapshot,
+            .fingerprint_override = override,
         };
     }
 
     pub fn deinit(self: *ProfilePaths) void {
-        if (self.snapshot_cli) |s| self.allocator.free(s);
+        if (self.fingerprint_override) |s| self.allocator.free(s);
         self.allocator.free(self.profile_dir);
         self.allocator.free(self.profile_name);
         self.allocator.free(self.user_data_dir);
@@ -97,10 +93,10 @@ pub const ProfilePaths = struct {
 
     /// Ensure user-data-dir and profile folder exist; create Preferences.json when missing.
     pub fn ensureProfileReady(self: *const ProfilePaths) !void {
-        try self.ensureProfileReadyWithTemplate(ProfileManager.defaultTemplateForName(self.profile_name));
+        try self.ensureProfileReadyWithFingerprint(ProfileManager.defaultFingerprintForName(self.profile_name));
     }
 
-    pub fn ensureProfileReadyWithTemplate(self: *const ProfilePaths, template: []const u8) !void {
+    pub fn ensureProfileReadyWithFingerprint(self: *const ProfilePaths, fingerprint: []const u8) !void {
         try std.fs.cwd().makePath(self.user_data_dir);
         try std.fs.cwd().makePath(self.profile_dir);
 
@@ -111,11 +107,11 @@ pub const ProfilePaths = struct {
 
         try writePreferences(prefs_path, .{
             .name = self.profile_name,
-            .template = template,
+            .fingerprint = fingerprint,
         });
         log.info(.app, "profile_paths.created", .{
             .profile_dir = self.profile_dir,
-            .template = template,
+            .fingerprint = fingerprint,
         });
     }
 
@@ -127,7 +123,7 @@ pub const ProfilePaths = struct {
             error.FileNotFound => {
                 return .{
                     .name = self.profile_name,
-                    .template = self.profile_name,
+                    .fingerprint = self.profile_name,
                 };
             },
             else => return err,
@@ -136,21 +132,14 @@ pub const ProfilePaths = struct {
         const parsed = try std.json.parseFromSliceLeaky(Preferences, arena, bytes, .{
             .ignore_unknown_fields = true,
         });
-        const template = if (parsed.template.len > 0) parsed.template else self.profile_name;
+        if (parsed.version != 3) return error.UnsupportedProfilePreferencesVersion;
+        if (parsed.fingerprint.len == 0) return error.MissingFingerprintId;
         return .{
             .version = parsed.version,
             .name = if (parsed.name.len > 0) parsed.name else self.profile_name,
-            .template = template,
-            .template_version = if (parsed.template_version > 0) parsed.template_version else 1,
-            .snapshot = parsed.snapshot,
+            .fingerprint = parsed.fingerprint,
             .created = parsed.created,
         };
-    }
-
-    pub fn templateId(self: *const ProfilePaths, arena: Allocator) ![]const u8 {
-        const prefs = try self.readPreferences(arena);
-        if (std.mem.eql(u8, prefs.template, "velora")) return "velora";
-        return try arena.dupe(u8, prefs.template);
     }
 };
 
@@ -175,11 +164,9 @@ fn writePreferences(path: []const u8, prefs: Preferences) !void {
     var buf: [1024]u8 = undefined;
     var writer = file.writer(&buf);
     try std.json.Stringify.value(.{
-        .version = if (prefs.version > 0) prefs.version else 2,
+        .version = 3,
         .name = prefs.name,
-        .template = prefs.template,
-        .template_version = if (prefs.template_version > 0) prefs.template_version else 1,
-        .snapshot = prefs.snapshot,
+        .fingerprint = prefs.fingerprint,
         .created = prefs.created,
     }, .{}, &writer.interface);
     try writer.interface.writeByte('\n');

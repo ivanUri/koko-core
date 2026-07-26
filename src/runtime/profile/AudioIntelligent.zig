@@ -2,7 +2,7 @@ const std = @import("std");
 
 const Frame = @import("../../core/browser/Frame.zig");
 
-/// CreepJS / Picasso standard OfflineAudioContext probe graph.
+/// Shape of the optional captured OfflineAudioContext profile graph.
 pub const ProbeState = struct {
     offline_channels: u32 = 0,
     offline_length: u32 = 0,
@@ -47,7 +47,7 @@ pub const ProbeState = struct {
         if (!self.oscillator_started) return false;
         if (@abs(self.oscillator_frequency - 10000) > 0.01) return false;
         if (@abs(self.compressor_threshold - (-50)) > 0.01) return false;
-        // CreepJS graph: osc → compressor → analyser → destination (no GainNode).
+        // Captured graph: oscillator → compressor → analyser → destination.
         if (self.gain_value > 0.01) return false;
         return true;
     }

@@ -63,7 +63,11 @@ fn resolve(allocator: Allocator) ![]const u8 {
 
 fn browserBundleExists(root: []const u8) bool {
     var buf: [512]u8 = undefined;
-    const velora_json = std.fmt.bufPrint(&buf, "{s}/browser/velora.json", .{root}) catch return false;
+    const velora_json = std.fmt.bufPrint(
+        &buf,
+        "{s}/browser/fingerprints/velora/fingerprint.json",
+        .{root},
+    ) catch return false;
     std.fs.cwd().access(velora_json, .{}) catch return false;
     return true;
 }
@@ -74,10 +78,10 @@ pub fn joinPath(allocator: Allocator, root: []const u8, suffix: []const u8) ![]c
 
 const testing = @import("../../testing/testing.zig");
 
-test "BrowserRoot: dev layout finds browser/velora.json" {
+test "BrowserRoot: dev layout finds default fingerprint folder" {
     const root = try get(std.testing.allocator);
     var buf: [512]u8 = undefined;
-    const path = try joinPath(std.testing.allocator, root, "browser/velora.json");
+    const path = try joinPath(std.testing.allocator, root, "browser/fingerprints/velora/fingerprint.json");
     defer std.testing.allocator.free(path);
     _ = std.fmt.bufPrint(&buf, "{s}", .{path}) catch unreachable;
     try testing.expect(std.fs.cwd().access(path, .{}) == .{});

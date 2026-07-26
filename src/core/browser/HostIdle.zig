@@ -22,6 +22,7 @@ pub fn isNetworkIdle(http: *const HttpClient) bool {
 pub fn isFullyIdle(http: *const HttpClient, frame: *Frame, browser: *Browser) bool {
     if (!http.isNetworkIdle()) return false;
     if (frame._script_manager.base.hasPendingJsWork()) return false;
+    if (frame.hasPendingResourceLoadEvents()) return false;
     if (browser.msToNextMacrotask() != null) return false;
     // Due-now host tasks should already be reflected in msToNext==0, but
     // keep an explicit ready check for delay-0 storms mid-tick.

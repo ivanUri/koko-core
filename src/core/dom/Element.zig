@@ -1477,9 +1477,7 @@ fn offsetParentClientOrigin(self: *Element, frame: *Frame, depth: usize) struct 
     const scroll_y = @as(f64, @floatFromInt(frame.window.getScrollY()));
     const off = getLayoutOffset(parent, frame);
     const y = calculateDocumentPosition(parent.asNode(), frame) + off.top;
-    const serp_left = googleSerpLayoutLeft(parent, frame);
-    const x = if (serp_left) |left| left else off.left;
-    return .{ .x = x - scroll_x, .y = y - scroll_y };
+    return .{ .x = off.left - scroll_x, .y = y - scroll_y };
 }
 
 fn finalizeClientRect(self: *Element, frame: *Frame, rect: DOMRect) DOMRect {
@@ -1590,100 +1588,6 @@ const replaced_default_height: f64 = 150.0;
 // Back-compat aliases (iframe fixtures / comments).
 const iframe_default_width: f64 = replaced_default_width;
 const iframe_default_height: f64 = replaced_default_height;
-
-/// Google Search errsrp grid: width ≈ 56 * cols − 20 (±2px tolerance).
-const google_serp_col_px: f64 = 56.0;
-const google_serp_col_adjust: f64 = 20.0;
-const google_serp_rhs_gap: f64 = 76.0;
-
-fn googleSerpColWidth(cols: u8) f64 {
-    return @as(f64, @floatFromInt(cols)) * google_serp_col_px - google_serp_col_adjust;
-}
-
-fn googleSerpTotalGridCols(viewport_width: f64) u8 {
-    if (viewport_width <= 939.98) return 12;
-    if (viewport_width <= 1163.98) return 16;
-    return 20;
-}
-
-fn googleSerpCenterRhsCols(viewport_width: f64, has_rhs: bool) struct { center: u8, rhs: u8 } {
-    const total = googleSerpTotalGridCols(viewport_width);
-    if (!has_rhs) {
-        const main_cols: u8 = if (total >= 20) 12 else total;
-        return .{ .center = main_cols, .rhs = 0 };
-    }
-    const center_cols = @min(12, @max(8, total - 6));
-    return .{ .center = center_cols, .rhs = total - 1 - center_cols };
-}
-
-fn googleSerpHasRhs(frame: *Frame) bool {
-    if (frame.document.getElementById("rhs", frame) != null) return true;
-    if (frame.document.getElementById("rhs-col", frame) != null) return true;
-    return false;
-}
-
-fn googleSerpRhsId(id: []const u8) bool {
-    return std.mem.eql(u8, id, "rhs") or std.mem.eql(u8, id, "rhs-col");
-}
-
-fn googleSerpGridWidth(self: *Element, frame: *Frame) ?f64 {
-    const id = self.getId();
-    if (id.len == 0) return null;
-    const viewport = rootLayoutSize(frame);
-    const has_rhs = googleSerpHasRhs(frame);
-    const cols = googleSerpCenterRhsCols(viewport.width, has_rhs);
-
-    if (std.mem.eql(u8, id, "center_col")) {
-        return googleSerpColWidth(cols.center);
-    }
-    if (googleSerpRhsId(id)) {
-        if (cols.rhs == 0) return null;
-        return googleSerpColWidth(cols.rhs);
-    }
-    return null;
-}
-
-fn isGoogleSerpRcnt(self: *Element) bool {
-    return std.mem.eql(u8, self.getId(), "rcnt");
-}
-
-/// Block-flow content height for Google SERP containers (`#rcnt`, `#center_col`).
-/// Resolves each child at depth 0 so parent/child layout matches sequential
-/// `offsetHeight` reads (errsrp `results_ch>=100` probe).
-fn googleSerpFlowHeight(self: *Element, frame: *Frame) f64 {
-    var total: f64 = 0;
-    var has_child = false;
-    var it = self.asNode().childrenIterator();
-    while (it.next()) |child| {
-        if (child.is(Element)) |el| {
-            if (el.getTag().isMetadata()) continue;
-            if (el.isHiddenForLayout(frame)) continue;
-            has_child = true;
-            const dims = resolveElementDimensions(el, frame, 0);
-            total += dims.height;
-        }
-    }
-    if (!has_child) return layout_leaf_block_height;
-    return @max(total, layout_leaf_block_height);
-}
-
-fn googleSerpLayoutLeft(self: *Element, frame: *Frame) ?f64 {
-    const id = self.getId();
-    if (id.len == 0) return null;
-    const viewport = rootLayoutSize(frame);
-    const has_rhs = googleSerpHasRhs(frame);
-    const cols = googleSerpCenterRhsCols(viewport.width, has_rhs);
-    const center_w = googleSerpColWidth(cols.center);
-    const rhs_w: f64 = if (cols.rhs > 0) googleSerpColWidth(cols.rhs) else 0;
-    const content_w = center_w + (if (cols.rhs > 0) google_serp_rhs_gap + rhs_w else 0);
-    const content_left = @max(0, (viewport.width - content_w) / 2.0);
-
-    if (std.mem.eql(u8, id, "center_col")) return content_left;
-    if (googleSerpRhsId(id) and cols.rhs > 0) {
-        return content_left + center_w + google_serp_rhs_gap;
-    }
-    return null;
-}
 
 fn isInlineLevelDisplay(display: []const u8) bool {
     if (std.ascii.eqlIgnoreCase(display, "inline")) return true;
@@ -1925,12 +1829,6 @@ fn resolveElementDimensions(self: *Element, frame: *Frame, depth: usize) LayoutS
                 if (parseLayoutDimension(h, parent_size.height)) |parsed| height = parsed;
             }
         }
-    } else if (googleSerpGridWidth(self, frame)) |serp_w| {
-        if (width == layout_default_size) width = serp_w;
-        height = googleSerpFlowHeight(self, frame);
-    } else if (isGoogleSerpRcnt(self)) {
-        if (width == layout_default_size) width = parent_size.width;
-        height = googleSerpFlowHeight(self, frame);
     } else if (isBlockLevel(self, frame)) {
         if (width == layout_default_size) width = parent_size.width;
         // Aspect-ratio / padding-top media boxes (heroes, cards): height comes
@@ -2592,12 +2490,10 @@ pub fn getBoundingClientRectForVisible(self: *Element, frame: *Frame) DOMRect {
     const scroll_y = @as(f64, @floatFromInt(frame.window.getScrollY()));
     const offset = getLayoutOffset(self, frame);
     const y = calculateDocumentPosition(self.asNode(), frame) + offset.top;
-    const serp_left = googleSerpLayoutLeft(self, frame);
-    const x = if (serp_left) |left| left else offset.left;
 
     if (shadowTreeHost(self.asNode())) |host| {
         const host_rect = host.getBoundingClientRectForVisible(frame);
-        const local_x = if (serp_left) |left| left else calculateSiblingPosition(self.asNode(), frame) + offset.left;
+        const local_x = calculateSiblingPosition(self.asNode(), frame) + offset.left;
         const local_y = calculateDocumentPosition(self.asNode(), frame) + offset.top;
         return finalizeClientRect(self, frame, .{
             ._x = host_rect._x + local_x,
@@ -2608,7 +2504,7 @@ pub fn getBoundingClientRectForVisible(self: *Element, frame: *Frame) DOMRect {
     }
 
     return finalizeClientRect(self, frame, .{
-        ._x = x - scroll_x,
+        ._x = offset.left - scroll_x,
         ._y = y - scroll_y,
         ._width = dims.width,
         ._height = dims.height,
@@ -2625,11 +2521,20 @@ pub fn getClientRects(self: *Element, frame: *Frame) ![]DOMRect {
 }
 
 pub fn getScrollTop(self: *Element, frame: *Frame) u32 {
+    if (frame.document.getDocumentElement() == self) {
+        return frame.window.getScrollY();
+    }
     const pos = frame._element_scroll_positions.get(self) orelse return 0;
     return pos.y;
 }
 
 pub fn setScrollTop(self: *Element, value: i32, frame: *Frame) !void {
+    // document.scrollingElement is the documentElement in this engine; its
+    // offsets are the Window viewport offsets, not element-local state.
+    if (frame.document.getDocumentElement() == self) {
+        try frame.window.scrollTo(.{ .x = @intCast(frame.window.getScrollX()) }, value, frame);
+        return;
+    }
     const gop = try frame._element_scroll_positions.getOrPut(frame.arena, self);
     if (!gop.found_existing) {
         gop.value_ptr.* = .{};
