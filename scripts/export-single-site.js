@@ -5,7 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
-const url = "https://grok.com";
+const url = "https://grok.com/";
 // Chỉ cần sửa cấu hình trong khối này.
 const CONFIG = {
   url,

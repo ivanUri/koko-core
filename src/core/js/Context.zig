@@ -380,6 +380,20 @@ pub fn getIncumbent(self: *Context) *Frame {
     };
 }
 
+/// The frame whose JavaScript realm is currently executing. This differs from
+/// the relevant realm of a cross-origin platform object: code in a child frame
+/// can invoke a method on its parent's WindowProxy while the current realm is
+/// still the child. Callers that need the incumbent settings object must
+/// preserve that distinction.
+pub fn getCurrentFrame(self: *Context) ?*Frame {
+    const v8_current = v8.v8__Isolate__GetCurrentContext(self.env.isolate.handle) orelse return null;
+    const ctx = fromC(v8_current) orelse return null;
+    return switch (ctx.global) {
+        .frame => |frame| frame,
+        .worker => null,
+    };
+}
+
 /// HTML entry settings object — last context entered via the embedder, or the
 /// microtask's entry realm while running promise reactions.
 pub fn getEntryFrame(self: *Context) ?*Frame {

@@ -1,0 +1,13 @@
+<!doctype html>
+<html>
+  <body>
+    <script>
+      try {
+        window.parent.postMessage({ type: "iframe-ready", value: 42 }, "*");
+        document.body.dataset.result = "posted";
+      } catch (error) {
+        document.body.dataset.result = `${error.name}:${error.message}`;
+      }
+    </script>
+  </body>
+</html>

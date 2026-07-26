@@ -3147,48 +3147,12 @@ fn frameDoneCallback(ctx: *anyopaque) !void {
         self.flushPendingFrameNavigatedObservers();
         if (!navDeliverable(self)) return;
 
-        // Small/medium documents: inline parse + staticScriptsDone (Velora frameDoneCallback).
-        // Large bootstraps (x.com __INITIAL_STATE__) defer to scheduler to avoid stack overflow.
-        // x.com ~265KB wire HTML with 170KB+ inline bootstrap — still deferred.
-        // go.dev ~64KB must stay inline (deferred path regressed DCL/crash).
-        // Bing ~180–220KB after Google knitsail re-nav hit deferred-parse
-        // "incorrect alignment" / StyleSheetList SIGSEGV — keep ≤256KB inline so
-        // re-nav mid-size docs use the same leaveTransferCallback lifecycle as SERP.
-        const inline_parse_max_html_bytes: usize = 256 * 1024;
-        if (raw_html.len <= inline_parse_max_html_bytes) {
-            const parse_arena = self.getArena(.medium, "Frame.parse") catch |err| {
-                log.warn(.frame, "parse arena", .{ .err = err, .url = self.url });
-                self.releaseArena(html_arena);
-                return;
-            };
-            defer self.releaseArena(parse_arena);
-
-            self._document_parse_active = true;
-            defer self._document_parse_active = false;
-
-            var parser = Parser.init(parse_arena, self.document.asNode(), self);
-            log.debug(.frame, "parse html inline", .{ .type = self._type, .url = self.url, .len = raw_html.len });
-            if (as_xml) {
-                parser.parseXML(raw_html);
-            } else if (std.mem.eql(u8, self.charset, "UTF-8")) {
-                parser.parse(raw_html);
-            } else {
-                parser.parseWithEncoding(raw_html, self.charset);
-            }
-            self.releaseArena(html_arena);
-            self.clearParserTextCaps();
-            if (!navDeliverable(self)) return;
-            self.reconcileParserIframeSrc();
-            self.drainQueuedNavigationsAfterParse();
-            self._parse_state = .{ .complete = {} };
-
-            // staticScriptsDone runs from HttpClient.leaveTransferCallback once
-            // curl unwinds — evaluate() inside the callback deadlocks defer heads.
-            self._pending_post_parse_lifecycle = true;
-            self._session.browser.http_client.serviceInboundCdpIfReadable();
-            return;
-        }
-
+        // HTML tree construction may synchronously encounter a classic external
+        // parser-blocking script. Never enter the parser from curl's document
+        // completion callback: libcurl cannot start the nested script transfer
+        // there, and demoting that script to async violates parser ordering.
+        // One deferred parse lifecycle for every document keeps the transfer
+        // callback, parser, and script-fetch ownership boundaries explicit.
         log.debug(.frame, "parse html deferred", .{ .type = self._type, .url = self.url, .len = raw_html.len });
         self.scheduleDeferredDocumentParse(raw_html, as_xml, html_arena) catch |err| {
             log.warn(.frame, "defer document parse", .{ .err = err, .url = self.url });

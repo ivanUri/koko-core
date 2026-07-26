@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<div id="result">PENDING</div>
+<script>globalThis.executionOrder = [];</script>
+<script src="first.js"></script>
+<script>
+  executionOrder.push("inline");
+  if (executionOrder.join(",") !== "first,inline") {
+    document.querySelector("#result").textContent = "FAIL:inline:" + executionOrder.join(",");
+  }
+</script>
+<script src="second.js"></script>
+<script>
+  const expected = "first,inline,second";
+  document.querySelector("#result").textContent =
+    executionOrder.join(",") === expected ? "PASS" : "FAIL:final:" + executionOrder.join(",");
+</script>

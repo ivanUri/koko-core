@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <base href="https://antcpt.com/score_detector/">
+  </base>
+  <meta http-equiv="origin-trial"
+    content="A7vZI3v+Gz7JfuRolKNM4Aff6zaGuT7X0mf3wtoZTnKv6497cVMnhy03KDqX7kBz/q/iidW7srW31oQbBt4VhgoAAACUeyJvcmlnaW4iOiJodHRwczovL3d3dy5nb29nbGUuY29tOjQ0MyIsImZlYXR1cmUiOiJEaXNhYmxlVGhpcmRQYXJ0eVN0b3JhZ2VQYXJ0aXRpb25pbmczIiwiZXhwaXJ5IjoxNzU3OTgwODAwLCJpc1N1YmRvbWFpbiI6dHJ1ZSwiaXNUaGlyZFBhcnR5Ijp0cnVlfQ==">
+  <meta charset="utf-8">
+
+  <title>Score detector for reCAPTCHA v3</title>
+  <meta name="description"
+    content="reCAPTCHA v3 score detector which shows if you are HUMAN or BOT according to Google.">
+  <meta name="author" content="AntiCaptcha plugin admin">
+
+  <meta content="width=device-width,initial-scale=1.0,minimum-scale=1.0,maximum-scale=1.0,user-scalable=0;"
+    name="viewport">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+
+  <!--    <link rel="stylesheet" href="css/styles.css?v=1.0">-->
+
+
+
+
+
+
+
+
+
+
+  <!-- Latest compiled and minified CSS -->
+  <!-- https://getbootstrap.com/docs/3.3/components/ -->
+  <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.6/css/bootstrap.min.css"
+    integrity="sha384-1q8mTJOASx8j1Au+a5WDVnPi2lkFfwwEAa8hDDdjZlpLegxhjVME1fgjWPGmkzs7" crossorigin="anonymous">
+</head>
+
+<body>
+  <!-- Yandex.Metrika counter - ->  <noscript><div><img src="https://mc.yandex.ru/watch/40574825" style="position:absolute; left:-9999px;" alt="" /></div></noscript> <!-- /Yandex.Metrika counter -->
+
+  <style>
+    button {
+      font-size: 12pt;
+      padding: 10px;
+    }
+
+    p.important {
+      font-size: 1.5em;
+      font-style: italic;
+    }
+  </style>
+
+  <div id="app" class="container">
+    <h1>reCAPTCHA v3 score detector</h1>
+    <blockquote>
+      This <b>Score</b> is taken by solving the reCAPTCHA v3 on your browser.
+      <br>
+      The <b>Score</b> shows if Google considers you as HUMAN or BOT.
+      <br> <i><b>1.0</b> is very likely a good interaction, <b>0.0</b> is very likely a bot</i> <br>
+      With low score values (&lt; <span style="color: #ff4000;">0.3</span>) you'll get a slow reCAPTCHA 2,
+      it would be hard to solve it.
+      <br>
+      And vise versa, with score &gt;= <span style="color: #00b800;">0.7</span> it will be much easier.
+    </blockquote>
+    <p class="important">
+      On the
+      <a href="http://getcaptchajob.com/cqzvgt5adv" target="_blank" rel="nofollow"
+        title="Kolotibablo: Earn money online while solving captchas">
+        Kolotibablo.com earning money project</a>,
+      you'll get paid for having the high Score!
+    </p>
+    <p class="text-warning">
+      Current User Agent: Chrome 150.0.0.0 for Mac OS
+      <br>
+      Current IP Address: 1.54.212.113
+    </p>
+    <div class="well">
+      <div class="row">
+        <div class="col-md-6">
+          <p><big style="font-size: 18pt; color: #00b800;">
+              Your score is: 0.9
+            </big> </p> <!----> <button>
+            Refresh score now!
+          </button>
+          <p style="color: #ff3aaf; margin-top: 20px;">
+            Too frequent checks may make worse this score.
+            It's not recommended to refresh your score often than once in 5 minutes.
+          </p>
+        </div>
+        <div class="col-md-6">
+          <h2>Previous score list (last 20)</h2> <!----> <button>Clear list</button> <br><br>
+          <div class="list-group"><a href="#" class="list-group-item">
+
+              Score: 0.9;
+              User Agent and OS: Chrome 150.0.0.0 for Mac OS;
+              Ip Address: 1.54.212.113;
+              Google Account: &lt;detect google account&gt;;
+              Time: 2:16:39 AM
+            </a></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+
+  <!--    -->
+
+
+
+  <div>
+    <div class="grecaptcha-badge" data-style="bottomright"
+      style="width: 256px; height: 60px; display: block; transition: right 0.3s ease; position: fixed; bottom: 14px; right: -186px; box-shadow: 0px 0px 5px gray; border-radius: 2px; overflow: hidden;">
+      <div class="grecaptcha-logo"><iframe title="reCAPTCHA" width="256" height="60" role="presentation"
+          name="a-3s5v5cw4e2ko" frameborder="0"
+          src="https://www.google.com/recaptcha/api2/anchor?ar=1&amp;k=6LcR_okUAAAAAPYrPe-HK_0RULO1aZM15ENyM-Mf&amp;co=aHR0cHM6Ly9hbnRjcHQuY29tOjQ0Mw..&amp;hl=en&amp;v=A7KpaEASfhDcK0nXxgQEyyYv&amp;size=invisible&amp;anchor-ms=20000&amp;execute-ms=30000&amp;cb=pl8n7opikm7t">
+          <!DOCTYPE html>
+          <html dir="ltr" lang="en">
+
+          <head>
+            <base
+              href="https://www.google.com/recaptcha/api2/anchor?ar=1&amp;k=6LcR_okUAAAAAPYrPe-HK_0RULO1aZM15ENyM-Mf&amp;co=aHR0cHM6Ly9hbnRjcHQuY29tOjQ0Mw..&amp;hl=en&amp;v=A7KpaEASfhDcK0nXxgQEyyYv&amp;size=invisible&amp;anchor-ms=20000&amp;execute-ms=30000&amp;cb=pl8n7opikm7t">
+            </base>
+            <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+            <meta http-equiv="X-UA-Compatible" content="IE=edge">
+            <title>reCAPTCHA</title>
+            <style type="text/css">
+              /* cyrillic-ext */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 400;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMa3GUBHMdazTgWw.woff2) format('woff2');
+                unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+              }
+
+              /* cyrillic */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 400;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMa3iUBHMdazTgWw.woff2) format('woff2');
+                unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+              }
+
+              /* greek-ext */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 400;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMa3CUBHMdazTgWw.woff2) format('woff2');
+                unicode-range: U+1F00-1FFF;
+              }
+
+              /* greek */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 400;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMa3-UBHMdazTgWw.woff2) format('woff2');
+                unicode-range: U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1, U+03A3-03FF;
+              }
+
+              /* math */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 400;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMawCUBHMdazTgWw.woff2) format('woff2');
+                unicode-range: U+0302-0303, U+0305, U+0307-0308, U+0310, U+0312, U+0315, U+031A, U+0326-0327, U+032C, U+032F-0330, U+0332-0333, U+0338, U+033A, U+0346, U+034D, U+0391-03A1, U+03A3-03A9, U+03B1-03C9, U+03D1, U+03D5-03D6, U+03F0-03F1, U+03F4-03F5, U+2016-2017, U+2034-2038, U+203C, U+2040, U+2043, U+2047, U+2050, U+2057, U+205F, U+2070-2071, U+2074-208E, U+2090-209C, U+20D0-20DC, U+20E1, U+20E5-20EF, U+2100-2112, U+2114-2115, U+2117-2121, U+2123-214F, U+2190, U+2192, U+2194-21AE, U+21B0-21E5, U+21F1-21F2, U+21F4-2211, U+2213-2214, U+2216-22FF, U+2308-230B, U+2310, U+2319, U+231C-2321, U+2336-237A, U+237C, U+2395, U+239B-23B7, U+23D0, U+23DC-23E1, U+2474-2475, U+25AF, U+25B3, U+25B7, U+25BD, U+25C1, U+25CA, U+25CC, U+25FB, U+266D-266F, U+27C0-27FF, U+2900-2AFF, U+2B0E-2B11, U+2B30-2B4C, U+2BFE, U+3030, U+FF5B, U+FF5D, U+1D400-1D7FF, U+1EE00-1EEFF;
+              }
+
+              /* symbols */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 400;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMaxKUBHMdazTgWw.woff2) format('woff2');
+                unicode-range: U+0001-000C, U+000E-001F, U+007F-009F, U+20DD-20E0, U+20E2-20E4, U+2150-218F, U+2190, U+2192, U+2194-2199, U+21AF, U+21E6-21F0, U+21F3, U+2218-2219, U+2299, U+22C4-22C6, U+2300-243F, U+2440-244A, U+2460-24FF, U+25A0-27BF, U+2800-28FF, U+2921-2922, U+2981, U+29BF, U+29EB, U+2B00-2BFF, U+4DC0-4DFF, U+FFF9-FFFB, U+10140-1018E, U+10190-1019C, U+101A0, U+101D0-101FD, U+102E0-102FB, U+10E60-10E7E, U+1D2C0-1D2D3, U+1D2E0-1D37F, U+1F000-1F0FF, U+1F100-1F1AD, U+1F1E6-1F1FF, U+1F30D-1F30F, U+1F315, U+1F31C, U+1F31E, U+1F320-1F32C, U+1F336, U+1F378, U+1F37D, U+1F382, U+1F393-1F39F, U+1F3A7-1F3A8, U+1F3AC-1F3AF, U+1F3C2, U+1F3C4-1F3C6, U+1F3CA-1F3CE, U+1F3D4-1F3E0, U+1F3ED, U+1F3F1-1F3F3, U+1F3F5-1F3F7, U+1F408, U+1F415, U+1F41F, U+1F426, U+1F43F, U+1F441-1F442, U+1F444, U+1F446-1F449, U+1F44C-1F44E, U+1F453, U+1F46A, U+1F47D, U+1F4A3, U+1F4B0, U+1F4B3, U+1F4B9, U+1F4BB, U+1F4BF, U+1F4C8-1F4CB, U+1F4D6, U+1F4DA, U+1F4DF, U+1F4E3-1F4E6, U+1F4EA-1F4ED, U+1F4F7, U+1F4F9-1F4FB, U+1F4FD-1F4FE, U+1F503, U+1F507-1F50B, U+1F50D, U+1F512-1F513, U+1F53E-1F54A, U+1F54F-1F5FA, U+1F610, U+1F650-1F67F, U+1F687, U+1F68D, U+1F691, U+1F694, U+1F698, U+1F6AD, U+1F6B2, U+1F6B9-1F6BA, U+1F6BC, U+1F6C6-1F6CF, U+1F6D3-1F6D7, U+1F6E0-1F6EA, U+1F6F0-1F6F3, U+1F6F7-1F6FC, U+1F700-1F7FF, U+1F800-1F80B, U+1F810-1F847, U+1F850-1F859, U+1F860-1F887, U+1F890-1F8AD, U+1F8B0-1F8BB, U+1F8C0-1F8C1, U+1F900-1F90B, U+1F93B, U+1F946, U+1F984, U+1F996, U+1F9E9, U+1FA00-1FA6F, U+1FA70-1FA7C, U+1FA80-1FA89, U+1FA8F-1FAC6, U+1FACE-1FADC, U+1FADF-1FAE9, U+1FAF0-1FAF8, U+1FB00-1FBFF;
+              }
+
+              /* vietnamese */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 400;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMa3OUBHMdazTgWw.woff2) format('woff2');
+                unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+              }
+
+              /* latin-ext */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 400;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMa3KUBHMdazTgWw.woff2) format('woff2');
+                unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+              }
+
+              /* latin */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 400;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMa3yUBHMdazQ.woff2) format('woff2');
+                unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+              }
+
+              /* cyrillic-ext */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 500;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMa3GUBHMdazTgWw.woff2) format('woff2');
+                unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+              }
+
+              /* cyrillic */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 500;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMa3iUBHMdazTgWw.woff2) format('woff2');
+                unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+              }
+
+              /* greek-ext */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 500;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMa3CUBHMdazTgWw.woff2) format('woff2');
+                unicode-range: U+1F00-1FFF;
+              }
+
+              /* greek */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 500;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMa3-UBHMdazTgWw.woff2) format('woff2');
+                unicode-range: U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1, U+03A3-03FF;
+              }
+
+              /* math */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 500;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMawCUBHMdazTgWw.woff2) format('woff2');
+                unicode-range: U+0302-0303, U+0305, U+0307-0308, U+0310, U+0312, U+0315, U+031A, U+0326-0327, U+032C, U+032F-0330, U+0332-0333, U+0338, U+033A, U+0346, U+034D, U+0391-03A1, U+03A3-03A9, U+03B1-03C9, U+03D1, U+03D5-03D6, U+03F0-03F1, U+03F4-03F5, U+2016-2017, U+2034-2038, U+203C, U+2040, U+2043, U+2047, U+2050, U+2057, U+205F, U+2070-2071, U+2074-208E, U+2090-209C, U+20D0-20DC, U+20E1, U+20E5-20EF, U+2100-2112, U+2114-2115, U+2117-2121, U+2123-214F, U+2190, U+2192, U+2194-21AE, U+21B0-21E5, U+21F1-21F2, U+21F4-2211, U+2213-2214, U+2216-22FF, U+2308-230B, U+2310, U+2319, U+231C-2321, U+2336-237A, U+237C, U+2395, U+239B-23B7, U+23D0, U+23DC-23E1, U+2474-2475, U+25AF, U+25B3, U+25B7, U+25BD, U+25C1, U+25CA, U+25CC, U+25FB, U+266D-266F, U+27C0-27FF, U+2900-2AFF, U+2B0E-2B11, U+2B30-2B4C, U+2BFE, U+3030, U+FF5B, U+FF5D, U+1D400-1D7FF, U+1EE00-1EEFF;
+              }
+
+              /* symbols */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 500;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMaxKUBHMdazTgWw.woff2) format('woff2');
+                unicode-range: U+0001-000C, U+000E-001F, U+007F-009F, U+20DD-20E0, U+20E2-20E4, U+2150-218F, U+2190, U+2192, U+2194-2199, U+21AF, U+21E6-21F0, U+21F3, U+2218-2219, U+2299, U+22C4-22C6, U+2300-243F, U+2440-244A, U+2460-24FF, U+25A0-27BF, U+2800-28FF, U+2921-2922, U+2981, U+29BF, U+29EB, U+2B00-2BFF, U+4DC0-4DFF, U+FFF9-FFFB, U+10140-1018E, U+10190-1019C, U+101A0, U+101D0-101FD, U+102E0-102FB, U+10E60-10E7E, U+1D2C0-1D2D3, U+1D2E0-1D37F, U+1F000-1F0FF, U+1F100-1F1AD, U+1F1E6-1F1FF, U+1F30D-1F30F, U+1F315, U+1F31C, U+1F31E, U+1F320-1F32C, U+1F336, U+1F378, U+1F37D, U+1F382, U+1F393-1F39F, U+1F3A7-1F3A8, U+1F3AC-1F3AF, U+1F3C2, U+1F3C4-1F3C6, U+1F3CA-1F3CE, U+1F3D4-1F3E0, U+1F3ED, U+1F3F1-1F3F3, U+1F3F5-1F3F7, U+1F408, U+1F415, U+1F41F, U+1F426, U+1F43F, U+1F441-1F442, U+1F444, U+1F446-1F449, U+1F44C-1F44E, U+1F453, U+1F46A, U+1F47D, U+1F4A3, U+1F4B0, U+1F4B3, U+1F4B9, U+1F4BB, U+1F4BF, U+1F4C8-1F4CB, U+1F4D6, U+1F4DA, U+1F4DF, U+1F4E3-1F4E6, U+1F4EA-1F4ED, U+1F4F7, U+1F4F9-1F4FB, U+1F4FD-1F4FE, U+1F503, U+1F507-1F50B, U+1F50D, U+1F512-1F513, U+1F53E-1F54A, U+1F54F-1F5FA, U+1F610, U+1F650-1F67F, U+1F687, U+1F68D, U+1F691, U+1F694, U+1F698, U+1F6AD, U+1F6B2, U+1F6B9-1F6BA, U+1F6BC, U+1F6C6-1F6CF, U+1F6D3-1F6D7, U+1F6E0-1F6EA, U+1F6F0-1F6F3, U+1F6F7-1F6FC, U+1F700-1F7FF, U+1F800-1F80B, U+1F810-1F847, U+1F850-1F859, U+1F860-1F887, U+1F890-1F8AD, U+1F8B0-1F8BB, U+1F8C0-1F8C1, U+1F900-1F90B, U+1F93B, U+1F946, U+1F984, U+1F996, U+1F9E9, U+1FA00-1FA6F, U+1FA70-1FA7C, U+1FA80-1FA89, U+1FA8F-1FAC6, U+1FACE-1FADC, U+1FADF-1FAE9, U+1FAF0-1FAF8, U+1FB00-1FBFF;
+              }
+
+              /* vietnamese */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 500;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMa3OUBHMdazTgWw.woff2) format('woff2');
+                unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+              }
+
+              /* latin-ext */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 500;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMa3KUBHMdazTgWw.woff2) format('woff2');
+                unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+              }
+
+              /* latin */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 500;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMa3yUBHMdazQ.woff2) format('woff2');
+                unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+              }
+
+              /* cyrillic-ext */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 900;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMa3GUBHMdazTgWw.woff2) format('woff2');
+                unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+              }
+
+              /* cyrillic */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 900;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMa3iUBHMdazTgWw.woff2) format('woff2');
+                unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+              }
+
+              /* greek-ext */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 900;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMa3CUBHMdazTgWw.woff2) format('woff2');
+                unicode-range: U+1F00-1FFF;
+              }
+
+              /* greek */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 900;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMa3-UBHMdazTgWw.woff2) format('woff2');
+                unicode-range: U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1, U+03A3-03FF;
+              }
+
+              /* math */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 900;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMawCUBHMdazTgWw.woff2) format('woff2');
+                unicode-range: U+0302-0303, U+0305, U+0307-0308, U+0310, U+0312, U+0315, U+031A, U+0326-0327, U+032C, U+032F-0330, U+0332-0333, U+0338, U+033A, U+0346, U+034D, U+0391-03A1, U+03A3-03A9, U+03B1-03C9, U+03D1, U+03D5-03D6, U+03F0-03F1, U+03F4-03F5, U+2016-2017, U+2034-2038, U+203C, U+2040, U+2043, U+2047, U+2050, U+2057, U+205F, U+2070-2071, U+2074-208E, U+2090-209C, U+20D0-20DC, U+20E1, U+20E5-20EF, U+2100-2112, U+2114-2115, U+2117-2121, U+2123-214F, U+2190, U+2192, U+2194-21AE, U+21B0-21E5, U+21F1-21F2, U+21F4-2211, U+2213-2214, U+2216-22FF, U+2308-230B, U+2310, U+2319, U+231C-2321, U+2336-237A, U+237C, U+2395, U+239B-23B7, U+23D0, U+23DC-23E1, U+2474-2475, U+25AF, U+25B3, U+25B7, U+25BD, U+25C1, U+25CA, U+25CC, U+25FB, U+266D-266F, U+27C0-27FF, U+2900-2AFF, U+2B0E-2B11, U+2B30-2B4C, U+2BFE, U+3030, U+FF5B, U+FF5D, U+1D400-1D7FF, U+1EE00-1EEFF;
+              }
+
+              /* symbols */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 900;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMaxKUBHMdazTgWw.woff2) format('woff2');
+                unicode-range: U+0001-000C, U+000E-001F, U+007F-009F, U+20DD-20E0, U+20E2-20E4, U+2150-218F, U+2190, U+2192, U+2194-2199, U+21AF, U+21E6-21F0, U+21F3, U+2218-2219, U+2299, U+22C4-22C6, U+2300-243F, U+2440-244A, U+2460-24FF, U+25A0-27BF, U+2800-28FF, U+2921-2922, U+2981, U+29BF, U+29EB, U+2B00-2BFF, U+4DC0-4DFF, U+FFF9-FFFB, U+10140-1018E, U+10190-1019C, U+101A0, U+101D0-101FD, U+102E0-102FB, U+10E60-10E7E, U+1D2C0-1D2D3, U+1D2E0-1D37F, U+1F000-1F0FF, U+1F100-1F1AD, U+1F1E6-1F1FF, U+1F30D-1F30F, U+1F315, U+1F31C, U+1F31E, U+1F320-1F32C, U+1F336, U+1F378, U+1F37D, U+1F382, U+1F393-1F39F, U+1F3A7-1F3A8, U+1F3AC-1F3AF, U+1F3C2, U+1F3C4-1F3C6, U+1F3CA-1F3CE, U+1F3D4-1F3E0, U+1F3ED, U+1F3F1-1F3F3, U+1F3F5-1F3F7, U+1F408, U+1F415, U+1F41F, U+1F426, U+1F43F, U+1F441-1F442, U+1F444, U+1F446-1F449, U+1F44C-1F44E, U+1F453, U+1F46A, U+1F47D, U+1F4A3, U+1F4B0, U+1F4B3, U+1F4B9, U+1F4BB, U+1F4BF, U+1F4C8-1F4CB, U+1F4D6, U+1F4DA, U+1F4DF, U+1F4E3-1F4E6, U+1F4EA-1F4ED, U+1F4F7, U+1F4F9-1F4FB, U+1F4FD-1F4FE, U+1F503, U+1F507-1F50B, U+1F50D, U+1F512-1F513, U+1F53E-1F54A, U+1F54F-1F5FA, U+1F610, U+1F650-1F67F, U+1F687, U+1F68D, U+1F691, U+1F694, U+1F698, U+1F6AD, U+1F6B2, U+1F6B9-1F6BA, U+1F6BC, U+1F6C6-1F6CF, U+1F6D3-1F6D7, U+1F6E0-1F6EA, U+1F6F0-1F6F3, U+1F6F7-1F6FC, U+1F700-1F7FF, U+1F800-1F80B, U+1F810-1F847, U+1F850-1F859, U+1F860-1F887, U+1F890-1F8AD, U+1F8B0-1F8BB, U+1F8C0-1F8C1, U+1F900-1F90B, U+1F93B, U+1F946, U+1F984, U+1F996, U+1F9E9, U+1FA00-1FA6F, U+1FA70-1FA7C, U+1FA80-1FA89, U+1FA8F-1FAC6, U+1FACE-1FADC, U+1FADF-1FAE9, U+1FAF0-1FAF8, U+1FB00-1FBFF;
+              }
+
+              /* vietnamese */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 900;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMa3OUBHMdazTgWw.woff2) format('woff2');
+                unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+              }
+
+              /* latin-ext */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 900;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMa3KUBHMdazTgWw.woff2) format('woff2');
+                unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+              }
+
+              /* latin */
+              @font-face {
+                font-family: 'Roboto';
+                font-style: normal;
+                font-weight: 900;
+                font-stretch: 100%;
+                src: url(//fonts.gstatic.com/s/roboto/v48/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMa3yUBHMdazQ.woff2) format('woff2');
+                unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+              }
+            </style>
+            <link rel="stylesheet" type="text/css"
+              href="https://www.gstatic.com/recaptcha/releases/A7KpaEASfhDcK0nXxgQEyyYv/styles__ltr.css">
+
+          </head>
+
+          <body>
+            <div id="rc-anchor-alert" class="rc-anchor-alert"></div>
+            <input type="hidden" id="recaptcha-token"
+              value="03AFcWeA6cHL0TLGaAMFZ43pgApY5HkyEhCOzfAg-g5b9u4SdGl98o_4QRBBFvTR--90KK6awErBcbw033bNnogguXCf5ysv7Sr83tTSsnBGaBdm_u5lKeAq_R2h2VTnp6z7CcdY33JfaPDzCyzORTHmru7GLZJBQtGU-_WZVQijvFGTpbXPs-TLjKhzTs7mcam-T2Np2rzqVjeCtmi0jfKXSCTPFq96nYSqv7Lkl1mYfFp-bEnfju8uLLgkLzBosF_KHNIua5GzMZ8F09zqURPUr9-0E-5MdukFg7VHYLbsicUPNuEJFBao_yQHGoXF-lcNrt1IAa2QX1pxT7BepZy8jSy8cwhbcFtOueomZa0ZzqwEse9TV3ivbkTUGRqc6whdJKICex33YaICDKkFukGHvCi12wgi1N26BxO3Agj7XkdA4foSBGCKNdvrmVN8hGlFWPUet0PG2BviEheCnN6EcATBhpfTOEFgr1RVPr-zBSnhegtJmxGfJob0K0fiSqFnO434CPVa-PXuQBqU2stYGzB0a_5xdP7ZVQqIE4GEevOlcS9_NUp_qzGoc_ccy5W40T-GNr0RsiwgA0cUJfXEpnB9nMpqt2HuiOxsd7fpPTjYMlPEr0Q1TT2gM63al4e2q_cYW7ao2b4v5YHFKHz46kBCBaJos79RF7ny-LuXKCFT69IVXLuom9myP0_bD13UtSXnFkH3BEcfu-cOsjheji2IT1obWN53YsvtvmWpdfNJDMvw99clBK49077fBySTV36jxN0Sz_DYuhWy92cNSh5b4rtulDq5apP4RrakJoncYiri7_65uHUaOiKJu_E3V5umiDRpdATCPVPgd2szCOQUpv9aowKeYBIifSKRbhUvt3akdacnJBv8O9fT4m41wMbexL3bSresMKTqCK4pbI723AVvrjfxK7lrfT0PaMbs1ZXHjj5BqBhXfIBARuIWKlrTwlRZebekdti76fGc-7dB5s4QQG-dRykE7MOgnRVnrNKCsr28fC5R_TRJcGF2Mn5sJXuQZSPdZpwyX4QNvZEgzGSVQo9VqVapeci89HzXoMemSOo_nZvZh1yhfDMYcv-uJJsArjmLsWT96yVmtoiDBJSjZnybsCSAgwA9bjV6iy-_wEFE1ZECnZaJbYujA1bRbb-KvORL0LTw12eQHjo05ctVRkEMmHIIuBYCEMHkyyPJvbsW43Gu93ZJRHnVXHWpoXVtD9G4FCrmG8p_aKADq0WzObrsuntlzkd_Tx2Dg1D8Bcg5JUoKbgr4aD8l2M1ZmYc6KzKsCtLEXZTiSKsD5gCNynYhHRI7DvQJ2sqfTxRz4ob9GNyMr_8zASYNNhbwOsUjmU37jST4ikNmqvrSrKHdpyhnzGZl4EcEuLh1ezR4_deoPgMJFVl79X3IoNLvbPu_SHCjdScQIhr93pJ3Qbo8_zBLM1ezgKM4RPBx6bp6DmPD89kof-6ng4yNjgGvAz5yYuB0qA8rMGYQa22vq9JNJz-TOnr7CWy8BeHAJvpP26ZBHDSp9MN8OxfndNwYbEhpHcANnRHB6xWI4s_EFLOIocgoG1sGPpgLvq10fid3u4sSwvQSFWAfUL6ZS7CY8HJA6GNxs2ynrsBPQP_FJmsZhkG9yGnLr_7F9wa5h0odKnyL6f8iDMrsF25NZ-XsjQD1_P8FcC3sKUuQ8yA80eivmv2Zc6qsLiN1CgGBx-9VpdvezPBkd-fYck6Hs2Qn7hFyzMAg3C5OjCfXTru2pdpJVx3mp1NzAFSNJqnJsXsesOApLTTRFrFshatonPKyWqS0VMFpbU3hifj6Tbfos_BwQcq8Le7175eqHGy5ubmOvOtbNobusqGvgfCXL5ct5J2lCdBrBYUaLZtVvY_EcwGzD9aw">
+            <div class="rc-anchor rc-anchor-invisible rc-anchor-light  rc-anchor-invisible-hover">
+              <div id="recaptcha-accessible-status" class="rc-anchor-aria-status" aria-hidden="true">Recaptcha requires
+                verification. </div>
+              <div class="rc-anchor-error-msg-container" style="display:none"><span class="rc-anchor-error-msg"
+                  aria-hidden="true"></span></div>
+              <div class="rc-anchor-normal-footer">
+                <div class="rc-anchor-logo-large" role="presentation">
+                  <div class="rc-anchor-logo-img rc-anchor-logo-img-large"></div>
+                </div>
+                <div class="rc-anchor-pt rc-anchor-over-quota-pt "></div>
+              </div>
+              <div class="rc-anchor-invisible-text smalltext"><span>protected by <strong>reCAPTCHA</strong></span>
+                <div id="rc-anchor-invisible-over-quota">
+                  <div>This site is exceeding <a href="https://cloud.google.com/recaptcha/docs/billing-information"
+                      target="_blank">reCAPTCHA Enterprise free quota</a>.</div>
+                </div>
+                <div class="rc-anchor-pt rc-anchor-over-quota-pt "></div>
+              </div>
+            </div>
+          </body>
+
+          </html>
+        </iframe></div>
+      <div class="grecaptcha-error"></div><textarea id="g-recaptcha-response-100000" name="g-recaptcha-response"
+        class="g-recaptcha-response"
+        style="width: 250px; height: 40px; border: 1px solid #c1c1c1; margin: 10px 25px; padding: 0px; resize: none; display: none;"></textarea>
+    </div><iframe style="display: none;">
+      <!DOCTYPE html>
+      <html>
+
+      <head>
+        <base href="about:blank">
+        </base>
+      </head>
+
+      <body></body>
+
+      </html>
+    </iframe>
+  </div>
+</body>
+
+</html>

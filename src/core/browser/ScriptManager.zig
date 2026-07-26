@@ -211,23 +211,12 @@ pub fn addFromElement(self: *ScriptManager, comptime from_parser: bool, script_e
     };
 
     const is_blocking = mode == .normal;
-    // Mid main-document HTML parse after knitsail re-nav: never eval inline
-    // blocking scripts on the html5ever stack (data:image / CSSOM bus errors).
-    // Queue as deferred so staticScriptsDone drains them after parse.
-    const force_queue_during_document_parse =
-        (comptime from_parser) and
-        frame._document_parse_active and
-        frame._parse_mode == .document and
-        is_inline;
-
-    // inserted later must still be queued (remote) or run immediately (inline).
-    const run_immediately = !force_queue_during_document_parse and
-        (is_blocking or (self.base.static_scripts_done and remote_url == null));
+    // Parser-inserted classic scripts without async/defer execute at their
+    // insertion point. The document parser itself is entered only after the
+    // document transfer callback has unwound, so both external and inline
+    // blocking scripts can use this same ordered path without curl re-entry.
+    const run_immediately = is_blocking or (self.base.static_scripts_done and remote_url == null);
     if (run_immediately == false) {
-        // Promote inline blocking → defer list for post-parse drain.
-        if (force_queue_during_document_parse and mode == .normal) {
-            script.extra.frame.mode = .@"defer";
-        }
         self.base.scriptList(script).append(&script.node);
     }
 

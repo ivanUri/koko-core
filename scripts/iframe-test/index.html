@@ -1,0 +1,13 @@
+<!doctype html>
+<html>
+  <body>
+    <output id="status">waiting</output>
+    <script>
+      window.addEventListener("message", (event) => {
+        document.querySelector("#status").textContent =
+          `received:${JSON.stringify(event.data)}:${event.data && event.data.type}`;
+      });
+    </script>
+    <iframe id="probe" src="/iframe-test/child.html?v=object-2"></iframe>
+  </body>
+</html>

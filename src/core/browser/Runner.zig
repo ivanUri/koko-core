@@ -167,36 +167,51 @@ pub fn tickCDP(self: *Runner, opts: TickOpts) !CDPTickResult {
 
 fn drainDeferredDocumentParse(self: *Runner, comptime is_cdp: bool) void {
     _ = is_cdp;
-    const frame = self.frame;
-    const http_client = self.http_client;
-    if (!frame.hasDeferredDocumentParsePending()) return;
-    // Do not gate on http_active: the document transfer is already done when
-    // frameDoneCallback schedules parse. Waiting for all subresource fetches
-    // (x.com module bundles, fonts) left HTML unparseable and DCL never fired.
-    // Departing realm: cancelOwnedSchedulerWork instead of running parse on dead DOM.
-    if (!frame.canRunOwnedScheduler()) {
-        frame.cancelOwnedSchedulerWork();
-        return;
-    }
+    self.drainDeferredDocumentParseFrame(self.frame);
+}
 
-    const env = &self.session.browser.env;
-    var slices: u8 = 0;
-    while (slices < 48) : (slices += 1) {
+/// Drain parser tasks in their owning browsing-context scheduler. Child-frame
+/// documents complete on independent HTTP transfers and therefore may become
+/// parse-ready while the root document is already complete. Moving their task
+/// to the root scheduler would break realm cancellation and teardown ownership;
+/// walk the live frame tree instead.
+fn drainDeferredDocumentParseFrame(self: *Runner, frame: *Frame) void {
+    const http_client = self.http_client;
+    if (frame.hasDeferredDocumentParsePending()) {
+        // Do not gate on http_active: the document transfer is already done when
+        // frameDoneCallback schedules parse. Waiting for all subresource fetches
+        // leaves HTML unparseable and DCL unable to fire.
         if (!frame.canRunOwnedScheduler()) {
             frame.cancelOwnedSchedulerWork();
-            break;
+            return;
         }
-        env.runMicrotasks(.macrotask_loop);
-        if (!frame.js.scheduler.hasReadyTasks()) break;
-        var hs: js.HandleScope = undefined;
-        const entered = frame.js.enter(&hs) orelse break;
-        const ran = frame.runOwnedSchedulerOne() catch false;
-        entered.exit();
-        if (!ran) break;
-        env.runMicrotasks(.macrotask_loop);
-        // CDP may start re-nav; next loop iteration cancels if realm left active.
-        http_client.serviceInboundCdpIfReadable();
-        if (!frame.hasDeferredDocumentParsePending() and !frame._document_parse_active) break;
+
+        const env = &self.session.browser.env;
+        var slices: u8 = 0;
+        while (slices < 48) : (slices += 1) {
+            if (!frame.canRunOwnedScheduler()) {
+                frame.cancelOwnedSchedulerWork();
+                return;
+            }
+            env.runMicrotasks(.macrotask_loop);
+            if (!frame.js.scheduler.hasReadyTasks()) break;
+            var hs: js.HandleScope = undefined;
+            const entered = frame.js.enter(&hs) orelse break;
+            const ran = frame.runOwnedSchedulerOne() catch false;
+            entered.exit();
+            if (!ran) break;
+            env.runMicrotasks(.macrotask_loop);
+            // CDP may start re-nav; next loop iteration cancels if realm left active.
+            http_client.serviceInboundCdpIfReadable();
+            if (!frame.hasDeferredDocumentParsePending() and !frame._document_parse_active) break;
+        }
+    }
+
+    // Parse callbacks can append nested browsing contexts. Index against the
+    // current list length so newly committed descendants are visited too.
+    var child_index: usize = 0;
+    while (child_index < frame.child_frames.items.len) : (child_index += 1) {
+        self.drainDeferredDocumentParseFrame(frame.child_frames.items[child_index]);
     }
 }
 
@@ -250,6 +265,12 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
             return .{ .ok = 0 };
         },
         .complete => {
+            // Root completion does not imply child document completion. A child
+            // transfer may have queued its parser task after the root entered
+            // `.complete`; drain those realm-owned tasks on every complete-state
+            // turn as well as during root document loading.
+            self.drainDeferredDocumentParse(is_cdp);
+
             // Service inbound CDP commands before macrotasks / background-task pumps.
             // ebay.com document load otherwise starves Runtime.evaluate for tens of seconds.
             if (comptime is_cdp) {
@@ -290,6 +311,7 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
             } else {
                 try browser.runMacrotasks();
             }
+            self.drainDeferredDocumentParse(is_cdp);
             // commitPendingPage may have swapped active/pending during tick/macrotasks;
             // do not drain RTC (or read load/idle state) through a stale Frame ptr.
             self.frame = session.pendingOrCurrentFrame() orelse return .done;

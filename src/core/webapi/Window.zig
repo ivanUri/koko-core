@@ -831,14 +831,19 @@ pub fn postMessage(self: *Window, message: js.Value.Temp, target_origin: ?[]cons
 
     const target_frame = self._frame;
     // MessageEvent.source reflects the incumbent settings object (HTML), not `this`.
-    const source_frame = resolvePostMessageSourceFrame(frame.js.getIncumbent(), frame);
+    // The injected `frame` belongs to the Window method receiver. For calls
+    // through another WindowProxy (for example child -> parent), that is the
+    // target realm, not the script's incumbent settings object. Snapshot the
+    // actively executing frame before this operation is queued; origin and
+    // source must continue to describe the sender when delivery happens.
+    const source_frame = frame.js.getCurrentFrame() orelse frame.js.getIncumbent();
     const source_window = source_frame.window;
 
     const arena = try target_frame.getArena(.medium, "Window.postMessage");
     errdefer target_frame.releaseArena(arena);
 
     const transferred_ports = if (transfer) |list|
-        try MessagePort.processTransferList(list, &frame.js.execution, &target_frame.js.execution, arena)
+        try MessagePort.processTransferList(list, &source_frame.js.execution, &target_frame.js.execution, arena)
     else
         &[_]*MessagePort{};
 
@@ -846,11 +851,11 @@ pub fn postMessage(self: *Window, message: js.Value.Temp, target_origin: ?[]cons
     const cloned_message = blk: {
         var source_owned: js.Local.Scope = undefined;
         const source_local: *const js.Local = blk2: {
-            if (frame.js.local) |active| break :blk2 active;
-            frame.js.localScope(&source_owned);
+            if (source_frame.js.local) |active| break :blk2 active;
+            source_frame.js.localScope(&source_owned);
             break :blk2 &source_owned.local;
         };
-        defer if (frame.js.local == null) source_owned.deinit();
+        defer if (source_frame.js.local == null) source_owned.deinit();
 
         var target_owned: js.Local.Scope = undefined;
         target_frame.js.localScope(&target_owned);
@@ -873,13 +878,12 @@ pub fn postMessage(self: *Window, message: js.Value.Temp, target_origin: ?[]cons
         .origin = try arena.dupe(u8, origin),
     };
 
-    const cross_browsing_context = frame != target_frame;
+    const cross_browsing_context = source_frame != target_frame;
     // Child → parent must dispatch synchronously so the sender can observe the
     // recipient's reaction before its stack unwinds (reCAPTCHA v3, Turnstile
     // token delivery). Parent → child (Turnstile iframe bootstrap) must wait
     // until the iframe document is complete so internal message routers exist.
-    const child_to_parent = cross_browsing_context and frame.parent == target_frame;
-    const parent_to_child = cross_browsing_context and target_frame.parent == frame;
+    const parent_to_child = cross_browsing_context and target_frame.parent == source_frame;
 
     const event_target = target_frame.window.asEventTarget();
     const has_listeners = target_frame._event_manager.hasDirectListeners(
@@ -909,7 +913,14 @@ pub fn postMessage(self: *Window, message: js.Value.Temp, target_origin: ?[]cons
     const target_exec = &target_frame.js.execution;
     const defer_parent_reply = parent_to_child and
         (target_frame.js.call_depth > 0 or js.JsEntryGate.scriptEvalActive(target_exec));
-    const sync_dispatch = transferred_ports.len > 0 or child_to_parent or
+    // HTML's window.postMessage algorithm always queues a posted-message
+    // task. In particular, child → parent delivery must not enter the parent
+    // realm while the child script is still on the V8 stack: doing so breaks
+    // realm-entry invariants (Debug traps at an unreachable) and can expose
+    // the message before the sender returns. Keep the existing synchronous
+    // MessagePort transfer and ready parent → child bootstrap path, but route
+    // ordinary child → parent messages through the scheduler below.
+    const sync_dispatch = transferred_ports.len > 0 or
         (parent_to_child and !defer_parent_reply);
 
     if (defer_parent_reply) {
@@ -938,26 +949,6 @@ pub fn postMessage(self: *Window, message: js.Value.Temp, target_origin: ?[]cons
     }
 
     try schedulePostMessageDelivery(target_frame, callback);
-}
-
-/// Resolve MessageEvent.source for window.postMessage. Uses V8 incumbent context,
-/// with fallbacks for promise-job backup-incumbent cases where only a bound
-/// function (or entry realm) remains on the JS stack.
-fn resolvePostMessageSourceFrame(incumbent_frame: *Frame, relevant_frame: *Frame) *Frame {
-    if (incumbent_frame.parent) |parent| {
-        // Bound handler realm (e.g. current/) vs `this` (relevant/): use shared parent.
-        if (relevant_frame.parent == parent and incumbent_frame != parent) {
-            return parent;
-        }
-    }
-    // V8 incumbent fallback to entry realm — use `this` frame's parent document.
-    if (relevant_frame.parent) |rp| {
-        const page_root = &relevant_frame._page.frame;
-        if (incumbent_frame == page_root or incumbent_frame.parent == null) {
-            return rp;
-        }
-    }
-    return incumbent_frame;
 }
 
 fn schedulePostMessageDelivery(target_frame: *Frame, callback: *PostMessageCallback) !void {
