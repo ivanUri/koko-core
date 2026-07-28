@@ -230,6 +230,32 @@ const TestContext = struct {
         return null;
     }
 
+    pub fn getSentMessageById(self: *TestContext, id: i64) !?json.Value {
+        for (0..5) |_| {
+            try self.read();
+            for (self.received.items) |message| {
+                const object = switch (message) {
+                    .object => |object| object,
+                    else => continue,
+                };
+                const message_id = object.get("id") orelse continue;
+                switch (message_id) {
+                    .integer => |value| if (value == id) return message,
+                    else => {},
+                }
+            }
+
+            if (self.cdp_.browser_context) |*bc| {
+                if (bc.session.hasPage()) {
+                    var runner = try bc.session.runner(.{});
+                    _ = try runner.tick(.{ .ms = 1000 });
+                }
+            }
+            std.Thread.sleep(5 * std.time.ns_per_ms);
+        }
+        return null;
+    }
+
     fn read(self: *TestContext) !void {
         while (true) {
             const n = posix.read(self.socket, self.read_buf[self.read_at..]) catch |err| switch (err) {

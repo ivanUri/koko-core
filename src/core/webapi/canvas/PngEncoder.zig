@@ -101,9 +101,14 @@ test "PngEncoder: encode colored canvas" {
     const png_data = try encodePNG(buffer, allocator);
     defer allocator.free(png_data);
 
-    // Should produce valid PNG
-    try testing.expect(png_data.len > 100); // Reasonable size for 10x10 PNG
+    // A solid image compresses very efficiently, so byte length is not a
+    // validity signal. Verify the PNG signature and IHDR dimensions instead.
+    try testing.expect(png_data.len >= 33);
     try testing.expectEqual(@as(u8, 0x89), png_data[0]);
+    try testing.expectEqualStrings("IHDR", png_data[12..16]);
+    try testing.expectEqual(@as(u32, 10), std.mem.readInt(u32, png_data[16..20], .big));
+    try testing.expectEqual(@as(u32, 10), std.mem.readInt(u32, png_data[20..24], .big));
+    try testing.expectEqual(@as(u8, 6), png_data[25]); // RGBA
 }
 
 test "PngEncoder: deterministic output" {

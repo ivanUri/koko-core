@@ -20,7 +20,9 @@ pub const allocator = std.testing.allocator;
 pub const expectError = std.testing.expectError;
 pub const expect = std.testing.expect;
 pub const expectString = std.testing.expectEqualStrings;
+pub const expectEqualStrings = std.testing.expectEqualStrings;
 pub const expectEqualSlices = std.testing.expectEqualSlices;
+pub const expectApproxEqAbs = std.testing.expectApproxEqAbs;
 
 // sometimes it's super useful to have an arena you don't really care about
 // in a test. Like, you need a mutable string, so you just want to dupe a
@@ -46,6 +48,17 @@ const Notification = @import("../runtime/Notification.zig");
 // can be useful when testing fields of an anytype an you don't know
 // exactly how to assert equality
 pub fn expectEqual(expected: anytype, actual: anytype) !void {
+    switch (@typeInfo(@TypeOf(expected))) {
+        .null => return std.testing.expectEqual(null, actual),
+        .optional => {
+            if (expected) |value| {
+                return expectEqual(value, actual);
+            }
+            return std.testing.expectEqual(null, actual);
+        },
+        else => {},
+    }
+
     switch (@typeInfo(@TypeOf(actual))) {
         .array => |arr| if (arr.child == u8) {
             return std.testing.expectEqualStrings(expected, &actual);
@@ -339,9 +352,9 @@ pub fn htmlRunner(comptime path: []const u8, opts: HtmlRunnerOpts) !void {
     defer reset();
 
     const root = try std.fs.path.joinZ(arena_allocator, &.{ WEB_API_TEST_ROOT, path });
-    const stat = std.fs.cwd().statFile(root) catch |err| {
-        std.debug.print("Failed to stat file: '{s}'", .{root});
-        return err;
+    const stat = std.fs.cwd().statFile(root) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        else => return err,
     };
 
     switch (stat.kind) {
@@ -446,6 +459,12 @@ const PageTestOpts = struct {
     wait_until_done: bool = true,
 };
 pub fn pageTest(comptime test_file: []const u8, opts: PageTestOpts) !*Frame {
+    const fixture_path = try std.fs.path.joinZ(arena_allocator, &.{ WEB_API_TEST_ROOT, test_file });
+    std.fs.cwd().access(fixture_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+
     const frame = try test_session.createPage();
     errdefer test_session.removePage();
 
@@ -483,7 +502,7 @@ test "tests:beforeAll" {
 
     const test_allocator = @import("root").tracking_allocator;
 
-    test_config = try Config.init(test_allocator, "test", .{ .serve = .{
+    try test_config.initInPlace(test_allocator, "test", .{ .serve = .{
         .insecure_disable_tls_host_verification = true,
         .user_agent_suffix = "internal-tester",
         .ws_max_concurrent = 50,

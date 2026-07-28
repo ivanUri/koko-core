@@ -223,11 +223,12 @@ fn spliceUtf16(allocator: std.mem.Allocator, data: []const u8, offset: usize, de
     const effective_delete = @min(delete_count, total - offset);
 
     const prefix = try extractUtf16Range(allocator, data, 0, offset);
-    errdefer allocator.free(prefix);
+    defer allocator.free(prefix);
     const suffix = try extractUtf16Range(allocator, data, offset + effective_delete, total - offset - effective_delete);
-    errdefer allocator.free(suffix);
+    defer allocator.free(suffix);
 
     const result = try String.concat(allocator, &.{ prefix, insert, suffix });
+    defer result.deinit(allocator);
     // concat may return SSO on the stack; dupe before returning the slice.
     return try allocator.dupe(u8, result.str());
 }
@@ -623,7 +624,9 @@ test "utf16OffsetToUtf8" {
 }
 
 test "extractUtf16Range" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
     try std.testing.expectEqualStrings("ell", try extractUtf16Range(allocator, "hello", 1, 3));
     try std.testing.expectEqualStrings("hello", try extractUtf16Range(allocator, "hello", 0, 100));
@@ -637,10 +640,10 @@ test "extractUtf16Range" {
     {
         const result = try extractUtf16Range(allocator, "🌠 test 🌠 TEST", 1, 8);
         defer allocator.free(result);
-        try std.testing.expectEqual(@as(usize, 11), result.len);
+        try std.testing.expectEqual(@as(usize, 12), result.len);
         try std.testing.expectEqual(@as(u16, 0xDF20), readUtf16Seq(result, 0).units[0]);
         try std.testing.expectEqualStrings(" test ", result[3..9]);
-        try std.testing.expectEqual(@as(u16, 0xD83C), std.unicode.utf8Decode(result[9..12]));
+        try std.testing.expectEqual(@as(u16, 0xD83C), readUtf16Seq(result, 9).units[0]);
     }
 
     try std.testing.expectEqualStrings("st 🌠 TE", try extractUtf16Range(allocator, "🌠 test 🌠 TEST", 5, 8));

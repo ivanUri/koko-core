@@ -50,6 +50,7 @@ fn keysToJson(allocator: std.mem.Allocator, keys: []const []const u8) ![]const u
 /// preserves accessor identity, setters and writable/value semantics.
 fn buildPrototypeScript(allocator: std.mem.Allocator, keys: []const []const u8) ![]const u8 {
     const keys_json = try keysToJson(allocator, keys);
+    defer allocator.free(keys_json);
     return std.fmt.allocPrint(
         allocator,
         \\(function(){{const keys={s};const allowed=new Set(keys);const el=document.documentElement;let proto=Object.getPrototypeOf(el);while(proto&&proto!==Object.prototype){{const descs=Object.getOwnPropertyDescriptors(proto);const own=Object.getOwnPropertyNames(proto);for(const k of own){{const d=descs[k];if(!d||!d.configurable)continue;const enumerable=allowed.has(k);if(d.enumerable!==enumerable){{Object.defineProperty(proto,k,{{...d,enumerable}});descs[k]={{...d,enumerable}};}}}}const ordered=[];for(const k of keys){{if(Object.prototype.hasOwnProperty.call(descs,k)&&descs[k].configurable)ordered.push(k);}}for(const k of ordered)delete proto[k];for(const k of ordered)Object.defineProperty(proto,k,descs[k]);proto=Object.getPrototypeOf(proto);}}}})();

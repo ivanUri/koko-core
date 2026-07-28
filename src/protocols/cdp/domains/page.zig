@@ -989,11 +989,11 @@ test "cdp.frame: getFrameTree" {
         try ctx.expectSentResult(.{
             .frameTree = .{
                 .frame = .{
-                    .id = "FID-000000000X",
+                    .id = "FID-0000000001",
                     .loaderId = "LID-0000000001",
                     .url = "http://127.0.0.1:9582/src/browser/tests/hi.html",
                     .domainAndRegistry = "",
-                    .securityOrigin = bc.security_origin,
+                    .securityOrigin = "http://127.0.0.1:9582",
                     .mimeType = "text/html",
                     .adFrameStatus = .{
                         .adFrameType = "none",
@@ -1012,11 +1012,11 @@ test "cdp.frame: getFrameTree" {
         try ctx.expectSentResult(.{
             .frameTree = .{
                 .frame = .{
-                    .id = "FID-000000000X",
+                    .id = "FID-0000000001",
                     .loaderId = "LID-0000000001",
                     .url = "http://127.0.0.1:9582/src/browser/tests/hi.html",
                     .domainAndRegistry = "",
-                    .securityOrigin = bc.security_origin,
+                    .securityOrigin = "http://127.0.0.1:9582",
                     .mimeType = "text/html",
                     .adFrameStatus = .{
                         .adFrameType = "none",

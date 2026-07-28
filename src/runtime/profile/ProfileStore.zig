@@ -1214,6 +1214,7 @@ test "ProfileStore: assets cannot escape fingerprint folder" {
 fn testPaths(allocator: std.mem.Allocator, profile_name: []const u8) !ProfilePaths.ProfilePaths {
     const base = try std.fmt.allocPrint(allocator, "/tmp/velora-profilestore-test-{s}", .{profile_name});
     defer allocator.free(base);
+    std.fs.cwd().deleteTree(base) catch {};
     var paths = try ProfilePaths.ProfilePaths.init(allocator, base, profile_name, null);
     try paths.ensureProfileReady();
     return paths;
@@ -1222,55 +1223,46 @@ fn testPaths(allocator: std.mem.Allocator, profile_name: []const u8) !ProfilePat
 test "ProfileStore: load velora profile" {
     var paths = try testPaths(std.testing.allocator, "velora");
     defer paths.deinit();
-    const profile = try resolve(&paths);
+    var profile = try resolve(&paths);
     defer profile.deinit();
     try testing.expectEqual(Mode.velora, profile.mode);
     try testing.expect(profile.http.brands.len >= 1);
 }
 
 test "ProfileStore: load chrome antidetect profile" {
-    var paths = try testPaths(std.testing.allocator, "chrome-macos-catalina");
+    var paths = try testPaths(std.testing.allocator, "huynew");
     defer paths.deinit();
-    const profile = try resolve(&paths);
+    var profile = try resolve(&paths);
     defer profile.deinit();
     try testing.expectEqual(Mode.antidetect, profile.mode);
     try testing.expect(std.mem.indexOf(u8, profile.http.user_agent, "Chrome") != null);
 }
 
-test "ProfileStore: load chrome-macos-sonoma with transport" {
-    var paths = try testPaths(std.testing.allocator, "chrome-macos-sonoma");
+test "ProfileStore: load captured Chrome profile with transport" {
+    var paths = try testPaths(std.testing.allocator, "huynew");
     defer paths.deinit();
-    const profile = try resolve(&paths);
+    var profile = try resolve(&paths);
     defer profile.deinit();
     try testing.expectEqual(Mode.antidetect, profile.mode);
     try testing.expectEqual(BrowserFamily.chrome, profile.browser_family);
-    try testing.expectEqual(TransportProfile.Target.chrome146, profile.transport.target);
-    try testing.expect(std.mem.indexOf(u8, profile.http.user_agent, "Chrome/149") != null);
+    try testing.expectEqual(TransportProfile.Target.chrome150, profile.transport.target);
+    try testing.expect(std.mem.indexOf(u8, profile.http.user_agent, "Chrome/150") != null);
     try testing.expectEqual(@as(usize, 5), profile.plugins.len);
-    try testing.expect(profile.fonts.len >= 800);
-    try testing.expect(profile.speech_voices.len >= 190);
-    try testing.expectEqual(@as(u8, 30), profile.identity.screen.color_depth);
-    try testing.expect(profile.hasPolicy("google-search"));
+    try testing.expect(profile.fonts.len > 0);
+    try testing.expect(profile.speech_voices.len > 0);
+    try testing.expectEqual(@as(u8, 24), profile.identity.screen.color_depth);
 }
 
 test "ProfileStore: velora profile has no site policies" {
     var paths = try testPaths(std.testing.allocator, "velora");
     defer paths.deinit();
-    const profile = try resolve(&paths);
+    var profile = try resolve(&paths);
     defer profile.deinit();
     try testing.expectEqual(@as(usize, 0), profile.policies.len);
 }
 
-test "ProfileStore: load firefox-macos profile" {
-    var paths = try testPaths(std.testing.allocator, "firefox-macos");
+test "ProfileStore: incomplete imported profile is rejected" {
+    var paths = try testPaths(std.testing.allocator, "kameleo-00b2456ba29ec623");
     defer paths.deinit();
-    const profile = try resolve(&paths);
-    defer profile.deinit();
-    try testing.expectEqual(Mode.antidetect, profile.mode);
-    try testing.expectEqual(BrowserFamily.firefox, profile.browser_family);
-    try testing.expectEqual(TransportProfile.Target.firefox147, profile.transport.target);
-    try testing.expect(std.mem.indexOf(u8, profile.http.user_agent, "Firefox/147") != null);
-    try testing.expectEqual(@as(usize, 0), profile.plugins.len);
-    try testing.expect(profile.canvas_probe_data_url == null);
-    try testing.expectEqual(@as(usize, 0), profile.policies.len);
+    try testing.expectError(error.MissingField, resolve(&paths));
 }

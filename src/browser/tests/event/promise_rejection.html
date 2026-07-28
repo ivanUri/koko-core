@@ -2,6 +2,10 @@
 <meta charset="utf-8">
 <body>pending</body>
 <script>
+  window.testing = {
+    assertOk: () => document.body.id === "promise-rejection-pass",
+    printTimeoutState: () => console.log(document.body.textContent),
+  };
   let unhandled = 0;
   let handled = 0;
   const late = Promise.reject("late-handler");

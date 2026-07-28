@@ -84,5 +84,5 @@ test "BrowserRoot: dev layout finds default fingerprint folder" {
     const path = try joinPath(std.testing.allocator, root, "browser/fingerprints/velora/fingerprint.json");
     defer std.testing.allocator.free(path);
     _ = std.fmt.bufPrint(&buf, "{s}", .{path}) catch unreachable;
-    try testing.expect(std.fs.cwd().access(path, .{}) == .{});
+    try std.fs.cwd().access(path, .{});
 }

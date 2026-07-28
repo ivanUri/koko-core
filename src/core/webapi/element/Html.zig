@@ -329,6 +329,7 @@ pub fn click(self: *HtmlElement, frame: *Frame) !void {
         .clientX = 0,
         .clientY = 0,
     }, frame)).asEvent();
+    defer event.releaseRef(frame._page);
     try frame._event_manager.dispatch(self.asEventTarget(), event);
 }
 

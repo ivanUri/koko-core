@@ -813,6 +813,9 @@ const Document = @import("../dom/Document.zig");
 test "InputController: checkbox activation focuses target" {
     const frame = try testing.test_session.createPage();
     defer testing.test_session.removePage();
+    try frame.navigate("about:blank", .{});
+    var runner = try testing.test_session.runner(.{});
+    try runner.wait(.{ .ms = 1000 });
 
     const doc = frame.document;
     const html_doc = doc.is(Document.HTMLDocument).?;
@@ -831,6 +834,9 @@ test "InputController: checkbox activation focuses target" {
 test "InputController: refines html container to checkbox child" {
     const frame = try testing.test_session.createPage();
     defer testing.test_session.removePage();
+    try frame.navigate("about:blank", .{});
+    var runner = try testing.test_session.runner(.{});
+    try runner.wait(.{ .ms = 1000 });
 
     const doc = frame.document;
     const html_doc = doc.is(Document.HTMLDocument).?;

@@ -656,8 +656,10 @@ test "HttpProfile: secFetchSite same-origin" {
 }
 
 test "HttpProfile: cold document hop has no Downlink and Sec-Fetch-User" {
-    const alloc = testing.allocator;
-    var headers = try HttpClient.Headers.initEmpty();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var headers = HttpClient.Headers.initEmpty();
     defer headers.deinit();
 
     const identity = Profile.macos_catalina_intel;
@@ -721,8 +723,10 @@ test "HttpProfile: cold document hop has no Downlink and Sec-Fetch-User" {
 }
 
 test "HttpProfile: in-session document hop omits only Sec-Fetch-User" {
-    const alloc = testing.allocator;
-    var headers = try HttpClient.Headers.initEmpty();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var headers = HttpClient.Headers.initEmpty();
     defer headers.deinit();
 
     const identity = Profile.macos_catalina_intel;
@@ -777,8 +781,10 @@ test "HttpProfile: in-session document hop omits only Sec-Fetch-User" {
 }
 
 test "HttpProfile: iframe navigation uses iframe destination without user activation" {
-    const alloc = testing.allocator;
-    var headers = try HttpClient.Headers.initEmpty();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var headers = HttpClient.Headers.initEmpty();
     defer headers.deinit();
 
     const identity = Profile.macos_catalina_intel;
@@ -821,8 +827,10 @@ test "HttpProfile: iframe navigation uses iframe destination without user activa
 }
 
 test "HttpProfile: XHR metadata never contains navigation-only headers" {
-    const alloc = testing.allocator;
-    var headers = try HttpClient.Headers.initEmpty();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var headers = HttpClient.Headers.initEmpty();
     defer headers.deinit();
 
     const identity = Profile.macos_catalina_intel;
@@ -864,8 +872,10 @@ test "HttpProfile: XHR metadata never contains navigation-only headers" {
 }
 
 test "HttpProfile: explicit no-cors mode controls fetch metadata" {
-    const alloc = testing.allocator;
-    var headers = try HttpClient.Headers.initEmpty();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var headers = HttpClient.Headers.initEmpty();
     defer headers.deinit();
 
     const identity = Profile.macos_catalina_intel;
@@ -896,7 +906,9 @@ test "HttpProfile: explicit no-cors mode controls fetch metadata" {
 }
 
 test "HttpProfile: brandFullVersion maps Not A Brand to x.0.0.0" {
-    const alloc = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
     const ver = try brandFullVersion(alloc, .{ .brand = "Not)A;Brand", .version = "24" }, "149.0.7827.104");
     try testing.expectEqualStrings("24.0.0.0", ver);
     const chrome_ver = try brandFullVersion(alloc, .{ .brand = "Google Chrome", .version = "149" }, "149.0.7827.104");

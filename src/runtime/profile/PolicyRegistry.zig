@@ -339,7 +339,7 @@ fn parseSitePolicy(allocator: Allocator, bytes: []const u8) !SitePolicy {
 const testing = @import("../../testing/testing.zig");
 
 test "PolicyRegistry: loads google-search policy" {
-    const registry = try PolicyRegistry.init(testing.allocator);
+    var registry = try PolicyRegistry.init(testing.allocator);
     defer registry.deinit();
     try testing.expect(registry.policies.len == 1);
     try testing.expectString("google-search", registry.policies[0].id);
@@ -348,7 +348,7 @@ test "PolicyRegistry: loads google-search policy" {
 const google_search_policy = [_][]const u8{"google-search"};
 
 test "PolicyRegistry: antidetect match on google search URL" {
-    const registry = try PolicyRegistry.init(testing.allocator);
+    var registry = try PolicyRegistry.init(testing.allocator);
     defer registry.deinit();
     const url = "https://www.google.com/search?q=velora";
     const policy = registry.matchNavigation(.antidetect, &google_search_policy, url);
@@ -357,21 +357,21 @@ test "PolicyRegistry: antidetect match on google search URL" {
 }
 
 test "PolicyRegistry: velora mode skips antidetect-only policy" {
-    const registry = try PolicyRegistry.init(testing.allocator);
+    var registry = try PolicyRegistry.init(testing.allocator);
     defer registry.deinit();
     const url = "https://www.google.com/search?q=velora";
     try testing.expect(registry.matchNavigation(.velora, &google_search_policy, url) == null);
 }
 
 test "PolicyRegistry: antidetect without profile opt-in skips policy" {
-    const registry = try PolicyRegistry.init(testing.allocator);
+    var registry = try PolicyRegistry.init(testing.allocator);
     defer registry.deinit();
     const url = "https://www.google.com/search?q=velora";
     try testing.expect(registry.matchNavigation(.antidetect, &.{}, url) == null);
 }
 
 test "PolicyRegistry: http plugin matches any google.com URL" {
-    const registry = try PolicyRegistry.init(testing.allocator);
+    var registry = try PolicyRegistry.init(testing.allocator);
     defer registry.deinit();
     const plugin = registry.matchHttpPlugin(.antidetect, &google_search_policy, "https://www.google.com/gen_204?x");
     try testing.expect(plugin != null);

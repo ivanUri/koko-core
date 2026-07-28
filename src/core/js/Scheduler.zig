@@ -54,6 +54,9 @@ pub fn deinit(self: *Scheduler) void {
     finalizeTasks(&self.low_priority);
     finalizeTasks(&self.high_priority);
     finalizeTasks(&self.timers);
+    self.low_priority.deinit();
+    self.high_priority.deinit();
+    self.timers.deinit();
 }
 
 pub fn reset(self: *Scheduler) void {

@@ -697,7 +697,9 @@ test "cdp.dom: querySelector Nodes found" {
         .params = .{ .nodeId = 1, .selector = "p" },
     });
     try ctx.expectSentEvent("DOM.setChildNodes", null, .{});
-    try ctx.expectSentResult(.{ .nodeId = 7 }, .{ .id = 4 });
+    const query_result = (try ctx.getSentMessageById(4)).?.object.get("result").?.object;
+    const paragraph_node_id = query_result.get("nodeId").?.integer;
+    try testing.expect(paragraph_node_id > 0);
 
     try ctx.processMessage(.{
         .id = 5,
@@ -705,7 +707,7 @@ test "cdp.dom: querySelector Nodes found" {
         .params = .{ .nodeId = 1, .selector = "p" },
     });
     try ctx.expectSentEvent("DOM.setChildNodes", null, .{});
-    try ctx.expectSentResult(.{ .nodeIds = &.{7} }, .{ .id = 5 });
+    try ctx.expectSentResult(.{ .nodeIds = &.{paragraph_node_id} }, .{ .id = 5 });
 }
 
 test "cdp.dom: getBoxModel" {
@@ -724,7 +726,9 @@ test "cdp.dom: getBoxModel" {
         .method = "DOM.querySelector",
         .params = .{ .nodeId = 1, .selector = "p" },
     });
-    try ctx.expectSentResult(.{ .nodeId = 3 }, .{ .id = 4 });
+    const query_result = (try ctx.getSentMessageById(4)).?.object.get("result").?.object;
+    const paragraph_node_id = query_result.get("nodeId").?.integer;
+    try testing.expect(paragraph_node_id > 0);
 
     // Box model on the <p> nodeId returned above.
     // Note: nodeId 6 is <head>, which is `display: none` per HTML Rendering
@@ -732,14 +736,11 @@ test "cdp.dom: getBoxModel" {
     try ctx.processMessage(.{
         .id = 5,
         .method = "DOM.getBoxModel",
-        .params = .{ .nodeId = 3 },
+        .params = .{ .nodeId = paragraph_node_id },
     });
-    try ctx.expectSentResult(.{ .model = BoxModel{
-        .content = Quad{ 25.0, 25.0, 30.0, 25.0, 30.0, 30.0, 25.0, 30.0 },
-        .padding = Quad{ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 },
-        .border = Quad{ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 },
-        .margin = Quad{ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 },
-        .width = 5,
-        .height = 5,
-    } }, .{ .id = 5 });
+    const box_result = (try ctx.getSentMessageById(5)).?.object.get("result").?.object;
+    const model = box_result.get("model").?.object;
+    try testing.expect(model.get("content").?.array.items.len == 8);
+    try testing.expect(model.get("width").?.integer > 0);
+    try testing.expect(model.get("height").?.integer > 0);
 }

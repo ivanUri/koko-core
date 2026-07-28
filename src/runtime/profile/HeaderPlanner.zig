@@ -21,14 +21,14 @@ const testing = @import("../../testing/testing.zig");
 const google_search_policy = [_][]const u8{"google-search"};
 
 test "HeaderPlanner: velora mode skips x-browser" {
-    const registry = try PolicyRegistry.PolicyRegistry.init(testing.allocator);
+    var registry = try PolicyRegistry.PolicyRegistry.init(testing.allocator);
     defer registry.deinit();
     const plan = headerPlan(&registry, .velora, &google_search_policy, "https://www.google.com/search?q=test");
     try testing.expect(plan.header_plugin == null);
 }
 
 test "HeaderPlanner: antidetect enables x-browser on google.com" {
-    const registry = try PolicyRegistry.PolicyRegistry.init(testing.allocator);
+    var registry = try PolicyRegistry.PolicyRegistry.init(testing.allocator);
     defer registry.deinit();
     const plan = headerPlan(&registry, .antidetect, &google_search_policy, "https://www.google.com/gen_204?xyz");
     try testing.expect(plan.header_plugin != null);
@@ -36,7 +36,7 @@ test "HeaderPlanner: antidetect enables x-browser on google.com" {
 }
 
 test "HeaderPlanner: antidetect without profile opt-in skips x-browser" {
-    const registry = try PolicyRegistry.PolicyRegistry.init(testing.allocator);
+    var registry = try PolicyRegistry.PolicyRegistry.init(testing.allocator);
     defer registry.deinit();
     const plan = headerPlan(&registry, .antidetect, &.{}, "https://www.google.com/gen_204?xyz");
     try testing.expect(plan.header_plugin == null);

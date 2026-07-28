@@ -705,7 +705,7 @@ test "cdp.target: dispose after Runtime.evaluate then recreate browser context" 
         },
         .sessionId = bc.session_id.?,
     });
-    try ctx.expectSentCount(1);
+    try testing.expect((try ctx.getSentMessageById(11)) != null);
 
     try ctx.processMessage(.{
         .id = 12,
@@ -854,21 +854,21 @@ test "cdp.target: getTargetInfo" {
 
     // pretend we createdTarget first
     _ = try bc.session.createPage();
-    bc.target_id = "TID-000000000C".*;
+    bc.target_id = "TID-0000000001".*;
     {
         try ctx.processMessage(.{ .id = 10, .method = "Target.getTargetInfo", .params = .{ .targetId = "TID-8" } });
         try ctx.expectSentError(-31998, "UnknownTargetId", .{ .id = 10 });
     }
 
     {
-        try ctx.processMessage(.{ .id = 11, .method = "Target.getTargetInfo", .params = .{ .targetId = "TID-000000000C" } });
+        try ctx.processMessage(.{ .id = 11, .method = "Target.getTargetInfo", .params = .{ .targetId = "FID-0000000001" } });
         try ctx.expectSentResult(.{
             .targetInfo = .{
-                .targetId = "TID-000000000C",
+                .targetId = "FID-0000000001",
                 .type = "page",
                 .title = "",
                 .url = "about:blank",
-                .attached = true,
+                .attached = false,
                 .canAccessOpener = false,
             },
         }, .{ .id = 11 });

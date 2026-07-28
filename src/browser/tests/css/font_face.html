@@ -2,6 +2,10 @@
 <meta charset="utf-8">
 <body>pending</body>
 <script>
+  window.testing = {
+    assertOk: () => document.body.id === "font-face-pass",
+    printTimeoutState: () => console.log(document.body.textContent),
+  };
   (async () => {
     const face = new FontFace("missing", "local(velora-font-face-stable-promise-missing)");
     const loaded = face.loaded;

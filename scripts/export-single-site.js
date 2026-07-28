@@ -5,7 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
-const url = "https://abrahamjuliot.github.io/creepjs/";
+const url = "https://www.tiktok.com/@team_hanoi";
 // Chỉ cần sửa cấu hình trong khối này.
 const CONFIG = {
   url,

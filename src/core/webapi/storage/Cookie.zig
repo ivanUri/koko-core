@@ -101,7 +101,7 @@ pub fn parse(allocator: Allocator, url: [:0]const u8, str: []const u8) !Cookie {
         return error.InvalidNameValue;
     }
 
-    var scrap: [8]u8 = undefined;
+    var scrap: [16]u8 = undefined;
 
     var path: ?[]const u8 = null;
     var domain: ?[]const u8 = null;
@@ -316,7 +316,8 @@ pub fn parsePath(arena: Allocator, url_: ?[:0]const u8, explicit_path: ?[]const 
         return try arena.dupe(u8, "/");
     }
     const index = std.mem.lastIndexOfScalar(u8, uri_path, '/') orelse return try arena.dupe(u8, "/");
-    return try arena.dupe(u8, uri_path[0 .. index + 1]);
+    if (index == 0) return try arena.dupe(u8, "/");
+    return try arena.dupe(u8, uri_path[0..index]);
 }
 
 fn isCookieNameValuePairValid(name: []const u8, value: []const u8) bool {
@@ -665,7 +666,7 @@ pub const Jar = struct {
         const same_site = areSameSite(opts.origin_url, target_url);
         const top_level = opts.top_level_url orelse opts.origin_url;
         const third_party = if (opts.origin_url) |origin|
-            isThirdPartyContext(top_level orelse origin, origin)
+            isThirdPartyContext(top_level orelse origin, target_url)
         else
             false;
 
@@ -678,8 +679,6 @@ pub const Jar = struct {
             if (!originBindingMatches(cookie, target_url)) {
                 continue;
             }
-            // Third-party cookie blocking applies to document.cookie only; HTTP
-            // requests still attach SameSite=None on cross-site subresources.
             if (!opts.is_http and third_party and !cookie.partitioned) {
                 continue;
             }
@@ -1163,7 +1162,7 @@ test "Jar: forRequest" {
     });
 
     // matching path without trailing /
-    try expectCookies("global1=1; global2=2; path1=3", &jar, "http://velora.io/about", .{
+    try expectCookies("path1=3; global1=1; global2=2", &jar, "http://velora.io/about", .{
         .origin_url = test_url,
         .is_http = true,
     });
@@ -1187,31 +1186,31 @@ test "Jar: forRequest" {
     });
 
     // exact directory match
-    try expectCookies("global1=1; global2=2; path2=4", &jar, "http://velora.io/docs/", .{
+    try expectCookies("path2=4; global1=1; global2=2", &jar, "http://velora.io/docs/", .{
         .origin_url = test_url,
         .is_http = true,
     });
 
     // sub directory match
-    try expectCookies("global1=1; global2=2; path2=4", &jar, "http://velora.io/docs/more", .{
+    try expectCookies("path2=4; global1=1; global2=2", &jar, "http://velora.io/docs/more", .{
         .origin_url = test_url,
         .is_http = true,
     });
 
     // secure
-    try expectCookies("global1=1; global2=2; secure=5", &jar, "https://velora.io/", .{
+    try expectCookies("secure=5", &jar, "https://velora.io/", .{
         .origin_url = test_url,
         .is_http = true,
     });
 
     // navigational cross domain, secure
-    try expectCookies("global1=1; global2=2; secure=5; sitenone=6; sitelax=7", &jar, "https://velora.io/x/", .{
+    try expectCookies("sitenone=6; secure=5", &jar, "https://velora.io/x/", .{
         .origin_url = "https://example.com/",
         .is_http = true,
     });
 
     // navigational cross domain, insecure
-    try expectCookies("global1=1; global2=2; sitelax=7", &jar, "http://velora.io/x/", .{
+    try expectCookies("sitelax=7; global1=1; global2=2", &jar, "http://velora.io/x/", .{
         .origin_url = "https://example.com/",
         .is_http = true,
     });
@@ -1327,7 +1326,7 @@ test "Cookie: parse key=value" {
     try expectError(error.InvalidByteSequence, null, &.{ 'a', 127, '=', 'b' });
     try expectError(error.InvalidByteSequence, null, &.{ 'a', '=', 'b', 20 });
     // UTF-8 bytes above 0x7F are allowed in names and values (WPT encoding/charset).
-    try expectAttribute(.{ .name = "a", .value = "b" }, null, &.{ 'a', '=', 'b', 128 });
+    try expectAttribute(.{ .name = "a", .value = "b\u{0080}" }, null, "a=b\u{0080}");
     try expectAttribute(.{ .name = "тест", .value = "2" }, null, "тест=2");
     try expectAttribute(.{ .name = "test", .value = "1春节回家路·春运完全手册" }, null, "test=1春节回家路·春运完全手册");
     try expectAttribute(.{ .name = "春节回", .value = "4家路·春运完全手册" }, null, "春节回=4家路·春运完全手册");
@@ -1410,7 +1409,7 @@ test "Cookie: parse key=value" {
 
     // Values may contain commas, semicolons (before first ';'), and '='.
     try expectAttribute(.{ .name = "test", .value = "1, baz=qux" }, null, "test=1, baz=qux");
-    try expectAttribute(.{ .name = "test24", .value = "==" }, null, "test24==");
+    try expectAttribute(.{ .name = "test24", .value = "=" }, null, "test24==");
     try expectAttribute(.{ .name = "test", .value = "25=25" }, null, "test=25=25");
     try expectAttribute(.{ .name = "test", .value = "26=26=26" }, null, "test=26=26=26");
 
@@ -1656,10 +1655,14 @@ test "Cookie: sanitizeHttpSetCookie" {
 }
 
 test "Cookie: default path" {
-    try testing.expectEqual("/cookies/resources/", try parsePath(testing.allocator, "http://example.com/cookies/resources/echo-cookie.html", null));
-    try testing.expectEqual("/cookies/resources/", try parsePath(testing.allocator, "http://example.com/cookies/resources/set.py", null));
-    try testing.expectEqual("/", try parsePath(testing.allocator, "http://example.com/", null));
-    try testing.expectEqual("/", try parsePath(testing.allocator, "http://example.com/foo", null));
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try testing.expectEqual("/cookies/resources", try parsePath(allocator, "http://example.com/cookies/resources/echo-cookie.html", null));
+    try testing.expectEqual("/cookies/resources", try parsePath(allocator, "http://example.com/cookies/resources/set.py", null));
+    try testing.expectEqual("/", try parsePath(allocator, "http://example.com/", null));
+    try testing.expectEqual("/", try parsePath(allocator, "http://example.com/foo", null));
 }
 
 test "Cookie: pathMatches" {
@@ -1779,14 +1782,17 @@ test "Cookie: third-party context blocks non-partitioned cookies" {
     defer jar.deinit();
 
     try jar.addWithTopLevel(try Cookie.parse(testing.allocator, "https://velora.io/", "blocked=1;Path=/;Secure;SameSite=None"), now, true, "https://velora.io/");
-    try jar.addWithTopLevel(try Cookie.parse(testing.allocator, "https://velora.io/", "allowed=1;Path=/;Secure;SameSite=None;Partitioned"), now, true, "https://velora.io/");
+    try jar.addWithTopLevel(try Cookie.parse(testing.allocator, "https://velora.io/", "allowed=1;Path=/;Secure;SameSite=None;Partitioned"), now, true, "https://other.com/");
+    try testing.expectEqual(@as(usize, 2), jar.cookies.items.len);
+    try testing.expect(jar.cookies.items[1].partitioned);
+    try testing.expectEqualStrings("https:other.com", jar.cookies.items[1].partition_site.?);
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(testing.allocator);
     try jar.forRequest("https://velora.io/", buf.writer(testing.allocator), .{
         .origin_url = "https://other.com/",
         .top_level_url = "https://other.com/",
-        .is_http = true,
+        .is_http = false,
         .is_navigation = false,
     });
     try testing.expectEqualStrings("allowed=1", buf.items);

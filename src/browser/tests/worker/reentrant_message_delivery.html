@@ -2,6 +2,10 @@
 <meta charset="utf-8">
 <body>pending</body>
 <script>
+  window.testing = {
+    assertOk: () => document.body.id === "worker-reentrant-pass",
+    printTimeoutState: () => console.log(document.body.textContent),
+  };
   // A reply queues the next request from inside the current message handler.
   // The browser must deliver it in a later task, never recursively enter the
   // worker scheduler while this callback still owns its event and V8 locals.

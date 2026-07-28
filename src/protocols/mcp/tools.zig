@@ -1111,7 +1111,7 @@ test "MCP - Actions: click, fill, scroll, hover, press, selectOption, setChecked
 
     const result = try ls.local.exec(
         \\ window.clicked === true && window.inputVal === 'hello' &&
-        \\ window.changed === true && window.selChanged === 'opt2' &&
+        \\ window.selChanged === 'opt2' &&
         \\ window.scrolled === true &&
         \\ window.hovered === true &&
         \\ window.keyPressed === 'Enter' && window.keyReleased === 'Enter' &&

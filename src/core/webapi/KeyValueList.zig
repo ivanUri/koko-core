@@ -833,7 +833,7 @@ test "KeyValueList: set updates first match and preserves order" {
     try list.append(allocator, "c", "d");
     try list.set(allocator, "a", "B");
     try testing.expectEqual(@as(usize, 2), list.len());
-    try testing.expectString("b", list.get("a").?);
+    try testing.expectString("B", list.get("a").?);
     try testing.expectString("a", list.items()[0].name.str());
     try testing.expectString("B", list.items()[0].value.str());
     try testing.expectString("c", list.items()[1].name.str());

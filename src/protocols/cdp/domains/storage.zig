@@ -247,7 +247,8 @@ const testing = @import("../testing.zig");
 test "cdp.Storage: cookies" {
     var ctx = try testing.context();
     defer ctx.deinit();
-    _ = try ctx.loadBrowserContext(.{ .id = "BID-S" });
+    const bc = try ctx.loadBrowserContext(.{ .id = "BID-S" });
+    bc.session.cookie_jar.clearRetainingCapacity();
 
     // Initially empty
     try ctx.processMessage(.{

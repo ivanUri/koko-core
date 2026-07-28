@@ -94,7 +94,7 @@ fn digestBody(algorithm: []const u8, body: []const u8, scratch: std.mem.Allocato
         scratch.free(out);
         return error.DigestFailed;
     }
-    return out[0..out_len];
+    return try scratch.realloc(out, out_len);
 }
 
 fn metadataHashMatches(algorithm: []const u8, expected_hash: []const u8, body: []const u8, scratch: std.mem.Allocator) !bool {

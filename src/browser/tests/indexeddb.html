@@ -3,6 +3,10 @@
 
 <body>pending</body>
 <script>
+  window.testing = {
+    assertOk: () => document.body.id === "indexeddb-pass",
+    printTimeoutState: () => console.log(document.body.textContent),
+  };
   const order = [];
   const openRequest = indexedDB.open("velora-regression", 1);
   if (openRequest instanceof Promise) throw new Error("open returned Promise");

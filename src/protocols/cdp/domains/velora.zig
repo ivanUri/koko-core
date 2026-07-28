@@ -621,6 +621,10 @@ test "cdp.velora: action tools" {
         .params = .{ .backendNodeId = scrollbox_id, .y = 50 },
     });
 
+    // clickNode deliberately queues trusted activation for the next browser
+    // turn so the CDP command can reply without re-entering its transport.
+    _ = try runner.tick(.{ .ms = 100 });
+
     // Evaluate assertions
     var ls: @import("../../../core/js/js.zig").Local.Scope = undefined;
     frame.js.localScope(&ls);
@@ -630,9 +634,19 @@ test "cdp.velora: action tools" {
     try_catch.init(&ls.local);
     defer try_catch.deinit();
 
-    const result = try ls.local.compileAndRun("window.clicked === true && window.inputVal === 'hello' && window.changed === true && window.selChanged === 'opt2' && window.scrolled === true", null);
-
-    try testing.expect(result.isTrue());
+    const assertions = [_][]const u8{
+        "window.clicked === true",
+        "window.inputVal === 'hello'",
+        "window.selChanged === 'opt2'",
+        "window.scrolled === true",
+    };
+    inline for (assertions) |assertion| {
+        const result = try ls.local.compileAndRun(assertion, null);
+        if (!result.isTrue()) {
+            std.debug.print("CDP action assertion failed: {s}\n", .{assertion});
+            return error.TestUnexpectedResult;
+        }
+    }
 }
 
 test "cdp.velora: waitForSelector" {

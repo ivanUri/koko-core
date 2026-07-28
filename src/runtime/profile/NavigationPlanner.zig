@@ -99,18 +99,20 @@ fn applyPolicy(allocator: Allocator, policy: *const PolicyRegistry.SitePolicy, c
     }
 
     var prior_origin = ctx.prior_origin;
-    var referer = ctx.referer;
+    var generated_referer: ?[:0]const u8 = null;
+    errdefer if (generated_referer) |ref| allocator.free(ref);
     if (in_session) {
         if (rules.prior_origin) |origin| {
             if (prior_origin == null) prior_origin = try allocator.dupe(u8, origin);
         }
         if (rules.referer == .search_q_only) {
             const ref_src = if (policy.matchesNavigationUrl(ctx.prior_url)) ctx.prior_url else effective_url;
-            referer = try searchQOnlyReferer(allocator, ref_src);
+            generated_referer = try searchQOnlyReferer(allocator, ref_src);
         }
     }
 
-    const nav_referer = try defaultRefererFromPlan(allocator, ctx.prior_url, effective_url, referer);
+    const nav_referer = generated_referer orelse
+        try defaultRefererFromPlan(allocator, ctx.prior_url, effective_url, ctx.referer);
 
     const use_external_transport = blk: {
         const transport = rules.external_transport orelse break :blk false;
@@ -220,7 +222,7 @@ const testing = @import("../../testing/testing.zig");
 const google_search_policy = [_][]const u8{"google-search"};
 
 test "NavigationPlanner: velora mode is no-op" {
-    const registry = try PolicyRegistry.PolicyRegistry.init(testing.allocator);
+    var registry = try PolicyRegistry.PolicyRegistry.init(testing.allocator);
     defer registry.deinit();
 
     const plan = try navigationPlan(testing.allocator, .velora, &google_search_policy, &registry, .{
@@ -229,7 +231,7 @@ test "NavigationPlanner: velora mode is no-op" {
         .reason = .address_bar,
     });
     defer testing.allocator.free(plan.effective_url);
-    if (plan.referer) |ref| testing.allocator.free(ref);
+    defer if (plan.referer) |ref| testing.allocator.free(ref);
 
     try testing.expectString("https://www.google.com/search?q=test", plan.effective_url);
     try testing.expect(!plan.omit_cookies);
@@ -237,7 +239,7 @@ test "NavigationPlanner: velora mode is no-op" {
 }
 
 test "NavigationPlanner: antidetect first hop is cold omnibox (no priorOrigin, full headers)" {
-    const registry = try PolicyRegistry.PolicyRegistry.init(testing.allocator);
+    var registry = try PolicyRegistry.PolicyRegistry.init(testing.allocator);
     defer registry.deinit();
 
     const plan = try navigationPlan(testing.allocator, .antidetect, &google_search_policy, &registry, .{
@@ -246,8 +248,8 @@ test "NavigationPlanner: antidetect first hop is cold omnibox (no priorOrigin, f
         .reason = .address_bar,
     });
     defer testing.allocator.free(plan.effective_url);
-    if (plan.referer) |ref| testing.allocator.free(ref);
-    if (plan.prior_origin) |origin| testing.allocator.free(origin);
+    defer if (plan.referer) |ref| testing.allocator.free(ref);
+    defer if (plan.prior_origin) |origin| testing.allocator.free(origin);
 
     try testing.expect(!plan.curl_defaults_only);
     try testing.expect(!plan.omit_cookies);
@@ -257,7 +259,7 @@ test "NavigationPlanner: antidetect first hop is cold omnibox (no priorOrigin, f
 }
 
 test "NavigationPlanner: first hop uses Chrome transport when flag enabled" {
-    const registry = try PolicyRegistry.PolicyRegistry.init(testing.allocator);
+    var registry = try PolicyRegistry.PolicyRegistry.init(testing.allocator);
     defer registry.deinit();
 
     const plan = try navigationPlan(testing.allocator, .antidetect, &google_search_policy, &registry, .{
@@ -267,14 +269,14 @@ test "NavigationPlanner: first hop uses Chrome transport when flag enabled" {
         .external_transport_enabled = true,
     });
     defer testing.allocator.free(plan.effective_url);
-    if (plan.referer) |ref| testing.allocator.free(ref);
-    if (plan.prior_origin) |origin| testing.allocator.free(origin);
+    defer if (plan.referer) |ref| testing.allocator.free(ref);
+    defer if (plan.prior_origin) |origin| testing.allocator.free(origin);
 
     try testing.expect(plan.use_external_transport);
 }
 
 test "NavigationPlanner: sg_ss hop uses Chrome transport when flag enabled" {
-    const registry = try PolicyRegistry.PolicyRegistry.init(testing.allocator);
+    var registry = try PolicyRegistry.PolicyRegistry.init(testing.allocator);
     defer registry.deinit();
 
     const plan = try navigationPlan(testing.allocator, .antidetect, &google_search_policy, &registry, .{
@@ -284,14 +286,14 @@ test "NavigationPlanner: sg_ss hop uses Chrome transport when flag enabled" {
         .external_transport_enabled = true,
     });
     defer testing.allocator.free(plan.effective_url);
-    if (plan.referer) |ref| testing.allocator.free(ref);
-    if (plan.prior_origin) |origin| testing.allocator.free(origin);
+    defer if (plan.referer) |ref| testing.allocator.free(ref);
+    defer if (plan.prior_origin) |origin| testing.allocator.free(origin);
 
     try testing.expect(plan.use_external_transport);
 }
 
 test "NavigationPlanner: in-session redirect hop uses navigation reason" {
-    const registry = try PolicyRegistry.PolicyRegistry.init(testing.allocator);
+    var registry = try PolicyRegistry.PolicyRegistry.init(testing.allocator);
     defer registry.deinit();
 
     const plan = try navigationPlan(testing.allocator, .antidetect, &google_search_policy, &registry, .{
@@ -300,8 +302,8 @@ test "NavigationPlanner: in-session redirect hop uses navigation reason" {
         .reason = .navigation,
     });
     defer testing.allocator.free(plan.effective_url);
-    if (plan.referer) |ref| testing.allocator.free(ref);
-    if (plan.prior_origin) |origin| testing.allocator.free(origin);
+    defer if (plan.referer) |ref| testing.allocator.free(ref);
+    defer if (plan.prior_origin) |origin| testing.allocator.free(origin);
 
     try testing.expect(!plan.omit_cookies);
     try testing.expect(plan.omit_sec_fetch_user);
@@ -310,7 +312,7 @@ test "NavigationPlanner: in-session redirect hop uses navigation reason" {
 }
 
 test "NavigationPlanner: antidetect in-session omits sec-fetch-user keeps cookies" {
-    const registry = try PolicyRegistry.PolicyRegistry.init(testing.allocator);
+    var registry = try PolicyRegistry.PolicyRegistry.init(testing.allocator);
     defer registry.deinit();
 
     const plan = try navigationPlan(testing.allocator, .antidetect, &google_search_policy, &registry, .{
@@ -319,8 +321,8 @@ test "NavigationPlanner: antidetect in-session omits sec-fetch-user keeps cookie
         .reason = .address_bar,
     });
     defer testing.allocator.free(plan.effective_url);
-    if (plan.referer) |ref| testing.allocator.free(ref);
-    if (plan.prior_origin) |origin| testing.allocator.free(origin);
+    defer if (plan.referer) |ref| testing.allocator.free(ref);
+    defer if (plan.prior_origin) |origin| testing.allocator.free(origin);
 
     try testing.expect(!plan.omit_cookies);
     try testing.expect(plan.omit_sec_fetch_user);
@@ -330,7 +332,7 @@ test "NavigationPlanner: antidetect in-session omits sec-fetch-user keeps cookie
 }
 
 test "NavigationPlanner: antidetect without profile opt-in is no-op" {
-    const registry = try PolicyRegistry.PolicyRegistry.init(testing.allocator);
+    var registry = try PolicyRegistry.PolicyRegistry.init(testing.allocator);
     defer registry.deinit();
 
     const plan = try navigationPlan(testing.allocator, .antidetect, &.{}, &registry, .{
@@ -339,7 +341,7 @@ test "NavigationPlanner: antidetect without profile opt-in is no-op" {
         .reason = .address_bar,
     });
     defer testing.allocator.free(plan.effective_url);
-    if (plan.referer) |ref| testing.allocator.free(ref);
+    defer if (plan.referer) |ref| testing.allocator.free(ref);
 
     try testing.expect(!plan.curl_defaults_only);
     try testing.expect(!plan.omit_cookies);

@@ -294,8 +294,10 @@ test "Cache: CacheControl.parse" {
 
 test "Cache: tryCache stores ETag without Cache-Control" {
     const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
     const meta = try tryCache(
-        allocator,
+        arena.allocator(),
         0,
         "http://example.com/",
         200,

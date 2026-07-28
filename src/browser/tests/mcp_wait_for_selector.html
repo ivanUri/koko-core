@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<body>
+  <div id="existing">Existing</div>
+  <script>
+    setTimeout(() => {
+      const delayed = document.createElement("div");
+      delayed.id = "delayed";
+      delayed.textContent = "Delayed";
+      document.body.appendChild(delayed);
+    }, 50);
+  </script>
+</body>
+</html>

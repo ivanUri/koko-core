@@ -219,7 +219,7 @@ const testing = @import("../testing.zig");
 test "cdp.Emulation: setDeviceMetricsOverride updates layout" {
     var ctx = try testing.context();
     defer ctx.deinit();
-    _ = try ctx.loadBrowserContext(.{ .id = "BID-DM1" });
+    _ = try ctx.loadBrowserContext(.{ .id = "BID-DM1", .url = "mcp_actions.html" });
 
     try ctx.processMessage(.{
         .id = 1,

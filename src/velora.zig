@@ -126,3 +126,7 @@ pub fn assert(ok: bool, comptime msg: []const u8, args: anytype) void {
     log.err(.app, msg, args);
     std.debug.assert(ok);
 }
+
+test {
+    std.testing.refAllDecls(@This());
+}

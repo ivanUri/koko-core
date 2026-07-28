@@ -1,0 +1,46 @@
+<!doctype html>
+<html>
+<body>
+  <button id="btn">Click Me</button>
+  <input id="inp">
+  <select id="sel">
+    <option value="opt1">Option 1</option>
+    <option value="opt2">Option 2</option>
+  </select>
+  <div id="scrollbox" style="height: 40px; overflow: auto">
+    <div style="height: 200px">Scrollable content</div>
+  </div>
+  <button id="hoverTarget">Hover Me</button>
+  <input id="keyTarget">
+  <select id="sel2">
+    <option value="a">A</option>
+    <option value="b">B</option>
+  </select>
+  <input id="chk" type="checkbox">
+  <input id="rad" type="radio">
+  <script>
+    const btn = document.getElementById("btn");
+    const inp = document.getElementById("inp");
+    const sel = document.getElementById("sel");
+    const scrollbox = document.getElementById("scrollbox");
+    const hover = document.getElementById("hoverTarget");
+    const key = document.getElementById("keyTarget");
+    const sel2 = document.getElementById("sel2");
+    const chk = document.getElementById("chk");
+    const rad = document.getElementById("rad");
+    btn.addEventListener("click", () => window.clicked = true);
+    inp.addEventListener("input", () => window.inputVal = inp.value);
+    inp.addEventListener("change", () => window.changed = true);
+    sel.addEventListener("change", () => window.selChanged = sel.value);
+    scrollbox.addEventListener("scroll", () => window.scrolled = true);
+    hover.addEventListener("mouseover", () => window.hovered = true);
+    key.addEventListener("keydown", event => window.keyPressed = event.key);
+    key.addEventListener("keyup", event => window.keyReleased = event.key);
+    sel2.addEventListener("change", () => window.sel2Changed = sel2.value);
+    chk.addEventListener("click", () => window.chkClicked = true);
+    chk.addEventListener("change", () => window.chkChanged = true);
+    rad.addEventListener("click", () => window.radClicked = true);
+    rad.addEventListener("change", () => window.radChanged = true);
+  </script>
+</body>
+</html>

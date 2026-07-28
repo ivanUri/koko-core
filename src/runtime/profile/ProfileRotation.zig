@@ -22,9 +22,8 @@ pub fn pickFromPool(
 const testing = @import("../../testing/testing.zig");
 
 test "ProfileRotation: pick from pool" {
-    var buf: [8]u8 = undefined;
     var prng = std.Random.DefaultPrng.init(1234);
-    const name = try pickFromPool(std.testing.allocator, "chrome-macos-sonoma,chrome-windows-11", prng.random(&buf));
+    const name = try pickFromPool(std.testing.allocator, "chrome-macos-sonoma,chrome-windows-11", prng.random());
     defer std.testing.allocator.free(name);
     try testing.expect(std.mem.eql(u8, name, "chrome-macos-sonoma") or std.mem.eql(u8, name, "chrome-windows-11"));
 }

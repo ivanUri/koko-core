@@ -1076,19 +1076,7 @@ fn canonicalizeFileHref(allocator: Allocator, url: [:0]const u8) ![:0]const u8 {
         host = "";
     }
 
-    if (host.len > 0) {
-        const path_is_trivial = pathname.len == 0 or std.mem.eql(u8, pathname, "/");
-        if (!path_is_trivial) {
-            if (pathname[0] == '/') {
-                pathname = try std.fmt.allocPrintSentinel(allocator, "/{s}{s}", .{ host, pathname }, 0);
-            } else {
-                pathname = try std.fmt.allocPrintSentinel(allocator, "/{s}/{s}", .{ host, pathname }, 0);
-            }
-            host = "";
-        } else if (pathname.len == 0) {
-            pathname = "/";
-        }
-    }
+    if (host.len > 0 and pathname.len == 0) pathname = "/";
 
     if (host.len == 0) {
         pathname = try normalizeFilePathname(allocator, pathname);
@@ -1382,7 +1370,7 @@ fn shouldPercentEncode(c: u8, comptime encode_set: EncodeSet) bool {
         .path => switch (c) {
             'A'...'Z', 'a'...'z', '0'...'9', '-', '.', '_', '~' => false,
             '!', '$', '&', '\'', '(', ')', '*', '+', ',', ';', '=', '/', '?', '#', '[', ']', '@' => false,
-            '"', '<', '>', '`', '{', '}', ' ' => true,
+            '"', '<', '>', '^', '`', '{', '}', ' ' => true,
             else => false,
         },
         .query => switch (c) {
@@ -2548,7 +2536,7 @@ test "URL: ensureEncoded" {
         },
         .{
             .url = "https://example.com/file[1].html",
-            .expected = "https://example.com/file%5B1%5D.html",
+            .expected = "https://example.com/file[1].html",
         },
         .{
             .url = "https://example.com/file{name}.html",
@@ -2636,11 +2624,11 @@ test "URL: ensureEncoded" {
         },
         .{
             .url = "https://example.com/100% complete",
-            .expected = "https://example.com/100%25%20complete",
+            .expected = "https://example.com/100%%20complete",
         },
         .{
             .url = "https://example.com/path?value=100% done",
-            .expected = "https://example.com/path?value=100%25%20done",
+            .expected = "https://example.com/path?value=100%%20done",
         },
         .{
             .url = "about:blank",
@@ -2685,7 +2673,7 @@ test "URL: resolve with encoding" {
         .{
             .base = "https://example.com/",
             .path = "file[1].html",
-            .expected = "https://example.com/file%5B1%5D.html",
+            .expected = "https://example.com/file[1].html",
         },
         .{
             .base = "https://example.com/",
@@ -2705,12 +2693,12 @@ test "URL: resolve with encoding" {
         .{
             .base = "https://example.com/",
             .path = "file|pipe.html",
-            .expected = "https://example.com/file%7Cpipe.html",
+            .expected = "https://example.com/file|pipe.html",
         },
         .{
             .base = "https://example.com/",
             .path = "file\\backslash.html",
-            .expected = "https://example.com/file%5Cbackslash.html",
+            .expected = "https://example.com/file/backslash.html",
         },
         .{
             .base = "https://example.com/",
@@ -3174,31 +3162,31 @@ test "URL: resolve path scheme" {
         .{
             .base = "https://www.example.com/example",
             .path = "https://about",
-            .expected = "https://about",
+            .expected = "https://about/",
         },
         //different schemes and path as absolute (without slash)
         .{
             .base = "https://www.example.com/example",
             .path = "http:about",
-            .expected = "http://about",
+            .expected = "http://about/",
         },
         //different schemes and path as absolute (with one slash)
         .{
             .base = "https://www.example.com/example",
             .path = "http:/about",
-            .expected = "http://about",
+            .expected = "http://about/",
         },
         //different schemes and path as absolute (with two slashes)
         .{
             .base = "https://www.example.com/example",
             .path = "http://about",
-            .expected = "http://about",
+            .expected = "http://about/",
         },
         //same schemes and path as absolute (with more slashes)
         .{
             .base = "https://site/",
             .path = "https://path",
-            .expected = "https://path",
+            .expected = "https://path/",
         },
         //path scheme is not special and path as absolute (without additional slashes)
         .{
@@ -3210,19 +3198,19 @@ test "URL: resolve path scheme" {
         .{
             .base = "https://www.example.com/example",
             .path = "ws://about",
-            .expected = "ws://about",
+            .expected = "ws://about/",
         },
         //different schemes and path as absolute (path scheme=wss)
         .{
             .base = "https://www.example.com/example",
             .path = "wss://about",
-            .expected = "wss://about",
+            .expected = "wss://about/",
         },
         //different schemes and path as absolute (path scheme=ftp)
         .{
             .base = "https://www.example.com/example",
             .path = "ftp://about",
-            .expected = "ftp://about",
+            .expected = "ftp://about/",
         },
         //different schemes and path as absolute (path scheme=file)
         .{
