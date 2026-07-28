@@ -46,12 +46,33 @@ page_pool: std.heap.MemoryPool(Page),
 // run HttpClient.perform / V8 macrotasks concurrently on the same session.
 tick_mutex: std.Thread.Mutex = .{},
 
+// Host-owned cancellation is durable across V8 execution scopes. V8's
+// TerminateExecution flag is intentionally transient: script watchdogs may
+// clear it after containing one runaway evaluation. A CLI deadline, however,
+// applies to the whole browser operation and must remain observable by the
+// runner until that operation reaches its terminal path.
+host_termination_requested: std.atomic.Value(bool) = .init(false),
+
 // Inspector-driven Runtime.evaluate / callFunctionOn depth. Used to defer
 // commitPendingPage while CDP holds the active V8 context on the stack.
 cdp_eval_depth: u32 = 0,
 
 pub fn cdpInspectorBusy(self: *const Browser) bool {
     return self.cdp_eval_depth > 0;
+}
+
+pub fn requestHostTermination(self: *Browser) void {
+    self.host_termination_requested.store(true, .release);
+    self.env.terminate();
+}
+
+pub fn isHostTerminationRequested(self: *const Browser) bool {
+    return self.host_termination_requested.load(.acquire);
+}
+
+pub fn clearHostTermination(self: *Browser) void {
+    self.env.cancelTerminate();
+    self.host_termination_requested.store(false, .release);
 }
 
 const InitOpts = struct {

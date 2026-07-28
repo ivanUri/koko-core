@@ -1,109 +1,366 @@
-# Velora — Tổng quan mã nguồn (dành cho AI đọc trước khi code)
+# Velora Codebase Overview
 
-> **Mục đích của file này**: cho một phiên AI coding mới bức tranh đầy đủ về dự án Velora TRƯỚC KHI phải đọc lại hàng trăm file source. Đọc file này trước, sau đó mới đọc code cụ thể liên quan tới việc đang làm. Các file chi tiết hơn nằm ở `knowledge/codebase-map/` (tiếng Việt, dành riêng cho AI — khác với `knowledge/` gốc là ghi chép kỹ thuật tiếng Anh dành cho blog/kỹ sư, xem mục 7).
->
-> Viết dựa trên đọc trực tiếp source code + 1 phiên debug thực tế (điều tra vì sao export `grok.com` không vượt qua Cloudflare Turnstile — đã lần ra tận gốc rễ trong engine, xem `knowledge/codebase-map/pitfalls-and-invariants.md` mục 7).
+> This document gives engineers and coding agents a reliable starting point
+> before they modify Velora. It is an orientation guide, not a substitute for
+> reading the relevant implementation, its callers, tests, and architecture
+> notes. Read [`AGENTS.md`](AGENTS.md) before making changes.
 
-## 1. Velora là gì
+## 1. What Velora Is
 
-Browser engine headless viết **từ đầu bằng Zig** (không dựa trên Chromium), tối ưu cho automation/AI agent thay vì duyệt web tương tác của con người. Mục tiêu: nhẹ hơn, khởi động nhanh hơn, kiểm soát lifecycle chính xác hơn so với việc nhúng Chromium đầy đủ (qua Playwright/Puppeteer). Xem `README.md` để biết định vị sản phẩm; xem `AGENTS.md` để biết **luật kỹ thuật bắt buộc** khi sửa code (tóm tắt lại ở mục 6 bên dưới).
+Velora is an AI-first, headless browser runtime written primarily in Zig. It
+implements its own browser engine instead of embedding Chromium and is designed
+for automation, agents, crawling, testing, and programmable web execution.
 
-**Quy mô**: ~178,600 dòng Zig trong `src/`. 109 commit tính tới thời điểm khảo sát.
+The project focuses on:
 
-## 2. Kiến trúc 5 tầng
+- deterministic navigation and event ordering;
+- explicit browser, session, page, frame, and JavaScript-realm lifecycles;
+- DOM, HTML, CSS/layout, Web API, storage, and networking behavior;
+- CDP-compatible automation and MCP-native agent integration;
+- persistent browser profiles and fingerprint configuration;
+- lower-level control than a Chromium wrapper can provide.
 
-```
-Core Engine  ->  Runtime  ->  Protocols  ->  Adapters  ->  Public API
-src/core/        src/runtime/  src/protocols/  src/adapters/  src/public/
-```
+Velora is not intended to be a desktop-browser replacement. Its primary product
+surface is programmable browser infrastructure.
 
-| Tầng | Thư mục | Vai trò | Tài liệu chi tiết |
-|---|---|---|---|
-| Core Engine | `src/core/` (401 file) | DOM, HTML parser (html5ever/Rust), JS binding (V8), toàn bộ Web API (305 file trong `webapi/`) | [`knowledge/codebase-map/core-engine.md`](knowledge/codebase-map/core-engine.md) |
-| Runtime | `src/runtime/` (71 file) | Network stack (curl), ArenaPool, realm lifecycle, fingerprint/anti-detect profile (28 file), storage, telemetry | [`knowledge/codebase-map/runtime-and-network.md`](knowledge/codebase-map/runtime-and-network.md) |
-| Protocols | `src/protocols/` (30 file) | CDP (21 domain) + MCP (stdio) | [`knowledge/codebase-map/protocols-and-adapters.md`](knowledge/codebase-map/protocols-and-adapters.md) |
-| Adapters | `src/adapters/` (4 file) | CLI (`main.zig`) + Server (`velora serve`) | cùng file trên |
-| Public API | `src/public/` (4 file) | **Lưu ý: hiện phần lớn là stub chưa hiện thực** — xem mục 5 | cùng file trên |
+The repository currently contains roughly 500 Zig source files. The largest
+subsystem is `src/core/webapi/`, followed by the browser, DOM, JavaScript,
+network, profile, and protocol implementations.
 
-Ngoài ra: `src/support/` (tiện ích chung: logging, crash handler, FFI libcurl/libcrypto/zlib), `src/testing/` (server HTTP/WS giả cho test deterministic), `src/data/` (public suffix list).
+## 2. Architectural Model
 
-**Build system**: `build.zig` (52KB/1262 dòng) — xem [`knowledge/codebase-map/build-and-dependencies.md`](knowledge/codebase-map/build-and-dependencies.md) cho mọi chi tiết (cờ `-D...`, cách link V8/curl-impersonate/html5ever-Rust/WebRTC/nghttp2, cảnh báo `.zig-cache` có thể phình 20GB+).
+The source tree is organized into five main layers:
 
-## 3. Bắt đầu nhanh
-
-```bash
-zig build                                   # build Debug, ra ./zig-out/bin/velora
-./zig-out/bin/velora fetch --dump html https://example.com/
-./zig-out/bin/velora serve --host 127.0.0.1 --port 9222   # CDP server
-./zig-out/bin/velora mcp                    # MCP server qua stdio
-```
-
-Cờ CLI đầy đủ (tất cả `--wait-*`, `--http-*`, `--browser-profile`, `--log-*`...) đã được liệt kê nguyên văn từ `--help` thật trong `protocols-and-adapters.md` mục 5 — **không đoán cờ, tra bảng đó**.
-
-**Debug hành vi runtime**: luôn thử trước
-```bash
-./zig-out/bin/velora fetch --dump html --log-level debug --log-dir /tmp/vlog <url>
-```
-rồi soát `network/all.log` (đối chiếu `"intercept start"`/`"intercept done"` với `"release connection"` theo url) và `core/all.log` (đếm `microtask.checkpoint.*` bất thường = dấu hiệu busy-spin). Đây là kỹ thuật đã thực sự dùng để tìm ra root cause 1 bug treo event loop — xem case study đầy đủ trong `pitfalls-and-invariants.md` mục 7.
-
-## 4. Luồng dữ liệu 1 lần `fetch` (tóm tắt để định hướng đọc code)
-
-```
-main.zig → Config.parseArgsInPlace() → App.init()
-  → Frame.navigate(url) → HttpClient.request() (qua Network/curl)
-  → response → Parser.parse() (html5ever) → DOM tree
-  → ScriptManagerBase chạy <script> theo thứ tự static/defer/async
-  → JS thực thi trong V8 realm, gọi ngược DOM/Web API qua js/TaggedOpaque + webapi/
-  → Runner._tick() lặp tới khi điều kiện --wait-until thoả (hoặc hết --wait-ms)
-  → dump ra stdout theo --dump
+```text
+Adapters / entry points
+        |
+Protocols (CDP and MCP)
+        |
+Browser runtime and services
+        |
+Core browser engine
+        |
+Support libraries and native dependencies
 ```
 
-Mọi mắt xích trên đều đã được đọc trực tiếp và ghi chú chi tiết trong `core-engine.md`/`runtime-and-network.md`.
+The directory layout is:
 
-## 5. 3 điều dễ hiểu lầm nhất (đọc kỹ trước khi giả định)
-
-1. **`src/public/` KHÔNG phải API thật đang dùng.** Đã đọc trực tiếp `public/Frame.zig`: `goto()`/`content()`/`evalString()` là thân hàm rỗng. API thật là **CDP** (`velora serve`, dùng bởi SDK TypeScript ở repo riêng `velora-sdk`) và **CLI** (`velora fetch`).
-2. **"Không pass qua Cloudflare/anti-bot" không nhất thiết là bị phát hiện.** Trong ca thật đã điều tra, nguyên nhân là engine tự treo (busy-spin CPU) do 1 transfer HTTP không bao giờ được tầng curl đánh dấu hoàn tất — không liên quan gì tới fingerprint. Luôn kiểm tra network log trước khi kết luận "bị chặn".
-3. **Panic không có stack trace hữu ích là chuyện BÌNH THƯỜNG của repo này**, không phải máy bạn cấu hình sai — `build.zig` cố ý luôn strip debug info kể cả ở Debug build (workaround 1 bug thật của Zig 0.15.2 compiler). Dùng `lldb -o run -o "thread backtrace all"` thay vì trông chờ vào output panic mặc định.
-
-## 6. Luật bắt buộc khi sửa code (tóm tắt `AGENTS.md` — đọc file gốc để đủ chi tiết)
-
-- **Cấm** vá theo hostname/site cụ thể. Nếu fix không giải thích được mà không nhắc tên site → dừng lại, tìm invariant tổng quát của web platform đang bị vi phạm.
-- Sửa đúng component sở hữu invariant (DOM/CSS/navigation/event loop/networking/JS realm/serialization) — không vá bù ở lớp CLI/exporter/lifecycle sau.
-- Mọi arena/response/handle/listener/task phải có đúng 1 chủ sở hữu, đúng 1 đường giải phóng, an toàn qua mọi nhánh (success/error/cancel/navigate/timeout/shutdown/stale-realm).
-- Quy trình: reproduce + ghi bằng chứng → phát biểu invariant vi phạm → soát mọi caller liên quan → fix nhỏ nhất áp dụng chung → test tối thiểu không phụ thuộc mạng thật → test hẹp rồi rộng → site thật chỉ để kiểm tra tích hợp cuối, không encode vào logic production.
-- Còn có `.clinerules` (luật tương tự, ngắn gọn hơn, dùng bởi Cline) và `.grok/rules/` (luật cho Grok agent, gồm cả rule "sau mỗi fix quan trọng phải viết note vào `knowledge/`") — cả 3 bộ luật (`AGENTS.md`, `.clinerules`, `.grok/rules/`) đồng nhất về tinh thần: root-cause only, không hardcode/spoof, không vá riêng từng site.
-- Xem thêm `knowledge/codebase-map/pitfalls-and-invariants.md` cho danh sách cạm bẫy cụ thể đã gặp thật (ArenaPool leak, cancel-on-nav race, busy-spin event loop, Zig compiler bug...).
-
-## 7. Hai kho tài liệu khác nhau — đừng nhầm
-
-- **`knowledge/codebase-map/`** (thư mục này tạo ra) — tiếng Việt, mục đích DUY NHẤT là giúp AI đọc code nhanh hơn, cập nhật khi kiến trúc thay đổi lớn. Không cần theo chuẩn "blog-length".
-- **`knowledge/`** (gốc, đã tồn tại từ trước) — sổ tay kỹ thuật tiếng Anh CHÍNH THỨC của dự án, mỗi bài hướng tới trở thành 1 bài blog public (900–2500 từ tuỳ loại, xem `knowledge/README.md`). Chia theo: `architecture/` (quyết định kiến trúc), `bugs/` (post-mortem bug + WPT suite), `fingerprint/` (từng vector chống fingerprint), `captcha/` (reCAPTCHA/hCaptcha/Turnstile/Arkose), `automation/`, `performance/`, `research/`, `blog/`. **Trước khi báo "phát hiện bug mới", luôn grep tên hiện tượng trong `knowledge/bugs/` và `knowledge/architecture/` trước** — rất nhiều bug tưởng mới đã có người gặp và ghi chép.
-- Quy tắc riêng của `knowledge/`: viết bằng tiếng Anh, note = bản nháp chính thức (viết đủ dài ngay từ đầu, không viết ngắn rồi mở rộng sau), luôn có mục "Related Knowledge" liên kết bài khác.
-
-## 8. Bản đồ thư mục gốc (ngoài `src/`)
-
-| Thư mục/file | Nội dung |
+| Directory | Responsibility |
 |---|---|
-| `knowledge/` | Sổ tay kỹ thuật (mục 7) |
-| `knowledge/codebase-map/` | 4 file chi tiết bổ sung cho file này: `core-engine.md`, `runtime-and-network.md`, `protocols-and-adapters.md`, `build-and-dependencies.md`, `pitfalls-and-invariants.md` |
-| `docs/` | Tài liệu public ngắn: `homebrew.md` (publish qua Homebrew tap), `tls-impersonate.md`, `curl-impersonate-fork.md` |
-| `scripts/` | Script Node.js phụ trợ: `export-single-site.js`/`export-site.js` (export 1 hoặc nhiều URL ra HTML tĩnh qua `velora fetch`), `capture-fingerprint.js`, `convert-kameleo.js` (chuyển đổi fingerprint bundle định dạng Kameleo), `profile-bundle.mjs`, các `.sh`/`urls-*.txt` phục vụ test hàng loạt |
-| `browser/` | `fingerprints/` (bundle fingerprint theo profile, vd `huynew`, `velora`, `kameleo-*`) và `policies/` (policy JSON, vd `google-search.json` + `plugins/`) — dữ liệu cấu hình runtime, không phải code |
-| `exports/`, `export-logs/` | Output thật từ `velora fetch` (HTML đã export + log tương ứng) — dữ liệu làm việc, không phải nguồn |
-| `decoded_view/` | JSON đã giải mã từ 1 profile bundle cụ thể (`ic`, `local`, `opts`, `profile_bin`) — có vẻ là output debug/kiểm tra bundle |
-| `dist/` | Bản build đã đóng gói sẵn (`velora-1.0.1-darwin-arm64`, `velora-1.0.2-darwin-arm64` + tarball) |
-| `velora-test/` | File HTML test cố định nhỏ (`dom-heavy.html`, `js-compute.html`, `minimal.html`, `mixed.html`) — dùng cho benchmark/test local, không phụ thuộc mạng |
-| `packaging/` | Công thức Homebrew (`packaging/homebrew/velora.rb`) và tài nguyên đóng gói khác |
-| `vendor/` | Dependency vendor hoá: `curl-impersonate` (+ patches), `v8-wrapper`, `libidn2`, `stb_image_write`, `canvas_text_macos.c` |
-| `.velora-cache/` | Cache bootstrap V8 + depot_tools (nhiều GB — **không xoá tuỳ tiện**, xem `build-and-dependencies.md`) |
-| `.zig-cache/` | Cache biên dịch Zig (có thể phình 20GB+ — **an toàn để `rm -rf`**, sẽ tự tạo lại) |
-| `.github/workflows/release.yml` | CI: publish GitHub Release khi push tag `v*` hoặc chạy thủ công (`workflow_dispatch`) |
-| `.grok/` | Cấu hình + rules cho Grok CLI agent (`config.toml`, `hooks/`, `rules/`) |
-| `.clinerules` | Luật kỹ thuật cho Cline (tinh thần giống `AGENTS.md`, ngắn gọn hơn) |
-| `AGENTS.md` | **Luật kỹ thuật bắt buộc** — đọc trước khi sửa code (mục 6) |
-| `package.json` | Chỉ có 2 dependency Node (`playwright`, `ws`) + script `export-site` — phần Node CHỈ phục vụ script phụ trợ (`scripts/`), không phải phần chạy chính của Velora (đó là binary Zig) |
+| `src/core/` | Browser behavior: pages and frames, DOM, parsing, V8 bindings, Web APIs, XPath, semantic trees, and browser actions. |
+| `src/runtime/` | Process-level services: configuration, networking, storage, telemetry, profiles, lifecycle coordination, notifications, and arena pooling. |
+| `src/protocols/` | Automation-facing protocols: CDP domains and MCP tools/resources. |
+| `src/adapters/` | Executable entry points: CLI command dispatch and the CDP WebSocket server. |
+| `src/public/` | Experimental Zig wrapper API. It is not yet the primary supported product API. |
+| `src/support/` | Shared primitives, logging, crash handling, native interfaces, strings, allocators, and utility code. |
+| `src/testing/` | Deterministic unit/integration test harness, local HTTP/WebSocket servers, and test runner. |
+| `src/browser/tests/` | Local HTML fixtures used by browser, Web API, CDP, MCP, and lifecycle tests. |
+| `src/data/` | Generated or embedded data, including the public suffix list. |
 
-## 9. Khi nào cần cập nhật lại các file này
+The actual dependency graph confirms these boundaries: the CLI, CDP, and MCP
+packages are entry layers with mostly outbound calls, while `browser`, `dom`,
+`js`, `webapi`, `network`, and `profile` are the high-fan-in engine packages.
+CDP is the broadest protocol adapter because it coordinates browser, DOM,
+JavaScript, network, profile, and Web API state.
 
-Cập nhật `knowledge/codebase-map/*.md` khi: thêm/xoá 1 subsystem lớn, đổi kiến trúc event loop/lifecycle, đổi cờ CLI đáng kể, đổi dependency build lớn. KHÔNG cần cập nhật cho mỗi bug fix nhỏ — bug fix nhỏ nên vào `knowledge/bugs/` theo quy tắc ở mục 7.
+## 3. Runtime Ownership
+
+Understanding ownership is more important than memorizing individual functions.
+The main runtime objects are:
+
+```text
+App
+├── Network
+├── Storage and telemetry services
+├── ArenaPool
+└── configuration and embedded resources
+
+Browser
+├── V8 environment / isolate
+└── Session
+    ├── notification and scheduler state
+    └── Page / top-level Frame
+        ├── Document and DOM tree
+        ├── Window and JavaScript realm
+        ├── EventManager
+        ├── parser and script managers
+        └── child Frames
+```
+
+Important ownership rules:
+
+- `App` owns process-wide services and the shared arena pool.
+- A `Browser` owns its V8 isolate and must be created, used, and destroyed on
+  the same thread.
+- A `Session` owns browsing-session state, including pages, cookies, scheduling,
+  and protocol-visible page selection.
+- A page/frame generation owns its document, realm, event state, resource
+  handles, and navigation-scoped work.
+- Navigation invalidates stale document/realm state. Code must not retain
+  pointers or callbacks across generations without an explicit validity
+  contract.
+- Every acquired arena, response, listener, task, handle, and native resource
+  must have one owner and one terminal release path.
+
+Do not repair ownership defects with sleeps, retries, exporter cleanup, or
+post-processing. Fix the component that owns the violated invariant.
+
+## 4. Executable Modes and Public Surfaces
+
+The executable entry point is `src/adapters/cli/main.zig`. Configuration and
+command parsing live in `src/runtime/Config.zig`.
+
+Velora supports these command modes:
+
+| Command | Purpose |
+|---|---|
+| `velora fetch` | Navigate one page, wait for a lifecycle condition, and optionally dump HTML, Markdown, or another supported representation. |
+| `velora serve` | Run the CDP-compatible HTTP/WebSocket server. |
+| `velora mcp` | Run an MCP server over stdio, optionally with a local CDP endpoint. |
+| `velora profile` | Create, list, import, export, and manage persistent browser profiles. |
+| `velora help` / `velora version` | CLI metadata and usage. |
+
+The main supported automation surfaces are:
+
+1. **CDP server** — implemented in `src/protocols/cdp/` and exposed by
+   `velora serve`.
+2. **MCP server** — implemented in `src/protocols/mcp/` and exposed by
+   `velora mcp`.
+3. **CLI fetch path** — implemented by `src/velora.zig::fetch` and the CLI
+   adapter.
+4. **TypeScript SDK** — maintained in the separate
+   [`ivanUri/velora-sdk`](https://github.com/ivanUri/velora-sdk) repository and
+   communicates with the engine through CDP.
+
+The wrappers under `src/public/` are experimental. Some methods are thin
+wrappers while others are incomplete; do not assume this directory represents
+the production SDK contract.
+
+## 5. Navigation and Page Execution Flow
+
+A typical `velora fetch` operation follows this path:
+
+```text
+CLI main
+  -> Config.parseArgsInPlace
+  -> App.init
+  -> fetch worker thread
+  -> Browser.init
+  -> Browser.newSession
+  -> Session.createPage
+  -> Frame.navigate
+  -> network request pipeline
+  -> response and HTML parser
+  -> DOM construction
+  -> script scheduling and V8 execution
+  -> event loop / microtask checkpoints
+  -> Runner.wait
+  -> optional selector, click, or script wait
+  -> HTML / Markdown / semantic output
+  -> profile persistence and deterministic teardown
+```
+
+Key components to inspect for navigation-related work:
+
+| Concern | Primary implementation area |
+|---|---|
+| Browser/session/page lifecycle | `src/core/browser/Browser.zig`, `Session.zig`, `Page.zig`, `Frame.zig` |
+| URL parsing and mutation | `src/core/browser/URL.zig` |
+| HTTP scheduling and transfers | `src/core/browser/HttpClient.zig`, `src/runtime/network/` |
+| HTML parsing | `src/core/parser/`, `src/core/html5ever/` |
+| JavaScript realms and V8 | `src/core/js/`, frame realm lifecycle code |
+| Tasks and microtasks | `src/core/js/Scheduler.zig`, runner and frame tick paths |
+| DOM events and activation | `EventManager.zig`, `InputController.zig`, `src/core/webapi/event/` |
+| Cookies and storage | `src/core/webapi/storage/`, `src/runtime/storage/` |
+| Persistent profiles | `src/runtime/profile/`, `src/runtime/profile_session.zig` |
+| Serialization and extraction | `dump.zig`, `markdown.zig`, `src/core/semantic/` |
+
+## 6. Protocol Architecture
+
+### CDP
+
+`src/protocols/cdp/CDP.zig` coordinates connections, targets, sessions, and
+domain dispatch. Individual domains live under
+`src/protocols/cdp/domains/`.
+
+CDP is an adapter over engine state. A protocol fix should remain in CDP only
+when the engine already behaves correctly and the defect is specifically in
+CDP representation, identity, serialization, or command semantics. If the DOM,
+navigation, event, network, or lifecycle behavior itself is wrong, fix the core
+owner and keep CDP as a faithful projection.
+
+### MCP
+
+The MCP server lives under `src/protocols/mcp/`. It exposes navigation,
+evaluation, extraction, semantic-tree, form, and browser-action tools. Actions
+such as click, fill, hover, press, select, check, scroll, and selector waits must
+delegate to browser-level behavior rather than reproduce DOM semantics in the
+protocol layer.
+
+MCP node identifiers are protocol handles over live engine nodes. They must be
+treated as generation-scoped and invalidated when their owning page or document
+is replaced.
+
+## 7. Profiles, Fingerprints, and Network Policy
+
+Persistent profile behavior is implemented in `src/runtime/profile/` and
+`src/runtime/profile_session.zig`. Runtime profile data is stored under a
+Chrome-style user-data directory and can include cookies, local storage,
+fingerprint assets, HTTP behavior, and navigation policy.
+
+Repository-level profile data lives under:
+
+- `browser/fingerprints/` — fingerprint bundles and captured assets;
+- `browser/policies/` — declarative runtime policies and policy plugins.
+
+Profile and anti-detect behavior must remain declarative and site-independent.
+Never add production branches based on a hostname, product name, DOM shape, or
+third-party challenge implementation. A site may expose a browser defect, but
+the fix must be stated as a browser, networking, lifecycle, or serialization
+invariant.
+
+## 8. Building and Testing
+
+### Build
+
+```bash
+zig build
+```
+
+The executable is written to:
+
+```text
+zig-out/bin/velora
+```
+
+Common local commands:
+
+```bash
+./zig-out/bin/velora fetch --dump html https://example.com/
+./zig-out/bin/velora serve --host 127.0.0.1 --port 9222
+./zig-out/bin/velora mcp
+./zig-out/bin/velora profile list
+```
+
+Use `velora help` or inspect `src/runtime/Config.zig` for the authoritative
+option list. Do not guess option names from old scripts or notes.
+
+Velora currently targets Zig 0.15.2. `build.zig` defaults to stripped binaries,
+including Debug builds, as a workaround for Zig/LLVM debug-type crashes. For a
+diagnostic build, `-Dstrip=false` may provide better stack information, but it
+can re-expose the compiler issue documented in
+[`knowledge/codebase-map/build-and-dependencies.md`](knowledge/codebase-map/build-and-dependencies.md).
+
+### Unit and Integration Tests
+
+```bash
+zig build test
+```
+
+`src/velora.zig` uses `std.testing.refAllDecls` so the build discovers tests
+through the imported source graph. The custom runner supports:
+
+```bash
+TEST_FILTER='NavigationPlanner' zig build test
+TEST_VERBOSE=0 zig build test
+```
+
+Tests that need browser behavior should use deterministic local fixtures and
+the infrastructure in `src/testing/`. Do not make a third-party website the
+only regression test.
+
+Recommended validation order:
+
+1. run the smallest deterministic test that reproduces the invariant;
+2. run the relevant subsystem or filtered tests;
+3. run the complete `zig build test` suite;
+4. use a real website only as an integration check.
+
+## 9. Debugging Guidance
+
+For runtime behavior, start with structured logs:
+
+```bash
+./zig-out/bin/velora fetch \
+  --dump html \
+  --log-level debug \
+  --log-dir /tmp/velora-log \
+  https://example.com/
+```
+
+Useful evidence includes:
+
+- request start, headers, response completion, cancellation, and connection
+  release in network logs;
+- frame and navigation generations;
+- realm creation and destruction;
+- task queue and microtask checkpoints;
+- retained arenas or handles during teardown;
+- protocol request/response traces when the engine result and protocol result
+  differ.
+
+Do not infer an anti-bot or fingerprint failure solely from a blank page, a
+timeout, or an HTTP status. First establish whether the network transfer,
+parser, script scheduler, event loop, and lifecycle reached their expected
+terminal states.
+
+Because default binaries are stripped, a panic may not include source line
+information. Use an unstripped build when it compiles reliably, or run the
+binary under LLDB and correlate the result with structured logs and deterministic
+tests.
+
+## 10. Engineering Rules
+
+[`AGENTS.md`](AGENTS.md) is authoritative. The essential rules are:
+
+- Read the relevant implementation, surrounding callers, lifecycle ownership,
+  existing tests, and architecture/bug notes before changing code.
+- State the violated web-platform or browser invariant before implementing a
+  browser-behavior fix.
+- Fix the lowest correct, site-independent abstraction.
+- Never branch on a website hostname, URL, product name, CSS selector, DOM
+  shape, or framework fingerprint.
+- Preserve success, failure, cancellation, navigation, timeout, shutdown, and
+  stale-realm terminal paths.
+- Give every resource exactly one owner and one terminal release path.
+- Define cache keys, generations, and invalidation contracts explicitly.
+- Add deterministic regression coverage for every fix.
+- Report remaining failures separately; do not hide them with sleeps,
+  retries, fallback CSS, DOM rewriting, or exporter post-processing.
+
+If a proposed fix cannot be explained without naming the site that exposed it,
+redesign the fix around the underlying browser invariant.
+
+## 11. Repository Map
+
+| Path | Contents |
+|---|---|
+| `knowledge/` | Architecture decisions, bug investigations, browser research, automation notes, and technical write-ups. |
+| `knowledge/codebase-map/` | Deeper subsystem maps covering the core engine, runtime/networking, protocols/adapters, build system, and known invariants. |
+| `docs/` | User-facing installation, packaging, TLS, and benchmark documentation. |
+| `scripts/` | Development utilities for exporting pages, profiles, fingerprints, benchmarks, and bulk checks. |
+| `browser/` | Declarative fingerprint bundles and runtime policies. |
+| `packaging/` | Distribution and Homebrew packaging files. |
+| `vendor/` | Vendored native dependencies and local patches. |
+| `dist/` | Packaged release artifacts when present. |
+| `exports/`, `export-logs/` | Generated integration outputs and logs; these are evidence/artifacts, not engine source. |
+| `.velora-cache/` | Large bootstrapped dependency cache, including V8/depot_tools data. |
+| `.zig-cache/` | Regenerable Zig build cache. |
+| `.github/workflows/` | Release and repository automation. |
+
+The Node.js files in this repository support development and export tooling;
+the browser engine itself is the Zig binary.
+
+## 12. Documentation Maintenance
+
+Update this overview when:
+
+- a major subsystem or public execution mode is added or removed;
+- ownership boundaries or navigation/realm lifecycle architecture changes;
+- CDP, MCP, or the supported SDK surface changes materially;
+- build or test entry points change;
+- profile or storage architecture changes.
+
+Record focused bug investigations under `knowledge/bugs/` and architectural
+decisions under `knowledge/architecture/`. Before documenting a newly discovered
+failure, search those directories for existing work on the same invariant.

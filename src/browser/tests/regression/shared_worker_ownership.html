@@ -1,0 +1,8 @@
+<!doctype html>
+<script>
+  const source = "onconnect = () => {}";
+  const url = URL.createObjectURL(
+    new Blob([source], { type: "text/javascript" }),
+  );
+  globalThis.worker = new SharedWorker(url, "ownership-regression");
+</script>

@@ -17,6 +17,7 @@ const js = @import("../js/js.zig");
 const URL = @import("URL.zig");
 const U = @import("../browser/URL.zig");
 const Frame = @import("../browser/Frame.zig");
+const log = @import("../../support/log.zig");
 
 const Location = @This();
 
@@ -116,7 +117,22 @@ pub fn replace(_: *const Location, url: [:0]const u8, frame: *Frame) !void {
 }
 
 pub fn reload(_: *const Location, frame: *Frame) !void {
-    return frame.scheduleNavigation(frame.url, .{ .reason = .script, .kind = .reload }, .{ .script = frame });
+    if (std.posix.getenv("VELORA_NAVIGATION_TRACE") != null) {
+        log.info(.browser, "Location.reload", .{
+            .url = frame.url,
+            .frame_id = frame._frame_id,
+            .realm = frame.realmState(),
+        });
+    }
+    // Reload is a document navigation even though its target URL is identical
+    // to the current URL. Without force, scheduleNavigation's same-URL guard
+    // correctly treats ordinary location assignments as no-ops but incorrectly
+    // swallows Location.reload().
+    return frame.scheduleNavigation(frame.url, .{
+        .reason = .script,
+        .kind = .reload,
+        .force = true,
+    }, .{ .script = frame });
 }
 
 pub fn toString(self: *const Location, frame: *Frame) [:0]const u8 {
@@ -150,3 +166,28 @@ pub const JsApi = struct {
     pub const replace = bridge.function(Location.replace, .{});
     pub const reload = bridge.function(Location.reload, .{});
 };
+
+const testing = @import("../../testing/testing.zig");
+test "Location.reload queues a same-URL document navigation" {
+    const frame = try testing.pageTest("hi.html", .{});
+    defer testing.test_session.removePage();
+
+    try Location.reload(frame.window._location, frame);
+
+    const queued = frame._queued_navigation orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(.reload, queued.opts.kind);
+    try std.testing.expect(queued.opts.force);
+}
+
+test "Location.replace queues a same-URL document navigation" {
+    const frame = try testing.pageTest("hi.html", .{});
+    defer testing.test_session.removePage();
+
+    try Location.replace(frame.window._location, frame.url, frame);
+
+    const queued = frame._queued_navigation orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(
+        @import("navigation/root.zig").NavigationType.replace,
+        queued.opts.kind.toNavigationType(),
+    );
+}

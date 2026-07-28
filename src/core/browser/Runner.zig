@@ -79,6 +79,11 @@ fn _wait(self: *Runner, comptime is_cdp: bool, opts: WaitOpts) !CDPWaitResult {
     var gc_hint_timer = std.time.Timer.start() catch unreachable;
 
     while (true) {
+        // A host deadline is an operation-level cancellation, not merely a V8
+        // evaluation interruption. Finish the wait so callers can serialize the
+        // last committed document and then run normal ownership-safe teardown.
+        if (self.session.browser.isHostTerminationRequested()) return .done;
+
         if (gc_hint_timer.read() >= gc_hint_period_ns) {
             gc_hint_timer.reset();
             self.frame._page.cleanupClosedPopups();
@@ -96,6 +101,7 @@ fn _wait(self: *Runner, comptime is_cdp: bool, opts: WaitOpts) !CDPWaitResult {
         self.session.drainDeferredCommit();
 
         const tick_result = self._tick(is_cdp, tick_opts) catch |err| {
+            if (self.session.browser.isHostTerminationRequested()) return .done;
             switch (err) {
                 error.JsError => {}, // already logged (with hopefully more context)
                 else => log.err(.browser, "session wait", .{
@@ -556,4 +562,17 @@ test "Runner: waitForScript" {
 
     var runner = try frame._session.runner(.{});
     try runner.waitForScript("document.querySelector('#sel1')", 10);
+}
+
+test "Runner: host termination ends a browser wait" {
+    defer testing.reset();
+    const frame = try testing.pageTest("runner/runner1.html", .{});
+    defer frame._session.removePage();
+
+    const browser = frame._session.browser;
+    browser.requestHostTermination();
+    defer browser.clearHostTermination();
+
+    var runner = try frame._session.runner(.{});
+    try runner.wait(.{ .ms = 60_000, .until = .done });
 }

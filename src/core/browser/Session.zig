@@ -234,6 +234,11 @@ fn allocatePage(self: *Session, frame_id: u32) !*Page {
 }
 
 fn finishDestroyPage(self: *Session, page: *Page) void {
+    // SharedWorkerRuntime currently owns a realm assembled from its creator
+    // Page's factory and registries. Tear it down while that Page is still
+    // valid; destroying the Page first leaves Context.page dangling during
+    // realm cleanup (for example BroadcastChannel detachment).
+    self.destroySharedWorkersOwnedBy(page);
     page.deinit();
     self.browser.page_pool.destroy(page);
 }
@@ -973,6 +978,26 @@ pub fn getOrCreateSharedWorkerRuntime(self: *Session, params: SharedWorkerRuntim
 
 pub fn unregisterSharedWorkerRuntime(self: *Session, runtime: *SharedWorkerRuntime) void {
     _ = self._shared_workers.remove(runtime.identity_key);
+}
+
+fn destroySharedWorkersOwnedBy(self: *Session, page: *Page) void {
+    if (self._shared_workers.count() == 0) return;
+
+    // Runtime.destroy mutates the registry, so snapshot matching values first.
+    var owned: std.ArrayList(*SharedWorkerRuntime) = .{};
+    var it = self._shared_workers.valueIterator();
+    while (it.next()) |runtime| {
+        if (runtime.*.owner_page == page) {
+            owned.append(self.arena, runtime.*) catch {
+                // Teardown cannot leave a runtime pointing into a Page that is
+                // about to be freed. Destroy immediately if snapshot growth
+                // fails; reset iteration because the map was mutated.
+                runtime.*.destroy();
+                return self.destroySharedWorkersOwnedBy(page);
+            };
+        }
+    }
+    for (owned.items) |runtime| runtime.destroy();
 }
 
 fn destroySharedWorkers(self: *Session) void {

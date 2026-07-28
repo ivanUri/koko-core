@@ -53,13 +53,10 @@ pub fn constructor(
         return error.SyntaxError;
     }
 
-    const arena = try session.getArena(.small, "SharedWorker");
-    errdefer session.releaseArena(arena);
-
-    const resolved_url = try URL.resolve(arena, exec.url.*, url, .{ .encoding = frame.charset });
+    const resolved_url = try URL.resolve(frame.arena, exec.url.*, url, .{ .encoding = frame.charset });
     const normalized = normalizeOptions(options);
 
-    const identity_key = try makeIdentityKey(arena, frame.origin, resolved_url, name);
+    const identity_key = try makeIdentityKey(frame.arena, frame.origin, resolved_url, name);
     const runtime = try session.getOrCreateSharedWorkerRuntime(.{
         .frame = frame,
         .resolved_url = resolved_url,
@@ -68,7 +65,7 @@ pub fn constructor(
         .options = normalized,
     });
 
-    const self = try frame._factory.eventTargetWithAllocator(arena, SharedWorker{
+    const self = try frame._factory.eventTarget(SharedWorker{
         ._proto = undefined,
         ._port = null,
         ._runtime = runtime,
@@ -228,6 +225,11 @@ pub const SharedWorkerRuntime = struct {
 
     arena: Allocator,
     session: *Session,
+    /// The current worker realm is built from this Page's factory, origin
+    /// registry, and lifecycle-owned web-platform state. Until shared-worker
+    /// realms have a fully session-owned environment, the runtime must be
+    /// destroyed before this Page.
+    owner_page: *@import("../browser/Page.zig"),
     identity_key: []const u8,
     resolved_url: [:0]const u8,
     name: []const u8,
@@ -269,6 +271,7 @@ pub const SharedWorkerRuntime = struct {
         self.* = .{
             .arena = arena,
             .session = session,
+            .owner_page = params.frame._page,
             .identity_key = identity_key,
             .resolved_url = resolved_url,
             .name = name,
@@ -377,3 +380,15 @@ pub const JsApi = struct {
     pub const port = bridge.accessor(SharedWorker.getPort, null, .{});
     pub const onerror = bridge.accessor(SharedWorker.getOnError, SharedWorker.setOnError, .{});
 };
+
+const testing = @import("../../testing/testing.zig");
+test "SharedWorker runtime host is session-owned, not frame-owned" {
+    const session = testing.test_session;
+    const runtime_count_before = session._shared_workers.count();
+    const frame = try testing.pageTest("regression/shared_worker_ownership.html", .{});
+
+    try std.testing.expectEqual(@as(usize, 0), frame.workers.items.len);
+    try std.testing.expectEqual(runtime_count_before + 1, session._shared_workers.count());
+    session.removePage();
+    try std.testing.expectEqual(runtime_count_before, session._shared_workers.count());
+}

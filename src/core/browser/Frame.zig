@@ -1956,17 +1956,14 @@ fn scheduleNavigationWithArena(originator: *Frame, arena: Allocator, request_url
     };
 
     const session = target._session;
-    // Same URL (including identical fragment): no-op unless forced reload.
-    // SPA code often sets location.hash to its current value; treating that as
-    // a full navigation hangs the load pipeline and WPT harness.
-    if (!opts.force and std.mem.eql(u8, target.url, resolved_url)) {
-        session.releaseArena(arena);
-        return;
-    }
     // Short-circuit true fragment-only navigations (same path/query, different
-    // fragment). Keeps history/location SPA updates off the network path.
+    // fragment). Exact same-fragment assignments are filtered by Location's
+    // hash setter before reaching this path. A full location assign/replace to
+    // the current document URL is still a document navigation in browsers.
     const is_fragment_navigation = URL.eqlDocument(target.url, resolved_url);
-    if (!opts.force and is_fragment_navigation) {
+    if (!opts.force and is_fragment_navigation and
+        !std.mem.eql(u8, target.url, resolved_url))
+    {
         target.url = try target.arena.dupeZ(u8, resolved_url);
         target.window._location = try Location.init(target.url, target);
         if (target.parent == null) {

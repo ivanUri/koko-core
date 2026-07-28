@@ -1100,6 +1100,20 @@ fn settleFetchDone(self: *Fetch) !void {
     self._owns_response = false;
     self._fetch_resolved = true;
 
+    // Opt-in diagnostics for successful fetch bodies. Wire-header capture
+    // cannot explain application-level state transitions whose decision is in
+    // a small JSON response. Keep this disabled by default and bounded so it
+    // cannot turn arbitrary downloads into unbounded logs.
+    if (std.posix.getenv("VELORA_FETCH_BODY_LOG") != null) {
+        const body = self._buf.items[0..@min(self._buf.items.len, 4096)];
+        log.info(.http, "fetch response body", .{
+            .url = self._url,
+            .len = self._buf.items.len,
+            .body = body,
+            .truncated = body.len != self._buf.items.len,
+        });
+    }
+
     const env = exec.context.env;
     if (env.checkpoint_active) {
         ls.toLocal(self._resolver).resolve("fetch done", js_val);

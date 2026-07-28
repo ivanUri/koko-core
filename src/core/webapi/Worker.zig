@@ -164,7 +164,6 @@ pub fn initSharedHost(
     });
     self._worker_scope = try WorkerGlobalScope.init(self, resolved_url, true);
     errdefer self._worker_scope.deinit();
-    try frame.trackWorker(self);
 
     if (std.mem.startsWith(u8, url, "blob:")) {
         const blob: *Blob = frame.js.execution.lookupBlobUrl(url) orelse {

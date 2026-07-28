@@ -242,27 +242,32 @@ fn run(allocator: Allocator, main_arena: Allocator) !void {
 const FetchTerminator = struct {
     mutex: std.Thread.Mutex = .{},
     browser: ?*v.Browser = null,
+    requested: bool = false,
 
     fn storeBrowser(self: *FetchTerminator, browser: *v.Browser) void {
         self.mutex.lock();
         defer self.mutex.unlock();
         self.browser = browser;
+        // Preserve a deadline that races browser initialization. Listener
+        // registration happens before the worker is spawned, so cancellation
+        // must be durable even while there is no isolate to interrupt yet.
+        if (self.requested) browser.requestHostTermination();
     }
 
     fn releaseBrowser(self: *FetchTerminator) void {
         self.mutex.lock();
         defer self.mutex.unlock();
         const b = self.browser orelse return;
-        b.env.cancelTerminate();
+        b.clearHostTermination();
         self.browser = null;
     }
 
     fn terminate(self: *FetchTerminator) void {
         self.mutex.lock();
         defer self.mutex.unlock();
+        self.requested = true;
         const b = self.browser orelse return;
-        b.env.terminate();
-        self.browser = null;
+        b.requestHostTermination();
     }
 };
 
