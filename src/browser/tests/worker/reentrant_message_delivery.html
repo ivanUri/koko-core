@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+  // A reply queues the next request from inside the current message handler.
+  // The browser must deliver it in a later task, never recursively enter the
+  // worker scheduler while this callback still owns its event and V8 locals.
+  const source = `
+    onmessage = ({ data }) => {
+      postMessage(data);
+    };
+  `;
+  const worker = new Worker(URL.createObjectURL(new Blob([source], { type: "text/javascript" })));
+  const seen = [];
+  let handlerActive = false;
+
+  worker.onmessage = ({ data }) => {
+    if (handlerActive) throw new Error("worker message delivery was reentrant");
+    handlerActive = true;
+    seen.push(data);
+    if (data < 24) worker.postMessage(data + 1);
+    handlerActive = false;
+
+    if (data === 24) {
+      const expected = Array.from({ length: 25 }, (_, i) => i).join(",");
+      if (seen.join(",") !== expected) throw new Error(`message order: ${seen}`);
+      worker.terminate();
+      document.body.id = "worker-reentrant-pass";
+      document.body.textContent = "worker-reentrant-pass";
+    }
+  };
+  worker.postMessage(0);
+</script>

@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+  (async () => {
+    const face = new FontFace("missing", "local(velora-font-face-stable-promise-missing)");
+    const loaded = face.loaded;
+
+    if (face.status !== "unloaded") throw new Error(`initial status: ${face.status}`);
+    if (face.loaded !== loaded) throw new Error("loaded promise is not stable");
+
+    const firstLoad = face.load();
+    if (firstLoad !== loaded || face.load() !== loaded) {
+      throw new Error("load() did not return the stable loaded promise");
+    }
+
+    try {
+      await firstLoad;
+      throw new Error("missing local font unexpectedly loaded");
+    } catch (error) {
+      if (error.name !== "NetworkError") throw error;
+    }
+
+    if (face.status !== "error") throw new Error(`terminal status: ${face.status}`);
+    document.body.id = "font-face-pass";
+    document.body.textContent = "font-face-pass";
+  })();
+</script>

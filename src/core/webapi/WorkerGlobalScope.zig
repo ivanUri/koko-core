@@ -374,7 +374,7 @@ pub fn scheduleDeferredFlushUndelivered(self: *WorkerGlobalScope) !void {
     errdefer self._session.releaseArena(arena);
 
     const callback = try arena.create(DeferFlushUndeliveredCallback);
-    callback.* = .{ .worker_scope = self, .arena = arena };
+    callback.* = .{ .worker_scope = self, .session = self._session, .arena = arena };
 
     try self.js.scheduler.add(callback, DeferFlushUndeliveredCallback.run, 0, .{
         .name = "WorkerGlobalScope.deferFlushUndelivered",
@@ -385,16 +385,20 @@ pub fn scheduleDeferredFlushUndelivered(self: *WorkerGlobalScope) !void {
 
 const DeferFlushUndeliveredCallback = struct {
     worker_scope: *WorkerGlobalScope,
+    session: *Session,
     arena: Allocator,
 
     fn cancelled(ctx: *anyopaque) void {
         const self: *DeferFlushUndeliveredCallback = @ptrCast(@alignCast(ctx));
-        self.worker_scope._session.releaseArena(self.arena);
+        self.session.releaseArena(self.arena);
     }
 
     fn run(ctx: *anyopaque) !?u32 {
         const self: *DeferFlushUndeliveredCallback = @ptrCast(@alignCast(ctx));
-        defer self.worker_scope._session.releaseArena(self.arena);
+        defer self.session.releaseArena(self.arena);
+        const worker = self.worker_scope._worker;
+        if (!worker.beginTask()) return null;
+        defer worker.endTask();
         try self.worker_scope.flushPendingUndelivered();
         return null;
     }
@@ -409,7 +413,8 @@ pub fn flushPendingUndelivered(self: *WorkerGlobalScope) !void {
     const target = self.asEventTarget();
 
     while (self._pending_undelivered.items.len > 0) {
-        if (!self._event_manager.hasDirectListeners(target, "message", self._on_message)) {
+        const on_message = handlerFromCurrentGlobal(&ls.local, "onmessage");
+        if (!self._event_manager.hasDirectListeners(target, "message", on_message)) {
             break;
         }
 
@@ -420,10 +425,9 @@ pub fn flushPendingUndelivered(self: *WorkerGlobalScope) !void {
             .bubbles = false,
             .cancelable = false,
         }, self._page)).asEvent();
-        try self.dispatch(target, event, self._on_message, .{});
-        self.pumpDueTimersNow(0);
+        try self.dispatch(target, event, on_message, .{});
     }
-    try scheduleDeferredMacrotaskPump(self);
+    try self._worker._frame.scheduleDeferredMacrotaskPump(0);
     try self._worker._frame.scheduleDeferredMacrotaskPump(20);
 }
 
@@ -522,6 +526,12 @@ pub fn syncScriptHandlerSlotsFromLocal(self: *WorkerGlobalScope, local: *const J
     }
 }
 
+fn handlerFromCurrentGlobal(local: *const JS.Local, comptime field: []const u8) ?JS.Function {
+    const global_handle = v8.v8__Context__Global(local.handle).?;
+    const global = JS.Object{ .local = local, .handle = global_handle };
+    return global.getFunction(field) catch null;
+}
+
 /// Notify a shared-worker's `onerror` handler for a runtime throw when the
 /// pending exception object is unavailable on the outer TryCatch.
 pub fn reportSharedScriptRuntimeError(
@@ -572,39 +582,18 @@ pub fn dispatchConnectEvent(self: *WorkerGlobalScope, port: *MessagePort) !void 
     }, self._page)).asEvent();
     try self.dispatch(target, event, on_connect, .{ .context = "SharedWorker.onconnect" });
     if (self._worker._shared_mode) {
-        try drainSharedConnectAsyncWork(self);
         try scheduleDeferredSharedConnectPump(self, 0);
     } else {
-        try scheduleDeferredMacrotaskPump(self);
+        try self._worker._frame.scheduleDeferredMacrotaskPump(0);
     }
 }
 
-fn drainSharedConnectAsyncWork(self: *WorkerGlobalScope) !void {
-    const frame = self._worker._frame;
-    const browser = frame._session.browser;
-    var pass: u32 = 0;
-    var idle_passes: u32 = 0;
-    while (pass < 128 and idle_passes < 8) : (pass += 1) {
-        _ = browser.http_client.tick(0) catch {};
-        try browser.runMacrotasks();
-        const busy = self.js.scheduler.hasReadyTasks() or frame.js.scheduler.hasReadyTasks();
-        if (busy) {
-            idle_passes = 0;
-        } else {
-            idle_passes += 1;
-        }
-    }
-}
-
-const shared_connect_pump_min_rounds: u32 = 8;
-const shared_connect_pump_max_rounds: u32 = 64;
-
-fn scheduleDeferredSharedConnectPump(self: *WorkerGlobalScope, round: u32) !void {
+fn scheduleDeferredSharedConnectPump(self: *WorkerGlobalScope, _: u32) !void {
     const arena = try self._session.getArena(.tiny, "WGS.deferSharedConnectPump");
     errdefer self._session.releaseArena(arena);
 
     const callback = try arena.create(DeferSharedConnectPumpCallback);
-    callback.* = .{ .worker_scope = self, .arena = arena, .round = round };
+    callback.* = .{ .worker_scope = self, .session = self._session, .arena = arena };
 
     try self.js.scheduler.add(callback, DeferSharedConnectPumpCallback.run, 0, .{
         .name = "WorkerGlobalScope.deferSharedConnectPump",
@@ -615,34 +604,30 @@ fn scheduleDeferredSharedConnectPump(self: *WorkerGlobalScope, round: u32) !void
 
 const DeferSharedConnectPumpCallback = struct {
     worker_scope: *WorkerGlobalScope,
+    session: *Session,
     arena: Allocator,
-    round: u32,
 
     fn cancelled(ctx: *anyopaque) void {
         const self: *DeferSharedConnectPumpCallback = @ptrCast(@alignCast(ctx));
-        self.worker_scope._session.releaseArena(self.arena);
+        self.session.releaseArena(self.arena);
     }
 
     fn run(ctx: *anyopaque) !?u32 {
         const self: *DeferSharedConnectPumpCallback = @ptrCast(@alignCast(ctx));
         const wgs = self.worker_scope;
+        const worker = wgs._worker;
+        if (!worker.beginTask()) {
+            self.session.releaseArena(self.arena);
+            return null;
+        }
+        defer worker.endTask();
         const frame = wgs._worker._frame;
         const browser = frame._session.browser;
 
         _ = browser.http_client.tick(0) catch {};
-        browser.runMacrotasks() catch |err| {
-            log.warn(.browser, "shared connect deferred pump", .{ .err = err });
-        };
         try frame.scheduleDeferredMacrotaskPump(0);
 
-        const worker_pending = wgs.js.scheduler.hasReadyTasks();
-        const frame_pending = frame.js.scheduler.hasReadyTasks();
-        defer wgs._session.releaseArena(self.arena);
-
-        const should_continue = worker_pending or frame_pending or self.round < shared_connect_pump_min_rounds;
-        if (should_continue and self.round + 1 < shared_connect_pump_max_rounds) {
-            try scheduleDeferredSharedConnectPump(wgs, self.round + 1);
-        }
+        defer self.session.releaseArena(self.arena);
         return null;
     }
 };
@@ -666,6 +651,14 @@ pub fn flushPendingConnects(self: *WorkerGlobalScope) !void {
 // Posts a message from the worker back to the frame.
 // The message is cloned via structured clone and dispatched on the Worker object.
 pub fn postMessage(self: *WorkerGlobalScope, data: JS.Value, transfer_arg: ?JS.Value) !void {
+    // Delivering to the parent can synchronously pump its scheduler.  A page
+    // message handler is therefore allowed to terminate this worker before
+    // postMessage returns; keep the worker realm alive for the whole bridge
+    // call, including transfer processing and the follow-up pump.
+    const worker = self._worker;
+    if (!worker.beginTask()) return;
+    defer worker.endTask();
+
     const FormData = @import("net/FormData.zig");
     const TaggedOpaque = @import("../js/TaggedOpaque.zig");
     if (data.isBranded(FormData) or
@@ -681,7 +674,7 @@ pub fn postMessage(self: *WorkerGlobalScope, data: JS.Value, transfer_arg: ?JS.V
 
     const message_id = self._debug_nextMessageId();
     // Mid-eval postMessage must queue on Worker — see Worker._initial_eval_active.
-    if (self._worker._initial_eval_active) {
+    if (worker._initial_eval_active) {
         log.info(.browser, "worker postMessage mid-initial-eval", .{
             .worker_id = self._frame_id,
             .message_id = message_id,
@@ -693,7 +686,7 @@ pub fn postMessage(self: *WorkerGlobalScope, data: JS.Value, transfer_arg: ?JS.V
         });
     }
 
-    const frame = self._worker._frame;
+    const frame = worker._frame;
     const transfer_list = try MessagePort.parseTransferArg(data.local, transfer_arg);
     const transferred_ports = try MessagePort.processTransferList(
         transfer_list,
@@ -702,9 +695,8 @@ pub fn postMessage(self: *WorkerGlobalScope, data: JS.Value, transfer_arg: ?JS.V
         self.arena,
     );
 
-    try self._worker.receiveMessage(data, message_id, transferred_ports, transfer_list);
+    try worker.receiveMessage(data, message_id, transferred_ports, transfer_list);
     Worker.pumpMessageDelivery(frame);
-    try scheduleDeferredMacrotaskPump(self);
 }
 
 /// Run overdue worker scheduler tasks (setTimeout/setInterval) without nesting
@@ -732,37 +724,6 @@ pub fn pumpDueTimersNow(self: *WorkerGlobalScope, max_delay_ms: u32) void {
     }
 }
 
-fn scheduleDeferredMacrotaskPump(worker_scope: *WorkerGlobalScope) !void {
-    const arena = try worker_scope._session.getArena(.tiny, "WorkerGlobalScope.deferPump");
-    errdefer worker_scope._session.releaseArena(arena);
-
-    const callback = try arena.create(DeferPumpCallback);
-    callback.* = .{ .frame = worker_scope._worker._frame, .arena = arena };
-
-    try worker_scope.js.scheduler.add(callback, DeferPumpCallback.run, 0, .{
-        .name = "WorkerGlobalScope.deferPump",
-        .low_priority = false,
-        .finalizer = DeferPumpCallback.cancelled,
-    });
-}
-
-const DeferPumpCallback = struct {
-    frame: *Frame,
-    arena: Allocator,
-
-    fn cancelled(ctx: *anyopaque) void {
-        const self: *DeferPumpCallback = @ptrCast(@alignCast(ctx));
-        self.frame.releaseArena(self.arena);
-    }
-
-    fn run(ctx: *anyopaque) !?u32 {
-        const self: *DeferPumpCallback = @ptrCast(@alignCast(ctx));
-        defer self.frame.releaseArena(self.arena);
-        Worker.pumpMessageDelivery(self.frame);
-        return null;
-    }
-};
-
 // Called internally by Worker when it wants to post a message to us
 pub fn receiveMessage(
     self: *WorkerGlobalScope,
@@ -774,6 +735,7 @@ pub fn receiveMessage(
     if (self._closed) {
         return;
     }
+    const session = self._session;
 
     const cloned_data: ?JS.Value.Temp = blk: {
         var source_ls: JS.Local.Scope = undefined;
@@ -787,8 +749,6 @@ pub fn receiveMessage(
         break :blk cloned.temp() catch break :blk null;
     };
 
-    const session = self._session;
-
     const message_arena = try session.getArena(.tiny, "WorkerGlobalScope.receiveMessage");
     errdefer session.releaseArena(message_arena);
 
@@ -799,6 +759,7 @@ pub fn receiveMessage(
         .data = cloned_data,
         .ports = ports_copy,
         .worker_scope = self,
+        .session = session,
         .arena = message_arena,
         .message_id = message_id,
         .task_owner = self.js.execution.captureTaskOwner(),
@@ -833,17 +794,17 @@ pub fn structuredClone(_: *const WorkerGlobalScope, value: JS.Value) !JS.Value {
     return value.structuredClone();
 }
 
-pub fn unhandledPromiseRejection(self: *WorkerGlobalScope, no_handler: bool, rejection: JS.PromiseRejection) !void {
+pub fn notifyPromiseRejection(self: *WorkerGlobalScope, no_handler: bool, promise: JS.Promise, reason: ?JS.Value) !void {
     if (comptime IS_DEBUG) {
         log.debug(.js, "unhandled rejection", .{
             .target = "worker",
-            .value = rejection.reason(),
-            .stack = rejection.local.stackTrace() catch |err| @errorName(err) orelse "???",
+            .value = reason,
+            .stack = promise.local.stackTrace() catch |err| @errorName(err) orelse "???",
         });
     } else {
         log.warn(.js, "unhandled rejection", .{
             .target = "worker",
-            .value = rejection.reason(),
+            .value = reason,
         });
     }
 
@@ -857,8 +818,8 @@ pub fn unhandledPromiseRejection(self: *WorkerGlobalScope, no_handler: bool, rej
     const target = self.asEventTarget();
     if (self._event_manager.hasDirectListeners(target, event_name, attribute_callback)) {
         const event = (try @import("event/PromiseRejectionEvent.zig").init(event_name, .{
-            .reason = if (rejection.reason()) |r| try r.temp() else null,
-            .promise = try rejection.promise().temp(),
+            .reason = if (reason) |r| try r.temp() else null,
+            .promise = try promise.temp(),
         }, self._page)).asEvent();
         // Ignore any errors from dispatching the event to avoid crashing
         self.dispatch(target, event, attribute_callback, .{}) catch |err| {
@@ -976,6 +937,7 @@ fn importScriptBody(self: *WorkerGlobalScope, arena: Allocator, resolved_url: [:
     try self.headersForRequest(&headers, .{
         .request_url = resolved_url,
         .resource_type = .script,
+        .include_origin_header = false,
     });
 
     const response = http_client.syncRequest(arena, .{
@@ -1166,8 +1128,6 @@ fn evalImportedScript(
     imported: ImportedScript,
     caller_site: ImportScriptCallerSite,
 ) !void {
-    const session = self._session;
-
     var ls: JS.Local.Scope = undefined;
     self.js.localScope(&ls);
     defer ls.deinit();
@@ -1176,7 +1136,6 @@ fn evalImportedScript(
     try_catch.init(&ls.local);
     defer try_catch.deinit();
 
-    session.browser.env.pumpSchedulerTasks();
     _ = compileAndRunImportedScript(&ls.local, imported.body, imported.script_url) catch |err| {
         if (try_catch.hasCaught()) {
             try handleImportScriptEvalError(self, arena, &try_catch, &ls.local, imported.script_url, caller_site);
@@ -1191,13 +1150,10 @@ fn evalImportedScript(
         return err;
     };
 
-    ls.local.runMacrotasks();
     if (self._worker._bootstrap_complete) {
         Worker.pumpBootstrapMessaging(&self.js.execution);
     }
-    session.browser.runMacrotasks() catch |err| {
-        log.warn(.browser, "importScript pump", .{ .err = err });
-    };
+    try self._worker._frame.scheduleDeferredMacrotaskPump(0);
 }
 
 fn importScript(self: *WorkerGlobalScope, arena: Allocator, url: [:0]const u8, caller_site: ImportScriptCallerSite) !void {
@@ -1365,6 +1321,7 @@ const ReceiveMessageCallback = struct {
     ports: []const *MessagePort,
     arena: Allocator,
     worker_scope: *WorkerGlobalScope,
+    session: *Session,
     message_id: u64,
     task_owner: RealmLifecycleKernel.TaskOwner,
 
@@ -1375,7 +1332,7 @@ const ReceiveMessageCallback = struct {
     }
 
     fn deinit(self: *ReceiveMessageCallback) void {
-        self.worker_scope._session.releaseArena(self.arena);
+        self.session.releaseArena(self.arena);
     }
 
     fn run(ctx: *anyopaque) !?u32 {
@@ -1383,6 +1340,13 @@ const ReceiveMessageCallback = struct {
         defer self.deinit();
 
         const worker_scope = self.worker_scope;
+        const worker = worker_scope._worker;
+        if (!worker.beginTask()) {
+            if (self.data) |d| d.release();
+            self.data = null;
+            return null;
+        }
+        defer worker.endTask();
         const exec = &worker_scope.js.execution;
         if (exec.isTaskOwnerStale(self.task_owner) or
             exec.realmState() != .active or
@@ -1394,6 +1358,15 @@ const ReceiveMessageCallback = struct {
         }
         const target = worker_scope.asEventTarget();
 
+        var ls: JS.Local.Scope = undefined;
+        if (!worker_scope.js.tryLocalScope(&ls)) {
+            if (self.data) |d| d.release();
+            self.data = null;
+            return null;
+        }
+        defer ls.deinit();
+        worker_scope.syncScriptHandlerSlotsFromLocal(&ls.local);
+
         if (comptime IS_DEBUG) {
             log.info(.browser, "worker dispatch inbound message", .{
                 .worker_id = worker_scope._frame_id,
@@ -1404,7 +1377,7 @@ const ReceiveMessageCallback = struct {
 
         // If data is null, structured clone failed - fire messageerror
         if (self.data == null) {
-            const on_messageerror = worker_scope._on_messageerror;
+            const on_messageerror = handlerFromCurrentGlobal(&ls.local, "onmessageerror");
             if (!worker_scope._event_manager.hasDirectListeners(target, "messageerror", on_messageerror)) {
                 return null;
             }
@@ -1416,12 +1389,7 @@ const ReceiveMessageCallback = struct {
             return null;
         }
 
-        var ls: JS.Local.Scope = undefined;
-        worker_scope.js.localScope(&ls);
-        defer ls.deinit();
-        worker_scope.syncScriptHandlerSlotsFromLocal(&ls.local);
-
-        const on_message = worker_scope._on_message;
+        const on_message = handlerFromCurrentGlobal(&ls.local, "onmessage");
 
         // Queue until onmessage / addEventListener is registered (reCAPTCHA worker setup).
         if (!worker_scope._event_manager.hasDirectListeners(target, "message", on_message)) {
@@ -1441,9 +1409,12 @@ const ReceiveMessageCallback = struct {
             .cancelable = false,
         }, worker_scope._page)).asEvent();
         try worker_scope.dispatch(target, event, on_message, .{});
-        worker_scope.pumpDueTimersNow(0);
-        try scheduleDeferredMacrotaskPump(worker_scope);
+        // This callback already runs as a worker macrotask. Pumping the same
+        // scheduler here recursively enters the next message handler before
+        // the current V8 callback and its event objects have unwound. The
+        // outer scheduler loop owns FIFO continuation after this task returns.
         const frame = worker_scope._worker._frame;
+        try frame.scheduleDeferredMacrotaskPump(0);
         try frame.scheduleDeferredMacrotaskPump(20);
         return null;
     }

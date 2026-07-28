@@ -342,12 +342,33 @@ pub fn imageAddedCallback(self: *Image, frame: *Frame) !void {
         .guard = LoadGuard.Guard.init(&frame.js.execution),
     };
 
+    const preload_key = try frame.imagePreloadKey(
+        arena,
+        owned_url,
+        self.getCrossOrigin(),
+    );
+    const preload_use = try frame.useImagePreload(
+        preload_key,
+        load,
+        ImageLoad.preloadResultCallback,
+    );
+    if (preload_use != .none) {
+        // The preload registry owns completion delivery from here. It either
+        // called the callback synchronously or retained it as an in-flight
+        // waiter, so no second network transfer may be started.
+        caller_owns_scratch = false;
+        return;
+    }
+
     const session = frame._session;
     const http_client = &session.browser.http_client;
     var headers = try http_client.newHeaders();
     try frame.headersForRequest(&headers, .{
         .request_url = owned_url,
         .resource_type = .image,
+        // Plain images use no-CORS. An explicit crossorigin attribute switches
+        // the image request to CORS and therefore carries Origin.
+        .include_origin_header = self.getCrossOrigin() != null,
     });
 
     // From this point the ImageLoad callbacks own `scratch`.  Client.request
@@ -459,6 +480,38 @@ const ImageLoad = struct {
             try self.frame.queueLoad(self.image._proto);
         } else {
             try self.dispatchError();
+        }
+    }
+
+    fn preloadResultCallback(ctx: *anyopaque, result: Frame.ImagePreloadResult) !void {
+        const self: *ImageLoad = @ptrCast(@alignCast(ctx));
+        defer self.finish();
+
+        self.image._loading = false;
+        self.image._complete = true;
+        self.image._failed = !result.ok;
+        if (result.ok) {
+            const dims = encodedImageDimensions(result.probe) orelse
+                self.image.resolveNaturalDimensions();
+            self.image._natural_width = dims.w;
+            self.image._natural_height = dims.h;
+            self.frame.domChanged();
+        } else {
+            self.image._natural_width = 0;
+            self.image._natural_height = 0;
+        }
+
+        if (!self.deliverable()) return;
+        if (result.ok) {
+            try self.frame.queueLoad(self.image._proto);
+        } else {
+            // A failed resource hint does not make the consumer fail. The
+            // registry removes failed entries before notifying waiters, so the
+            // image can perform its own normal fetch without recursing back
+            // into the failed preload generation.
+            self.image._complete = false;
+            self.image._failed = false;
+            try self.image.imageAddedCallback(self.frame);
         }
     }
 

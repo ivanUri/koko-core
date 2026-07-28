@@ -82,8 +82,13 @@ pub fn tailHook(base: *ScriptManagerBase) void {
     }
 }
 
-fn getHeaders(self: *ScriptManager, url: [:0]const u8, resource_type: HttpClient.RequestParams.ResourceType) !HttpClient.Headers {
-    return self.base.getHeaders(url, resource_type, .none);
+fn getHeaders(
+    self: *ScriptManager,
+    url: [:0]const u8,
+    resource_type: HttpClient.RequestParams.ResourceType,
+    cors_mode: bool,
+) !HttpClient.Headers {
+    return self.base.getHeaders(url, resource_type, .none, cors_mode);
 }
 
 pub fn addFromElement(self: *ScriptManager, comptime from_parser: bool, script_element: *Element.Html.Script, comptime ctx: []const u8) !void {
@@ -238,7 +243,7 @@ pub fn addFromElement(self: *ScriptManager, comptime from_parser: bool, script_e
         self.base.is_evaluating = true;
         defer self.base.endEvaluationWindow(was_evaluating);
 
-        const headers = try self.getHeaders(url, .script);
+        const headers = try self.getHeaders(url, .script, kind == .module);
 
         // libcurl cannot multi_add/perform from inside a transfer callback
         // (SPA injects scripts during another script's doneCallback). Blocking

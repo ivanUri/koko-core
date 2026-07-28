@@ -62,7 +62,12 @@ fn inlineChildReadyForAccess(child: *Frame) bool {
 pub fn getContentWindow(self: *const IFrame, frame: *Frame) ?Window.Access {
     const frame_window = self._window orelse return null;
     if (!inlineChildReadyForAccess(frame_window._frame)) return null;
-    return Window.Access.init(frame.window, frame_window);
+    // DOM access to the iframe element is mediated by its owning document.
+    // The bridge's injected relevant realm can be the child while a callback
+    // entered from that child is executing on the parent. Using it would return
+    // the actual cross-origin global and let V8 reject even `postMessage`.
+    const accessor = @constCast(self).asNode().ownerFrame(frame);
+    return Window.Access.init(accessor.window, frame_window);
 }
 
 pub fn getContentDocument(self: *const IFrame, frame: *Frame) ?*Document {
@@ -71,7 +76,8 @@ pub fn getContentDocument(self: *const IFrame, frame: *Frame) ?*Document {
     if (IFrameSandbox.usesOpaqueOrigin(IFrameSandbox.parse(@constCast(self)))) return null;
     // Cross-origin / distinct-opaque browsing contexts: contentDocument null.
     // Same-origin about:blank children share the parent Origin* pointer.
-    if (frame.js.origin != window._frame.js.origin) return null;
+    const accessor = @constCast(self).asNode().ownerFrame(frame);
+    if (accessor.js.origin != window._frame.js.origin) return null;
     return window._document;
 }
 

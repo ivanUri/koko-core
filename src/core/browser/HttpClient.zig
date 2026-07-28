@@ -1513,6 +1513,20 @@ fn processOneMessage(self: *Client, msg: http.Handles.MultiMessage, transfer: *T
         }
     }
 
+    // A pooled TLS/HTTP connection can become unusable between the browser
+    // iframe's initial challenge request and its retry navigation. libcurl
+    // reports this as SendError before any HTTP status exists. Retry the
+    // request once on a freshly initialized connection, preserving the
+    // request body and browser callbacks. This is transport recovery, not a
+    // site-specific challenge workaround.
+    if (msg.err) |err| {
+        if (err == error.SendError and transfer._transient_retries == 0) {
+            try transfer.handleTransientConnectionRetry();
+            _ = try self.perform(0);
+            return false;
+        }
+    }
+
     // Transfer is done (success or error). Caller (processMessages) owns deinit.
     // Return true = done (caller will deinit), false = continues (redirect/auth).
 
@@ -1907,8 +1921,10 @@ pub const RequestParams = struct {
     redirect_refresh_ctx: ?*anyopaque = null,
     /// Rebuild wire headers on redirect retry (configureConn, after curl detach).
     redirect_header_rebuild: ?*const fn (ctx: *anyopaque, transfer: *Transfer, conn: *http.Connection) anyerror!void = null,
-    /// When false, skip curl-impersonate default_headers (fetch POST without Content-Type).
-    curl_default_headers: bool = true,
+    /// Whether curl-impersonate owns the browser header set for this request.
+    /// Core normally builds the complete list, so this is opt-in for the narrow
+    /// navigation path that deliberately delegates headers to the transport.
+    curl_default_headers: bool = false,
     /// Use COPYPOSTFIELDS without CURLOPT_POST (no implicit Content-Type).
     raw_post_body: bool = false,
     /// HTTP cache revalidation validators (injected in configureConn).
@@ -2145,6 +2161,7 @@ pub const Transfer = struct {
     _performing: bool = false,
     _redirect_count: u8 = 0,
     _misdirected_retries: u8 = 0,
+    _transient_retries: u8 = 0,
     _skip_body: bool = false,
     _first_data_received: bool = false,
     /// True once incremental body chunks were delivered via data_callback.
@@ -2158,6 +2175,11 @@ pub const Transfer = struct {
     _callback_error: ?anyerror = null,
 
     _wire_capture: ?*http.WireHeaderCapture.Session = null,
+    /// Per-attempt header list passed to CURLOPT_HTTPHEADER. libcurl borrows
+    /// this list for the lifetime of the transfer, so it cannot be a stack
+    /// clone. Rebuilding it on every configure prevents transport additions
+    /// from mutating the canonical request headers across redirects/retries.
+    _effective_headers: ?http.Headers = null,
 
     // for when a Transfer is queued in the client.queue
     _node: std.DoublyLinkedList.Node = .{},
@@ -2173,6 +2195,10 @@ pub const Transfer = struct {
         if (self._conn) |conn| {
             self.client.removeConn(conn);
             self._conn = null;
+        }
+        if (self._effective_headers) |*headers| {
+            headers.deinit();
+            self._effective_headers = null;
         }
 
         self.client.deinitRequest(self.req);
@@ -2290,7 +2316,12 @@ pub const Transfer = struct {
             }
         }
 
-        var header_list = req.params.headers;
+        if (self._effective_headers) |*previous| {
+            previous.deinit();
+            self._effective_headers = null;
+        }
+        var header_list = try req.params.headers.clone();
+        errdefer header_list.deinit();
         try conn.secretHeaders(&header_list, &client.network.config.http_headers);
 
         if (comptime build_config.curl_impersonate) {
@@ -2345,11 +2376,12 @@ pub const Transfer = struct {
 
         // TLS impersonate before HTTP overrides — profile headers must win over chrome146 defaults.
         if (comptime build_config.curl_impersonate) {
-            // Document navigations use a full Chrome 150 Accept-first header list
-            // (Frame.headersForRequest); curl-impersonate default_headers would
-            // reintroduce chrome146 Sec-CH-first order and duplicate headers.
-            const curl_default_headers = req.params.curl_default_headers and
-                !(req.params.resource_type == .document);
+            // Browser-controlled headers have exactly one owner. Most requests
+            // get a complete, context-aware list from Frame.headersForRequest;
+            // enabling curl defaults as well leaks navigation-only metadata
+            // (for example Sec-Fetch-User/UIR) into fetch/XHR requests. The one
+            // delegated cold-navigation path opts in explicitly.
+            const curl_default_headers = req.params.curl_default_headers;
             // Transport selection is request policy until per-origin Alt-Svc
             // state is implemented. Never infer it from resource type or the
             // browser identity: the TLS profile must describe the transport
@@ -2419,6 +2451,7 @@ pub const Transfer = struct {
                 try conn.setGetMode();
             }
         }
+        self._effective_headers = header_list;
     }
 
     pub fn reset(self: *Transfer) void {
@@ -2508,6 +2541,25 @@ pub const Transfer = struct {
         transfer._misdirected_retries = 1;
         transfer.reset();
         transfer._misdirected_retries = 1;
+
+        try conn.forceFreshConnection();
+        try transfer.configureConn(conn);
+        try client.handles.add(conn);
+        transfer._detached_conn = null;
+        transfer._conn = conn;
+    }
+
+    fn handleTransientConnectionRetry(transfer: *Transfer) !void {
+        const client = transfer.client;
+        const conn = transfer._conn orelse return error.SendError;
+
+        try client.handles.remove(conn);
+        transfer._conn = null;
+        transfer._detached_conn = conn;
+
+        transfer._transient_retries = 1;
+        transfer.reset();
+        transfer._transient_retries = 1;
 
         try conn.forceFreshConnection();
         try transfer.configureConn(conn);

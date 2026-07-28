@@ -432,18 +432,12 @@ pub fn flushPendingPostMessages(self: *Window) void {
         }
 
         const pending = self._pending_post_messages.orderedRemove(0);
-        PostMessageCallback.dispatch(pending) catch |err| {
-            log.warn(.browser, "pending postMessage dispatch", .{ .err = err });
+        schedulePostMessageDelivery(frame, pending) catch |err| {
+            log.warn(.browser, "pending postMessage schedule", .{ .err = err });
             pending.message.release();
             pending.deinit();
-            continue;
         };
-        pending.deinit();
     }
-
-    frame.scheduleDeferredMacrotaskPump(0) catch |err| {
-        log.warn(.browser, "flush pending postMessage pump", .{ .err = err });
-    };
 }
 
 /// Cancel messages owned by this Window that never became scheduler tasks.
@@ -549,8 +543,12 @@ const RequestIdleCallbackOpts = struct {
 };
 pub fn requestIdleCallback(self: *Window, cb: js.Function.Temp, opts_: ?RequestIdleCallbackOpts, exec: *js.Execution) !u32 {
     const opts = opts_ orelse RequestIdleCallbackOpts{};
-    return self._timers.schedule(exec, cb, opts.timeout orelse 50, .{
+    // An omitted timeout is not a 50ms timer. It is an idle task with no
+    // author deadline; the idle-priority scheduler decides when there is
+    // budget. Only an explicit `timeout` creates a timer deadline.
+    return self._timers.schedule(exec, cb, 0, .{
         .mode = .idle,
+        .idle_timeout_ms = opts.timeout,
         .repeat = false,
         .params = &.{},
         .low_priority = true,
@@ -836,7 +834,9 @@ pub fn postMessage(self: *Window, message: js.Value.Temp, target_origin: ?[]cons
     // target realm, not the script's incumbent settings object. Snapshot the
     // actively executing frame before this operation is queued; origin and
     // source must continue to describe the sender when delivery happens.
-    const source_frame = frame.js.getCurrentFrame() orelse frame.js.getIncumbent();
+    const source_frame = frame.js.getEntryFrame() orelse
+        frame.js.getCurrentFrame() orelse
+        frame.js.getIncumbent();
     const source_window = source_frame.window;
 
     const arena = try target_frame.getArena(.medium, "Window.postMessage");
@@ -878,76 +878,12 @@ pub fn postMessage(self: *Window, message: js.Value.Temp, target_origin: ?[]cons
         .origin = try arena.dupe(u8, origin),
     };
 
-    const cross_browsing_context = source_frame != target_frame;
-    // Child → parent must dispatch synchronously so the sender can observe the
-    // recipient's reaction before its stack unwinds (reCAPTCHA v3, Turnstile
-    // token delivery). Parent → child (Turnstile iframe bootstrap) must wait
-    // until the iframe document is complete so internal message routers exist.
-    const parent_to_child = cross_browsing_context and target_frame.parent == source_frame;
-
-    const event_target = target_frame.window.asEventTarget();
-    const has_listeners = target_frame._event_manager.hasDirectListeners(
-        event_target,
-        "message",
-        target_frame.window._on_message,
-    );
-
-    // Parent → child bootstrap may arrive while the iframe is still parsing. Queue
-    // until message routers exist. Do not queue once listeners are registered:
-    // Turnstile posts requestExtraParams and expects the extraParams reply on the
-    // same synchronous turn even if the iframe document is not yet .complete.
-    if (parent_to_child and target_frame._load_state != .complete and !has_listeners) {
-        try target_frame.window.queuePendingPostMessage(callback);
-        return;
-    }
-
-    // Parent → child must be synchronous once the iframe is ready, but not while
-    // the target is still inside an outbound postMessage / classic eval
-    // (reentrant delivery). Turnstile posts requestExtraParams; running the
-    // parent reply before the child's stack unwinds leaves bootstrap globals
-    // (e.g. Wuby5) undefined → TypeError reading '.call'.
-    //
-    // Target-local only: do not use mustQueueAsTask — it includes
-    // anyContextOnV8Stack, which is true whenever the *parent* is running JS
-    // that calls postMessage (would defer every parent→child delivery).
-    const target_exec = &target_frame.js.execution;
-    const defer_parent_reply = parent_to_child and
-        (target_frame.js.call_depth > 0 or js.JsEntryGate.scriptEvalActive(target_exec));
-    // HTML's window.postMessage algorithm always queues a posted-message
-    // task. In particular, child → parent delivery must not enter the parent
-    // realm while the child script is still on the V8 stack: doing so breaks
-    // realm-entry invariants (Debug traps at an unreachable) and can expose
-    // the message before the sender returns. Keep the existing synchronous
-    // MessagePort transfer and ready parent → child bootstrap path, but route
-    // ordinary child → parent messages through the scheduler below.
-    const sync_dispatch = transferred_ports.len > 0 or
-        (parent_to_child and !defer_parent_reply);
-
-    if (defer_parent_reply) {
-        try schedulePostMessageDelivery(target_frame, callback);
-        return;
-    }
-
-    if (sync_dispatch) {
-        if (!has_listeners) {
-            target_frame.window.queuePendingPostMessage(callback) catch |err| {
-                log.warn(.browser, "queue pending postMessage", .{ .err = err });
-                callback.message.release();
-                callback.deinit();
-            };
-            return;
-        }
-
-        PostMessageCallback.dispatch(callback) catch |err| {
-            log.warn(.browser, "postMessage dispatch", .{ .err = err });
-            callback.message.release();
-            callback.deinit();
-            return;
-        };
-        callback.deinit();
-        return;
-    }
-
+    // HTML queues every Window.postMessage delivery on the target browsing
+    // context's posted-message task source. Never enter another realm directly
+    // from the sender's stack, including parent/child and transferable cases.
+    // If the target has not installed a listener when the task runs, `run`
+    // transfers ownership to the Window pending queue; listener registration
+    // schedules it again rather than dispatching reentrantly.
     try schedulePostMessageDelivery(target_frame, callback);
 }
 
@@ -1110,17 +1046,17 @@ pub fn getWebDriver(_: *const Window) @import("WebDriver.zig") {
     return .{};
 }
 
-pub fn unhandledPromiseRejection(self: *Window, no_handler: bool, rejection: js.PromiseRejection, frame: *Frame) !void {
+pub fn notifyPromiseRejection(self: *Window, no_handler: bool, promise: js.Promise, reason: ?js.Value, frame: *Frame) !void {
     if (comptime IS_DEBUG) {
         log.debug(.js, "unhandled rejection", .{
             .target = "window",
-            .value = rejection.reason(),
-            .stack = rejection.local.stackTrace() catch |err| @errorName(err) orelse "???",
+            .value = reason,
+            .stack = promise.local.stackTrace() catch |err| @errorName(err) orelse "???",
         });
     } else {
         log.warn(.js, "unhandled rejection", .{
             .target = "window",
-            .value = rejection.reason(),
+            .value = reason,
         });
     }
 
@@ -1134,8 +1070,8 @@ pub fn unhandledPromiseRejection(self: *Window, no_handler: bool, rejection: js.
     const target = self.asEventTarget();
     if (frame._event_manager.hasDirectListeners(target, event_name, attribute_callback)) {
         const event = (try @import("event/PromiseRejectionEvent.zig").init(event_name, .{
-            .reason = if (rejection.reason()) |r| try r.temp() else null,
-            .promise = try rejection.promise().temp(),
+            .reason = if (reason) |r| try r.temp() else null,
+            .promise = try promise.temp(),
         }, frame._page)).asEvent();
         // Ignore any errors from dispatching the event to avoid crashing
         frame._event_manager.dispatchDirect(target, event, attribute_callback, .{ .context = "window.unhandledrejection" }) catch |err| {
@@ -1188,10 +1124,24 @@ const PostMessageCallback = struct {
         const window = frame.window;
         const event_target = window.asEventTarget();
 
+        var owned_scope: js.Local.Scope = undefined;
+        const local: *const js.Local = if (frame.js.local) |active| active else blk: {
+            frame.js.localScope(&owned_scope);
+            break :blk &owned_scope.local;
+        };
+        defer if (frame.js.local == null) owned_scope.deinit();
+        const source_value = try (try local.zigValueToJs(
+            Window.Access.init(window, self.source),
+            .{},
+        )).temp();
+        errdefer source_value.release();
+
         const event = (try MessageEvent.initTrusted(comptime .wrap("message"), .{
             .data = .{ .value = self.message },
             .origin = self.origin,
             .source = self.source,
+            .source_context = window,
+            .source_value = source_value,
             .ports = self.ports,
             .bubbles = false,
             .cancelable = false,

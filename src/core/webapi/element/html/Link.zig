@@ -136,6 +136,11 @@ fn fetchPreloadImage(self: *Link, frame: *Frame, href: []const u8) !void {
 
     const resolved = try URL.resolve(scratch, frame.base(), href, .{ .encoding = frame.charset });
     const owned_url = try frame.arena.dupeZ(u8, resolved);
+    const preload_key = try frame.imagePreloadKey(
+        frame.arena,
+        owned_url,
+        self.getCrossOrigin(),
+    );
 
     if (self._preload_loading) {
         if (self._preload_url) |prev| {
@@ -163,7 +168,14 @@ fn fetchPreloadImage(self: *Link, frame: *Frame, href: []const u8) !void {
         .frame = frame,
         .arena = arena,
         .guard = LoadGuard.Guard.init(&frame.js.execution),
+        .preload_key = preload_key,
     };
+
+    if (!try frame.beginImagePreload(preload_key)) {
+        caller_owns_scratch = false;
+        _ = try frame.useImagePreload(preload_key, load, PreloadLoad.preloadResultCallback);
+        return;
+    }
 
     const session = frame._session;
     const http_client = &session.browser.http_client;
@@ -171,6 +183,10 @@ fn fetchPreloadImage(self: *Link, frame: *Frame, href: []const u8) !void {
     try frame.headersForRequest(&headers, .{
         .request_url = owned_url,
         .resource_type = .image,
+        // A preload must use the same request mode and credentials contract as
+        // the eventual image consumer. Plain `as=image` is no-CORS; an explicit
+        // crossorigin attribute opts the preload into CORS.
+        .include_origin_header = self.getCrossOrigin() != null,
     });
 
     // Handoff before entering the async client (may call errorCallback sync).
@@ -204,6 +220,10 @@ const PreloadLoad = struct {
     arena: std.mem.Allocator,
     status: u16 = 0,
     guard: LoadGuard.Guard,
+    preload_key: []const u8,
+    probe: std.ArrayList(u8) = .empty,
+
+    const max_probe_bytes = 512 * 1024;
 
     fn deliverable(self: *const PreloadLoad) bool {
         const frame = self.frame;
@@ -223,12 +243,18 @@ const PreloadLoad = struct {
         return true;
     }
 
-    fn dataCallback(_: HttpClient.Response, _: []const u8) !void {}
+    fn dataCallback(response: HttpClient.Response, data: []const u8) !void {
+        const self: *PreloadLoad = @ptrCast(@alignCast(response.ctx));
+        if (self.probe.items.len >= max_probe_bytes) return;
+        const remaining = max_probe_bytes - self.probe.items.len;
+        try self.probe.appendSlice(self.arena, data[0..@min(data.len, remaining)]);
+    }
 
     fn shutdownCallback(ctx: *anyopaque) void {
         const self: *PreloadLoad = @ptrCast(@alignCast(ctx));
         // Always clear loading + release arena; do not require deliverable.
         if (self.link._preload_loading) self.link._preload_loading = false;
+        self.frame.completeImagePreload(self.preload_key, false, &.{}) catch {};
         self.finish();
     }
 
@@ -241,6 +267,7 @@ const PreloadLoad = struct {
         if (!self.deliverable()) return;
 
         const ok = self.status >= 200 and self.status <= 299;
+        try self.frame.completeImagePreload(self.preload_key, ok, self.probe.items);
         if (ok) {
             try self.frame.queueLoad(self.link._proto);
         } else {
@@ -252,8 +279,21 @@ const PreloadLoad = struct {
         const self: *PreloadLoad = @ptrCast(@alignCast(ctx));
         defer self.finish();
         self.link._preload_loading = false;
+        self.frame.completeImagePreload(self.preload_key, false, &.{}) catch {};
         if (!self.deliverable()) return;
         self.dispatchError() catch {};
+    }
+
+    fn preloadResultCallback(ctx: *anyopaque, result: Frame.ImagePreloadResult) !void {
+        const self: *PreloadLoad = @ptrCast(@alignCast(ctx));
+        defer self.finish();
+        self.link._preload_loading = false;
+        if (!self.deliverable()) return;
+        if (result.ok) {
+            try self.frame.queueLoad(self.link._proto);
+        } else {
+            try self.dispatchError();
+        }
     }
 
     fn dispatchError(self: *PreloadLoad) !void {

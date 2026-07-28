@@ -227,8 +227,10 @@ fn waitForActivationHit(root_frame: *Frame, x: f64, y: f64, timeout_ms: u32) !?F
             return null;
         }
 
+        // Runner.tick already blocks on the next network/scheduler wake-up.
+        // A second fixed sleep made hit testing depend on an arbitrary 10ms
+        // polling quantum and added latency to every activation.
         _ = try runner.tick(.{ .ms = 50 });
-        std.Thread.sleep(10 * std.time.ns_per_ms);
     }
 }
 

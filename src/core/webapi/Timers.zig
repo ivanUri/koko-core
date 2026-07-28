@@ -25,6 +25,7 @@ const WorkerGlobalScope = @import("WorkerGlobalScope.zig");
 
 const log = @import("../../support/log.zig");
 const RealmLifecycleKernel = @import("../../runtime/RealmLifecycleKernel.zig");
+const milliTimestamp = @import("../../support/datetime.zig").milliTimestamp;
 const Allocator = std.mem.Allocator;
 
 const Timers = @This();
@@ -44,6 +45,9 @@ pub const ScheduleOpts = struct {
     name: []const u8,
     low_priority: bool = false,
     mode: Mode = .normal,
+    /// Author-supplied requestIdleCallback deadline. This does not delay the
+    /// idle task; it only controls IdleDeadline.didTimeout.
+    idle_timeout_ms: ?u32 = null,
 };
 
 /// Timer nesting rules belong to the HTML timers algorithm. Rendering and idle
@@ -116,6 +120,8 @@ pub fn schedule(
         .timer_id = timer_id,
         .task_owner = exec.captureTaskOwner(),
         .params = persisted_params,
+        .scheduled_at_ms = milliTimestamp(.monotonic),
+        .idle_timeout_ms = opts.idle_timeout_ms,
         .repeat_ms = if (opts.repeat) if (delay_ms == 0) 1 else delay_ms else null,
     };
     gop.value_ptr.* = callback;
@@ -123,6 +129,7 @@ pub fn schedule(
     try exec.context.scheduler.add(callback, ScheduleCallback.run, effective_delay, .{
         .name = opts.name,
         .low_priority = opts.low_priority,
+        .source = .timer,
         .finalizer = ScheduleCallback.cancelled,
     });
 
@@ -208,6 +215,8 @@ const ScheduleCallback = struct {
     arena: Allocator,
     removed: bool = false,
     params: []const js.Value.Temp,
+    scheduled_at_ms: u64,
+    idle_timeout_ms: ?u32,
 
     fn cancelled(ptr: *anyopaque) void {
         var self: *ScheduleCallback = @ptrCast(@alignCast(ptr));
@@ -272,7 +281,11 @@ const ScheduleCallback = struct {
         switch (self.mode) {
             .idle => {
                 const IdleDeadline = @import("IdleDeadline.zig");
-                invokeTimerCallback(&ls.local, self.exec, self.cb, .{IdleDeadline{}});
+                const did_timeout = if (self.idle_timeout_ms) |timeout|
+                    milliTimestamp(.monotonic) -% self.scheduled_at_ms >= timeout
+                else
+                    false;
+                invokeTimerCallback(&ls.local, self.exec, self.cb, .{IdleDeadline.init(did_timeout)});
             },
             .animation_frame => {
                 // requestAnimationFrame is window-only; if a worker ever

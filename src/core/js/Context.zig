@@ -151,11 +151,26 @@ script_manager: *ScriptManagerBase,
 // Our macrotasks
 scheduler: Scheduler,
 
+/// Rejected promises awaiting HTML's "notify about rejected promises" step.
+/// V8 reports `kPromiseRejectWithNoHandler` at rejection time, before the
+/// current JavaScript job has had a chance to attach a handler. Browsers defer
+/// the DOM event until a later task and cancel it when V8 subsequently reports
+/// `kPromiseHandlerAddedAfterReject` in the same turn.
+pending_promise_rejections: std.ArrayListUnmanaged(*PendingPromiseRejection) = .{},
+
 // Execution context for worker-compatible APIs. This provides a common
 // interface that works in both Page and Worker contexts.
 execution: Execution,
 
 unknown_properties: (if (IS_DEBUG) std.StringHashMapUnmanaged(UnknownPropertyStat) else void) = if (IS_DEBUG) .{} else {},
+
+pub const PendingPromiseRejection = struct {
+    context: *Context,
+    promise: js.Promise.Global,
+    reason: ?js.Value.Global,
+    state: enum { pending, reported, handled } = .pending,
+    notify_handled: bool = false,
+};
 
 const ModuleEntry = struct {
     // Can be null if we're asynchronously loading the module, in

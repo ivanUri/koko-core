@@ -249,7 +249,10 @@ pub fn setRequestHeader(self: *XMLHttpRequest, name: []const u8, value: []const 
 
 pub fn send(self: *XMLHttpRequest, body_: ?[]const u8) !void {
     if (comptime IS_DEBUG) {
-        log.debug(.http, "XMLHttpRequest.send", .{ .url = self._url });
+        log.debug(.http, "XMLHttpRequest.send", .{
+            .url = self._url,
+            .body_len = if (body_) |body| body.len else 0,
+        });
     }
     if (self._ready_state != .opened or self._send_flag) {
         return error.InvalidStateError;
@@ -274,10 +277,36 @@ pub fn send(self: *XMLHttpRequest, body_: ?[]const u8) !void {
     // Only add cookies for same-origin or when withCredentials is true
     const cookie_support = self._with_credentials or exec.isSameOrigin(self._url);
 
+    // XHR `send()` extracts a string BodyInit as UTF-8 text. If the author did
+    // not provide Content-Type, the body extraction algorithm supplies this
+    // default before the request reaches the HTTP transport. Leaving it absent
+    // lets libcurl invent application/x-www-form-urlencoded for POST, which is
+    // not browser behaviour and changes the request's representation metadata.
+    if (needsDefaultStringBodyContentType(
+        self._method,
+        self._request_body != null,
+        try self._request_headers.get("content-type", exec) != null,
+    )) {
+        try self._request_headers.set("content-type", "text/plain;charset=UTF-8", exec);
+    }
+
     try self._request_headers.populateHttpHeader(exec.call_arena, &headers, exec.buf);
+    // XMLHttpRequest is revalidated by default. Chromium emits these
+    // transport cache directives for author-created XHRs so an intermediary
+    // cannot satisfy the request from a stale representation. Keep explicit
+    // author headers authoritative.
+    if (try self._request_headers.get("cache-control", exec) == null) {
+        try headers.add("Cache-Control: no-cache");
+    }
+    if (try self._request_headers.get("pragma", exec) == null) {
+        try headers.add("Pragma: no-cache");
+    }
+    const xhr_cross_origin = !exec.isSameOrigin(self._url);
+    const xhr_unsafe_method = self._method != .GET and self._method != .HEAD;
     try exec.headersForRequest(&headers, .{
         .request_url = self._url,
         .resource_type = .xhr,
+        .include_origin_header = xhr_cross_origin or xhr_unsafe_method,
     });
 
     self.acquireRef();
@@ -458,9 +487,18 @@ pub fn getResponseXML(self: *XMLHttpRequest, exec: *const Execution) !?*Node.Doc
 fn httpStartCallback(response: HttpClient.Response) !void {
     const self: *XMLHttpRequest = @ptrCast(@alignCast(response.ctx));
     if (comptime IS_DEBUG) {
-        log.debug(.http, "request start", .{ .method = self._method, .url = self._url, .source = "xhr" });
+        log.debug(.http, "request start", .{
+            .method = self._method,
+            .url = self._url,
+            .source = "xhr",
+            .body_len = if (self._request_body) |body| body.len else 0,
+        });
     }
     self._http_response = response;
+}
+
+fn needsDefaultStringBodyContentType(method: http.Method, has_body: bool, has_content_type: bool) bool {
+    return has_body and !has_content_type and method != .GET and method != .HEAD;
 }
 
 fn httpHeaderCallback(response: HttpClient.Response, header: http.Header) !void {
@@ -552,6 +590,16 @@ fn httpDoneCallback(ctx: *anyopaque) !void {
         .len = self._response_data.items.len,
     });
 
+    if (self._response_status >= 400) {
+        traceErrorExchange(self) catch |err| {
+            log.warn(.http, "XHR error trace", .{
+                .url = self._url,
+                .status = self._response_status,
+                .err = err,
+            });
+        };
+    }
+
     // Not that the request is done, the http/client will free the transfer
     // object. It isn't safe to keep it around.
     self._http_response = null;
@@ -570,6 +618,75 @@ fn httpDoneCallback(ctx: *anyopaque) !void {
     // their main bundle. Queue one HTML task and keep the request's self-ref
     // until that task either dispatches or is cancelled by realm teardown.
     try self.queueSuccessfulCompletion();
+}
+
+/// Opt-in raw capture for diagnosing rejected XHR exchanges. The XHR owns the
+/// request body and accumulated response state until `httpDoneCallback`
+/// returns, so this is the last lifecycle point where both sides can be
+/// serialized without retaining transfer or realm memory. Wire-level request
+/// headers are captured separately by `VELORA_WIRE_HEADERS`.
+fn traceErrorExchange(self: *const XMLHttpRequest) !void {
+    const trace_dir = std.posix.getenv("VELORA_HTTP_ERROR_TRACE_DIR") orelse return;
+    try std.fs.cwd().makePath(trace_dir);
+
+    const stem = try std.fmt.allocPrint(
+        self._arena,
+        "{x}-{d}-{d}",
+        .{ @intFromPtr(self), self._request_generation, self._response_status },
+    );
+
+    const metadata_path = try std.fmt.allocPrint(
+        self._arena,
+        "{s}/{s}.metadata.txt",
+        .{ trace_dir, stem },
+    );
+    const request_body_path = try std.fmt.allocPrint(
+        self._arena,
+        "{s}/{s}.request.body",
+        .{ trace_dir, stem },
+    );
+    const response_body_path = try std.fmt.allocPrint(
+        self._arena,
+        "{s}/{s}.response.body",
+        .{ trace_dir, stem },
+    );
+
+    var metadata = try std.fs.cwd().createFile(metadata_path, .{ .truncate = true });
+    defer metadata.close();
+
+    var buf: [4096]u8 = undefined;
+    var writer = metadata.writer(&buf);
+    try writer.interface.print(
+        "method: {s}\nurl: {s}\nresponse-url: {s}\nstatus: {d}\nrequest-body-length: {d}\nresponse-body-length: {d}\nresponse-headers:\n",
+        .{
+            @tagName(self._method),
+            self._url,
+            self._response_url,
+            self._response_status,
+            if (self._request_body) |body| body.len else 0,
+            self._response_data.items.len,
+        },
+    );
+    for (self._response_headers.items) |header| {
+        try writer.interface.print("{s}\n", .{header});
+    }
+    try writer.interface.flush();
+
+    var request_body_file = try std.fs.cwd().createFile(request_body_path, .{ .truncate = true });
+    defer request_body_file.close();
+    if (self._request_body) |body| try request_body_file.writeAll(body);
+
+    var response_body_file = try std.fs.cwd().createFile(response_body_path, .{ .truncate = true });
+    defer response_body_file.close();
+    try response_body_file.writeAll(self._response_data.items);
+
+    log.info(.http, "XHR error trace saved", .{
+        .url = self._url,
+        .status = self._response_status,
+        .metadata = metadata_path,
+        .request_body = request_body_path,
+        .response_body = response_body_path,
+    });
 }
 
 fn dispatchSuccessfulCompletion(self: *XMLHttpRequest) !void {
@@ -811,6 +928,16 @@ pub const JsApi = struct {
 };
 
 const testing = @import("../../../testing/testing.zig");
+
+test "XHR string BodyInit supplies text content type only when required" {
+    try testing.expect(needsDefaultStringBodyContentType(.POST, true, false));
+    try testing.expect(needsDefaultStringBodyContentType(.PUT, true, false));
+    try testing.expect(!needsDefaultStringBodyContentType(.POST, false, false));
+    try testing.expect(!needsDefaultStringBodyContentType(.POST, true, true));
+    try testing.expect(!needsDefaultStringBodyContentType(.GET, true, false));
+    try testing.expect(!needsDefaultStringBodyContentType(.HEAD, true, false));
+}
+
 test "WebApi: XHR" {
     try testing.htmlRunner("net/xhr.html", .{});
 }

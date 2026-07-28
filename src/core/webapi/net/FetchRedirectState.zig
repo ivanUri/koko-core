@@ -17,6 +17,9 @@ pub const State = struct {
     referrer_policy: []const u8,
     referrer_source_url: [:0]const u8,
     body_content_type: ?[]const u8,
+    fetch_mode: []const u8,
+    credentials_mode: []const u8,
+    cache_revalidate: bool,
 };
 
 pub fn buildWireHeaders(
@@ -42,6 +45,10 @@ pub fn buildWireHeaders(
         }
     }
     try req_headers.populateHttpHeader(alloc, &headers, exec.buf);
+    if (state.cache_revalidate) {
+        try headers.add("Cache-Control: no-cache");
+        try headers.add("Pragma: no-cache");
+    }
 
     const zero_length_body = body == null and !is_get_or_head and
         (std.mem.eql(u8, method_name, "POST") or std.mem.eql(u8, method_name, "PUT") or
@@ -62,6 +69,9 @@ pub fn buildWireHeaders(
         .resource_type = .fetch,
         .include_origin_header = !is_get_or_head,
         .header_arena = alloc,
+        .fetch_mode = state.fetch_mode,
+        .storage_access_active = std.mem.eql(u8, state.credentials_mode, "include") or
+            (std.mem.eql(u8, state.credentials_mode, "same-origin") and exec.isSameOrigin(request_url)),
     };
     if (std.mem.eql(u8, state.referrer, "about:client")) {
         header_opts.referrer_source_url = state.referrer_source_url;
@@ -111,7 +121,7 @@ pub fn rebuildHeaders(ctx: *anyopaque, transfer: *HttpClient.Transfer, conn: *ht
 
     const raw_post_body = params.body != null and state.body_content_type == null;
     params.raw_post_body = raw_post_body;
-    params.curl_default_headers = !raw_post_body;
+    params.curl_default_headers = false;
 }
 
 pub fn refresh(_: *anyopaque, _: *HttpClient.Transfer, _: [:0]const u8) !void {}

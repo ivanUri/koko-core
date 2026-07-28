@@ -108,6 +108,10 @@ pub fn init(input: Input, options: ?InitOpts, exec: *const Execution) !js.Promis
         .referrer_policy = try arena.dupe(u8, request._referrer_policy),
         .referrer_source_url = try arena.dupeZ(u8, exec.url.*),
         .body_content_type = request._body_content_type,
+        .fetch_mode = @tagName(request._mode),
+        .credentials_mode = @tagName(request._credentials),
+        .cache_revalidate = request._cache == .@"no-cache" or
+            request._cache == .reload or request._cache == .@"no-store",
     };
 
     const fetch = try arena.create(Fetch);
@@ -148,7 +152,10 @@ pub fn init(input: Input, options: ?InitOpts, exec: *const Execution) !js.Promis
     RealmLifecycleKernel.tracePromiseSchedule(exec.frameId(), exec.realmEpoch(), .fetch_completion);
 
     const raw_post_body = request._body != null and request._body_content_type == null;
-    const curl_default_headers = !raw_post_body;
+    // Fetch constructs its browser-controlled headers before entering the
+    // transport. curl-impersonate contributes TLS behaviour only here; its
+    // generic navigation header preset must not be merged into Fetch requests.
+    const curl_default_headers = false;
     const credentials = request._credentials;
     const cross_origin = !exec.isSameOrigin(request._url);
     const needs_preflight = request._mode == .cors and cross_origin and
@@ -338,6 +345,15 @@ fn startCorsPreflight(opts: PreflightStart) !void {
     var pf_headers = try opts.http_client.newHeaders();
     // HttpClient owns this list only after request() succeeds.
     errdefer pf_headers.deinit();
+    try exec.headersForRequest(&pf_headers, .{
+        .request_url = fetch._url,
+        .resource_type = .fetch,
+        // Preflight always carries Origin, appended explicitly below.
+        .include_origin_header = false,
+        .header_arena = arena,
+        .fetch_mode = "cors",
+        .storage_access_active = false,
+    });
     try appendCorsOriginHeader(exec, arena, &pf_headers);
     // ACR-Method
     const acrm = try std.fmt.allocPrintSentinel(arena, "Access-Control-Request-Method: {s}", .{opts.method_name}, 0);
@@ -365,7 +381,7 @@ fn startCorsPreflight(opts: PreflightStart) !void {
             .cookie_origin = exec.url.*,
             .top_level_cookie_url = exec.topLevelCookieUrl(),
             .notification = opts.session.notification,
-            .curl_default_headers = true,
+            .curl_default_headers = false,
             .raw_post_body = false,
             .keepalive = false,
             .attribution_frame = exec.attributionFrame(),
@@ -1179,6 +1195,13 @@ const DeferredFetchDoneCallback = struct {
     fn run(ctx: *anyopaque) !?u32 {
         const self: *DeferredFetchDoneCallback = @ptrCast(@alignCast(ctx));
         const fetch = self.fetch;
+        if (comptime IS_DEBUG) {
+            log.info(.http, "fetch deferred completion task", .{
+                .url = fetch._url,
+                .attempt = self.attempts,
+                .realm = @tagName(fetch._exec.realmState()),
+            });
+        }
         if (fetch._fetch_resolved) return null;
         if (fetch._exec.isTaskOwnerStale(self.task_owner)) {
             // Give up without hang: release; resolve path already abandoned.

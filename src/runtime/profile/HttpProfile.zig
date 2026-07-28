@@ -18,6 +18,9 @@ pub const accept_encoding = "Accept-Encoding: gzip, deflate, br";
 /// Chrome 150 document navigations: gzip, deflate, br, zstd (no dcb/dcz).
 pub const accept_encoding_zstd = "Accept-Encoding: gzip, deflate, br, zstd";
 pub const document_priority = "Priority: u=0, i";
+pub const subresource_priority = "Priority: u=1, i";
+pub const image_priority = "Priority: i";
+pub const image_accept = "Accept: image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8";
 
 /// Cold / first-hop Network Information estimates (rarely sent on hop-1; kept for non-search).
 pub const document_downlink: f64 = 9.8;
@@ -51,6 +54,11 @@ pub const RequestContext = struct {
     is_document_navigation: bool = false,
     navigation_destination: NavigationDestination = .top_level,
     origin: ?[]const u8 = null,
+    /// Fetch Metadata mode supplied by the request algorithm. Resource type is
+    /// only a fallback for callers such as images and scripts whose mode is
+    /// implied by their fetch destination.
+    fetch_mode: ?[]const u8 = null,
+    storage_access_active: bool = true,
 };
 
 pub fn secFetchDest(ctx: RequestContext) []const u8 {
@@ -419,6 +427,9 @@ pub fn appendChromeHeaders(
         return appendChromeDocumentNavigationHeaders(headers, allocator, identity, static, ctx, opts);
     }
 
+    // Priority and Accept are destination metadata selected by the browser,
+    // not generic values shared by every subresource.
+    try headers.add(if (ctx.resource_type == .image) image_priority else subresource_priority);
     try headers.add(static.sec_ch_ua_header);
 
     if (opts.full_client_hints) {
@@ -440,10 +451,10 @@ pub fn appendChromeHeaders(
     if (comptime !build_config.curl_impersonate) {
         try headers.add(static.user_agent_header);
     }
-    try headers.add(subresource_accept);
+    try headers.add(if (ctx.resource_type == .image) image_accept else subresource_accept);
 
     const site = secFetchSite(ctx);
-    const mode = secFetchMode(ctx.resource_type);
+    const mode = ctx.fetch_mode orelse secFetchMode(ctx.resource_type);
     const dest = secFetchDest(ctx);
 
     const site_hdr = try std.fmt.allocPrintSentinel(allocator, "Sec-Fetch-Site: {s}", .{site}, 0);
@@ -454,6 +465,13 @@ pub fn appendChromeHeaders(
 
     const dest_hdr = try std.fmt.allocPrintSentinel(allocator, "Sec-Fetch-Dest: {s}", .{dest}, 0);
     try headers.add(dest_hdr);
+
+    // Storage access follows the request's effective credentials state. A
+    // same-origin image is no-cors but still carries cookies/storage, whereas
+    // a cross-origin fetch with credentials=same-origin does not.
+    if (ctx.storage_access_active) {
+        try headers.add("Sec-Fetch-Storage-Access: active");
+    }
 
     try headers.add(accept_encoding_zstd);
     try headers.add(static.accept_language_header);
@@ -800,6 +818,81 @@ test "HttpProfile: iframe navigation uses iframe destination without user activa
     try testing.expectEqualStrings("cross-site", site.?);
     try testing.expect(!saw_user);
     try testing.expect(!saw_uir);
+}
+
+test "HttpProfile: XHR metadata never contains navigation-only headers" {
+    const alloc = testing.allocator;
+    var headers = try HttpClient.Headers.initEmpty();
+    defer headers.deinit();
+
+    const identity = Profile.macos_catalina_intel;
+    const static = StaticHeaders{
+        .user_agent_header = "User-Agent: test\x00",
+        .sec_ch_ua_header = "Sec-Ch-Ua: \"Google Chrome\";v=\"149\"\x00",
+        .accept_language_header = "Accept-Language: en-US,en;q=0.9\x00",
+    };
+    const ctx = RequestContext{
+        .request_url = "https://widget.example/verify\x00",
+        .resource_type = .xhr,
+        .frame_origin = "https://widget.example",
+        .origin = "https://widget.example",
+    };
+    try appendChromeHeaders(&headers, alloc, &identity, &static, ctx, .{});
+
+    var dest: ?[]const u8 = null;
+    var mode: ?[]const u8 = null;
+    var saw_user = false;
+    var saw_uir = false;
+    var storage_access: ?[]const u8 = null;
+    var priority: ?[]const u8 = null;
+    var it = headers.iterator();
+    while (it.next()) |hdr| {
+        if (std.mem.eql(u8, hdr.name, "Sec-Fetch-Dest")) dest = hdr.value;
+        if (std.mem.eql(u8, hdr.name, "Sec-Fetch-Mode")) mode = hdr.value;
+        if (std.mem.eql(u8, hdr.name, "Sec-Fetch-User")) saw_user = true;
+        if (std.mem.eql(u8, hdr.name, "Upgrade-Insecure-Requests")) saw_uir = true;
+        if (std.mem.eql(u8, hdr.name, "Sec-Fetch-Storage-Access")) storage_access = hdr.value;
+        if (std.mem.eql(u8, hdr.name, "Priority")) priority = hdr.value;
+    }
+
+    try testing.expectEqualStrings("empty", dest.?);
+    try testing.expectEqualStrings("cors", mode.?);
+    try testing.expect(!saw_user);
+    try testing.expect(!saw_uir);
+    try testing.expectEqualStrings("active", storage_access.?);
+    try testing.expectEqualStrings("u=1, i", priority.?);
+}
+
+test "HttpProfile: explicit no-cors mode controls fetch metadata" {
+    const alloc = testing.allocator;
+    var headers = try HttpClient.Headers.initEmpty();
+    defer headers.deinit();
+
+    const identity = Profile.macos_catalina_intel;
+    const static = StaticHeaders{
+        .user_agent_header = "User-Agent: test\x00",
+        .sec_ch_ua_header = "Sec-Ch-Ua: \"Google Chrome\";v=\"149\"\x00",
+        .accept_language_header = "Accept-Language: en-US,en;q=0.9\x00",
+    };
+    const ctx = RequestContext{
+        .request_url = "https://probe.example/status\x00",
+        .resource_type = .fetch,
+        .frame_origin = "https://embedder.example",
+        .fetch_mode = "no-cors",
+        .storage_access_active = false,
+    };
+    try appendChromeHeaders(&headers, alloc, &identity, &static, ctx, .{});
+
+    var mode: ?[]const u8 = null;
+    var storage_access: ?[]const u8 = null;
+    var it = headers.iterator();
+    while (it.next()) |hdr| {
+        if (std.mem.eql(u8, hdr.name, "Sec-Fetch-Mode")) mode = hdr.value;
+        if (std.mem.eql(u8, hdr.name, "Sec-Fetch-Storage-Access")) storage_access = hdr.value;
+    }
+
+    try testing.expectEqualStrings("no-cors", mode.?);
+    try testing.expectEqual(@as(?[]const u8, null), storage_access);
 }
 
 test "HttpProfile: brandFullVersion maps Not A Brand to x.0.0.0" {

@@ -190,6 +190,8 @@ fn connect(self: *EventSource) !void {
     try exec.headersForRequest(&headers, .{
         .request_url = self._url,
         .resource_type = .fetch,
+        // The CORS Origin, when required, is appended explicitly above.
+        .include_origin_header = false,
     });
 
     const cookie_support = self._with_credentials or same_origin;

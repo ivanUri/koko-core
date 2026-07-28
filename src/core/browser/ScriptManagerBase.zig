@@ -433,10 +433,16 @@ pub fn getHeaders(
     request_url: [:0]const u8,
     resource_type: HttpClient.RequestParams.ResourceType,
     referrer_kind: ModuleReferrerKind,
+    cors_mode: bool,
 ) !http.Headers {
     var headers = try self.client.newHeaders();
     const referrer_opts: Frame.HeadersForRequestOpts = switch (referrer_kind) {
-        .none => .{ .request_url = request_url, .resource_type = resource_type },
+        .none => .{
+            .request_url = request_url,
+            .resource_type = resource_type,
+            .include_origin_header = cors_mode,
+            .fetch_mode = if (cors_mode) "cors" else "no-cors",
+        },
         .worker_static => blk: {
             const frame = self.owner.parentFrame();
             break :blk .{
@@ -444,6 +450,8 @@ pub fn getHeaders(
                 .resource_type = resource_type,
                 .referrer_source_url = self.owner.url(),
                 .referrer_policy = frame.referrer_policy,
+                .include_origin_header = true,
+                .fetch_mode = "cors",
             };
         },
         .worker_dynamic => blk: {
@@ -453,8 +461,15 @@ pub fn getHeaders(
                     .resource_type = resource_type,
                     .referrer_source_url = self.owner.url(),
                     .referrer_policy = w._worker._referrer_policy,
+                    .include_origin_header = true,
+                    .fetch_mode = "cors",
                 },
-                .frame => .{ .request_url = request_url, .resource_type = resource_type },
+                .frame => .{
+                    .request_url = request_url,
+                    .resource_type = resource_type,
+                    .include_origin_header = true,
+                    .fetch_mode = "cors",
+                },
             };
         },
     };
@@ -606,7 +621,7 @@ pub fn preloadImport(self: *ScriptManagerBase, url: [:0]const u8, referrer: []co
             .frame_id = self.owner.frameId(),
             .attribution_frame = self.owner.attributionFrame(),
             .loader_id = self.owner.loaderId(),
-            .headers = try self.getHeaders(owned_url, .script, self.moduleReferrerKind()),
+            .headers = try self.getHeaders(owned_url, .script, self.moduleReferrerKind(), true),
             .cookie_jar = &session.cookie_jar,
             .cookie_origin = self.owner.url(),
             .top_level_cookie_url = self.owner.topLevelCookieUrl(),
@@ -775,7 +790,7 @@ pub fn getAsyncImport(self: *ScriptManagerBase, url: [:0]const u8, cb: ImportAsy
             .frame_id = self.owner.frameId(),
             .attribution_frame = self.owner.attributionFrame(),
             .loader_id = self.owner.loaderId(),
-            .headers = try self.getHeaders(url, .script, .worker_dynamic),
+            .headers = try self.getHeaders(url, .script, .worker_dynamic, true),
             .resource_type = .script,
             .cookie_jar = &session.cookie_jar,
             .cookie_origin = self.owner.url(),

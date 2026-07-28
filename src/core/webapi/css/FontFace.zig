@@ -28,21 +28,38 @@ _rc: RC(u8) = .{},
 _arena: Allocator,
 _family: []const u8,
 _source: []const u8 = "",
+_loaded_resolver: js.PromiseResolver.Global,
+_status: Status = .unloaded,
+
+const Status = enum {
+    unloaded,
+    loading,
+    loaded,
+    error_state,
+};
 
 pub fn init(family: []const u8, source: []const u8, frame: *Frame) !*FontFace {
     const arena = try frame.getArena(.tiny, "FontFace");
     errdefer frame.releaseArena(arena);
+
+    const resolver = frame.js.local.?.createPromiseResolver();
+    var loaded_resolver = try resolver.persist();
+    errdefer loaded_resolver.deinit();
 
     const self = try arena.create(FontFace);
     self.* = .{
         ._arena = arena,
         ._family = try arena.dupe(u8, family),
         ._source = try arena.dupe(u8, source),
+        ._loaded_resolver = loaded_resolver,
     };
     return self;
 }
 
 pub fn deinit(self: *FontFace, page: *Page) void {
+    // Promise globals are registered with the owning JS Context/Page by
+    // PromiseResolver.persist(). Page teardown resets that registry exactly
+    // once; resetting the same V8 global here would double-release it.
     page.releaseArena(self._arena);
 }
 
@@ -118,17 +135,36 @@ fn extractLocalFontName(source: []const u8) ?[]const u8 {
 // the profile whitelist (CreepJS system-font probe). FP uses local('Arial') under a dummy
 // family name; gate on the local() target, not FontFace.family. Web fonts resolve like Chrome.
 pub fn load(self: *FontFace, frame: *Frame) !js.Promise {
+    const resolver = self._loaded_resolver.local(frame.js.local.?);
+    const promise = resolver.promise();
+    if (self._status != .unloaded) return promise;
+
+    self._status = .loading;
     if (isLocalFontSource(self._source)) {
         const probe_family = extractLocalFontName(self._source) orelse self._family;
-        if (!FingerprintProfile.isFontFamilyAvailable(frame.identityProfile(), probe_family)) {
-            return frame.js.local.?.rejectPromise(.{ .dom_exception = .{ .err = error.NetworkError } });
+        const available = FingerprintProfile.isFontFamilyAvailable(frame.identityProfile(), probe_family);
+        if (!available) {
+            self._status = .error_state;
+            resolver.rejectError("FontFace.load", .{ .dom_exception = .{ .err = error.NetworkError } });
+            return promise;
         }
     }
-    return frame.js.local.?.resolvePromise(self);
+    self._status = .loaded;
+    resolver.resolve("FontFace.load", self);
+    return promise;
 }
 
 pub fn getLoaded(self: *FontFace, frame: *Frame) !js.Promise {
-    return load(self, frame);
+    return self._loaded_resolver.local(frame.js.local.?).promise();
+}
+
+pub fn getStatus(self: *const FontFace) []const u8 {
+    return switch (self._status) {
+        .unloaded => "unloaded",
+        .loading => "loading",
+        .loaded => "loaded",
+        .error_state => "error",
+    };
 }
 
 pub const JsApi = struct {
@@ -142,7 +178,7 @@ pub const JsApi = struct {
 
     pub const constructor = bridge.constructor(FontFace.init, .{});
     pub const family = bridge.accessor(FontFace.getFamily, null, .{});
-    pub const status = bridge.attribute("loaded", .{});
+    pub const status = bridge.accessor(FontFace.getStatus, null, .{});
     pub const style = bridge.attribute("normal", .{});
     pub const weight = bridge.attribute("normal", .{});
     pub const stretch = bridge.attribute("normal", .{});

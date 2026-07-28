@@ -54,11 +54,33 @@ fn hintMatches(hint: []const u8, comptime name: []const u8) bool {
     return std.mem.eql(u8, hint, name);
 }
 
+fn fullVersionList(exec: *js.Execution) ![]const Brand {
+    const brands = brandsFromProfile(exec.loadedProfile());
+    const profile = exec.identityProfile();
+    const result = try exec.call_arena.alloc(Brand, brands.len);
+    for (brands, result) |brand, *out| {
+        const browser_brand = std.mem.indexOf(u8, brand.brand, "Chrome") != null or
+            std.mem.indexOf(u8, brand.brand, "Chromium") != null;
+        const version = if (browser_brand)
+            try exec.call_arena.dupe(u8, profile.ua_full_version)
+        else
+            try std.fmt.allocPrint(exec.call_arena, "{s}.0.0.0", .{brand.version});
+        out.* = .{ .brand = brand.brand, .version = version };
+    }
+    return result;
+}
+
 pub fn getHighEntropyValues(_: *const NavigatorUAData, hints: []const []const u8, exec: *js.Execution) !js.Promise {
     const local = exec.context.local orelse return error.NotHandled;
     const profile = exec.identityProfile();
 
     var obj = local.newObject();
+    // UA-CH includes the low-entropy values in every result in addition to
+    // the explicitly requested high-entropy hints.
+    if (!(try obj.set("brands", brandsFromProfile(exec.loadedProfile()), .{}))) return error.CreateObjectFailure;
+    if (!(try obj.set("mobile", profile.ua_mobile, .{}))) return error.CreateObjectFailure;
+    if (!(try obj.set("platform", profile.ua_data_platform, .{}))) return error.CreateObjectFailure;
+
     for (hints) |hint| {
         if (hintMatches(hint, "platform")) {
             if ((try obj.set("platform", profile.ua_data_platform, .{})) == false) return error.CreateObjectFailure;
@@ -73,13 +95,12 @@ pub fn getHighEntropyValues(_: *const NavigatorUAData, hints: []const []const u8
         } else if (hintMatches(hint, "uaFullVersion")) {
             if ((try obj.set("uaFullVersion", profile.ua_full_version, .{})) == false) return error.CreateObjectFailure;
         } else if (hintMatches(hint, "fullVersionList")) {
-            const brands = brandsFromProfile(exec.loadedProfile());
-            if ((try obj.set("fullVersionList", brands, .{})) == false) return error.CreateObjectFailure;
+            if ((try obj.set("fullVersionList", try fullVersionList(exec), .{})) == false) return error.CreateObjectFailure;
         } else if (hintMatches(hint, "wow64")) {
             if ((try obj.set("wow64", false, .{})) == false) return error.CreateObjectFailure;
-        } else if (hintMatches(hint, "formFactor")) {
-            const form_factor = [_][]const u8{"Desktop"};
-            if ((try obj.set("formFactor", form_factor, .{})) == false) return error.CreateObjectFailure;
+        } else if (hintMatches(hint, "formFactors")) {
+            const form_factors = [_][]const u8{"Desktop"};
+            if ((try obj.set("formFactors", form_factors, .{})) == false) return error.CreateObjectFailure;
         }
     }
 

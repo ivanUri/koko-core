@@ -92,6 +92,24 @@ pub const Headers = struct {
         }
     }
 
+    /// Make an independently owned curl header list.
+    ///
+    /// `Headers` is a thin owner around `curl_slist`; assigning it only copies
+    /// the head pointer. Transport-only additions (Cookie, validators, proxy
+    /// secrets) must therefore clone before mutation or retries/redirects will
+    /// append into the request's canonical list.
+    pub fn clone(self: Headers) !Headers {
+        var result = Headers.initEmpty();
+        errdefer result.deinit();
+
+        var node = self.headers;
+        while (node) |current| : (node = current.next) {
+            const raw = current.data orelse continue;
+            try result.add(@ptrCast(raw));
+        }
+        return result;
+    }
+
     pub fn add(self: *Headers, header: [*c]const u8) !void {
         // Copies the value
         const updated_headers = libcurl.curl_slist_append(self.headers, header);

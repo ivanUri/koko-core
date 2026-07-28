@@ -5,7 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
-const url = "https://grok.com/";
+const url = "https://abrahamjuliot.github.io/creepjs/";
 // Chỉ cần sửa cấu hình trong khối này.
 const CONFIG = {
   url,
@@ -20,8 +20,8 @@ const CONFIG = {
   keepScripts: false,
   includeFrames: true,
   waitUntil: "done",
-  waitMs: 30_000,
-  terminateMs: 30_000,
+  waitMs: 40_000,
+  terminateMs: 40_000,
   // Wait for finite presentation animations to settle before serializing.
   // Infinite decorative animations are intentionally ignored.
   waitScript: null,

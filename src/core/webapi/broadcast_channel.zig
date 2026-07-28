@@ -95,6 +95,19 @@ pub const BroadcastChannel = struct {
         self._page.unregisterBroadcastChannel(self);
     }
 
+    pub fn detachForContextTeardown(self: *BroadcastChannel, context: *js.Context) bool {
+        const owned = switch (self._context) {
+            .frame => |frame| frame.js == context,
+            .worker => |worker| worker.js == context,
+        };
+        if (owned) self._closed = true;
+        return owned;
+    }
+
+    fn contextIsLive(self: *const BroadcastChannel) bool {
+        return self.getJsContext().execution.canEnterJs(.strict_active);
+    }
+
     pub fn getOnMessage(self: *const BroadcastChannel) ?js.Function.Global {
         return self._on_message;
     }
@@ -112,7 +125,9 @@ pub const BroadcastChannel = struct {
     }
 
     fn scheduleMessage(self: *BroadcastChannel, source: js.Value.Temp, sender_origin: []const u8) !void {
+        if (self._closed or !self.contextIsLive()) return;
         const cloned = self.cloneMessage(source) catch |err| {
+            if (err == error.StaleRealm) return;
             try self.dispatchMessageError(err);
             return;
         };
@@ -129,12 +144,13 @@ pub const BroadcastChannel = struct {
         try self.getScheduler().add(callback, DeliverCallback.run, 0, .{
             .name = "BroadcastChannel.postMessage",
             .low_priority = false,
+            .finalizer = DeliverCallback.cancelled,
         });
     }
 
     fn cloneMessage(self: *BroadcastChannel, message: js.Value.Temp) !js.Value.Temp {
         var ls: js.Local.Scope = undefined;
-        self.getJsContext().localScope(&ls);
+        if (!self.getJsContext().tryLocalScope(&ls)) return error.StaleRealm;
         defer ls.deinit();
 
         const cloned = try message.local(&ls.local).structuredCloneTo(&ls.local, null);
@@ -154,7 +170,7 @@ pub const BroadcastChannel = struct {
     }
 
     fn deliverMessage(self: *BroadcastChannel, message: js.Value.Temp, sender_origin: []const u8) !void {
-        if (self._closed) return;
+        if (self._closed or !self.contextIsLive()) return;
 
         const target = self.asEventTarget();
         if (!self.hasListeners("message", self._on_message)) return;
@@ -189,7 +205,7 @@ pub const BroadcastChannel = struct {
         };
     }
 
-    fn getJsContext(self: *BroadcastChannel) *js.Context {
+    fn getJsContext(self: *const BroadcastChannel) *js.Context {
         return switch (self._context) {
             .frame => |f| f.js,
             .worker => |w| w.js,
@@ -213,6 +229,11 @@ pub const BroadcastChannel = struct {
             defer self.deinit();
             try self.channel.deliverMessage(self.message, self.sender_origin);
             return null;
+        }
+
+        fn cancelled(ctx: *anyopaque) void {
+            const self: *DeliverCallback = @ptrCast(@alignCast(ctx));
+            self.deinit();
         }
 
         fn deinit(self: *DeliverCallback) void {

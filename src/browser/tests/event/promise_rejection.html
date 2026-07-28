@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+  let unhandled = 0;
+  let handled = 0;
+  const late = Promise.reject("late-handler");
+
+  addEventListener("unhandledrejection", (event) => {
+    if (event.promise !== late || event.reason !== "late-handler") {
+      throw new Error("wrong unhandledrejection payload");
+    }
+    unhandled++;
+    late.catch(() => {});
+  });
+  addEventListener("rejectionhandled", (event) => {
+    if (event.promise !== late || event.reason !== "late-handler") {
+      throw new Error("wrong rejectionhandled payload");
+    }
+    handled++;
+  });
+
+  // FontFace.load() rejects synchronously in the native binding for a missing
+  // local face. Attaching the handler in the calling JS job must prevent an
+  // unhandledrejection event, just like Promise.reject(...).catch(...).
+  new FontFace("missing", "local(velora-promise-rejection-test-missing)")
+    .load()
+    .catch(() => {});
+
+  setTimeout(() => {
+    if (unhandled !== 1 || handled !== 1) {
+      throw new Error(`wrong rejection notifications: ${unhandled}/${handled}`);
+    }
+    document.body.id = "promise-rejection-pass";
+    document.body.textContent = "promise-rejection-pass";
+  }, 20);
+</script>

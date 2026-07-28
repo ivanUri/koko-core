@@ -224,7 +224,7 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
     const http_client = self.http_client;
 
     switch (frame._parse_state) {
-        .pre, .raw, .text, .image, .html => {
+        .pre, .raw, .text, .image, .html, .deferred_html => {
             // The main frame hasn't started/finished navigating.
             // There's no JS to run, and no reason to run the scheduler.
             // Include queue/ready_queue: SPA inject mid-callback parks transfers

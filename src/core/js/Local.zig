@@ -132,6 +132,8 @@ pub fn compileFunction(
     comptime parameter_names: []const []const u8,
     extensions: []const v8.Object,
 ) !js.Function {
+    if (self.ctx.env.isExecutionTerminating()) return error.ExecutionTerminated;
+
     // TODO: Make configurable.
     const script_name = self.isolate.initStringHandle("anonymous");
     const script_source = if (@TypeOf(src) == js.String) src.handle else self.isolate.initStringHandle(src);
@@ -167,6 +169,8 @@ pub fn compileFunction(
 
 /// Returns true when `src` is syntactically valid JavaScript (compile-only probe).
 pub fn canCompileScript(self: *const Local, src: []const u8, name: ?[]const u8) bool {
+    if (self.ctx.env.isExecutionTerminating()) return false;
+
     const script_name = self.isolate.initStringHandle(name orelse "anonymous");
     const script_source = self.isolate.initStringHandle(src);
 
@@ -192,6 +196,12 @@ pub fn canCompileScript(self: *const Local, src: []const u8, name: ?[]const u8) 
 }
 
 pub fn compileAndRun(self: *const Local, src: []const u8, name: ?[]const u8) !js.Value {
+    // V8 forbids compile/entry APIs after TerminateExecution until the host
+    // explicitly cancels termination. Deadline teardown owns that transition;
+    // nested DOM/worker callbacks must fail closed instead of tripping V8's
+    // debug CHECK.
+    if (self.ctx.env.isExecutionTerminating()) return error.ExecutionTerminated;
+
     const script_name = self.isolate.initStringHandle(name orelse "anonymous");
     const script_source = self.isolate.initStringHandle(src);
 

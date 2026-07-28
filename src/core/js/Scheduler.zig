@@ -37,6 +37,7 @@ _sequence: u64,
 _generation: u64 = 0,
 low_priority: Queue,
 high_priority: Queue,
+timers: Queue,
 
 pub fn init(allocator: std.mem.Allocator) Scheduler {
     return .{
@@ -44,6 +45,7 @@ pub fn init(allocator: std.mem.Allocator) Scheduler {
         ._generation = 0,
         .low_priority = Queue.init(allocator, {}),
         .high_priority = Queue.init(allocator, {}),
+        .timers = Queue.init(allocator, {}),
     };
 }
 
@@ -51,20 +53,24 @@ pub fn deinit(self: *Scheduler) void {
     self._generation +%= 1;
     finalizeTasks(&self.low_priority);
     finalizeTasks(&self.high_priority);
+    finalizeTasks(&self.timers);
 }
 
 pub fn reset(self: *Scheduler) void {
     self._generation +%= 1;
     finalizeTasks(&self.low_priority);
     finalizeTasks(&self.high_priority);
+    finalizeTasks(&self.timers);
     self.low_priority.clearRetainingCapacity();
     self.high_priority.clearRetainingCapacity();
+    self.timers.clearRetainingCapacity();
 }
 
 /// Remove matching tasks and invoke their finalizers. Used when tearing down a
 /// Worker while deferred script tasks may still be queued on the parent frame.
 pub fn cancelTasks(self: *Scheduler, matcher: *const fn (ctx: *anyopaque, callback: Callback) bool) void {
     cancelTasksInQueue(&self.high_priority, matcher);
+    cancelTasksInQueue(&self.timers, matcher);
     cancelTasksInQueue(&self.low_priority, matcher);
 }
 
@@ -91,16 +97,24 @@ fn cancelTasksInQueue(queue: *Queue, matcher: *const fn (ctx: *anyopaque, callba
     }
 }
 
+pub const TaskSource = enum { generic, timer };
+
 const AddOpts = struct {
     name: []const u8 = "",
     low_priority: bool = false,
+    source: TaskSource = .generic,
     finalizer: ?Finalizer = null,
 };
 pub fn add(self: *Scheduler, ctx: *anyopaque, cb: Callback, run_in_ms: u32, opts: AddOpts) !void {
     if (comptime IS_DEBUG) {
         log.debug(.scheduler, "scheduler.add", .{ .name = opts.name, .run_in_ms = run_in_ms, .low_priority = opts.low_priority });
     }
-    var queue = if (opts.low_priority) &self.low_priority else &self.high_priority;
+    var queue = if (opts.source == .timer)
+        &self.timers
+    else if (opts.low_priority)
+        &self.low_priority
+    else
+        &self.high_priority;
     const seq = self._sequence + 1;
     self._sequence = seq;
     return queue.add(.{
@@ -110,6 +124,7 @@ pub fn add(self: *Scheduler, ctx: *anyopaque, cb: Callback, run_in_ms: u32, opts
         .name = opts.name,
         .finalizer = opts.finalizer,
         .low_priority = opts.low_priority,
+        .source = opts.source,
         .run_at = milliTimestamp(.monotonic) + run_in_ms,
     });
 }
@@ -121,6 +136,16 @@ pub fn run(self: *Scheduler) !void {
     // repeating low-priority timers (CreepJS setTimeout polling).
     try self.runQueue(&self.high_priority, now, gen);
     if (self._generation != gen) return;
+    try self.runQueue(&self.timers, now, gen);
+    if (self._generation != gen) return;
+    try self.runQueue(&self.low_priority, now, gen);
+}
+
+pub fn runNonTimerTasks(self: *Scheduler) !void {
+    const gen = self._generation;
+    const now = milliTimestamp(.monotonic);
+    try self.runQueue(&self.high_priority, now, gen);
+    if (self._generation != gen) return;
     try self.runQueue(&self.low_priority, now, gen);
 }
 
@@ -130,11 +155,28 @@ pub fn runOne(self: *Scheduler) !bool {
     const now = milliTimestamp(.monotonic);
     if (try self.runOneFromQueue(&self.high_priority, now, gen)) return true;
     if (self._generation != gen) return false;
+    if (try self.runOneFromQueue(&self.timers, now, gen)) return true;
+    if (self._generation != gen) return false;
     if (try self.runOneFromQueue(&self.low_priority, now, gen)) return true;
     return false;
 }
 
+pub fn runOneNonTimerTask(self: *Scheduler) !bool {
+    const gen = self._generation;
+    const now = milliTimestamp(.monotonic);
+    if (try self.runOneFromQueue(&self.high_priority, now, gen)) return true;
+    if (self._generation != gen) return false;
+    return try self.runOneFromQueue(&self.low_priority, now, gen);
+}
+
 pub fn hasReadyTasks(self: *Scheduler) bool {
+    const now = milliTimestamp(.monotonic);
+    return queueHasReadyTask(&self.low_priority, now) or
+        queueHasReadyTask(&self.high_priority, now) or
+        queueHasReadyTask(&self.timers, now);
+}
+
+pub fn hasReadyNonTimerTasks(self: *Scheduler) bool {
     const now = milliTimestamp(.monotonic);
     return queueHasReadyTask(&self.low_priority, now) or queueHasReadyTask(&self.high_priority, now);
 }
@@ -150,11 +192,11 @@ pub fn msToNextLow(self: *Scheduler) ?u64 {
 pub fn msToNext(self: *Scheduler) ?u64 {
     const high = msToNextInQueue(&self.high_priority);
     const low = msToNextInQueue(&self.low_priority);
-    if (high) |h| {
-        if (low) |l| return @min(h, l);
-        return h;
-    }
-    return low;
+    const timer = msToNextInQueue(&self.timers);
+    var result = high orelse low orelse timer orelse return null;
+    if (low) |value| result = @min(result, value);
+    if (timer) |value| result = @min(result, value);
+    return result;
 }
 
 fn msToNextInQueue(queue: *Queue) ?u64 {
@@ -200,7 +242,9 @@ fn runOneFromQueue(self: *Scheduler, queue: *Queue, now: u64, gen: u64) !bool {
         // Re-arm into the **same** priority queue the task was scheduled with.
         // Page timers (setTimeout/setInterval) use high_priority via AddOpts;
         // requestIdleCallback stays low. No string matching on task.name.
-        if (task.low_priority) {
+        if (task.source == .timer) {
+            try self.timers.add(task);
+        } else if (task.low_priority) {
             try self.low_priority.add(task);
         } else {
             try self.high_priority.add(task);
@@ -232,7 +276,43 @@ const Task = struct {
     finalizer: ?Finalizer,
     /// When re-arming a repeating task, keep the original priority band.
     low_priority: bool = false,
+    source: TaskSource = .generic,
 };
 
 pub const Callback = *const fn (ctx: *anyopaque) anyerror!?u32;
 const Finalizer = *const fn (ctx: *anyopaque) void;
+
+test "Scheduler: parser turns run non-timer task sources" {
+    var scheduler = Scheduler.init(std.testing.allocator);
+    defer scheduler.deinit();
+
+    const CallbackState = struct {
+        generic_ran: bool = false,
+        timer_ran: bool = false,
+
+        fn generic(ctx: *anyopaque) !?u32 {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.generic_ran = true;
+            return null;
+        }
+
+        fn timer(ctx: *anyopaque) !?u32 {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.timer_ran = true;
+            return null;
+        }
+    };
+
+    var state = CallbackState{};
+    try scheduler.add(&state, CallbackState.timer, 0, .{ .source = .timer });
+    try scheduler.add(&state, CallbackState.generic, 0, .{});
+
+    try scheduler.runNonTimerTasks();
+    try std.testing.expect(state.generic_ran);
+    try std.testing.expect(!state.timer_ran);
+    try std.testing.expect(scheduler.hasReadyTasks());
+    try std.testing.expect(!scheduler.hasReadyNonTimerTasks());
+
+    try scheduler.run();
+    try std.testing.expect(state.timer_ran);
+}

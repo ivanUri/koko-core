@@ -63,11 +63,17 @@ fn _resolve(self: PromiseResolver, value: anytype) !void {
     if (!out.has_value or !out.value) {
         return error.FailedToResolvePromise;
     }
-    // Nested full runMicrotasks is deferred (reentry guard). Mark pending so an
-    // outer loop or a deferred continue (Fetch.deferredContinue) can flush.
-    // Do not PerformCheckpoint here when nested under HTTP done_callback — that
-    // re-enters page JS on the curl stack and races Fingerprint agent collection.
-    if (env.checkpoint_active) {
+    // A native binding runs with the calling JavaScript job suspended. Promise
+    // reactions must not run until that binding returns to V8: the caller still
+    // has to receive the Promise and may attach handlers before the HTML
+    // microtask checkpoint. Running a checkpoint here reports synchronously
+    // rejected Web API promises as unhandled and permits arbitrary JS reentry in
+    // the middle of a native operation.
+    //
+    // Caller.deinit marks the checkpoint pending and the script/task runner owns
+    // the checkpoint after V8 unwinds. Settlements made outside a native binding
+    // (for example an HTTP completion) retain the eager host checkpoint below.
+    if (local.ctx.call_depth > 0 or env.checkpoint_active) {
         env.checkpoint_pending = true;
         return;
     }
@@ -75,7 +81,7 @@ fn _resolve(self: PromiseResolver, value: anytype) !void {
 }
 
 pub fn reject(self: PromiseResolver, comptime source: []const u8, value: anytype) void {
-    self._reject(value) catch |err| {
+    self._reject(source, value) catch |err| {
         log.err(.bug, "reject", .{ .source = source, .err = err, .persistent = false });
     };
 }
@@ -105,24 +111,25 @@ pub fn rejectError(
         .type_error => |msg| self.local.isolate.createTypeError(msg),
         // "Exceptional".
         .dom_exception => |exception| {
-            self._reject(DOMException.fromError(exception.err) orelse unreachable) catch |reject_err| {
+            self._reject(source, DOMException.fromError(exception.err) orelse unreachable) catch |reject_err| {
                 log.err(.bug, "rejectDomException", .{ .source = source, .err = reject_err, .persistent = false });
             };
             return;
         },
     };
 
-    self._reject(js.Value{ .handle = handle, .local = self.local }) catch |reject_err| {
+    self._reject(source, js.Value{ .handle = handle, .local = self.local }) catch |reject_err| {
         log.err(.bug, "rejectError", .{ .source = source, .err = reject_err, .persistent = false });
     };
 }
 
-fn _reject(self: PromiseResolver, value: anytype) !void {
+fn _reject(self: PromiseResolver, comptime source: []const u8, value: anytype) !void {
     const local = self.local;
     const env = local.ctx.env;
 
     if (builtin.mode == .Debug) {
         log.info(.browser, "promise.reject", .{
+            .source = source,
             .checkpoint_active = env.checkpoint_active,
             .checkpoint_pending = env.checkpoint_pending,
         });
@@ -135,7 +142,9 @@ fn _reject(self: PromiseResolver, value: anytype) !void {
     if (!out.has_value or !out.value) {
         return error.FailedToRejectPromise;
     }
-    if (env.checkpoint_active) {
+    // See _resolve: a rejected Promise must be observable by its JavaScript
+    // caller before unhandled-rejection bookkeeping runs.
+    if (local.ctx.call_depth > 0 or env.checkpoint_active) {
         env.checkpoint_pending = true;
         return;
     }

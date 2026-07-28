@@ -180,21 +180,47 @@ pub fn flushPendingIdentityRemovals(self: *Page) void {
 
 /// Tear down a secondary identity map (e.g. a dedicated worker realm). Globals
 /// may still be live in V8 when the worker context is destroyed; mark finalizer
-/// nodes done and drop the map. Weak callbacks reset handles on the next GC.
+/// nodes done and drop the map. Retired nodes must also be unlinked before
+/// destroyContext: their weak callbacks own and free the nodes once `done` is
+/// set, so leaving one in the FinalizerCallback chain creates a dangling link.
 pub fn shutdownIdentity(self: *Page, identity: *js.Identity) void {
-    {
-        var fc_it = self.finalizer_callbacks.valueIterator();
-        while (fc_it.next()) |fc_ptr| {
-            var id: ?*Session.FinalizerCallback.Identity = fc_ptr.*.identities;
-            while (id) |node| {
-                if (node.identity == identity) {
-                    node.done = true;
-                }
-                id = node.next;
-            }
-        }
+    var fc_it = self.finalizer_callbacks.valueIterator();
+    while (fc_it.next()) |fc_ptr| {
+        retireFinalizerIdentityNodes(fc_ptr.*, identity);
     }
     identity.identity_map = .{};
+}
+
+fn retireFinalizerIdentityNodes(fc: *Session.FinalizerCallback, identity: *js.Identity) void {
+    var current = fc.identities;
+    var kept_head: ?*Session.FinalizerCallback.Identity = null;
+    var kept_tail: ?*Session.FinalizerCallback.Identity = null;
+    var kept_count: u8 = 0;
+
+    // Detach the published chain first. A weak callback may run as soon as a
+    // node is marked done and is then allowed to destroy that session-owned
+    // node without leaving a stale pointer reachable from `fc`.
+    fc.identities = null;
+    fc.identity_count = 0;
+    while (current) |node| {
+        const next = node.next;
+        node.next = null;
+        if (node.identity == identity) {
+            _ = identity.identity_map.remove(node.resolved_ptr_id);
+            node.done = true;
+        } else {
+            if (kept_tail) |tail| {
+                tail.next = node;
+            } else {
+                kept_head = node;
+            }
+            kept_tail = node;
+            kept_count +|= 1;
+        }
+        current = next;
+    }
+    fc.identities = kept_head;
+    fc.identity_count = kept_count;
 }
 
 // Tear down the Page and its root Frame. Equivalent to the old
@@ -400,6 +426,50 @@ pub fn detachFinalizer(self: *Page, finalizer_ptr_id: usize) void {
     self.releaseArena(fc.arena);
 }
 
+test "Page: shutting down one realm unlinks only its finalizer identity nodes" {
+    var retired_identity: js.Identity = .{};
+    var live_identity: js.Identity = .{};
+    const session: *Session = @ptrFromInt(@alignOf(Session));
+    const page: *Page = @ptrFromInt(@alignOf(Page));
+
+    var retired_first: Session.FinalizerCallback.Identity = .{
+        .session = session,
+        .page = page,
+        .identity = &retired_identity,
+        .finalizer_ptr_id = 1,
+        .resolved_ptr_id = 11,
+    };
+    var live: Session.FinalizerCallback.Identity = .{
+        .session = session,
+        .page = page,
+        .identity = &live_identity,
+        .finalizer_ptr_id = 1,
+        .resolved_ptr_id = 12,
+    };
+    var retired_last: Session.FinalizerCallback.Identity = .{
+        .session = session,
+        .page = page,
+        .identity = &retired_identity,
+        .finalizer_ptr_id = 1,
+        .resolved_ptr_id = 13,
+    };
+    retired_first.next = &live;
+    live.next = &retired_last;
+
+    var fc: Session.FinalizerCallback = undefined;
+    fc.identities = &retired_first;
+    fc.identity_count = 3;
+
+    retireFinalizerIdentityNodes(&fc, &retired_identity);
+
+    try std.testing.expect(retired_first.done);
+    try std.testing.expect(retired_last.done);
+    try std.testing.expect(!live.done);
+    try std.testing.expectEqual(@as(?*Session.FinalizerCallback.Identity, &live), fc.identities);
+    try std.testing.expectEqual(@as(?*Session.FinalizerCallback.Identity, null), live.next);
+    try std.testing.expectEqual(@as(u8, 1), fc.identity_count);
+}
+
 pub fn getOrCreateOrigin(self: *Page, key_: ?[]const u8) !*js.Origin {
     const session = self.session;
     const key = key_ orelse {
@@ -515,5 +585,24 @@ pub fn unregisterBroadcastChannel(self: *Page, channel: *BroadcastChannel) void 
     }
     if (list.items.len == 0) {
         _ = self.broadcast_channels.remove(channel.registryKey());
+    }
+}
+
+/// A BroadcastChannel is entangled with its creation realm. Closing every
+/// channel before that realm's V8 context is reset prevents later senders from
+/// cloning into a stale global. Scheduler reset owns cancellation of already
+/// queued deliveries through their task finalizers.
+pub fn unregisterBroadcastChannelsForContext(self: *Page, context: *js.Context) void {
+    var it = self.broadcast_channels.iterator();
+    while (it.next()) |entry| {
+        const list = entry.value_ptr;
+        var i = list.items.len;
+        while (i > 0) {
+            i -= 1;
+            const channel = list.items[i];
+            if (channel.detachForContextTeardown(context)) {
+                _ = list.swapRemove(i);
+            }
+        }
     }
 }

@@ -61,6 +61,10 @@ pub const TaskSource = enum {
     unknown,
 };
 
+fn taskSourceOwnsOuterMacrotaskTurn(source: TaskSource) bool {
+    return source == .macrotask_loop;
+}
+
 // CreepJS Promise.all fans out ~19 async probes across 5 frames; each queues
 // offline-audio / worker / canvas microtasks and can trip the old budget before
 // setTimeout(0) continuations (canvas2d, audio post) get a macrotask turn.
@@ -694,6 +698,10 @@ pub fn destroyContext(self: *Env, context: *Context) void {
 
     self.notifyInspectorContextDestroyed(context);
 
+    // Realm-owned registries must be detached while the Context identity is
+    // still valid and before Context.deinit resets its V8 global.
+    context.page.unregisterBroadcastChannelsForContext(context);
+
     context.deinit();
 }
 
@@ -878,7 +886,14 @@ pub fn runMicrotasks(self: *Env, source: TaskSource) void {
     self.checkpoint_active = false;
     self.clearSchedulerSuppression();
 
-    if (self.scheduler_pump_depth == 0 and self.anyContextHasReadyTimers()) {
+    // Promise/event/timer checkpoints may run while their scheduler callback
+    // still owns V8 locals, events and listener handles. They may drain only
+    // microtasks. Cross-context scheduler work belongs to the explicit outer
+    // macrotask-loop checkpoint after that callback has unwound.
+    if (taskSourceOwnsOuterMacrotaskTurn(source) and
+        self.scheduler_pump_depth == 0 and
+        self.anyContextHasReadyTimers())
+    {
         self.pumpSchedulerTasks();
         if (self.checkpoint_pending) {
             self.runMicrotasks(.timer_callback);
@@ -886,6 +901,14 @@ pub fn runMicrotasks(self: *Env, source: TaskSource) void {
     }
 
     self.flushPendingIdentityRemovals();
+}
+
+test "only the outer macrotask checkpoint may pump schedulers" {
+    try std.testing.expect(taskSourceOwnsOuterMacrotaskTurn(.macrotask_loop));
+    try std.testing.expect(!taskSourceOwnsOuterMacrotaskTurn(.event_handler));
+    try std.testing.expect(!taskSourceOwnsOuterMacrotaskTurn(.timer_callback));
+    try std.testing.expect(!taskSourceOwnsOuterMacrotaskTurn(.promise_resolve));
+    try std.testing.expect(!taskSourceOwnsOuterMacrotaskTurn(.after_evaluate));
 }
 
 fn flushPendingIdentityRemovals(self: *Env) void {
@@ -967,14 +990,14 @@ pub fn runMacrotasks(self: *Env) !void {
             }
             continue;
         }
-        if (contextBlocksTimerPump(ctx)) continue;
+        const timers_blocked = contextBlocksTimerPump(ctx);
 
         if (comptime builtin.is_test == false) {
             // I hate this comptime check as much as you do. But we have tests
             // which rely on short execution before shutdown. In real world, it's
             // underterministic whether a timer will or won't run before the
             // frame shutsdown. But for tests, we need to run them to their end.
-            if (ctx.scheduler.hasReadyTasks() == false) {
+            if ((if (timers_blocked) ctx.scheduler.hasReadyNonTimerTasks() else ctx.scheduler.hasReadyTasks()) == false) {
                 continue;
             }
         }
@@ -986,7 +1009,10 @@ pub fn runMacrotasks(self: *Env) !void {
         // Re-check after enter — detach can race with enter.
         if (!self.isContextRegistered(ctx)) continue;
         switch (ctx.global) {
-            .frame => |frame| try frame.runOwnedScheduler(),
+            .frame => |frame| if (timers_blocked)
+                try frame.js.scheduler.runNonTimerTasks()
+            else
+                try frame.runOwnedScheduler(),
             .worker => try ctx.scheduler.run(),
         }
     }
@@ -1026,8 +1052,8 @@ pub fn runOneMacrotaskRound(self: *Env) !bool {
             }
             continue;
         }
-        if (contextBlocksTimerPump(ctx)) continue;
-        if (!ctx.scheduler.hasReadyTasks()) continue;
+        const timers_blocked = contextBlocksTimerPump(ctx);
+        if (!(if (timers_blocked) ctx.scheduler.hasReadyNonTimerTasks() else ctx.scheduler.hasReadyTasks())) continue;
 
         if (!self.isContextRegistered(ctx)) continue;
         var hs: js.HandleScope = undefined;
@@ -1035,7 +1061,10 @@ pub fn runOneMacrotaskRound(self: *Env) !bool {
         defer entered.exit();
         if (!self.isContextRegistered(ctx)) continue;
         const ran = switch (ctx.global) {
-            .frame => |frame| try frame.runOwnedSchedulerOne(),
+            .frame => |frame| if (timers_blocked)
+                try frame.js.scheduler.runOneNonTimerTask()
+            else
+                try frame.runOwnedSchedulerOne(),
             .worker => try ctx.scheduler.runOne(),
         };
         if (ran) return true;
@@ -1096,7 +1125,10 @@ pub fn anyContextOnV8Stack(self: *const Env) bool {
 
 fn anyContextHasReadyTimers(self: *const Env) bool {
     for (self.contexts[0..self.context_count]) |ctx| {
-        if (contextBlocksTimerPump(ctx)) continue;
+        if (contextBlocksTimerPump(ctx)) {
+            if (ctx.scheduler.hasReadyNonTimerTasks()) return true;
+            continue;
+        }
         if (ctx.scheduler.hasReadyTasks()) return true;
     }
     return false;
@@ -1276,25 +1308,100 @@ fn promiseRejectCallback(message_handle: v8.PromiseRejectMessage) callconv(.c) v
         .call_arena = ctx.call_arena,
     };
 
-    const no_handler = promise_event == v8.kPromiseRejectWithNoHandler;
-    switch (ctx.global) {
-        .frame => |frame| {
-            frame.window.unhandledPromiseRejection(no_handler, .{
-                .local = &local,
-                .handle = &message_handle,
-            }, frame) catch |err| {
-                log.warn(.browser, "unhandled rejection handler", .{ .err = err, .target = "window" });
-            };
-        },
-        .worker => |wsg| {
-            wsg.unhandledPromiseRejection(no_handler, .{
-                .local = &local,
-                .handle = &message_handle,
-            }) catch |err| {
-                log.warn(.browser, "unhandled rejection handler", .{ .err = err, .target = "worker" });
-            };
-        },
+    const promise = (js.PromiseRejection{ .local = &local, .handle = &message_handle }).promise();
+    if (promise_event == v8.kPromiseRejectWithNoHandler) {
+        queuePromiseRejection(ctx, promise, (js.PromiseRejection{
+            .local = &local,
+            .handle = &message_handle,
+        }).reason()) catch |err| {
+            log.warn(.browser, "queue unhandled rejection", .{ .err = err });
+        };
+    } else {
+        markPromiseRejectionHandled(ctx, promise);
     }
+}
+
+fn findPendingPromiseRejection(ctx: *Context, promise: js.Promise) ?*Context.PendingPromiseRejection {
+    for (ctx.pending_promise_rejections.items) |pending| {
+        if (v8.v8__Global__IsEqual(&pending.promise.handle, @ptrCast(promise.handle))) return pending;
+    }
+    return null;
+}
+
+fn queuePromiseRejection(ctx: *Context, promise: js.Promise, reason: ?js.Value) !void {
+    if (findPendingPromiseRejection(ctx, promise) != null) return;
+
+    const pending = try ctx.arena.create(Context.PendingPromiseRejection);
+    pending.* = .{
+        .context = ctx,
+        .promise = try promise.persist(),
+        .reason = if (reason) |value| try value.persist() else null,
+    };
+    try ctx.pending_promise_rejections.append(ctx.arena, pending);
+    try ctx.scheduler.add(pending, notifyPromiseRejectionTask, 0, .{
+        .name = "promise rejection notification",
+        .low_priority = false,
+    });
+    schedulePromiseRejectionPump(ctx);
+}
+
+fn markPromiseRejectionHandled(ctx: *Context, promise: js.Promise) void {
+    const pending = findPendingPromiseRejection(ctx, promise) orelse return;
+    switch (pending.state) {
+        .pending => pending.state = .handled,
+        .reported => {
+            if (pending.notify_handled) return;
+            pending.notify_handled = true;
+            ctx.scheduler.add(pending, notifyPromiseRejectionTask, 0, .{
+                .name = "promise rejection handled notification",
+                .low_priority = false,
+            }) catch return;
+            schedulePromiseRejectionPump(ctx);
+        },
+        .handled => {},
+    }
+}
+
+fn schedulePromiseRejectionPump(ctx: *Context) void {
+    switch (ctx.global) {
+        .frame => |frame| frame.scheduleDeferredMacrotaskPump(0) catch {},
+        .worker => |worker| worker._worker._frame.scheduleDeferredMacrotaskPump(0) catch {},
+    }
+}
+
+fn notifyPromiseRejectionTask(raw: *anyopaque) !?u32 {
+    const pending: *Context.PendingPromiseRejection = @ptrCast(@alignCast(raw));
+    const ctx = pending.context;
+    if (ctx.execution.realmState() == .dead) return null;
+
+    const no_handler = switch (pending.state) {
+        .pending => blk: {
+            pending.state = .reported;
+            break :blk true;
+        },
+        .reported => blk: {
+            if (!pending.notify_handled) return null;
+            pending.notify_handled = false;
+            pending.state = .handled;
+            break :blk false;
+        },
+        .handled => return null,
+    };
+
+    // Scheduler tasks can run either from Env.runMacrotasks (context already
+    // entered) or directly from a Frame/Runner wait edge. Use a full Local
+    // scope so both paths have a V8 Context, HandleScope, and ctx.local.
+    var local_scope: js.Local.Scope = undefined;
+    ctx.localScope(&local_scope);
+    defer local_scope.deinit();
+    const local = &local_scope.local;
+    const promise = pending.promise.local(local);
+    const reason = if (pending.reason) |*value| value.local(local) else null;
+    switch (ctx.global) {
+        .frame => |frame| try frame.window.notifyPromiseRejection(no_handler, promise, reason, frame),
+        .worker => |worker| try worker.notifyPromiseRejection(no_handler, promise, reason),
+    }
+    return null;
 }
 
 fn fatalCallback(c_location: [*c]const u8, c_message: [*c]const u8) callconv(.c) void {

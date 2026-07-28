@@ -14,19 +14,29 @@
 const std = @import("std");
 
 const IdleDeadline = @This();
+const milliTimestamp = @import("../../support/datetime.zig").milliTimestamp;
 
-// Padding to avoid zero-size struct, which causes identity_map pointer collisions.
-_pad: bool = false,
+/// Idle periods are capped at 50ms by the requestIdleCallback processing model.
+const idle_period_budget_ms: u64 = 50;
 
-pub fn init() IdleDeadline {
-    return .{};
+deadline_ms: u64 = 0,
+_did_timeout: bool = false,
+
+pub fn init(did_timeout: bool) IdleDeadline {
+    return .{
+        .deadline_ms = milliTimestamp(.monotonic) + idle_period_budget_ms,
+        ._did_timeout = did_timeout,
+    };
 }
 
-pub fn timeRemaining(_: *const IdleDeadline) f64 {
-    // Return a fixed 50ms.
-    // This allows idle callbacks to perform work without complex
-    // timing infrastructure.
-    return 50.0;
+pub fn timeRemaining(self: *const IdleDeadline) f64 {
+    const now = milliTimestamp(.monotonic);
+    if (now >= self.deadline_ms) return 0;
+    return @floatFromInt(self.deadline_ms - now);
+}
+
+pub fn getDidTimeout(self: *const IdleDeadline) bool {
+    return self._did_timeout;
 }
 
 pub const JsApi = struct {
@@ -41,5 +51,5 @@ pub const JsApi = struct {
     };
 
     pub const timeRemaining = bridge.function(IdleDeadline.timeRemaining, .{});
-    pub const didTimeout = bridge.property(false, .{ .template = false });
+    pub const didTimeout = bridge.accessor(IdleDeadline.getDidTimeout, null, .{});
 };

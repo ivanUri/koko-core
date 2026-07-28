@@ -33,6 +33,10 @@ _data: ?Data = null,
 _origin: []const u8 = "",
 _last_event_id: []const u8 = "",
 _source: ?*Window = null,
+/// Window whose realm receives this event. `source` is a WindowProxy as seen
+/// from this browsing context, not from the source object's relevant realm.
+_source_context: ?*Window = null,
+_source_value: ?js.Value.Temp = null,
 _ports: []const *MessagePort = &.{},
 
 const MessageEventOptions = struct {
@@ -40,6 +44,8 @@ const MessageEventOptions = struct {
     origin: ?[]const u8 = null,
     last_event_id: ?[]const u8 = null,
     source: ?*Window = null,
+    source_context: ?*Window = null,
+    source_value: ?js.Value.Temp = null,
     ports: []const *MessagePort = &.{},
 };
 
@@ -77,6 +83,8 @@ fn initWithTrusted(arena: Allocator, typ: String, opts_: ?Options, trusted: bool
             ._origin = if (opts.origin) |str| try arena.dupe(u8, str) else "",
             ._last_event_id = if (opts.last_event_id) |str| try arena.dupe(u8, str) else "",
             ._source = opts.source,
+            ._source_context = opts.source_context,
+            ._source_value = opts.source_value,
             ._ports = opts.ports,
         },
     );
@@ -93,6 +101,7 @@ pub fn deinit(self: *MessageEvent, page: *Page) void {
             .string, .arraybuffer => {},
         }
     }
+    if (self._source_value) |value| value.release();
     self._proto.deinit(page);
 }
 
@@ -131,9 +140,15 @@ pub fn getLastEventId(self: *const MessageEvent) []const u8 {
     return self._last_event_id;
 }
 
-pub fn getSource(self: *const MessageEvent, frame: *Frame) ?Window.Access {
+pub fn getSource(self: *const MessageEvent, frame: *Frame) ?js.Value {
+    if (self._source_value) |value| {
+        const local = frame.js.local orelse return null;
+        return value.local(local);
+    }
     const source = self._source orelse return null;
-    return Window.Access.init(frame.window, source);
+    const receiver = self._source_context orelse frame.window;
+    const local = frame.js.local orelse return null;
+    return local.zigValueToJs(Window.Access.init(receiver, source), .{}) catch null;
 }
 
 pub fn getPorts(self: *const MessageEvent) []*MessagePort {

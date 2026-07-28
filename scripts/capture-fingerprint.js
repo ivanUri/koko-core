@@ -328,7 +328,25 @@ audio: `(async () => {
   } catch(e) { return { error: e.message }; }
 })()`,
 
-fonts: `(() => {
+fonts: `(async () => {
+  // Local Font Access is Chrome's authoritative view of installed font faces.
+  // Preserve family, full face name, and PostScript name because CSS local()
+  // accepts any of them. The canvas candidate probe remains a portable
+  // fallback for browsers/origins where local-fonts permission is unavailable.
+  if (typeof queryLocalFonts === "function") {
+    try {
+      const entries = await queryLocalFonts();
+      const names = new Set();
+      for (const entry of entries) {
+        for (const name of [entry.family, entry.fullName, entry.postscriptName]) {
+          if (typeof name === "string" && name.trim()) names.add(name.trim());
+        }
+      }
+      if (names.size) return Array.from(names).sort((a, b) => a.localeCompare(b));
+    } catch (error) {
+      console.warn("Local Font Access unavailable; using candidate fallback:", error?.message || error);
+    }
+  }
   const list = [
     "-apple-system","BlinkMacSystemFont","system-ui","Helvetica Neue","Helvetica",
     "Arial","Arial Black","Georgia","Times New Roman","Courier New","Verdana",
@@ -557,6 +575,21 @@ async function main() {
   console.log(`   URL    : ${target.url}\n`);
 
   const cdp = await connectCDP(target.webSocketDebuggerUrl);
+
+  // queryLocalFonts() requires an explicit local-fonts permission on a secure
+  // origin. localhost is secure-context eligible; grant only for the current
+  // capture target and leave non-HTTP targets on the portable fallback.
+  try {
+    const captureOrigin = new URL(target.url).origin;
+    if (captureOrigin !== "null") {
+      await cdp.send("Browser.grantPermissions", {
+        origin: captureOrigin,
+        permissions: ["localFonts"],
+      });
+    }
+  } catch (error) {
+    console.warn(`  ⚠️  local-fonts permission: ${error.message}`);
+  }
 
   const results = {};
   const run = async (key, label) => {

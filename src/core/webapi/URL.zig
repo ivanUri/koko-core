@@ -18,6 +18,7 @@ const U = @import("../browser/URL.zig");
 const URLSearchParams = @import("net/URLSearchParams.zig");
 const Blob = @import("Blob.zig");
 const Execution = js.Execution;
+const log = @import("../../support/log.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -322,6 +323,12 @@ pub fn createObjectURL(blob: *Blob, exec: *const Execution) ![]const u8 {
             );
             try g._blob_urls.put(g.arena, blob_url, blob);
             blob.acquireRef();
+            log.info(.browser, "blob URL created", .{
+                .url = blob_url,
+                .origin = g.origin orelse "null",
+                .len = blob.getSize(),
+                .mime = blob.getType(),
+            });
             return blob_url;
         },
     }
@@ -336,7 +343,10 @@ pub fn revokeObjectURL(url: []const u8, exec: *const Execution) void {
     switch (exec.context.global) {
         inline else => |g| {
             if (g._blob_urls.fetchRemove(url)) |entry| {
+                log.info(.browser, "blob URL revoked", .{ .url = url });
                 entry.value.releaseRef(g._page);
+            } else {
+                log.info(.browser, "blob URL revoke ignored", .{ .url = url });
             }
         },
     }

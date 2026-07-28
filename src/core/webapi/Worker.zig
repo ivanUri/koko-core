@@ -51,6 +51,12 @@ _worker_scope: *WorkerGlobalScope,
 
 _url: [:0]const u8,
 _terminated: bool = false,
+/// Parent callbacks are removed from the scheduler before teardown, but the
+/// currently executing callback is no longer in a queue.  Script dispatch can
+/// synchronously call Worker.terminate(), so arena release must wait until that
+/// callback unwinds.
+_task_depth: u32 = 0,
+_destroy_pending: bool = false,
 _script_loaded: bool = false,
 _bootstrap_complete: bool = false,
 /// True only while `loadInitialScript` / module eval is on the worker V8 stack.
@@ -162,10 +168,20 @@ pub fn initSharedHost(
 
     if (std.mem.startsWith(u8, url, "blob:")) {
         const blob: *Blob = frame.js.execution.lookupBlobUrl(url) orelse {
-            log.warn(.js, "invalid blob", .{ .target = "shared-worker" });
+            log.warn(.js, "invalid blob", .{
+                .target = "shared-worker",
+                .worker_id = self._frame_id,
+                .url = url,
+            });
             return error.BlobNotFound;
         };
         const script_copy = try arena.dupe(u8, blob._slice);
+        log.info(.browser, "blob worker resolved", .{
+            .worker_id = self._frame_id,
+            .shared = true,
+            .url = resolved_url,
+            .script_len = script_copy.len,
+        });
         try self.scheduleDeferredBlobScript(script_copy);
         return self;
     }
@@ -186,6 +202,7 @@ pub fn initSharedHost(
         .resource_type = .worker,
         .referrer_source_url = frame.url,
         .referrer_policy = frame.referrer_policy,
+        .include_origin_header = false,
     });
     http_client.request(.{
         .ctx = self,
@@ -256,10 +273,20 @@ pub fn init(url: []const u8, options: ?WorkerOptions, exec: *Execution) !*Worker
     if (std.mem.startsWith(u8, url, "blob:")) {
         errdefer frame.removeWorker(self);
         const blob: *Blob = exec.lookupBlobUrl(url) orelse {
-            log.warn(.js, "invalid blob", .{ .target = "worker" });
+            log.warn(.js, "invalid blob", .{
+                .target = "worker",
+                .worker_id = self._frame_id,
+                .url = url,
+            });
             return error.BlobNotFound;
         };
         const script_copy = try arena.dupe(u8, blob._slice);
+        log.info(.browser, "blob worker resolved", .{
+            .worker_id = self._frame_id,
+            .shared = false,
+            .url = resolved_url,
+            .script_len = script_copy.len,
+        });
         try self.scheduleDeferredBlobScript(script_copy);
         return self;
     }
@@ -282,6 +309,7 @@ pub fn init(url: []const u8, options: ?WorkerOptions, exec: *Execution) !*Worker
         .resource_type = .worker,
         .referrer_source_url = frame.url,
         .referrer_policy = frame.referrer_policy,
+        .include_origin_header = false,
     });
     http_client.request(.{
         .ctx = self,
@@ -311,15 +339,43 @@ pub fn init(url: []const u8, options: ?WorkerOptions, exec: *Execution) !*Worker
     return self;
 }
 
-fn cancelDeferredScriptTasks(scheduler: *Scheduler, worker: *Worker) void {
+/// Parent-realm tasks may outlive the worker realm unless they are explicitly
+/// detached before the worker arena is returned.  Every callback recognized
+/// here owns a direct `*Worker` reference and is scheduled on the parent
+/// frame's scheduler.
+fn parentTaskWorker(ctx: *anyopaque, callback: Scheduler.Callback) ?*Worker {
+    if (callback == DeferWorkerPumpCallback.run) {
+        const entry: *DeferWorkerPumpCallback = @ptrCast(@alignCast(ctx));
+        return entry.worker;
+    }
+    if (callback == DeferFlushCallback.run) {
+        const entry: *DeferFlushCallback = @ptrCast(@alignCast(ctx));
+        return entry.worker;
+    }
+    if (callback == DeferErrorCallback.run) {
+        const entry: *DeferErrorCallback = @ptrCast(@alignCast(ctx));
+        return entry.worker;
+    }
+    if (callback == DeferPendingErrorCallback.run) {
+        const entry: *DeferPendingErrorCallback = @ptrCast(@alignCast(ctx));
+        return entry.worker;
+    }
+    if (callback == DeferFlushUndeliveredCallback.run) {
+        const entry: *DeferFlushUndeliveredCallback = @ptrCast(@alignCast(ctx));
+        return entry.worker;
+    }
+    if (callback == ReceiveMessageCallback.run) {
+        const entry: *ReceiveMessageCallback = @ptrCast(@alignCast(ctx));
+        return entry.worker;
+    }
+    return null;
+}
+
+fn cancelParentTasks(scheduler: *Scheduler, worker: *Worker) void {
     const Matcher = struct {
         var target: *Worker = undefined;
         fn match(ctx: *anyopaque, callback: Scheduler.Callback) bool {
-            if (callback != DeferBlobScriptCallback.run and callback != DeferFetchedScriptCallback.run) {
-                return false;
-            }
-            const entry: *DeferBlobScriptCallback = @ptrCast(@alignCast(ctx));
-            return entry.worker == target;
+            return parentTaskWorker(ctx, callback) == target;
         }
     };
     Matcher.target = worker;
@@ -328,13 +384,34 @@ fn cancelDeferredScriptTasks(scheduler: *Scheduler, worker: *Worker) void {
 
 /// Abort the worker, drop parent-frame references, and release resources.
 pub fn destroy(self: *Worker) void {
-    if (self._terminated) return;
+    if (self._terminated or self._destroy_pending) return;
     // Shared worker script hosts are not tracked on frame.workers.
     if (!self._shared_mode) {
-        cancelDeferredScriptTasks(&self._frame.js.scheduler, self);
+        // Cancellation runs task finalizers while the Worker and its frame are
+        // still alive.  No parent task may retain `self` past this point.
+        cancelParentTasks(&self._frame.js.scheduler, self);
         self._frame.removeWorker(self);
     }
+    if (self._task_depth != 0) {
+        self._destroy_pending = true;
+        return;
+    }
     self.deinitForSession(self._frame._session);
+}
+
+pub fn beginTask(self: *Worker) bool {
+    if (self._terminated or self._destroy_pending) return false;
+    self._task_depth += 1;
+    return true;
+}
+
+pub fn endTask(self: *Worker) void {
+    std.debug.assert(self._task_depth != 0);
+    self._task_depth -= 1;
+    if (self._task_depth == 0 and self._destroy_pending) {
+        self._destroy_pending = false;
+        self.deinitForSession(self._frame._session);
+    }
 }
 
 // Called from Frame.deinit when the frame is destroyed (workers already drained
@@ -459,48 +536,6 @@ fn scheduleDeferredMacrotaskPump(frame: *Frame) void {
 }
 
 /// CreepJS getWorkerData uses two setTimeout(0) rounds after creep.js eval.
-const bootstrap_drain_max_passes: u32 = 128;
-const bootstrap_pump_max_rounds: u32 = 48;
-
-pub fn pumpBootstrapContext(ctx: *js.Context, env: *js.Env) void {
-    const exec = &ctx.execution;
-    if (exec.realmState() == .dead) return;
-    if (!exec.canEnterJs(.strict_active)) return;
-    // Shared host reentrancy policy (architecture: JsEntryGate).
-    if (js.JsEntryGate.mustQueueAsTask(exec)) return;
-
-    var hs: js.HandleScope = undefined;
-    const entered = ctx.enter(&hs) orelse return;
-    defer entered.exit();
-
-    var pass: u8 = 0;
-    while (pass < 32) : (pass += 1) {
-        if (!ctx.scheduler.hasReadyTasks()) break;
-        _ = ctx.scheduler.runOne() catch break;
-        var mt: u8 = 0;
-        while (mt < 8) : (mt += 1) {
-            env.performMicrotaskCheckpoint(ctx);
-        }
-    }
-}
-
-fn drainBootstrapSchedulers(self: *Worker) !void {
-    const env = &self._frame._session.browser.env;
-    var pass: u32 = 0;
-    while (pass < bootstrap_drain_max_passes) : (pass += 1) {
-        var any_ready = false;
-        if (self._worker_scope.js.scheduler.hasReadyTasks()) {
-            any_ready = true;
-            pumpBootstrapContext(self._worker_scope.js, env);
-        }
-        if (self._frame.js.scheduler.hasReadyTasks()) {
-            any_ready = true;
-            pumpBootstrapContext(self._frame.js, env);
-        }
-        if (!any_ready) break;
-    }
-}
-
 fn loadInitialScript(self: *Worker, script: []const u8) !void {
     if (self._script_type == .module) {
         try self.loadInitialModule(script);
@@ -627,17 +662,12 @@ fn loadInitialScript(self: *Worker, script: []const u8) !void {
         // inbound delivery does not land in _pending_undelivered with null Zig slots.
         self._worker_scope.syncScriptHandlerSlotsFromLocal(&ls.local);
         try self._worker_scope.flushPendingUndelivered();
-        ls.local.runMacrotasks();
     }
     if (self._shared_mode) {
         if (self._shared_script_ready_cb) |cb| cb(self);
     }
-    // Drain worker↔page scheduler queues only after the worker local scope exits.
-    // Pumping the parent frame while the worker context is still entered breaks
-    // MessageEvent delivery (WPT message-event / Worker_basic).
-    try drainBootstrapSchedulers(self);
-    // CreepJS worker scope chains setTimeout (queueEvent) after eval; pump the
-    // worker scheduler on the next frame turn so getWorkerData can postMessage.
+    // Worker messages and timers are tasks. The outer Env turn owns their
+    // delivery after initial evaluation exits; never synchronously drain here.
     try self.scheduleDeferredWorkerPump(0);
     try self.finishInitialScriptLoad();
 }
@@ -678,12 +708,10 @@ fn loadInitialModule(self: *Worker, script: []const u8) !void {
 
         self._worker_scope.syncScriptHandlerSlotsFromLocal(&ls.local);
         try self._worker_scope.flushPendingUndelivered();
-        ls.local.runMacrotasks();
     }
     if (self._shared_mode) {
         if (self._shared_script_ready_cb) |cb| cb(self);
     }
-    try drainBootstrapSchedulers(self);
     try self.scheduleDeferredWorkerPump(0);
     try self.finishInitialScriptLoad();
 }
@@ -697,13 +725,13 @@ fn finishInitialScriptLoad(self: *Worker) !void {
     try self.scheduleDeferredParentFlush();
 }
 
-fn scheduleDeferredWorkerPump(self: *Worker, round: u32) !void {
+fn scheduleDeferredWorkerPump(self: *Worker, _: u32) !void {
     const frame = self._frame;
     const arena = try frame.getArena(.tiny, "Worker.deferPump");
     errdefer frame.releaseArena(arena);
 
     const callback = try arena.create(DeferWorkerPumpCallback);
-    callback.* = .{ .worker = self, .arena = arena, .round = round };
+    callback.* = .{ .worker = self, .arena = arena };
 
     try frame.js.scheduler.add(callback, DeferWorkerPumpCallback.run, 0, .{
         .name = "Worker.deferPump",
@@ -715,7 +743,6 @@ fn scheduleDeferredWorkerPump(self: *Worker, round: u32) !void {
 const DeferWorkerPumpCallback = struct {
     worker: *Worker,
     arena: Allocator,
-    round: u32,
 
     fn cancelled(ctx: *anyopaque) void {
         const self: *DeferWorkerPumpCallback = @ptrCast(@alignCast(ctx));
@@ -725,24 +752,19 @@ const DeferWorkerPumpCallback = struct {
     fn run(ctx: *anyopaque) !?u32 {
         const self: *DeferWorkerPumpCallback = @ptrCast(@alignCast(ctx));
         const worker = self.worker;
-        if (worker._terminated) {
+        if (!worker.beginTask()) {
             worker._frame.releaseArena(self.arena);
             return null;
         }
+        defer worker.endTask();
         const frame = worker._frame;
-        const browser = frame._session.browser;
-
-        browser.runMacrotasks() catch |err| {
-            log.warn(.browser, "worker deferred pump", .{ .err = err });
-        };
+        // Wake the parent scheduler without recursively entering Env from a
+        // worker scheduler callback.
         scheduleDeferredMacrotaskPump(frame);
 
-        const worker_pending = worker._worker_scope.js.scheduler.hasReadyTasks();
-        const frame_pending = frame.js.scheduler.hasReadyTasks();
         defer frame.releaseArena(self.arena);
-        if ((worker_pending or frame_pending) and self.round + 1 < bootstrap_pump_max_rounds) {
-            try worker.scheduleDeferredWorkerPump(self.round + 1);
-        }
+        // The Runner revisits every registered context on the next outer turn.
+        // Do not self-reschedule based on queues that include this callback.
         return null;
     }
 };
@@ -777,6 +799,12 @@ fn scheduleDeferredBlobScript(self: *Worker, script: []const u8) !void {
         .low_priority = false,
         .finalizer = DeferBlobScriptCallback.cancelled,
     });
+    log.info(.browser, "blob worker eval scheduled", .{
+        .worker_id = self._frame_id,
+        .shared = self._shared_mode,
+        .url = self._url,
+        .script_len = script.len,
+    });
 }
 
 const DeferFetchedScriptCallback = struct {
@@ -805,15 +833,41 @@ const DeferBlobScriptCallback = struct {
 
     fn cancelled(ctx: *anyopaque) void {
         const self: *DeferBlobScriptCallback = @ptrCast(@alignCast(ctx));
+        log.info(.browser, "blob worker eval cancelled", .{
+            .worker_id = self.worker._frame_id,
+            .shared = self.worker._shared_mode,
+            .url = self.worker._url,
+            .script_len = self.script.len,
+        });
         self.worker._frame.releaseArena(self.arena);
     }
 
     fn run(ctx: *anyopaque) !?u32 {
         const self: *DeferBlobScriptCallback = @ptrCast(@alignCast(ctx));
         defer self.worker._frame.releaseArena(self.arena);
-        if (self.worker._terminated) return null;
+        if (self.worker._terminated) {
+            log.info(.browser, "blob worker eval skipped", .{
+                .worker_id = self.worker._frame_id,
+                .shared = self.worker._shared_mode,
+                .url = self.worker._url,
+                .script_len = self.script.len,
+            });
+            return null;
+        }
+        log.info(.browser, "blob worker eval start", .{
+            .worker_id = self.worker._frame_id,
+            .shared = self.worker._shared_mode,
+            .url = self.worker._url,
+            .script_len = self.script.len,
+        });
         self.worker._script_loaded = true;
         try self.worker.loadInitialScript(self.script);
+        log.info(.browser, "blob worker eval complete", .{
+            .worker_id = self.worker._frame_id,
+            .shared = self.worker._shared_mode,
+            .url = self.worker._url,
+            .script_len = self.script.len,
+        });
         return null;
     }
 };
@@ -829,8 +883,10 @@ const DeferFlushCallback = struct {
 
     fn run(ctx: *anyopaque) !?u32 {
         const self: *DeferFlushCallback = @ptrCast(@alignCast(ctx));
-        defer self.worker._frame.releaseArena(self.arena);
-        if (self.worker._terminated) return null;
+        const frame = self.worker._frame;
+        defer frame.releaseArena(self.arena);
+        if (!self.worker.beginTask()) return null;
+        defer self.worker.endTask();
 
         try self.worker.flushPendingInboundMessages();
         try self.worker.flushPendingUndelivered();
@@ -890,8 +946,10 @@ const DeferErrorCallback = struct {
 
     fn run(ctx: *anyopaque) !?u32 {
         const self: *DeferErrorCallback = @ptrCast(@alignCast(ctx));
-        defer self.worker._frame.releaseArena(self.arena);
-        if (self.worker._terminated) return null;
+        const frame = self.worker._frame;
+        defer frame.releaseArena(self.arena);
+        if (!self.worker.beginTask()) return null;
+        defer self.worker.endTask();
         self.worker.fireLoadErrorEventFromFrame(self.message);
         return null;
     }
@@ -1013,7 +1071,10 @@ const DeferPendingErrorCallback = struct {
 
     fn run(ctx: *anyopaque) !?u32 {
         const self: *DeferPendingErrorCallback = @ptrCast(@alignCast(ctx));
-        defer self.worker._frame.releaseArena(self.arena);
+        const frame = self.worker._frame;
+        defer frame.releaseArena(self.arena);
+        if (!self.worker.beginTask()) return null;
+        defer self.worker.endTask();
         tryFlushPendingPageError(self.worker);
         return null;
     }
@@ -1114,40 +1175,18 @@ pub fn bootstrapMessagingActive(exec: *const Execution) bool {
     };
 }
 
-/// Pump worker↔page scheduler queues via `runOne()` (safe on the V8 central stack
-/// only — not nested inside Script.eval / DOM API / HTTP doneCallback).
+/// Request an outer event-loop turn for worker↔page delivery.
+/// Message dispatch is always asynchronous; this function never drains a
+/// scheduler itself.
 pub fn pumpMessageDelivery(frame: *Frame) void {
-    const env = &frame._session.browser.env;
-    // Nested host stack (V8 / script eval / transfer) is unsafe for runOne pumps.
-    if (js.JsEntryGate.mustQueueAsTask(&frame.js.execution)) return;
-    var pass: u32 = 0;
-    while (pass < bootstrap_drain_max_passes) : (pass += 1) {
-        var any_ready = false;
-        if (frame.js.scheduler.hasReadyTasks()) {
-            any_ready = true;
-            pumpBootstrapContext(frame.js, env);
-        }
-        for (frame.workers.items) |worker| {
-            if (worker._terminated) continue;
-            if (!worker._worker_scope.js.scheduler.hasReadyTasks()) continue;
-            any_ready = true;
-            pumpBootstrapContext(worker._worker_scope.js, env);
-        }
-        if (!any_ready) break;
-    }
+    scheduleDeferredMacrotaskPump(frame);
 }
 
 pub fn pumpBootstrapMessaging(exec: *const Execution) void {
     if (!bootstrapMessagingActive(exec)) return;
-    const env = exec.context.env;
     switch (exec.context.global) {
-        .worker => |wgs| {
-            pumpBootstrapContext(wgs.js, env);
-            pumpBootstrapContext(wgs._worker._frame.js, env);
-        },
-        .frame => |frame| {
-            pumpMessageDelivery(frame);
-        },
+        .worker => |wgs| pumpMessageDelivery(wgs._worker._frame),
+        .frame => |frame| pumpMessageDelivery(frame),
     }
 }
 
@@ -1169,10 +1208,6 @@ fn dispatchInboundTempNow(
         return false;
     }
 
-    var ls: js.Local.Scope = undefined;
-    frame.js.localScope(&ls);
-    defer ls.deinit();
-
     const event = (try MessageEvent.initTrusted(comptime .wrap("message"), .{
         .data = .{ .value = cloned_data },
         .ports = ports,
@@ -1183,17 +1218,6 @@ fn dispatchInboundTempNow(
     try frame._event_manager.dispatchDirect(target, event, on_message, .{ .context = "Worker.receiveMessage" });
     pumpMessageDelivery(frame);
     return true;
-}
-
-fn dispatchInboundMessageNow(
-    self: *Worker,
-    data: js.Value,
-    message_id: u64,
-    ports: []const *MessagePort,
-    transfer_list: ?[]const js.Value,
-) !bool {
-    const cloned_data = try self.cloneMessageToFrameWithTransfer(data, transfer_list);
-    return self.dispatchInboundTempNow(cloned_data, message_id, ports);
 }
 
 // Called internally by WorkerGlobalScope when it wants to post a message to us
@@ -1223,8 +1247,6 @@ pub fn receiveMessage(
         return;
     }
 
-    if (try self.dispatchInboundMessageNow(data, message_id, ports, transfer_list)) return;
-
     if (!self._bootstrap_complete and !self._parent_delivery_ready) {
         const cloned_data = try self.cloneMessageToFrameWithTransfer(data, transfer_list);
         const ports_copy = try self._arena.dupe(*MessagePort, ports);
@@ -1245,6 +1267,10 @@ pub fn receiveMessage(
         return;
     }
 
+    // HTML's "queue a task to fire a message event" never invokes the parent
+    // listener inline from the worker's current task. Synchronous dispatch here
+    // re-enters the document realm while the worker callback still owns its V8
+    // locals and can deadlock on request/response message chains.
     try self.enqueueInboundMessage(data, message_id, ports, transfer_list);
 }
 
@@ -1288,8 +1314,10 @@ const DeferFlushUndeliveredCallback = struct {
 
     fn run(ctx: *anyopaque) !?u32 {
         const self: *DeferFlushUndeliveredCallback = @ptrCast(@alignCast(ctx));
-        defer self.worker._frame.releaseArena(self.arena);
-        if (self.worker._terminated) return null;
+        const frame = self.worker._frame;
+        defer frame.releaseArena(self.arena);
+        if (!self.worker.beginTask()) return null;
+        defer self.worker.endTask();
         try self.worker.flushPendingUndelivered();
         return null;
     }
@@ -1363,6 +1391,7 @@ fn enqueueInboundTempMessage(self: *Worker, cloned_data: js.Value.Temp, message_
     const callback = try message_arena.create(ReceiveMessageCallback);
     callback.* = .{
         .worker = self,
+        .session = frame._session,
         .data = cloned_data,
         .ports = ports_copy,
         .arena = message_arena,
@@ -1479,6 +1508,7 @@ const ReceiveMessageCallback = struct {
     ports: []const *MessagePort,
     arena: Allocator,
     worker: *Worker,
+    session: *Session,
     message_id: u64,
 
     fn cancelled(ctx: *anyopaque) void {
@@ -1490,7 +1520,7 @@ const ReceiveMessageCallback = struct {
     }
 
     fn deinit(self: *ReceiveMessageCallback) void {
-        self.worker._frame._session.releaseArena(self.arena);
+        self.session.releaseArena(self.arena);
     }
 
     fn run(ctx: *anyopaque) !?u32 {
@@ -1498,7 +1528,8 @@ const ReceiveMessageCallback = struct {
         defer self.deinit();
 
         const worker = self.worker;
-        if (worker._terminated) return null;
+        if (!worker.beginTask()) return null;
+        defer worker.endTask();
         const frame = worker._frame;
         const target = worker.asEventTarget();
 
@@ -1562,4 +1593,28 @@ pub const JsApi = struct {
 const testing = @import("../../testing/testing.zig");
 test "WebApi: Worker" {
     try testing.htmlRunner("worker", .{});
+}
+
+test "Worker: every parent scheduler callback is owned by its worker" {
+    const target: *Worker = @ptrFromInt(@alignOf(Worker));
+
+    var pump: DeferWorkerPumpCallback = undefined;
+    pump.worker = target;
+    var flush: DeferFlushCallback = undefined;
+    flush.worker = target;
+    var load_error: DeferErrorCallback = undefined;
+    load_error.worker = target;
+    var pending_error: DeferPendingErrorCallback = undefined;
+    pending_error.worker = target;
+    var undelivered: DeferFlushUndeliveredCallback = undefined;
+    undelivered.worker = target;
+    var message: ReceiveMessageCallback = undefined;
+    message.worker = target;
+
+    try std.testing.expectEqual(target, parentTaskWorker(&pump, DeferWorkerPumpCallback.run));
+    try std.testing.expectEqual(target, parentTaskWorker(&flush, DeferFlushCallback.run));
+    try std.testing.expectEqual(target, parentTaskWorker(&load_error, DeferErrorCallback.run));
+    try std.testing.expectEqual(target, parentTaskWorker(&pending_error, DeferPendingErrorCallback.run));
+    try std.testing.expectEqual(target, parentTaskWorker(&undelivered, DeferFlushUndeliveredCallback.run));
+    try std.testing.expectEqual(target, parentTaskWorker(&message, ReceiveMessageCallback.run));
 }

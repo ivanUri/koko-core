@@ -383,6 +383,10 @@ _layout_cache_dom_version: usize = 0,
 _layout_visibility_cache: StyleManager.VisibilityCache = .empty,
 _layout_visibility_cache_version: usize = 0,
 _layout_doc_position_cache: std.AutoHashMapUnmanaged(usize, f64) = .empty,
+// Image preload responses are keyed by URL + request credentials mode. The
+// eventual HTMLImageElement either subscribes to an in-flight preload or
+// consumes its completed probe, matching the browser preload cache contract.
+_image_preloads: std.StringHashMapUnmanaged(ImagePreloadEntry) = .empty,
 // True while resolveElementDimensions is on the stack — enables stylesheet fast path.
 _layout_resolve_depth: u32 = 0,
 
@@ -1045,9 +1049,113 @@ pub const HeadersForRequestOpts = struct {
     curl_defaults_only: bool = false,
     /// Fetch spec: omit Origin on GET/HEAD (§2.3).
     include_origin_header: bool = true,
+    /// Fetch Metadata mode selected by the Fetch/Request algorithm.
+    fetch_mode: ?[]const u8 = null,
+    /// Whether this request has effective cookie/storage credentials.
+    storage_access_active: bool = true,
     /// Per-request arena for header strings (fetch redirect refresh; avoids frame/call_arena races).
     header_arena: ?Allocator = null,
 };
+
+pub const ImagePreloadResult = struct {
+    ok: bool,
+    probe: []const u8,
+};
+
+pub const ImagePreloadCallback = *const fn (ctx: *anyopaque, result: ImagePreloadResult) anyerror!void;
+
+const ImagePreloadWaiter = struct {
+    ctx: *anyopaque,
+    callback: ImagePreloadCallback,
+};
+
+const ImagePreloadEntry = struct {
+    state: enum { loading, complete } = .loading,
+    result: ImagePreloadResult = .{ .ok = false, .probe = &.{} },
+    waiters: std.ArrayListUnmanaged(ImagePreloadWaiter) = .{},
+};
+
+pub const ImagePreloadUse = enum {
+    none,
+    waiting,
+    delivered,
+};
+
+/// Preload reuse keys include the request's CORS credentials mode. Two
+/// requests for the same URL are reusable only when their fetch parameters
+/// match, just as an HTTP cache entry alone is insufficient for preload reuse.
+pub fn imagePreloadKey(
+    self: *Frame,
+    allocator: Allocator,
+    url: []const u8,
+    cross_origin: ?[]const u8,
+) ![:0]const u8 {
+    _ = self;
+    const mode = if (cross_origin) |value|
+        if (std.ascii.eqlIgnoreCase(value, "use-credentials")) "cors-include" else "cors-same-origin"
+    else
+        "no-cors-include";
+    return std.fmt.allocPrintSentinel(allocator, "{s}\n{s}", .{ url, mode }, 0);
+}
+
+/// Returns true only for the owner that must start the network request.
+pub fn beginImagePreload(self: *Frame, key: []const u8) !bool {
+    if (self._image_preloads.contains(key)) return false;
+    const owned_key = try self.arena.dupe(u8, key);
+    try self._image_preloads.put(self.arena, owned_key, .{});
+    return true;
+}
+
+/// Subscribe an image consumer to an in-flight preload or synchronously
+/// deliver an already completed preload response.
+pub fn useImagePreload(
+    self: *Frame,
+    key: []const u8,
+    ctx: *anyopaque,
+    callback: ImagePreloadCallback,
+) !ImagePreloadUse {
+    const entry = self._image_preloads.getPtr(key) orelse return .none;
+    switch (entry.state) {
+        .loading => {
+            try entry.waiters.append(self.arena, .{ .ctx = ctx, .callback = callback });
+            return .waiting;
+        },
+        .complete => {
+            try callback(ctx, entry.result);
+            return .delivered;
+        },
+    }
+}
+
+/// Complete exactly one preload generation and notify all matching consumers.
+pub fn completeImagePreload(self: *Frame, key: []const u8, ok: bool, probe: []const u8) !void {
+    const entry = self._image_preloads.getPtr(key) orelse return;
+    if (entry.state == .complete) return;
+
+    if (!ok) {
+        const removed = self._image_preloads.fetchRemove(key) orelse return;
+        for (removed.value.waiters.items) |waiter| {
+            waiter.callback(waiter.ctx, .{ .ok = false, .probe = &.{} }) catch |err| {
+                log.warn(.browser, "image preload consumer", .{ .err = err });
+            };
+        }
+        return;
+    }
+
+    entry.result = .{
+        .ok = true,
+        .probe = if (probe.len == 0) &.{} else try self.arena.dupe(u8, probe),
+    };
+    entry.state = .complete;
+
+    const waiters = entry.waiters.items;
+    entry.waiters = .{};
+    for (waiters) |waiter| {
+        waiter.callback(waiter.ctx, entry.result) catch |err| {
+            log.warn(.browser, "image preload consumer", .{ .err = err });
+        };
+    }
+}
 
 fn navigateReasonForProfile(reason: NavigateReason) @import("../../runtime/profile/ProfileRuntime.zig").Reason {
     return switch (reason) {
@@ -1114,6 +1222,8 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
         .is_document_navigation = opts.is_document_navigation,
         .navigation_destination = opts.navigation_destination,
         .origin = origin,
+        .fetch_mode = opts.fetch_mode,
+        .storage_access_active = opts.storage_access_active,
     };
 
     if (comptime build_config.curl_impersonate) {
@@ -1154,7 +1264,7 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
             try HttpProfile.appendFirefoxHeaders(headers, hdr_alloc, &static, ctx);
         } else if (opts.resource_type == .document and opts.is_document_navigation) {
             const full_hints = opts.resource_type == .document or
-                self._session.clientHintsEnabledForUrl(self.arena, request_url);
+                self.highEntropyClientHintsEnabledForUrl(request_url);
             // Always emit the full Chrome 150 document list (Accept-first + Sec-Fetch-*).
             // The old branch used thin `appendCurlImpersonateDocumentOverrides` for cold
             // hops, assuming libcurl default_headers would supply Accept/Sec-Fetch/UIR.
@@ -1185,7 +1295,7 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
             );
         } else {
             const full_hints = opts.resource_type == .document or
-                self._session.clientHintsEnabledForUrl(self.arena, request_url);
+                self.highEntropyClientHintsEnabledForUrl(request_url);
             const chrome_opts = HttpProfile.ChromeHeadersOpts{
                 .full_client_hints = full_hints,
                 .brands = profile.http.brands,
@@ -1211,6 +1321,32 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
 
     const referer = try refererHeaderForRequest(self, opts);
     try HttpProfile.appendFallbackHeaders(headers, hdr_alloc, identity, &static, ctx, referer);
+}
+
+fn highEntropyClientHintsEnabledForUrl(self: *const Frame, request_url: [:0]const u8) bool {
+    if (!self._session.clientHintsEnabledForUrl(self.arena, request_url)) return false;
+
+    // The UA-CH Permissions Policy default allowlist is `self`. Accept-CH from
+    // a target origin does not delegate high-entropy hints to a cross-origin
+    // document that later fetches that target.
+    const request_origin = URL.getOrigin(self.arena, request_url) catch return false;
+    if (!@import("../../runtime/profile/ClientHints.zig").defaultPolicyAllowsHighEntropy(
+        request_origin,
+        self.origin,
+    )) return false;
+
+    // Permissions Policy is inherited through every embedding boundary. Until
+    // per-feature iframe/header delegation is represented, enforce the default
+    // `self` allowlist across the complete ancestor chain.
+    var child: *const Frame = self;
+    while (child.parent) |parent| {
+        if (!@import("../../runtime/profile/ClientHints.zig").defaultPolicyAllowsHighEntropy(
+            child.origin,
+            parent.origin,
+        )) return false;
+        child = parent;
+    }
+    return true;
 }
 
 // Origin for WebSocket upgrade and other callers that only need the origin token.
@@ -1332,9 +1468,11 @@ const DeferMacrotaskPumpCallback = struct {
 
     fn run(ctx: *anyopaque) !?u32 {
         const self: *DeferMacrotaskPumpCallback = @ptrCast(@alignCast(ctx));
-        self.frame._session.browser.runMacrotasks() catch |err| {
-            log.warn(.browser, "deferred macrotask pump", .{ .err = err });
-        };
+        // This marker exists only to wake the outer Runner/Env turn. Calling
+        // runMacrotasks here recursively drains schedulers while their current
+        // callback still owns V8 locals and event objects. The outer event loop
+        // observes the remaining ready contexts after this callback returns.
+        _ = self.frame;
         return null;
     }
 };
@@ -1641,6 +1779,7 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
                 .referer = nav_referer,
                 .omit_cookies = nav_plan.omit_cookies,
                 .omit_sec_fetch_user = nav_plan.omit_sec_fetch_user,
+                .curl_default_headers = nav_plan.curl_defaults_only,
                 .prefer_http3 = nav_plan.prefer_http3,
                 .force_fresh_connection = nav_plan.force_fresh_connection,
                 .notification = self._session.notification,
@@ -1673,6 +1812,7 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
             .referer = nav_referer,
             .omit_cookies = nav_plan.omit_cookies,
             .omit_sec_fetch_user = nav_plan.omit_sec_fetch_user,
+            .curl_default_headers = nav_plan.curl_defaults_only,
             .prefer_http3 = nav_plan.prefer_http3,
             .redirect_policy_refresh = refreshDocumentRedirectRequest,
             .notification = self._session.notification,
@@ -2120,8 +2260,11 @@ const DeferStaticScriptsDoneCallback = struct {
 pub fn scheduleDeferredDocumentParse(self: *Frame, raw_html: []const u8, as_xml: bool, html_arena: Allocator) !void {
     // Refuse while a parse is in flight — mid-parse reschedule + pump re-entered
     // html5ever and corrupted the tree (Google → Bing SIGABRT).
-    if (self._document_parse_scheduled or self._document_parse_active) return;
+    if (self._document_parse_scheduled or self._document_parse_active) {
+        return error.DocumentParseAlreadyPending;
+    }
     self._document_parse_scheduled = true;
+    errdefer self._document_parse_scheduled = false;
 
     const callback = try self.arena.create(DeferDocumentParseCallback);
     callback.* = .{
@@ -2134,6 +2277,7 @@ pub fn scheduleDeferredDocumentParse(self: *Frame, raw_html: []const u8, as_xml:
     try self.js.scheduler.add(callback, DeferDocumentParseCallback.run, 0, .{
         .name = "Frame.deferDocumentParse",
         .low_priority = false,
+        .finalizer = DeferDocumentParseCallback.cancelled,
     });
 }
 
@@ -2142,6 +2286,15 @@ const DeferDocumentParseCallback = struct {
     raw_html: []const u8,
     as_xml: bool,
     html_arena: Allocator,
+
+    fn finish(self: *DeferDocumentParseCallback) void {
+        self.frame.releaseArena(self.html_arena);
+    }
+
+    fn cancelled(ctx: *anyopaque) void {
+        const self: *DeferDocumentParseCallback = @ptrCast(@alignCast(ctx));
+        self.finish();
+    }
 
     fn run(ctx: *anyopaque) !?u32 {
         const self: *DeferDocumentParseCallback = @ptrCast(@alignCast(ctx));
@@ -2158,10 +2311,11 @@ const DeferDocumentParseCallback = struct {
         // re-enter this callback mid-parse (Google re-nav → Bing double parse →
         // corrupt _parent / SIGABRT). Never parse the same document twice.
         if (self.frame._document_parse_active) {
+            self.finish();
             return null;
         }
         self.frame._document_parse_scheduled = false;
-        defer self.frame.releaseArena(self.html_arena);
+        defer self.finish();
         // Do not block all inbound CDP (Runtime.evaluate) with navigationCritical.
         // Cancel-on-nav is cooperative: poll may start re-nav → prepareForOutgoingAbort
         // marks draining + resets scheduler; parser callbacks re-check realm.
@@ -2188,12 +2342,23 @@ const DeferDocumentParseCallback = struct {
             parser.parseWithEncoding(self.raw_html, self.frame.charset);
         }
         self.frame.clearParserTextCaps();
+        log.debug(.frame, "parse html done", .{ .type = self.frame._type, .url = self.frame.url, .len = self.raw_html.len });
+
+        // A parser-executed script may queue navigation for this very frame.
+        // `navDeliverable` intentionally becomes false as soon as that happens,
+        // but the Session queue is the mechanism that actually starts the next
+        // document. Hand the queue over before applying the departing-document
+        // lifecycle guard, otherwise the frame remains `deferred_html` forever.
+        const self_navigation_queued = self.frame._queued_navigation != null;
+        if (!self_navigation_queued) {
+            self.frame.reconcileParserIframeSrc();
+        }
+        self.frame.drainQueuedNavigationsAfterParse();
+        if (self_navigation_queued) return null;
+
         // Re-nav may have marked draining mid-parse via a nested path; do not
         // run scripts / load events on a departing realm.
         if (!navDeliverable(self.frame)) return null;
-        log.debug(.frame, "parse html done", .{ .type = self.frame._type, .url = self.frame.url, .len = self.raw_html.len });
-        self.frame.reconcileParserIframeSrc();
-        self.frame.drainQueuedNavigationsAfterParse();
         self.frame._parse_state = .{ .complete = {} };
 
         self.frame.pollCdpDuringLongWork();
@@ -2239,10 +2404,11 @@ pub fn iframeCompletedLoading(self: *Frame, iframe: *IFrame) void {
                 self.pendingLoadCompleted();
             };
         };
-        // Nested-safe microtasks; denser settle + sparse re-arm via EventLoop.
+        // Promise reactions are driven by the load event's microtask checkpoint
+        // and the shared event loop. Do not keep polling this realm on a private
+        // wall-clock schedule.
         self.pumpSameTurnPromiseContinuations();
         self.settleIframePromisesNow();
-        self.scheduleIframePromiseSettle() catch {};
         return;
     }
     self.queueIframeLoad(iframe) catch |err| {
@@ -2332,10 +2498,9 @@ const DeferIframeLoadCallback = struct {
             self.frame.pendingLoadCompleted();
             return null;
         };
-        // After property onload (pure-JS resolve), force realm + outer drains so
-        // shared-iframe `ip` await continuations are not stranded until the 2s race.
+        // After property onload (pure-JS resolve), perform the normal microtask
+        // checkpoint; later timers remain owned by the shared event loop.
         self.frame.settleIframePromisesNow();
-        self.frame.scheduleIframePromiseSettle() catch {};
         return null;
     }
 };
@@ -2364,12 +2529,12 @@ pub fn settleIframePromisesNow(self: *Frame) void {
         // Nested appendChild / script: schedule outer pumps; wait-edge spin finishes.
         env.checkpoint_pending = true;
         self.scheduleDeferredMacrotaskPump(0) catch {};
-        self.scheduleDeferredMacrotaskPump(10) catch {};
         return;
     }
 
-    // Top-level denser path: due timers (≤50ms) + shared EventLoop.spin.
-    self.pumpDueTimersNow(50);
+    // Top-level path: only work already due in this turn. Future timers retain
+    // their own scheduler deadlines and wake through the shared event loop.
+    self.pumpDueTimersNow(0);
     pass = 0;
     while (pass < 8) : (pass += 1) {
         env.drainAllRealmMicrotasks();
@@ -2388,61 +2553,6 @@ pub fn settleIframePromisesNow(self: *Frame) void {
         env.checkpoint_pending = true;
     }
 }
-
-/// Sparse re-settle across agent iframe race (~2s). One re-arming task instead
-/// of 12 independent settles (architecture follow-up — collapse private storms).
-/// Wait-edge `EventLoop.spin` drains delay-0; these catch late setTimeout(10) /
-/// await continuations only.
-pub fn scheduleIframePromiseSettle(self: *Frame) !void {
-    const arena = try self.getArena(.tiny, "Frame.iframePromiseSettle");
-    errdefer self.releaseArena(arena);
-    const callback = try arena.create(IframePromiseSettleCallback);
-    callback.* = .{
-        .frame = self,
-        .arena = arena,
-        .task_owner = self.js.execution.captureTaskOwner(),
-        .step = 0,
-    };
-    try self.js.scheduler.add(callback, IframePromiseSettleCallback.run, 0, .{
-        .name = "Frame.iframePromiseSettle",
-        .low_priority = false,
-        .finalizer = IframePromiseSettleCallback.cancelled,
-    });
-    // Kick macrotask pumps so the chain is not stuck behind a quiet loop.
-    self.scheduleDeferredMacrotaskPump(0) catch {};
-    self.scheduleDeferredMacrotaskPump(10) catch {};
-}
-
-const IframePromiseSettleCallback = struct {
-    frame: *Frame,
-    arena: Allocator,
-    task_owner: @import("../../runtime/RealmLifecycleKernel.zig").TaskOwner,
-    /// Gaps after each settle: 0 (initial) → +10 → +40 (=50) → +150 (=200) → +800 (=1000).
-    step: u8,
-
-    fn cancelled(ctx: *anyopaque) void {
-        const self: *IframePromiseSettleCallback = @ptrCast(@alignCast(ctx));
-        self.frame.releaseArena(self.arena);
-    }
-
-    fn run(ctx: *anyopaque) !?u32 {
-        const self: *IframePromiseSettleCallback = @ptrCast(@alignCast(ctx));
-        if (self.frame.js.execution.isTaskOwnerStale(self.task_owner)) {
-            self.frame.releaseArena(self.arena);
-            return null;
-        }
-        self.frame.settleIframePromisesNow();
-        // Sparse late settles only — Runner wait-edge spin covers dense delay-0.
-        const gaps = [_]u32{ 10, 40, 150, 800 };
-        if (self.step < gaps.len) {
-            const delay = gaps[self.step];
-            self.step += 1;
-            return delay;
-        }
-        self.frame.releaseArena(self.arena);
-        return null;
-    }
-};
 
 const IframeLoadDispatch = enum { same_turn, deferred };
 
@@ -2509,11 +2619,10 @@ fn dispatchIframeLoadNow(self: *Frame, iframes: []const *IFrame, comptime when: 
     }
 
     if (comptime when == .deferred) {
-        // Run iframe load handlers (and same-turn subframe script) before the parent
-        // document `load` event — reCAPTCHA v3 posts recaptcha-setup from anchor iframes.
-        self._session.browser.runMacrotasks() catch |err| {
-            log.warn(.browser, "iframe load pump", .{ .err = err });
-        };
+        // Preserve ordering by waking the next outer event-loop turn. Never
+        // recursively drain Env while the iframe-load scheduler callback and
+        // its V8 event handles are still active.
+        self.scheduleDeferredMacrotaskPump(0) catch {};
     }
 
     var completed: usize = 0;
@@ -2709,6 +2818,7 @@ fn refreshDocumentRedirectRequest(
     });
 
     transfer.req.params.omit_sec_fetch_user = nav_plan.omit_sec_fetch_user;
+    transfer.req.params.curl_default_headers = nav_plan.curl_defaults_only;
     transfer.req.params.omit_cookies = nav_plan.omit_cookies;
     transfer.req.params.prefer_http3 = nav_plan.prefer_http3;
     if (nav_plan.force_fresh_connection) transfer.req.params.force_fresh_connection = true;
@@ -3084,6 +3194,7 @@ fn frameDataCallback(response: HttpClient.Response, data: []const u8) !void {
         },
         .raw, .image => |*buf| try buf.appendSlice(self.arena, data),
         .pre => unreachable,
+        .deferred_html => unreachable,
         .complete => unreachable,
         .err => unreachable,
         .raw_done => unreachable,
@@ -3137,15 +3248,16 @@ fn frameDoneCallback(ctx: *anyopaque) !void {
     };
 
     if (self._parse_state == .html) {
-        var html = self._parse_state.html;
+        const html = self._parse_state.takeHtmlForDeferred().?;
         const raw_html = html.buffer.items;
         const as_xml = html.as_xml;
         const html_arena = html.arena;
-        html.buffer = .empty;
-        self._parse_state = .{ .html = html };
         self._session.browser.http_client.serviceInboundCdpIfReadable();
         self.flushPendingFrameNavigatedObservers();
-        if (!navDeliverable(self)) return;
+        if (!navDeliverable(self)) {
+            self._parse_state = .{ .html = html };
+            return;
+        }
 
         // HTML tree construction may synchronously encounter a classic external
         // parser-blocking script. Never enter the parser from curl's document
@@ -3156,7 +3268,9 @@ fn frameDoneCallback(ctx: *anyopaque) !void {
         log.debug(.frame, "parse html deferred", .{ .type = self._type, .url = self.url, .len = raw_html.len });
         self.scheduleDeferredDocumentParse(raw_html, as_xml, html_arena) catch |err| {
             log.warn(.frame, "defer document parse", .{ .err = err, .url = self.url });
-            self.releaseArena(html_arena);
+            // Scheduling did not take ownership. Restore the response state so
+            // teardown (or a later retry) remains its single terminal owner.
+            self._parse_state = .{ .html = html };
             return;
         };
         // Do NOT pump here: frameDoneCallback runs inside HttpClient transfer
@@ -3175,6 +3289,7 @@ fn frameDoneCallback(ctx: *anyopaque) !void {
 
     switch (self._parse_state) {
         .html => unreachable,
+        .deferred_html => unreachable,
         .text => |*buf| {
             try buf.appendSlice(self.arena, "</pre></body></html>");
             parser.parse(buf.items);
@@ -4142,7 +4257,7 @@ pub fn deliverSlotchangeEvents(self: *Frame) void {
 /// child frames. CDP clients (e.g. puppeteer networkidle0) expect lifecycle
 pub fn checkIdleNotifications(self: *Frame, total_http_activity: usize) void {
     switch (self._parse_state) {
-        .html, .complete => {
+        .html, .deferred_html, .complete => {
             if (self._notified_network_almost_idle.check(total_http_activity <= 2)) {
                 self.notifyNetworkAlmostIdle();
             }
@@ -5753,15 +5868,75 @@ pub fn scheduleCssAnimationEnd(self: *Frame, element: *Element) !void {
     if (self._css_anim_delivery_scheduled) return;
     self._css_anim_delivery_scheduled = true;
     self._css_anim_delivery_task_owner = owner;
-    // Small delay approximates animation-duration (Fluent uses ~0.25s); 0 still
-    // runs after the current task so React has committed onAnimationEnd props.
+    // Without a compositor we still schedule the terminal DOM events, but the
+    // deadline must come from the element's computed CSS rather than a
+    // site-shaped constant. Zero-duration animations remain a future task.
+    const delay_ms = self.cssAnimationTerminalDelayMs(element);
     try self.js.scheduler.add(self, struct {
         fn run(ctx: *anyopaque) !?u32 {
             const frame: *Frame = @ptrCast(@alignCast(ctx));
             frame.deliverCssAnimationEnds();
             return null;
         }
-    }.run, 0, .{ .name = "css.animationend" });
+    }.run, delay_ms, .{ .name = "css.animationend" });
+}
+
+fn cssAnimationTerminalDelayMs(self: *Frame, element: *Element) u32 {
+    const style = self.window.getComputedStyle(element, null, self) catch return 0;
+    const animation = cssTimelineDurationMs(
+        style.getPropertyValue("animation-duration", self),
+        style.getPropertyValue("animation-delay", self),
+    );
+    const transition = cssTimelineDurationMs(
+        style.getPropertyValue("transition-duration", self),
+        style.getPropertyValue("transition-delay", self),
+    );
+    return @max(animation, transition);
+}
+
+fn cssTimelineDurationMs(duration_list: []const u8, delay_list: []const u8) u32 {
+    var duration_ms: [32]i64 = undefined;
+    var delay_ms: [32]i64 = undefined;
+    const duration_count = parseCssTimeList(duration_list, &duration_ms);
+    const delay_count = parseCssTimeList(delay_list, &delay_ms);
+    if (duration_count == 0) return 0;
+
+    var max_ms: i64 = 0;
+    const item_count = @max(duration_count, delay_count);
+    for (0..item_count) |i| {
+        const duration = duration_ms[i % duration_count];
+        const delay = if (delay_count == 0) 0 else delay_ms[i % delay_count];
+        max_ms = @max(max_ms, duration +| delay);
+    }
+    return @intCast(@min(max_ms, std.math.maxInt(u32)));
+}
+
+fn parseCssTimeList(raw: []const u8, out: []i64) usize {
+    var count: usize = 0;
+    var values = std.mem.splitScalar(u8, raw, ',');
+    while (values.next()) |value| {
+        if (count == out.len) break;
+        out[count] = cssTimeMs(value);
+        count += 1;
+    }
+    return count;
+}
+
+fn cssTimeMs(raw: []const u8) i64 {
+    const value = std.mem.trim(u8, raw, &std.ascii.whitespace);
+    if (value.len == 0) return 0;
+    const multiplier: f64 = if (std.mem.endsWith(u8, value, "ms"))
+        1
+    else if (std.mem.endsWith(u8, value, "s"))
+        1000
+    else
+        return 0;
+    const unit_len: usize = if (multiplier == 1) 2 else 1;
+    const number = std.fmt.parseFloat(f64, value[0 .. value.len - unit_len]) catch return 0;
+    if (!std.math.isFinite(number)) return 0;
+    const millis = number * multiplier;
+    const limit = @as(f64, @floatFromInt(std.math.maxInt(i32)));
+    return @intFromFloat(std.math.clamp(millis, -limit, limit));
 }
 
 fn deliverCssAnimationEnds(self: *Frame) void {
@@ -6180,18 +6355,31 @@ fn nodeIsReady(self: *Frame, comptime from_parser: bool, node: *Node) !void {
 }
 
 const ParseState = union(enum) {
-    pre,
-    complete,
-    err: anyerror,
-    html: struct {
+    const Html = struct {
         arena: Allocator,
         buffer: std.ArrayList(u8),
         as_xml: bool = false,
-    },
+    };
+
+    pre,
+    complete,
+    err: anyerror,
+    html: Html,
+    /// The scheduler callback is the sole owner of the response arena.
+    deferred_html,
     text: std.ArrayList(u8),
     image: std.ArrayList(u8),
     raw: std.ArrayList(u8),
     raw_done: []const u8,
+
+    fn takeHtmlForDeferred(self: *ParseState) ?Html {
+        const html = switch (self.*) {
+            .html => |value| value,
+            else => return null,
+        };
+        self.* = .deferred_html;
+        return html;
+    }
 
     fn deinit(self: *ParseState, frame: *Frame) void {
         switch (self.*) {
@@ -6936,4 +7124,27 @@ test "Page: isSameOrigin" {
     try testing.expectEqual(false, frame.isSameOrigin(""));
     try testing.expectEqual(false, frame.isSameOrigin("not-a-url"));
     try testing.expectEqual(false, frame.isSameOrigin("//origin.com/foo"));
+}
+
+test "ParseState: deferred HTML transfers arena ownership" {
+    var buffer: std.ArrayList(u8) = .empty;
+    try buffer.appendSlice(testing.allocator, "<html></html>");
+    defer buffer.deinit(testing.allocator);
+
+    var state: ParseState = .{ .html = .{
+        .arena = testing.allocator,
+        .buffer = buffer,
+    } };
+    const html = state.takeHtmlForDeferred() orelse return error.TestExpectedEqual;
+
+    try testing.expect(state == .deferred_html);
+    try testing.expectEqualStrings("<html></html>", html.buffer.items);
+    try testing.expect(html.arena.ptr == testing.allocator.ptr);
+}
+
+test "CSS animation terminal delay follows computed time lists" {
+    try testing.expectEqual(@as(u32, 250), cssTimelineDurationMs("0.2s", "50ms"));
+    try testing.expectEqual(@as(u32, 900), cssTimelineDurationMs("100ms, 1s", "50ms, -100ms"));
+    try testing.expectEqual(@as(u32, 1200), cssTimelineDurationMs("1s, 200ms", "200ms"));
+    try testing.expectEqual(@as(u32, 2000), cssTimelineDurationMs("0s", "2s"));
 }
