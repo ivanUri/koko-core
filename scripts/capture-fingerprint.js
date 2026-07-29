@@ -311,19 +311,35 @@ canvas: `(() => {
 
 audio: `(async () => {
   try {
-    const ctx = new OfflineAudioContext(1, 44100, 44100);
+    // Match the graph used by the browser fingerprint collector and by
+    // AudioIntelligent.matchesStandardProbe(). Capture the complete rendered
+    // buffer plus analyser output; a partial, differently-sized graph cannot
+    // be safely replayed as a browser baseline.
+    const ctx = new OfflineAudioContext(1, 5000, 44100);
     const osc = ctx.createOscillator();
     osc.type = "triangle";
     osc.frequency.setValueAtTime(10000, ctx.currentTime);
     const comp = ctx.createDynamicsCompressor();
-    osc.connect(comp); comp.connect(ctx.destination);
-    osc.start(0); osc.stop(ctx.currentTime + 0.1);
+    comp.threshold.value = -50;
+    comp.knee.value = 40;
+    comp.ratio.value = 12;
+    comp.attack.value = 0;
+    comp.release.value = 0.25;
+    const analyser = ctx.createAnalyser();
+    osc.connect(comp); comp.connect(analyser); analyser.connect(ctx.destination);
+    osc.start(0);
     const buf = await ctx.startRendering();
+    const freq = new Float32Array(analyser.frequencyBinCount);
+    const timeDomain = new Float32Array(analyser.fftSize);
+    analyser.getFloatFrequencyData(freq);
+    analyser.getFloatTimeDomainData(timeDomain);
     return {
       sampleRate: buf.sampleRate,
       length: buf.length,
       numberOfChannels: buf.numberOfChannels,
-      samples: Array.from(buf.getChannelData(0).slice(4500, 4600)),
+      samples: Array.from(buf.getChannelData(0)),
+      freq: Array.from(freq),
+      timeDomain: Array.from(timeDomain),
     };
   } catch(e) { return { error: e.message }; }
 })()`,
@@ -429,20 +445,40 @@ voices: `(async () => {
   }));
 })()`,
 
-windowKeys: `(() => { const keys = []; for (const k in window) keys.push(k); return keys; })()`,
+// Collect browser-owned key surfaces from a fresh same-origin realm. The live
+// page global contains application/analytics globals, which are site state and
+// must never be persisted into a browser profile.
+windowKeys: `(() => {
+  const frame = document.createElement("iframe");
+  frame.style.display = "none"; document.documentElement.appendChild(frame);
+  try { const keys = []; for (const k in frame.contentWindow) keys.push(k); return keys; }
+  finally { frame.remove(); }
+})()`,
 
-navigatorKeys: `(() => { const keys = []; for (const k in navigator) keys.push(k); return keys; })()`,
+navigatorKeys: `(() => {
+  const frame = document.createElement("iframe");
+  frame.style.display = "none"; document.documentElement.appendChild(frame);
+  try { const keys = []; for (const k in frame.contentWindow.navigator) keys.push(k); return keys; }
+  finally { frame.remove(); }
+})()`,
 
-htmlElementKeys: `(() => { const el = document.createElement("div"); const keys = []; for (const k in el) keys.push(k); return keys; })()`,
+htmlElementKeys: `(() => {
+  const frame = document.createElement("iframe");
+  frame.style.display = "none"; document.documentElement.appendChild(frame);
+  try { const el = frame.contentDocument.createElement("div"); const keys = []; for (const k in el) keys.push(k); return keys; }
+  finally { frame.remove(); }
+})()`,
 
 cssKeys: `(() => {
-  const el = document.createElement("div");
-  document.body.appendChild(el);
-  const s = window.getComputedStyle(el);
-  const enumerable = []; for (const k in s) enumerable.push(k);
-  const ownNames = Object.getOwnPropertyNames(s);
-  document.body.removeChild(el);
-  return { enumerable, ownNames };
+  const frame = document.createElement("iframe");
+  frame.style.display = "none"; document.documentElement.appendChild(frame);
+  try {
+    const el = frame.contentDocument.createElement("div");
+    frame.contentDocument.body.appendChild(el);
+    const s = frame.contentWindow.getComputedStyle(el);
+    const enumerable = []; for (const k in s) enumerable.push(k);
+    return { enumerable, ownNames: Object.getOwnPropertyNames(s) };
+  } finally { frame.remove(); }
 })()`,
 
 maths: `(() => {
@@ -461,34 +497,36 @@ maths: `(() => {
 })()`,
 
 clientRects: `(() => {
-  const el = document.createElement("div");
-  el.style.cssText = "position:fixed;top:0;left:0;width:200px;height:100px;font-size:16px;font-family:Arial";
-  el.textContent = "Velora fingerprint probe";
-  document.body.appendChild(el);
-  const r = el.getBoundingClientRect();
-  const cr = Array.from(el.getClientRects()).map(x => ({
-    x: x.x, y: x.y, width: x.width, height: x.height,
-  }));
-  document.body.removeChild(el);
-  return { rect: { x: r.x, y: r.y, width: r.width, height: r.height }, clientRects: cr };
+  // This baseline is meaningful only for the CreepJS probe DOM consumed by
+  // ClientRectsIntelligent. Do not label an arbitrary rectangle as that
+  // baseline: doing so silently maps unrelated data onto cRect1..N.
+  const elements = Array.from({length: 12}, (_, i) => document.getElementById("cRect" + (i + 1)));
+  if (elements.some((el) => !el)) return null;
+  const rect = (r) => ({ x: r.x, y: r.y, width: r.width, height: r.height });
+  const emojis = Array.from(document.getElementsByClassName("domrect-emoji"));
+  return {
+    elementClientRects: elements.map((el) => rect(el.getBoundingClientRect())),
+    emojiDims: emojis.map((el) => {
+      const r = el.getBoundingClientRect(); return { w: r.width, h: r.height };
+    }),
+  };
 })()`,
 
 svg: `(() => {
   try {
-    const ns = "http://www.w3.org/2000/svg";
-    const svg = document.createElementNS(ns, "svg");
-    Object.assign(svg.style, { position:"fixed", top:"0", left:"0" });
-    svg.setAttribute("width","200"); svg.setAttribute("height","100");
-    document.body.appendChild(svg);
-    const t = document.createElementNS(ns, "text");
-    t.setAttribute("x","10"); t.setAttribute("y","50");
-    t.setAttribute("font-family","Arial"); t.setAttribute("font-size","20");
-    t.textContent = "Velora";
-    svg.appendChild(t);
-    const b = t.getBBox();
-    const len = t.getComputedTextLength();
-    document.body.removeChild(svg);
-    return { x: b.x, y: b.y, width: b.width, height: b.height, computedTextLength: len };
+    const box = document.getElementById("svgBox");
+    const emojis = box ? Array.from(box.getElementsByClassName("svgrect-emoji")) : [];
+    if (!box || !emojis.length) return null;
+    const rect = (r) => ({ x: r.x, y: r.y, width: r.width, height: r.height });
+    const first = emojis[0];
+    return {
+      bBox: rect(box.getBBox()),
+      computedTextLength: first.getComputedTextLength(),
+      subStringLength: first.getSubStringLength(0, Math.min(10, first.getNumberOfChars())),
+      extentOfChar: rect(first.getExtentOfChar(0)),
+      perEmojiComputedTextLength: emojis.map((el) => el.getComputedTextLength()),
+      perEmojiNumberOfChars: emojis.map((el) => el.getNumberOfChars()),
+    };
   } catch(e) { return { error: e.message }; }
 })()`,
 

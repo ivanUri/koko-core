@@ -384,6 +384,12 @@ pub fn changeProxy(self: *Client, proxy: ?[:0]const u8) !void {
     self.use_proxy = self.http_proxy != null;
 }
 
+/// Proxy currently owned by the browser network context. Native transports
+/// such as WebSocket must use the same route as HTTP fetch/navigation.
+pub fn currentProxy(self: *const Client) ?[:0]const u8 {
+    return self.http_proxy;
+}
+
 pub fn newHeaders(self: *const Client) !http.Headers {
     if (comptime build_config.curl_impersonate) {
         // Document nav: curl default_headers + small overrides. Subresources: full override list.

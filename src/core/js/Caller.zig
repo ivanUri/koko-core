@@ -566,9 +566,7 @@ fn nameToString(local: *const Local, comptime T: type, name: *const v8.Name) !T 
 
 fn throwViaJsConstructHelper(local: *const Local, err: anyerror) bool {
     const global_handle = v8.v8__Context__Global(local.handle).?;
-    const global = js.Object{ .local = local, .handle = global_handle };
-    const helper_val = global.get("__veloraConstructThrow") catch return false;
-    if (!helper_val.isFunction()) return false;
+    const helper = if (local.ctx.construct_throw_helper) |*stored| stored.local(local) else return false;
 
     const type_name: []const u8 = switch (err) {
         error.TypeError, error.InvalidArgument => "TypeError",
@@ -578,7 +576,7 @@ fn throwViaJsConstructHelper(local: *const Local, err: anyerror) bool {
     const type_val = local.isolate.initStringHandle(type_name);
     const args = [_]?*const v8.Value{type_val};
     _ = v8.v8__Function__Call(
-        @ptrCast(helper_val.handle),
+        helper.handle,
         local.handle,
         global_handle,
         1,
@@ -589,13 +587,11 @@ fn throwViaJsConstructHelper(local: *const Local, err: anyerror) bool {
 
 pub fn throwViaJsRethrowHelper(local: *const Local, ex: js.Value) void {
     const global_handle = v8.v8__Context__Global(local.handle).?;
-    const global = js.Object{ .local = local, .handle = global_handle };
-    const helper_val = global.get("__veloraRethrow") catch return;
-    if (!helper_val.isFunction()) return;
+    const helper = if (local.ctx.rethrow_helper) |*stored| stored.local(local) else return;
 
     const args = [_]?*const v8.Value{ex.handle};
     _ = v8.v8__Function__Call(
-        @ptrCast(helper_val.handle),
+        helper.handle,
         local.handle,
         global_handle,
         1,
@@ -605,15 +601,13 @@ pub fn throwViaJsRethrowHelper(local: *const Local, ex: js.Value) void {
 
 fn throwViaJsDomExceptionHelper(local: *const Local, ex: @import("../dom/DOMException.zig")) bool {
     const global_handle = v8.v8__Context__Global(local.handle).?;
-    const global = js.Object{ .local = local, .handle = global_handle };
-    const helper_val = global.get("__veloraDomExceptionThrow") catch return false;
-    if (!helper_val.isFunction()) return false;
+    const helper = if (local.ctx.dom_exception_throw_helper) |*stored| stored.local(local) else return false;
 
     const name_val = local.isolate.initStringHandle(ex.getName());
     const msg_val = local.isolate.initStringHandle(ex.getMessage());
     const args = [_]?*const v8.Value{ name_val, msg_val };
     const result = v8.v8__Function__Call(
-        @ptrCast(helper_val.handle),
+        helper.handle,
         local.handle,
         global_handle,
         2,

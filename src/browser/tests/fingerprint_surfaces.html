@@ -1,0 +1,44 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+// Browser-level smoke coverage for the surfaces used by fingerprint agents.
+window.testing = {
+  assertOk: () => document.body.id === "fingerprint-surfaces-pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+try {
+  const canvas = document.createElement("canvas");
+  canvas.width = 64; canvas.height = 32;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("2d context unavailable");
+  ctx.fillStyle = "rgb(12,34,56)";
+  ctx.fillRect(0, 0, 8, 8);
+  const pixel = ctx.getImageData(1, 1, 1, 1).data;
+  if (pixel[0] !== 12 || pixel[1] !== 34 || pixel[2] !== 56 || pixel[3] !== 255)
+    throw new Error("canvas pixel mismatch");
+  if (!canvas.toDataURL().startsWith("data:image/png")) throw new Error("canvas encoding");
+  if (!(ctx.measureText("Velora").width > 0)) throw new Error("measureText");
+
+  // WebGL may legitimately be unavailable on headless/software configurations.
+  const gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
+  if (gl) {
+    if (typeof gl.getParameter !== "function" || typeof gl.getSupportedExtensions !== "function")
+      throw new Error("incomplete WebGL API");
+  }
+
+  const box = document.createElement("div");
+  box.style.cssText = "position:absolute;width:17px;height: ninepx;padding:3px";
+  document.body.appendChild(box);
+  const rect = box.getBoundingClientRect();
+  if (!(rect.width >= 17 && rect.height >= 0)) throw new Error("geometry unavailable");
+  if (!document.defaultView.getComputedStyle(box)) throw new Error("computed style unavailable");
+
+  document.body.textContent = "fingerprint-surfaces-pass";
+  document.body.id = "fingerprint-surfaces-pass";
+} catch (error) {
+  document.body.textContent = "fingerprint-surfaces-fail: " + error;
+  document.body.id = "fingerprint-surfaces-fail";
+}
+</script>

@@ -1121,7 +1121,6 @@ pub const PageJsApis = flattenTypes(&.{
     @import("../dom/Node.zig"),
     @import("../webapi/storage/storage.zig"),
     @import("../webapi/URL.zig"),
-    @import("../webapi/WebDriver.zig"),
     @import("../webapi/Window.zig"),
     @import("../webapi/Performance.zig"),
     @import("../webapi/EventCounts.zig"),
@@ -1280,3 +1279,11 @@ pub const JsApis = PageJsApis ++ [_]type{
     @import("../webapi/WorkerLocation.zig").JsApi,
     @import("../webapi/WorkerNavigator.zig").JsApi,
 };
+
+test "production page API list excludes the WPT WebDriver helper" {
+    inline for (PageJsApis) |JsApi| {
+        if (@hasDecl(JsApi.Meta, "name")) {
+            try std.testing.expect(!std.mem.eql(u8, JsApi.Meta.name, "WebDriver"));
+        }
+    }
+}

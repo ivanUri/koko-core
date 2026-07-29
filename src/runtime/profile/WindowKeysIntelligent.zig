@@ -27,9 +27,9 @@ pub fn installOnDocument(frame: *Frame, context: *js.Context) void {
         i = end;
     }
 
-    // Native FunctionTemplate OPN (iframe clean toString safe) — not JS assign.
-    const NativeBuiltinHooks = @import("NativeBuiltinHooks.zig");
-    NativeBuiltinHooks.installGetOwnPropertyNames(frame, context);
+    // Never replace Object.getOwnPropertyNames in one realm. Even a native
+    // FunctionTemplate has different identity/realm semantics from Chrome's
+    // intrinsic and is observable by comparing against a clean iframe.
 }
 
 fn keysToJson(allocator: std.mem.Allocator, keys: []const []const u8) ![]const u8 {

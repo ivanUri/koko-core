@@ -53,6 +53,10 @@ pub const StartOpts = struct {
     ip_filter: ?*const IpFilter = null,
     tls_verify: bool = true,
     cookie_header: ?[]const u8 = null,
+    /// Stable browser-context proxy selected by Config/CDP. HTTP CONNECT is
+    /// used for both ws:// and wss:// so the target never receives a direct
+    /// socket from the browser process.
+    proxy: ?[:0]const u8 = null,
 };
 
 pub const WebSocketClient = @This();
@@ -116,13 +120,30 @@ fn startImpl(self: *WebSocketClient, url: [:0]const u8, opts: StartOpts) !void {
     else
         80;
 
-    const address = try resolveAddress(self.allocator, hostname, port);
+    const target_address = try resolveAddress(self.allocator, hostname, port);
     if (opts.ip_filter) |filter| {
-        if (filter.isBlockedAddress(address)) return error.ConnectionRefused;
+        if (filter.isBlockedAddress(target_address)) return error.ConnectionRefused;
     }
 
-    const socket = connectTcp(address) catch |err| fallback: {
-        if (err != error.ConnectionRefused or !isLocalhostHostname(hostname)) return err;
+    const connect_address = if (opts.proxy) |proxy| blk: {
+        if (!std.mem.startsWith(u8, proxy, "http://")) return error.UnsupportedProxyScheme;
+        const proxy_host = URL.getHostname(proxy);
+        const proxy_port_text = URL.getPort(proxy);
+        const proxy_port: u16 = if (proxy_port_text.len == 0)
+            80
+        else
+            try std.fmt.parseInt(u16, proxy_port_text, 10);
+        const proxy_address = try resolveAddress(self.allocator, proxy_host, proxy_port);
+        if (opts.ip_filter) |filter| {
+            if (filter.isBlockedAddress(proxy_address)) return error.ConnectionRefused;
+        }
+        break :blk proxy_address;
+    } else target_address;
+
+    const socket = connectTcp(connect_address) catch |err| fallback: {
+        // Never fall back to a direct target socket when a proxy route was
+        // requested. That would leak traffic outside the browser context.
+        if (opts.proxy != null or err != error.ConnectionRefused or !isLocalhostHostname(hostname)) return err;
         const v4 = std.net.Address.parseIp("127.0.0.1", port) catch return err;
         if (opts.ip_filter) |filter| {
             if (filter.isBlockedAddress(v4)) return error.ConnectionRefused;
@@ -134,6 +155,10 @@ fn startImpl(self: *WebSocketClient, url: [:0]const u8, opts: StartOpts) !void {
     const socket_flags = try posix.fcntl(socket, posix.F.GETFL, 0);
     self.socket = socket;
     self.socket_flags = socket_flags;
+
+    if (opts.proxy) |proxy| {
+        try connectHttpProxyTunnel(self.allocator, socket, proxy, hostname, port);
+    }
 
     if (is_tls) {
         try self.startTls(url, hostname, opts.tls_verify);
@@ -147,6 +172,103 @@ fn startImpl(self: *WebSocketClient, url: [:0]const u8, opts: StartOpts) !void {
 
     const nonblocking = @as(u32, @bitCast(posix.O{ .NONBLOCK = true }));
     _ = try posix.fcntl(socket, posix.F.SETFL, socket_flags | nonblocking);
+}
+
+fn connectHttpProxyTunnel(
+    allocator: Allocator,
+    socket: posix.socket_t,
+    proxy: [:0]const u8,
+    target_host: []const u8,
+    target_port: u16,
+) !void {
+    const request = try buildProxyConnectRequest(allocator, proxy, target_host, target_port);
+    defer allocator.free(request);
+
+    var written: usize = 0;
+    while (written < request.len) {
+        const n = try posix.write(socket, request[written..]);
+        if (n == 0) return error.ConnectionRefused;
+        written += n;
+    }
+
+    var response: [8192]u8 = undefined;
+    var used: usize = 0;
+    while (std.mem.indexOf(u8, response[0..used], "\r\n\r\n") == null) {
+        if (used == response.len) return error.ProxyResponseTooLarge;
+        const n = try posix.read(socket, response[used..]);
+        if (n == 0) return error.ConnectionRefused;
+        used += n;
+    }
+
+    const first_line_end = std.mem.indexOf(u8, response[0..used], "\r\n") orelse return error.InvalidProxyResponse;
+    const first_line = response[0..first_line_end];
+    var fields = std.mem.splitScalar(u8, first_line, ' ');
+    _ = fields.next() orelse return error.InvalidProxyResponse;
+    const status_text = fields.next() orelse return error.InvalidProxyResponse;
+    const status = std.fmt.parseInt(u16, status_text, 10) catch return error.InvalidProxyResponse;
+    if (status != 200) return error.ProxyConnectRejected;
+}
+
+fn buildProxyConnectRequest(
+    allocator: Allocator,
+    proxy: [:0]const u8,
+    target_host: []const u8,
+    target_port: u16,
+) ![]u8 {
+    var request: std.ArrayList(u8) = .empty;
+    errdefer request.deinit(allocator);
+    try request.writer(allocator).print(
+        "CONNECT {s}:{d} HTTP/1.1\r\nHost: {s}:{d}\r\nProxy-Connection: Keep-Alive\r\n",
+        .{ target_host, target_port, target_host, target_port },
+    );
+
+    const encoded_user = URL.getUsername(proxy);
+    if (encoded_user.len > 0) {
+        const user = try percentDecode(allocator, encoded_user);
+        defer allocator.free(user);
+        const password = try percentDecode(allocator, URL.getPassword(proxy));
+        defer allocator.free(password);
+        const credentials = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ user, password });
+        defer allocator.free(credentials);
+        const encoded_len = std.base64.standard.Encoder.calcSize(credentials.len);
+        const encoded = try allocator.alloc(u8, encoded_len);
+        defer allocator.free(encoded);
+        _ = std.base64.standard.Encoder.encode(encoded, credentials);
+        try request.writer(allocator).print("Proxy-Authorization: Basic {s}\r\n", .{encoded});
+    }
+    try request.appendSlice(allocator, "\r\n");
+    return request.toOwnedSlice(allocator);
+}
+
+fn percentDecode(allocator: Allocator, encoded: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    var i: usize = 0;
+    while (i < encoded.len) {
+        if (encoded[i] == '%' and i + 2 < encoded.len) {
+            const high = std.fmt.charToDigit(encoded[i + 1], 16) catch return error.InvalidProxyCredentials;
+            const low = std.fmt.charToDigit(encoded[i + 2], 16) catch return error.InvalidProxyCredentials;
+            try out.append(allocator, (high << 4) | low);
+            i += 3;
+        } else {
+            try out.append(allocator, encoded[i]);
+            i += 1;
+        }
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+test "WebSocket HTTP proxy CONNECT uses decoded Basic credentials" {
+    const allocator = std.testing.allocator;
+    const request = try buildProxyConnectRequest(
+        allocator,
+        "http://user%40example:p%40ss@127.0.0.1:8080",
+        "echo.example",
+        443,
+    );
+    defer allocator.free(request);
+    try std.testing.expect(std.mem.startsWith(u8, request, "CONNECT echo.example:443 HTTP/1.1\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, request, "Proxy-Authorization: Basic dXNlckBleGFtcGxlOnBAc3M=\r\n") != null);
 }
 
 fn startTls(self: *WebSocketClient, url: [:0]const u8, hostname: []const u8, tls_verify: bool) !void {

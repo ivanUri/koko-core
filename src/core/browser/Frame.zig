@@ -1549,6 +1549,10 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
         self.window._chrome.recordNavigationStart(nav_start);
     }
     @import("../../runtime/profile/AutomationScrub.zig").applyOnce(self);
+    // Context bootstrap and constructor shims may use temporary engine
+    // helpers. They must be gone before any document script can enumerate the
+    // Window global.
+    @import("../js/Env.zig").cleanupFrameInternalGlobals(self.js);
 
     const req_id = self._session.browser.http_client.nextReqId();
     const nav_id = log.bumpNavId() orelse 0;
@@ -2093,12 +2097,6 @@ pub fn documentIsLoaded(self: *Frame) void {
 pub fn _documentIsLoaded(self: *Frame) !void {
     const HtmlElementVersionIntelligent = @import("../../runtime/profile/HtmlElementVersionIntelligent.zig");
     HtmlElementVersionIntelligent.installOnDocument(self, self.js);
-
-    const WindowKeysIntelligent = @import("../../runtime/profile/WindowKeysIntelligent.zig");
-    WindowKeysIntelligent.installOnDocument(self, self.js);
-
-    const NavigatorKeysIntelligent = @import("../../runtime/profile/NavigatorKeysIntelligent.zig");
-    NavigatorKeysIntelligent.installOnDocument(self, self.js);
 
     // Page DOMContentLoaded (after CDP). Failures here must not un-fire DCL.
     const event = try Event.initTrusted(.wrap("DOMContentLoaded"), .{ .bubbles = true }, self._page);

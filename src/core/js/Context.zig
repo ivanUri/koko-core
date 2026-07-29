@@ -118,6 +118,13 @@ pending_callback_exception: bool = false,
 // context.localScope
 local: ?*const js.Local = null,
 
+// Internal exception helpers are persistent handles, not globalThis
+// properties. Exposing engine plumbing as __velora* own properties is both a
+// web-compat violation and a high-signal automation fingerprint.
+construct_throw_helper: ?js.Function.Global = null,
+rethrow_helper: ?js.Function.Global = null,
+dom_exception_throw_helper: ?js.Function.Global = null,
+
 origin: *Origin,
 
 // Identity tracking for this context. For main world contexts, this points to

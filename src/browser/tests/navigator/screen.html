@@ -1,0 +1,9 @@
+<!doctype html><meta charset="utf-8"><body>pending</body>
+<script>
+window.testing = { assertOk: () => {
+  const s = screen;
+  return s && Number.isFinite(s.width) && Number.isFinite(s.height) &&
+    s.width > 0 && s.height > 0 && Number.isFinite(s.colorDepth) &&
+    Number.isFinite(s.pixelDepth);
+}, printTimeoutState: () => console.log(screen.width, screen.height) };
+</script>

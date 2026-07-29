@@ -113,6 +113,12 @@ pub const Config = struct {
     ice_servers: []const IceServer = &.{},
     /// If true, this side is the offerer (ICE controlling).
     is_offerer: bool = true,
+    /// Whether ICE may use host interfaces and direct UDP/STUN. Browser
+    /// network contexts with an HTTP proxy disable this because that proxy
+    /// cannot carry UDP; silently bypassing it would disclose the direct
+    /// route. A future TURN-over-TCP/TLS transport can provide relay
+    /// candidates without enabling this flag.
+    allow_non_proxied_udp: bool = true,
 };
 
 pub const OfferOptions = struct {
@@ -224,12 +230,18 @@ pub fn create(alloc: Allocator, config: Config) !*RTCPeerConnection {
     cmd_queue.* = RtcCommandQueue.init();
 
     // Parse STUN server from config
-    const stun_addr = parseFirstStunServer(alloc, config.ice_servers);
+    // Resolving a STUN hostname is itself part of the direct ICE route, so do
+    // not even perform that lookup when the browser network policy forbids it.
+    const stun_addr = if (config.allow_non_proxied_udp)
+        parseFirstStunServer(alloc, config.ice_servers)
+    else
+        null;
 
     // Create network thread
     const thread_config = WebRtcThread.Config{
         .stun_server = stun_addr,
         .ice_role = if (config.is_offerer) .controlling else .controlled,
+        .allow_non_proxied_udp = config.allow_non_proxied_udp,
     };
     const thread = try WebRtcThread.create(alloc, event_queue, cmd_queue, thread_config);
     errdefer thread.destroy();

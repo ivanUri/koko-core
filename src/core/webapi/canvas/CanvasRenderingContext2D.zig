@@ -556,3 +556,7 @@ const testing = @import("../../../testing/testing.zig");
 test "WebApi: CanvasRenderingContext2D" {
     try testing.htmlRunner("canvas/canvas_rendering_context_2d.html", .{});
 }
+
+test "WebApi: fingerprint surface smoke test" {
+    try testing.htmlRunner("fingerprint_surfaces.html", .{});
+}

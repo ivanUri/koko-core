@@ -27,6 +27,7 @@ const dump = @import("../core/browser/dump.zig");
 const mcp = @import("../protocols/mcp.zig");
 const Storage = @import("storage/Storage.zig");
 const WebBotAuthConfig = @import("network/WebBotAuth.zig").Config;
+const ProxyPool = @import("network/ProxyPool.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -91,6 +92,7 @@ const CommonOptions = .{
     .{ .name = "obey_robots", .type = bool },
     .{ .name = "proxy_bearer_token", .type = ?[:0]const u8 },
     .{ .name = "http_proxy", .type = ?[:0]const u8 },
+    .{ .name = "proxy_file", .type = ?[]const u8 },
     .{ .name = "http_max_concurrent", .type = ?u8 },
     .{ .name = "http_max_host_open", .type = ?u8 },
     .{ .name = "http_timeout", .type = ?u31 },
@@ -232,6 +234,9 @@ profile_runtime: ProfileRuntime.ProfileRuntime,
 http_headers: HttpHeaders,
 /// Default HTTP cache directory when --http-cache-dir is omitted.
 http_cache_dir_default: ?[]u8 = null,
+/// One proxy selected from --proxy-file during startup and held stable for
+/// the entire engine lifetime. Owned by Config.
+selected_proxy: ?[:0]u8 = null,
 
 /// ProfileRuntime stores a pointer into Config.profile; must run after Config is at its final address.
 pub fn rebindProfilePointers(self: *Config) void {
@@ -246,8 +251,24 @@ pub fn initInPlace(self: *Config, allocator: Allocator, exec_name: []const u8, m
     self.http_headers = undefined;
     self.profile_paths = undefined;
     self.http_cache_dir_default = null;
+    self.selected_proxy = null;
 
     if (modeSkipsProfileBootstrap(mode)) return;
+
+    if (self.proxyFile()) |path| {
+        if (self.explicitHttpProxy() != null) {
+            log.fatal(.app, "proxy options are mutually exclusive", .{
+                .options = "--http-proxy,--proxy-file",
+            });
+            return error.InvalidArgument;
+        }
+        self.selected_proxy = try ProxyPool.loadRandom(allocator, path);
+        errdefer allocator.free(self.selected_proxy.?);
+        log.info(.app, "proxy selected", .{
+            .source = path,
+            .endpoint = ProxyPool.redactedEndpoint(self.selected_proxy.?),
+        });
+    }
 
     const pool_pick = try self.resolveBrowserProfilePoolPick(allocator);
     defer if (pool_pick) |name| allocator.free(name);
@@ -316,6 +337,7 @@ fn modeSkipsProfileBootstrap(mode: Mode) bool {
 
 pub fn deinit(self: *Config, allocator: Allocator) void {
     if (self.http_cache_dir_default) |path| allocator.free(path);
+    if (self.selected_proxy) |proxy| allocator.free(proxy);
     if (!modeSkipsProfileBootstrap(self.mode)) {
         self.http_headers.deinit(allocator);
         self.profile_runtime.deinit(allocator);
@@ -339,9 +361,20 @@ pub fn obeyRobots(self: *const Config) bool {
 }
 
 pub fn httpProxy(self: *const Config) ?[:0]const u8 {
+    return self.explicitHttpProxy() orelse self.selected_proxy;
+}
+
+fn explicitHttpProxy(self: *const Config) ?[:0]const u8 {
     return switch (self.mode) {
         inline .serve, .fetch, .mcp => |opts| opts.http_proxy,
         else => unreachable,
+    };
+}
+
+pub fn proxyFile(self: *const Config) ?[]const u8 {
+    return switch (self.mode) {
+        inline .serve, .fetch, .mcp => |opts| opts.proxy_file,
+        .profile, .help, .version => null,
     };
 }
 
@@ -776,6 +809,12 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\--http-proxy    The HTTP proxy to use for all HTTP requests.
         \\                A username:password can be included for basic authentication.
         \\                Defaults to none.
+        \\
+        \\--proxy-file    File containing one proxy per line. One entry is selected
+        \\                at engine startup and remains fixed for the whole browser
+        \\                session. Supports http:// proxy URLs and
+        \\                host:port:user:password.
+        \\                Cannot be combined with --http-proxy.
         \\
         \\--proxy-bearer-token
         \\                The <token> to send for bearer authentication with the proxy

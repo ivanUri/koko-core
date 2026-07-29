@@ -2,8 +2,8 @@
   "version": 1,
   "id": "huynew",
   "mode": "antidetect",
-  "capturedAt": "2026-07-26T03:31:51.324Z",
-  "capturedFrom": "https://www.google.com/search?q=coingloo&oq=coingloo&gs_lcrp=EgZjaHJvbWUyBggAEEUYOTIKCAEQABiiBBiJBTIKCAIQABiiBBiJBTIHCAMQABjvBTIHCAQQABjvBdIBCDc3MzlqMGo3qAIAsAIA&sourceid=chrome&source=chrome.ob&ie=UTF-8&sei=X39lasyNGJT11e8P4Ivj6QE",
+  "capturedAt": "2026-07-29T07:57:20.242Z",
+  "capturedFrom": "https://demo.fingerprint.com/playground",
   "transport": {
     "impersonate": "chrome150"
   },
@@ -42,7 +42,7 @@
     "architecture": "arm",
     "bitness": "64",
     "model": "",
-    "uaFullVersion": "150.0.7871.186",
+    "uaFullVersion": "150.0.7871.187",
     "fullVersionList": [
       {
         "brand": "Not;A=Brand",
@@ -50,11 +50,11 @@
       },
       {
         "brand": "Chromium",
-        "version": "150.0.7871.186"
+        "version": "150.0.7871.187"
       },
       {
         "brand": "Google Chrome",
-        "version": "150.0.7871.186"
+        "version": "150.0.7871.187"
       }
     ],
     "formFactors": [
@@ -116,11 +116,11 @@
     }
   },
   "window": {
-    "innerWidth": 1200,
-    "innerHeight": 831,
-    "outerWidth": 1200,
-    "outerHeight": 918,
-    "screenX": 748,
+    "innerWidth": 1920,
+    "innerHeight": 875,
+    "outerWidth": 1920,
+    "outerHeight": 962,
+    "screenX": 0,
     "screenY": 25
   },
   "timezone": "Asia/Saigon",
@@ -330,12 +330,6 @@
   "mathsBaseline": {
     "dataFile": "assets/huynew-maths-baseline.json"
   },
-  "clientRectsBaseline": {
-    "dataFile": "assets/huynew-client-rects.json"
-  },
-  "svgBaseline": {
-    "dataFile": "assets/huynew-svg-baseline.json"
-  },
   "_future": {
     "webgpu": {
       "available": true,
@@ -360,10 +354,10 @@
         "texture-compression-etc2",
         "depth-clip-control",
         "texture-compression-bc-sliced-3d",
-        "timestamp-query",
         "clip-distances",
-        "shader-f16",
+        "timestamp-query",
         "texture-formats-tier2",
+        "shader-f16",
         "primitive-index",
         "texture-component-swizzle",
         "subgroups"
@@ -483,8 +477,8 @@
     "battery": {
       "charging": false,
       "chargingTime": null,
-      "dischargingTime": 4320,
-      "level": 0.32
+      "dischargingTime": 9240,
+      "level": 0.62
     },
     "bluetooth": {
       "available": true

@@ -1,0 +1,15 @@
+<!doctype html><meta charset="utf-8"><body>pending</body>
+<script>
+window.testing = { assertOk: () => {
+  const n = navigator;
+  if (typeof n.userAgent !== 'string' || !n.userAgent) return false;
+  if (typeof n.language !== 'string' || !Array.isArray(n.languages)) return false;
+  if (typeof n.hardwareConcurrency !== 'number' || n.hardwareConcurrency < 1) return false;
+  if ('userAgentData' in n) {
+    const u = n.userAgentData;
+    if (!u || typeof u.getHighEntropyValues !== 'function') return false;
+    if (!Array.isArray(u.brands) || typeof u.mobile !== 'boolean') return false;
+  }
+  return true;
+}, printTimeoutState: () => console.log(navigator.userAgent) };
+</script>

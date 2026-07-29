@@ -1,5 +1,7 @@
 (function () {
   const Native = SharedWorker;
+  const constructEnter = globalThis.__veloraWorkerConstructEnter;
+  const constructExit = globalThis.__veloraWorkerConstructExit;
   function workerBase() {
     try {
       return globalThis.location && globalThis.location.href;
@@ -12,7 +14,7 @@
       if (arguments.length < 1) {
         throw new TypeError();
       }
-      globalThis.__veloraWorkerConstructEnter();
+      constructEnter();
       try {
         const urlString = String(url);
         const base = workerBase();
@@ -42,7 +44,7 @@
         }
         return Reflect.construct(Native, [urlString, name, opts], new.target);
       } finally {
-        globalThis.__veloraWorkerConstructExit();
+        constructExit();
       }
     }
     return Native.apply(this, arguments);

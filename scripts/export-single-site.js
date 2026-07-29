@@ -5,7 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
-const url = "https://www.adobe.com/";
+const url = "https://browserleaks.com/webrtc";
 // Chỉ cần sửa cấu hình trong khối này.
 const CONFIG = {
   url,
@@ -16,7 +16,10 @@ const CONFIG = {
   // Point these two values at another profile explicitly when persistence is
   // required; the exporter itself does not select an identity for a site.
   userDataDir: path.join(os.homedir(), "Library", "Application Support", "velora"),
-  profile: "huynew",
+  profile: "chrome-current",
+  // Optional proxy pool. Velora selects one entry at process startup and keeps
+  // it for the complete browser session; it never rotates per request.
+  proxyFile: "/tmp/velora-alive-proxies.txt",
   keepScripts: false,
   includeFrames: true,
   waitUntil: "done",
@@ -125,6 +128,9 @@ function main() {
   }
   if (CONFIG.waitScript) {
     args.splice(args.length - 1, 0, "--wait-script", CONFIG.waitScript);
+  }
+  if (CONFIG.proxyFile) {
+    args.splice(args.length - 1, 0, "--proxy-file", path.resolve(projectRoot, CONFIG.proxyFile));
   }
 
   console.log(`Exporting: ${url.href}`);

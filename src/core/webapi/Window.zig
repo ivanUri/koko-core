@@ -1430,3 +1430,7 @@ test "WebApi: Window scroll" {
 test "WebApi: Window.onerror" {
     try testing.htmlRunner("event/report_error.html", .{});
 }
+
+test "WebApi: fingerprint surface invariants" {
+    try testing.htmlRunner("fingerprint_surface.html", .{});
+}

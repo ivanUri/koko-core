@@ -141,6 +141,10 @@ _remote_ufrag: [8]u8,
 _remote_pwd: [24]u8,
 _have_remote_creds: bool,
 
+// Browser network policy. False means the configured proxy cannot carry UDP,
+// so host enumeration, STUN, and ICE connectivity checks must remain inert.
+_allow_non_proxied_udp: bool,
+
 // UDP socket (single socket for all candidates per RFC 8445 §4.1.1.2)
 _sock: posix.socket_t,
 _sock_port: u16,
@@ -180,6 +184,7 @@ pub fn init(
     local_ufrag: [8]u8,
     local_pwd: [24]u8,
     role: Role,
+    allow_non_proxied_udp: bool,
 ) !IceAgent {
     // Open a single non-blocking UDP socket bound to any local port.
     const sock = try posix.socket(
@@ -208,6 +213,7 @@ pub fn init(
         ._remote_ufrag = std.mem.zeroes([8]u8),
         ._remote_pwd = std.mem.zeroes([24]u8),
         ._have_remote_creds = false,
+        ._allow_non_proxied_udp = allow_non_proxied_udp,
         ._sock = sock,
         ._sock_port = port,
         ._role = role,
@@ -225,7 +231,9 @@ pub fn init(
         ._check_seq = 0,
     };
 
-    _ = try self.gatherHostCandidates();
+    if (allow_non_proxied_udp) {
+        _ = try self.gatherHostCandidates();
+    }
     return self;
 }
 
@@ -261,6 +269,15 @@ pub fn setRemoteCredentials(
 pub fn startGathering(self: *IceAgent, stun_server: ?std.net.Address) !void {
     self._gathering = .gathering;
     self._stun_server = stun_server;
+
+    // HTTP CONNECT proxies do not provide a UDP route. Complete gathering
+    // with no candidates instead of exposing host/srflx addresses over the
+    // machine's direct interface. This preserves the WebRTC event lifecycle.
+    if (!self._allow_non_proxied_udp) {
+        self._gathering = .complete;
+        try self.emitGatheringComplete();
+        return;
+    }
 
     // Emit all host candidates immediately
     for (self._local.slice()) |*cand| {
@@ -851,4 +868,31 @@ fn pwdLen(buf: [24]u8) usize {
 
 fn currentMs() u64 {
     return @intCast(std.time.milliTimestamp());
+}
+
+test "proxy network policy completes ICE without direct candidates" {
+    const alloc = std.testing.allocator;
+    var events = RtcEventQueue.init();
+    var agent = try IceAgent.init(
+        alloc,
+        &events,
+        [_]u8{'u'} ** 8,
+        [_]u8{'p'} ** 24,
+        .controlling,
+        false,
+    );
+    defer agent.deinit();
+
+    // Supplying a STUN address must not matter: the network-context policy
+    // owns whether a direct UDP route may be used.
+    try agent.startGathering(std.net.Address.initIp4(.{ 203, 0, 113, 1 }, 3478));
+
+    try std.testing.expectEqual(@as(usize, 0), agent._local.len);
+    try std.testing.expectEqual(GatheringState.complete, agent._gathering);
+    try std.testing.expectEqual(StunState.idle, agent._stun_state);
+
+    const node = events.pop() orelse return error.MissingGatheringComplete;
+    defer alloc.destroy(node);
+    try std.testing.expect(node.event == .ice_gathering_complete);
+    try std.testing.expect(events.pop() == null);
 }

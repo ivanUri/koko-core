@@ -414,6 +414,7 @@ fn _createContext(self: *Env, global: anytype, params: ContextParams, kind: Cont
             installWorkerConstructDepth(context);
             installWorkerConstructorShim(context);
             installSharedWorkerConstructorShim(context);
+            cleanupFrameInternalGlobals(context);
             installUrlSearchParamsConstructorShim(context);
             installWebSocketConstructorShim(context);
             installCreepJsCompatShim(context);
@@ -436,6 +437,21 @@ fn _createContext(self: *Env, global: anytype, params: ContextParams, kind: Cont
     }
 
     return context;
+}
+
+pub fn cleanupFrameInternalGlobals(context: *Context) void {
+    var ls: js.Local.Scope = undefined;
+    context.localScope(&ls);
+    defer ls.deinit();
+    const global_handle = v8.v8__Context__Global(ls.local.handle) orelse return;
+    inline for (.{
+        "__veloraConstructThrow",
+        "__veloraRethrow",
+        "__veloraDomExceptionThrow",
+        "__veloraWorkerConstructing",
+        "__veloraWorkerConstructEnter",
+        "__veloraWorkerConstructExit",
+    }) |name| deleteOwnGlobal(&ls.local, global_handle, name);
 }
 
 /// WPT historical: href setter, structuredClone, URL(string coercion) throws in harness.
@@ -552,7 +568,29 @@ fn installConstructThrowShim(context: *Context) void {
     ;
     ls.local.eval(src, "construct-throw-shim") catch |err| {
         log.warn(.js, "construct throw shim", .{ .err = err });
+        return;
     };
+
+    const global_handle = v8.v8__Context__Global(ls.local.handle) orelse return;
+    const global = js.Object{ .local = &ls.local, .handle = global_handle };
+    if (global.getFunction("__veloraConstructThrow") catch null) |helper| {
+        context.construct_throw_helper = helper.persist() catch null;
+        deleteOwnGlobal(&ls.local, global.handle, "__veloraConstructThrow");
+    }
+    if (global.getFunction("__veloraRethrow") catch null) |helper| {
+        context.rethrow_helper = helper.persist() catch null;
+        deleteOwnGlobal(&ls.local, global.handle, "__veloraRethrow");
+    }
+    if (global.getFunction("__veloraDomExceptionThrow") catch null) |helper| {
+        context.dom_exception_throw_helper = helper.persist() catch null;
+        deleteOwnGlobal(&ls.local, global.handle, "__veloraDomExceptionThrow");
+    }
+}
+
+fn deleteOwnGlobal(local: *const js.Local, global: *const v8.Object, name: []const u8) void {
+    const key = local.isolate.initStringHandle(name);
+    var out: v8.MaybeBool = undefined;
+    v8.v8__Object__Delete(global, local.handle, key, &out);
 }
 
 /// Chrome unwraps TrustedScript before calling the intrinsic eval. Install a

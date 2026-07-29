@@ -48,6 +48,26 @@ pub fn validateAntidetectConsistency(
     }
 }
 
+/// High-entropy UA-CH exposes the same browser build through
+/// `uaFullVersion` and the Chromium/Google Chrome entries of
+/// `fullVersionList`. Profiles captured at different times must not be mixed.
+pub fn fullVersionListMatches(
+    ua_full_version: []const u8,
+    full_version_list: []const Brand,
+) bool {
+    if (ua_full_version.len == 0 or full_version_list.len == 0) return true;
+    var found_browser_brand = false;
+    for (full_version_list) |brand| {
+        if (std.mem.eql(u8, brand.brand, "Chromium") or
+            std.mem.eql(u8, brand.brand, "Google Chrome"))
+        {
+            found_browser_brand = true;
+            if (!std.mem.eql(u8, brand.version, ua_full_version)) return false;
+        }
+    }
+    return found_browser_brand;
+}
+
 pub fn uaPlatformMatchesNavigator(user_agent: []const u8, navigator_platform: []const u8) bool {
     if (std.mem.eql(u8, navigator_platform, "MacIntel")) {
         return std.mem.indexOf(u8, user_agent, "Macintosh") != null;
@@ -131,6 +151,21 @@ test "Spoofing: validate brand/UA consistency" {
         .{ .brand = "Google Chrome", .version = "131" },
     };
     try validateAntidetectConsistency(ua, &brands, "131.0.6778.86");
+}
+
+test "Spoofing: full version list must use one browser build" {
+    const matching = [_]Brand{
+        .{ .brand = "Not;A=Brand", .version = "8.0.0.0" },
+        .{ .brand = "Chromium", .version = "150.0.7871.187" },
+        .{ .brand = "Google Chrome", .version = "150.0.7871.187" },
+    };
+    try testing.expect(fullVersionListMatches("150.0.7871.187", &matching));
+
+    const mixed = [_]Brand{
+        .{ .brand = "Chromium", .version = "150.0.7871.186" },
+        .{ .brand = "Google Chrome", .version = "150.0.7871.187" },
+    };
+    try testing.expect(!fullVersionListMatches("150.0.7871.187", &mixed));
 }
 
 test "Spoofing: MacIntel accepts arm and x86 UA-CH arch" {

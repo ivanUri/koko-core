@@ -62,6 +62,7 @@ pub const Config = struct {
     sctp_remote_port: u16 = 5000,
     /// ICE role (offerer = controlling)
     ice_role: IceAgent.Role = .controlling,
+    allow_non_proxied_udp: bool = true,
 };
 
 // ---------------------------------------------------------------------------
@@ -117,7 +118,14 @@ pub fn create(alloc: Allocator, event_queue: *RtcEventQueue, cmd_queue: *RtcComm
     const pipe_fds = try posix.pipe2(.{ .NONBLOCK = true, .CLOEXEC = true });
 
     // Init ICE agent (opens UDP socket)
-    const ice = try IceAgent.init(alloc, event_queue, ufrag, pwd, config.ice_role);
+    const ice = try IceAgent.init(
+        alloc,
+        event_queue,
+        ufrag,
+        pwd,
+        config.ice_role,
+        config.allow_non_proxied_udp,
+    );
 
     // Init DTLS transport (generates certificate)
     const dtls_role: DtlsTransport.Role = if (config.ice_role == .controlling) .client else .server;

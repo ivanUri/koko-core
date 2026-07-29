@@ -233,7 +233,12 @@ pub const RTCPeerConnectionJs = struct {
     _destroyed: bool = false,
 
     pub fn constructor(config: ?js.Value, frame: *Frame) !*RTCPeerConnectionJs {
-        const native_config = try parseConfig(frame.arena, config);
+        var native_config = try parseConfig(frame.arena, config);
+        // RTCPeerConnection is part of the browser network context. An HTTP
+        // proxy cannot relay its UDP/STUN traffic, therefore direct candidate
+        // gathering must be disabled rather than bypassing that context.
+        native_config.allow_non_proxied_udp =
+            frame._session.browser.http_client.currentProxy() == null;
         const native = try RTCPeerConnectionNative.create(frame.arena, native_config);
 
         const self = try frame._factory.eventTarget(RTCPeerConnectionJs{

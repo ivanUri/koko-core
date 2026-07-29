@@ -1,0 +1,9 @@
+<!doctype html><meta charset="utf-8"><body>pending</body>
+<script>
+window.testing = { assertOk: () => {
+  const native = Function.prototype.toString.call(Array.prototype.push);
+  if (!native.includes('[native code]')) return false;
+  const d = Object.getOwnPropertyDescriptor(Array.prototype, 'push');
+  return !!d && typeof d.value === 'function' && d.writable === true;
+}, printTimeoutState: () => console.log(Function.prototype.toString.call(Array.prototype.push)) };
+</script>

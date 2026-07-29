@@ -90,10 +90,6 @@ pub fn getProductSub(_: *const WorkerNavigator, page: *Page) []const u8 {
     return page.navigatorState().productSub();
 }
 
-pub fn getWebdriver(_: *const WorkerNavigator, _: *Page) bool {
-    return false;
-}
-
 pub fn getDoNotTrack(_: *const WorkerNavigator, _: *Page) ?[]const u8 {
     return null;
 }
@@ -149,7 +145,6 @@ pub const JsApi = struct {
     pub const vendor = bridge.accessor(WorkerNavigator.getVendor, null, .{});
     pub const product = bridge.accessor(WorkerNavigator.getProduct, null, .{});
     pub const productSub = bridge.accessor(WorkerNavigator.getProductSub, null, .{});
-    pub const webdriver = bridge.accessor(WorkerNavigator.getWebdriver, null, .{});
     pub const doNotTrack = bridge.accessor(WorkerNavigator.getDoNotTrack, null, .{});
     pub const userAgentData = bridge.accessor(WorkerNavigator.getUserAgentData, null, .{});
     pub const gpu = bridge.accessor(WorkerNavigator.getGpu, null, .{});
@@ -158,3 +153,10 @@ pub const JsApi = struct {
     pub const permissions = bridge.accessor(WorkerNavigator.getPermissions, null, .{});
     pub const storage = bridge.accessor(WorkerNavigator.getStorage, null, .{});
 };
+
+test "WorkerNavigator does not expose window-only webdriver" {
+    // NavigatorAutomationInformation is included by Navigator, not by
+    // WorkerNavigator. An own `webdriver` member in a worker is therefore an
+    // observable interface-shape mismatch even when its value is false.
+    try std.testing.expect(!@hasDecl(JsApi, "webdriver"));
+}

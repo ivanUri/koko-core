@@ -1,0 +1,68 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+// Browser-level smoke coverage for the APIs used by fingerprint agents.  The
+// fixture intentionally checks observable platform invariants, rather than a
+// particular fingerprint value (which must remain configurable per profile).
+window.testing = {
+  assertOk: () => document.body.id === "fingerprint-surface-pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+(async () => {
+  const checks = [];
+  const fail = (name, error) => { console.error("fingerprint surface", name, error); return false; };
+  try {
+    checks.push(typeof navigator.userAgent === "string" && navigator.userAgent.length > 0);
+    checks.push(Array.isArray(navigator.languages) && navigator.languages.length > 0);
+    checks.push(typeof screen.width === "number" && typeof screen.colorDepth === "number");
+    checks.push(typeof Intl.DateTimeFormat === "function" &&
+      typeof new Intl.DateTimeFormat().resolvedOptions().timeZone === "string");
+    // WebDriver is a WPT testdriver helper, not a web-platform constructor.
+    checks.push(typeof WebDriver === "undefined" && !("webdriver" in window));
+
+    const key = "__velora_fingerprint_surface__";
+    localStorage.setItem(key, "ok");
+    checks.push(localStorage.getItem(key) === "ok");
+    localStorage.removeItem(key);
+
+    const fn = Function.prototype.toString;
+    checks.push(typeof fn === "function" && /native code/.test(fn.call(fn)));
+    const desc = Object.getOwnPropertyDescriptor(Function.prototype, "toString");
+    checks.push(!!desc && typeof desc.value === "function" && desc.configurable === false);
+
+    if (typeof RTCPeerConnection === "function") {
+      const pc = new RTCPeerConnection();
+      checks.push(typeof pc.createDataChannel === "function" && typeof pc.close === "function");
+      pc.close();
+    }
+
+    if (typeof indexedDB !== "undefined") {
+      await new Promise((resolve, reject) => {
+        const req = indexedDB.open("velora-fingerprint-surface", 2);
+        req.onupgradeneeded = () => {
+          if (!req.result.objectStoreNames.contains("kv")) req.result.createObjectStore("kv");
+        };
+        req.onerror = () => reject(req.error || new Error("indexedDB open failed"));
+        req.onsuccess = () => {
+          const db = req.result;
+          const tx = db.transaction("kv", "readwrite");
+          tx.objectStore("kv").put("ok", "key");
+          tx.oncomplete = () => { db.close(); resolve(); };
+          tx.onerror = () => reject(tx.error || new Error("indexedDB transaction failed"));
+        };
+      });
+      checks.push(true);
+    }
+  } catch (e) { checks.push(fail("exception", e)); }
+
+  if (checks.every(Boolean)) {
+    document.body.id = "fingerprint-surface-pass";
+    document.body.textContent = "fingerprint-surface-pass";
+  } else {
+    document.body.id = "fingerprint-surface-fail";
+    document.body.textContent = "fingerprint-surface-fail";
+  }
+})();
+</script>

@@ -1,0 +1,10 @@
+<!doctype html><meta charset="utf-8"><body>pending</body>
+<script>
+let done = false, ok = false;
+if (navigator.permissions && typeof navigator.permissions.query === 'function') {
+  navigator.permissions.query({name: 'notifications'}).then(p => {
+    ok = p && ['granted','denied','prompt'].includes(p.state); done = true;
+  }, () => { done = true; });
+} else { done = true; ok = true; }
+window.testing = { assertOk: () => done && ok, printTimeoutState: () => console.log('permissions', done, ok) };
+</script>

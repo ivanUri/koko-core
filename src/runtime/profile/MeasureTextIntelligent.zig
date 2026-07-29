@@ -20,15 +20,14 @@ pub fn lookup(frame: *Frame, font: []const u8, text: []const u8) ?Entry {
     const table = profile.measure_text_baseline;
     if (table.len == 0) return null;
 
-    const norm_font = normalizeFont(font);
     for (table) |entry| {
         if (!std.mem.eql(u8, entry.text, text)) continue;
         if (std.mem.eql(u8, entry.family, "creep-css-font")) {
-            if (std.mem.startsWith(u8, norm_font, "10px")) return entry;
+            if (normalizedStartsWith(font, "10px")) return entry;
             continue;
         }
         if (entry.font) |stored| {
-            if (std.mem.eql(u8, normalizeFont(stored), norm_font)) return entry;
+            if (normalizedEql(stored, font)) return entry;
             continue;
         }
         const family = extractPrimaryFamily(font) orelse continue;
@@ -38,29 +37,52 @@ pub fn lookup(frame: *Frame, font: []const u8, text: []const u8) ?Entry {
     return null;
 }
 
-fn normalizeFont(font: []const u8) []const u8 {
-    // Browsers collapse font shorthand whitespace; match loosely for CreepJS stack.
-    var out: [4096]u8 = undefined;
-    var len: usize = 0;
-    var prev_space = true;
-    for (std.mem.trim(u8, font, " \t\r\n")) |c| {
-        const space = c == ' ' or c == '\t' or c == '\r' or c == '\n';
-        if (space) {
-            if (!prev_space and len < out.len) {
-                out[len] = ' ';
-                len += 1;
-            }
-            prev_space = true;
-            continue;
+const NormalizedFontIterator = struct {
+    input: []const u8,
+    index: usize = 0,
+    emitted: bool = false,
+
+    fn next(self: *NormalizedFontIterator) ?u8 {
+        const whitespace_start = self.index;
+        while (self.index < self.input.len and isShorthandWhitespace(self.input[self.index])) {
+            self.index += 1;
         }
-        if (len < out.len) {
-            out[len] = c;
-            len += 1;
-        }
-        prev_space = false;
+        if (self.index == self.input.len) return null;
+
+        // Do not consume the first byte after a whitespace run. Returning the
+        // separator first lets the next call emit that byte without buffering
+        // or allocating normalized text.
+        if (self.emitted and self.index != whitespace_start) return ' ';
+
+        const byte = self.input[self.index];
+        self.index += 1;
+        self.emitted = true;
+        return byte;
     }
-    if (len > 0 and out[len - 1] == ' ') len -= 1;
-    return out[0..len];
+};
+
+fn isShorthandWhitespace(byte: u8) bool {
+    return byte == ' ' or byte == '\t' or byte == '\r' or byte == '\n';
+}
+
+fn normalizedEql(a: []const u8, b: []const u8) bool {
+    var a_it = NormalizedFontIterator{ .input = a };
+    var b_it = NormalizedFontIterator{ .input = b };
+    while (true) {
+        const a_byte = a_it.next();
+        const b_byte = b_it.next();
+        if (a_byte != b_byte) return false;
+        if (a_byte == null) return true;
+    }
+}
+
+fn normalizedStartsWith(value: []const u8, prefix: []const u8) bool {
+    var value_it = NormalizedFontIterator{ .input = value };
+    var prefix_it = NormalizedFontIterator{ .input = prefix };
+    while (prefix_it.next()) |prefix_byte| {
+        if (value_it.next() != prefix_byte) return false;
+    }
+    return true;
 }
 
 fn extractPrimaryFamily(font: []const u8) ?[]const u8 {
@@ -95,4 +117,32 @@ fn trimFamily(font: []const u8) ?[]const u8 {
     }
     if (family.len == 0) return null;
     return family;
+}
+
+test "normalized font comparison collapses shorthand whitespace" {
+    try std.testing.expect(normalizedEql(
+        " \titalic  10px/12px\n \"Inter\", sans-serif\r\n",
+        "italic 10px/12px \"Inter\", sans-serif",
+    ));
+    try std.testing.expect(!normalizedEql("10px Inter", "11px Inter"));
+    try std.testing.expect(normalizedEql(" \t\r\n", ""));
+}
+
+test "normalized font prefix matching handles surrounding whitespace" {
+    try std.testing.expect(normalizedStartsWith(" \n10px   \"Arial\"", "10px"));
+    try std.testing.expect(normalizedStartsWith("10px\t \"Arial\"", " 10px "));
+    try std.testing.expect(!normalizedStartsWith("110px Arial", "10px"));
+}
+
+test "normalized font comparison has no fixed-size truncation" {
+    const allocator = std.testing.allocator;
+    const long_a = try allocator.alloc(u8, 8193);
+    defer allocator.free(long_a);
+    @memset(long_a, 'a');
+    const long_b = try allocator.dupe(u8, long_a);
+    defer allocator.free(long_b);
+    long_a[8192] = 'x';
+    long_b[8192] = 'y';
+
+    try std.testing.expect(!normalizedEql(long_a, long_b));
 }

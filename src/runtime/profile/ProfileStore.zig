@@ -225,6 +225,7 @@ const JsonUserAgentData = struct {
     architecture: []const u8,
     bitness: []const u8,
     uaFullVersion: []const u8 = "1.0.0.0",
+    fullVersionList: []const JsonBrand = &.{},
     mobile: bool = false,
     prefersColorScheme: []const u8 = "light",
 };
@@ -514,6 +515,10 @@ fn parseJson(bytes: []const u8, asset_root: []const u8) !LoadedProfile {
             @as([]const Spoofing.Brand, @ptrCast(doc.userAgentData.brands)),
             doc.userAgentData.uaFullVersion,
         );
+        if (!Spoofing.fullVersionListMatches(
+            doc.userAgentData.uaFullVersion,
+            @as([]const Spoofing.Brand, @ptrCast(doc.userAgentData.fullVersionList)),
+        )) return error.InvalidProfile;
         if (!Spoofing.uaPlatformMatchesNavigator(doc.navigator.userAgent, doc.navigator.platform)) {
             return error.InvalidProfile;
         }

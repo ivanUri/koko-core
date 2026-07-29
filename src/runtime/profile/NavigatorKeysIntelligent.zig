@@ -20,9 +20,8 @@ pub fn installOnDocument(frame: *Frame, context: *js.Context) void {
         return;
     };
 
-    // Native FunctionTemplate Object.keys (iframe clean toString safe).
-    const NativeBuiltinHooks = @import("NativeBuiltinHooks.zig");
-    NativeBuiltinHooks.installObjectKeys(frame, context);
+    // Keep the realm's intrinsic Object.keys. Replacing it only in the main
+    // realm is a detectable cross-realm mutation and is not browser behavior.
 }
 
 fn keysToJson(allocator: std.mem.Allocator, keys: []const []const u8) ![]const u8 {

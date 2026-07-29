@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en" class="dark" data-theme="system"><head><style data-velora-cssom-snapshot=""></style><base href="https://browser-compat.turnstile.workers.dev/"></base>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="app-version" content="1.3.4">
+    <meta name="build-time" content="2026-06-12T16:02:14.499Z">
+    <meta name="robots" content="noindex, nofollow">
+    <meta name="description" content="Diagnose and fix Turnstile security check issues">
+    <meta name="color-scheme" content="light dark">
+    <title>Turnstile Troubleshooter</title>
+
+    
+
+    <link rel="preconnect" href="https://challenges.cloudflare.com">
+    <link rel="dns-prefetch" href="https://challenges.cloudflare.com">
+
+    <style nonce="5a99a84a-1fb1-4585-9125-f8f7d681e76a">/*! tailwindcss v4.2.2 | MIT License | https://tailwindcss.com */
+@layer properties{@supports (((-webkit-hyphens:none)) and (not (margin-trim:inline))) or ((-moz-orient:inline) and (not (color:rgb(from red r g b)))){*,:before,:after,::backdrop{--tw-rotate-x:initial;--tw-rotate-y:initial;--tw-rotate-z:initial;--tw-skew-x:initial;--tw-skew-y:initial;--tw-space-y-reverse:0;--tw-border-style:solid;--tw-leading:initial;--tw-font-weight:initial;--tw-shadow:0 0 #0000;--tw-shadow-color:initial;--tw-shadow-alpha:100%;--tw-inset-shadow:0 0 #0000;--tw-inset-shadow-color:initial;--tw-inset-shadow-alpha:100%;--tw-ring-color:initial;--tw-ring-shadow:0 0 #0000;--tw-inset-ring-color:initial;--tw-inset-ring-shadow:0 0 #0000;--tw-ring-inset:initial;--tw-ring-offset-width:0px;--tw-ring-offset-color:#fff;--tw-ring-offset-shadow:0 0 #0000;--tw-duration:initial}}}@layer theme{:root,:host{--font-sans:-apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, "Helvetica Neue", Arial, sans-serif;--font-mono:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;--color-red-50:oklch(97.1% .013 17.38);--color-red-200:oklch(88.5% .062 18.334);--color-red-400:oklch(70.4% .191 22.216);--color-red-500:oklch(63.7% .237 25.331);--color-red-600:oklch(57.7% .245 27.325);--color-red-700:oklch(50.5% .213 27.518);--color-red-800:oklch(44.4% .177 26.899);--color-red-900:oklch(39.6% .141 25.723);--color-yellow-50:oklch(98.7% .026 102.212);--color-yellow-200:oklch(94.5% .129 101.54);--color-yellow-400:oklch(85.2% .199 91.936);--color-yellow-500:oklch(79.5% .184 86.047);--color-yellow-600:oklch(68.1% .162 75.834);--color-yellow-700:oklch(55.4% .135 66.442);--color-yellow-800:oklch(47.6% .114 61.907);--color-green-400:oklch(79.2% .209 151.711);--color-green-500:oklch(72.3% .219 149.579);--color-green-600:oklch(62.7% .194 149.214);--color-green-700:oklch(52.7% .154 150.069);--color-green-800:oklch(44.8% .119 151.328);--color-blue-50:oklch(97% .014 254.604);--color-blue-300:oklch(80.9% .105 251.813);--color-blue-600:oklch(54.6% .245 262.881);--color-blue-800:oklch(42.4% .199 265.638);--color-blue-900:oklch(37.9% .146 265.522);--color-gray-50:oklch(98.5% .002 247.839);--color-gray-100:oklch(96.7% .003 264.542);--color-gray-200:oklch(92.8% .006 264.531);--color-gray-300:oklch(87.2% .01 258.338);--color-gray-400:oklch(70.7% .022 261.325);--color-gray-500:oklch(55.1% .027 264.364);--color-gray-600:oklch(44.6% .03 256.802);--color-gray-700:oklch(37.3% .034 259.733);--color-gray-800:oklch(27.8% .033 256.848);--color-gray-900:oklch(21% .034 264.665);--color-white:#fff;--spacing:.25rem;--container-4xl:56rem;--text-xs:.75rem;--text-xs--line-height:calc(1 / .75);--text-sm:.875rem;--text-sm--line-height:calc(1.25 / .875);--text-base:1rem;--text-base--line-height:calc(1.5 / 1);--text-lg:1.125rem;--text-lg--line-height:calc(1.75 / 1.125);--text-xl:1.25rem;--text-xl--line-height:calc(1.75 / 1.25);--text-3xl:1.875rem;--text-3xl--line-height:calc(2.25 / 1.875);--font-weight-medium:500;--font-weight-semibold:600;--font-weight-bold:700;--leading-tight:1.25;--radius-md:.375rem;--radius-lg:.5rem;--animate-spin:spin 1s linear infinite;--default-transition-duration:.15s;--default-transition-timing-function:cubic-bezier(.4, 0, .2, 1);--default-font-family:var(--font-sans);--default-mono-font-family:var(--font-mono);--color-cf-orange:#f6821f;--color-cf-orange-bright:#ee730a}}@layer base{*,:after,:before,::backdrop{box-sizing:border-box;border:0 solid;margin:0;padding:0}::file-selector-button{box-sizing:border-box;border:0 solid;margin:0;padding:0}html,:host{-webkit-text-size-adjust:100%;tab-size:4;line-height:1.5;font-family:var(--default-font-family,ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji");font-feature-settings:var(--default-font-feature-settings,normal);font-variation-settings:var(--default-font-variation-settings,normal);-webkit-tap-highlight-color:transparent}hr{height:0;color:inherit;border-top-width:1px}abbr:where([title]){-webkit-text-decoration:underline dotted;text-decoration:underline dotted}h1,h2,h3,h4,h5,h6{font-size:inherit;font-weight:inherit}a{color:inherit;-webkit-text-decoration:inherit;-webkit-text-decoration:inherit;-webkit-text-decoration:inherit;text-decoration:inherit}b,strong{font-weight:bolder}code,kbd,samp,pre{font-family:var(--default-mono-font-family,ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace);font-feature-settings:var(--default-mono-font-feature-settings,normal);font-variation-settings:var(--default-mono-font-variation-settings,normal);font-size:1em}small{font-size:80%}sub,sup{vertical-align:baseline;font-size:75%;line-height:0;position:relative}sub{bottom:-.25em}sup{top:-.5em}table{text-indent:0;border-color:inherit;border-collapse:collapse}:-moz-focusring{outline:auto}progress{vertical-align:baseline}summary{display:list-item}ol,ul,menu{list-style:none}img,svg,video,canvas,audio,iframe,embed,object{vertical-align:middle;display:block}img,video{max-width:100%;height:auto}button,input,select,optgroup,textarea{font:inherit;font-feature-settings:inherit;font-variation-settings:inherit;letter-spacing:inherit;color:inherit;opacity:1;background-color:#0000;border-radius:0}::file-selector-button{font:inherit;font-feature-settings:inherit;font-variation-settings:inherit;letter-spacing:inherit;color:inherit;opacity:1;background-color:#0000;border-radius:0}:where(select:is([multiple],[size])) optgroup{font-weight:bolder}:where(select:is([multiple],[size])) optgroup option{padding-inline-start:20px}::file-selector-button{margin-inline-end:4px}::placeholder{opacity:1}@supports (not ((-webkit-appearance:-apple-pay-button))) or (contain-intrinsic-size:1px){::placeholder{color:currentColor}@supports (color:color-mix(in lab, red, red)){::placeholder{color:color-mix(in oklab, currentcolor 50%, transparent)}}}textarea{resize:vertical}::-webkit-search-decoration{-webkit-appearance:none}::-webkit-date-and-time-value{min-height:1lh;text-align:inherit}::-webkit-datetime-edit{display:inline-flex}::-webkit-datetime-edit-fields-wrapper{padding:0}::-webkit-datetime-edit{padding-block:0}::-webkit-datetime-edit-year-field{padding-block:0}::-webkit-datetime-edit-month-field{padding-block:0}::-webkit-datetime-edit-day-field{padding-block:0}::-webkit-datetime-edit-hour-field{padding-block:0}::-webkit-datetime-edit-minute-field{padding-block:0}::-webkit-datetime-edit-second-field{padding-block:0}::-webkit-datetime-edit-millisecond-field{padding-block:0}::-webkit-datetime-edit-meridiem-field{padding-block:0}::-webkit-calendar-picker-indicator{line-height:1}:-moz-ui-invalid{box-shadow:none}button,input:where([type=button],[type=reset],[type=submit]){appearance:button}::file-selector-button{appearance:button}::-webkit-inner-spin-button{height:auto}::-webkit-outer-spin-button{height:auto}[hidden]:where(:not([hidden=until-found])){display:none!important}}@layer components;@layer utilities{.pointer-events-none{pointer-events:none}.sr-only{clip-path:inset(50%);white-space:nowrap;border-width:0;width:1px;height:1px;margin:-1px;padding:0;position:absolute;overflow:hidden}.fixed{position:fixed}.start{inset-inline-start:var(--spacing)}.bottom-4{bottom:calc(var(--spacing) * 4)}.left-1\/2{left:50%}.z-50{z-index:50}.mx-auto{margin-inline:auto}.my-3{margin-block:calc(var(--spacing) * 3)}.mt-1{margin-top:calc(var(--spacing) * 1)}.mt-1\.5{margin-top:calc(var(--spacing) * 1.5)}.mt-2{margin-top:calc(var(--spacing) * 2)}.mt-3{margin-top:calc(var(--spacing) * 3)}.mt-4{margin-top:calc(var(--spacing) * 4)}.mt-6{margin-top:calc(var(--spacing) * 6)}.mb-0\.5{margin-bottom:calc(var(--spacing) * .5)}.mb-1{margin-bottom:calc(var(--spacing) * 1)}.mb-1\.5{margin-bottom:calc(var(--spacing) * 1.5)}.mb-2{margin-bottom:calc(var(--spacing) * 2)}.mb-3{margin-bottom:calc(var(--spacing) * 3)}.mb-4{margin-bottom:calc(var(--spacing) * 4)}.ml-5{margin-left:calc(var(--spacing) * 5)}.block{display:block}.flex{display:flex}.hidden{display:none}.inline{display:inline}.inline-block{display:inline-block}.h-2{height:calc(var(--spacing) * 2)}.h-4{height:calc(var(--spacing) * 4)}.h-5{height:calc(var(--spacing) * 5)}.h-6{height:calc(var(--spacing) * 6)}.h-8{height:calc(var(--spacing) * 8)}.h-full{height:100%}.max-h-64{max-height:calc(var(--spacing) * 64)}.min-h-\[44px\]{min-height:44px}.min-h-\[48px\]{min-height:48px}.min-h-\[72px\]{min-height:72px}.min-h-screen{min-height:100vh}.w-2{width:calc(var(--spacing) * 2)}.w-4{width:calc(var(--spacing) * 4)}.w-5{width:calc(var(--spacing) * 5)}.w-6{width:calc(var(--spacing) * 6)}.w-8{width:calc(var(--spacing) * 8)}.w-full{width:100%}.max-w-4xl{max-width:var(--container-4xl)}.min-w-0{min-width:calc(var(--spacing) * 0)}.min-w-\[44px\]{min-width:44px}.flex-1{flex:1}.flex-shrink-0{flex-shrink:0}.transform{transform:var(--tw-rotate-x,) var(--tw-rotate-y,) var(--tw-rotate-z,) var(--tw-skew-x,) var(--tw-skew-y,)}.animate-spin{animation:var(--animate-spin)}.cursor-pointer{cursor:pointer}.list-decimal{list-style-type:decimal}.list-disc{list-style-type:disc}.flex-col{flex-direction:column}.items-center{align-items:center}.items-start{align-items:flex-start}.justify-between{justify-content:space-between}.justify-center{justify-content:center}.gap-0\.5{gap:calc(var(--spacing) * .5)}.gap-1{gap:calc(var(--spacing) * 1)}.gap-2{gap:calc(var(--spacing) * 2)}.gap-3{gap:calc(var(--spacing) * 3)}.gap-4{gap:calc(var(--spacing) * 4)}:where(.space-y-1&gt;:not(:last-child)){--tw-space-y-reverse:0;margin-block-start:calc(calc(var(--spacing) * 1) * var(--tw-space-y-reverse));margin-block-end:calc(calc(var(--spacing) * 1) * calc(1 - var(--tw-space-y-reverse)))}:where(.space-y-2&gt;:not(:last-child)){--tw-space-y-reverse:0;margin-block-start:calc(calc(var(--spacing) * 2) * var(--tw-space-y-reverse));margin-block-end:calc(calc(var(--spacing) * 2) * calc(1 - var(--tw-space-y-reverse)))}:where(.space-y-3&gt;:not(:last-child)){--tw-space-y-reverse:0;margin-block-start:calc(calc(var(--spacing) * 3) * var(--tw-space-y-reverse));margin-block-end:calc(calc(var(--spacing) * 3) * calc(1 - var(--tw-space-y-reverse)))}:where(.space-y-4&gt;:not(:last-child)){--tw-space-y-reverse:0;margin-block-start:calc(calc(var(--spacing) * 4) * var(--tw-space-y-reverse));margin-block-end:calc(calc(var(--spacing) * 4) * calc(1 - var(--tw-space-y-reverse)))}.truncate{text-overflow:ellipsis;white-space:nowrap;overflow:hidden}.overflow-hidden{overflow:hidden}.overflow-x-auto{overflow-x:auto}.overflow-y-auto{overflow-y:auto}.rounded{border-radius:.25rem}.rounded-full{border-radius:3.40282e38px}.rounded-lg{border-radius:var(--radius-lg)}.rounded-md{border-radius:var(--radius-md)}.border{border-style:var(--tw-border-style);border-width:1px}.border-t{border-top-style:var(--tw-border-style);border-top-width:1px}.border-t-2{border-top-style:var(--tw-border-style);border-top-width:2px}.border-b-2{border-bottom-style:var(--tw-border-style);border-bottom-width:2px}.border-l-4{border-left-style:var(--tw-border-style);border-left-width:4px}.border-blue-300{border-color:var(--color-blue-300)}.border-cf-orange{border-color:var(--color-cf-orange)}.border-gray-200{border-color:var(--color-gray-200)}.border-red-200{border-color:var(--color-red-200)}.border-yellow-200{border-color:var(--color-yellow-200)}.border-t-cf-orange{border-top-color:var(--color-cf-orange)}.border-l-green-500{border-left-color:var(--color-green-500)}.border-l-red-500{border-left-color:var(--color-red-500)}.bg-blue-50{background-color:var(--color-blue-50)}.bg-cf-orange{background-color:var(--color-cf-orange)}.bg-gray-50{background-color:var(--color-gray-50)}.bg-gray-100{background-color:var(--color-gray-100)}.bg-gray-200{background-color:var(--color-gray-200)}.bg-gray-700{background-color:var(--color-gray-700)}.bg-gray-900{background-color:var(--color-gray-900)}.bg-green-500{background-color:var(--color-green-500)}.bg-red-50{background-color:var(--color-red-50)}.bg-red-500{background-color:var(--color-red-500)}.bg-white{background-color:var(--color-white)}.bg-yellow-50{background-color:var(--color-yellow-50)}.bg-yellow-500{background-color:var(--color-yellow-500)}.p-0\.5{padding:calc(var(--spacing) * .5)}.p-1{padding:calc(var(--spacing) * 1)}.p-2{padding:calc(var(--spacing) * 2)}.p-3{padding:calc(var(--spacing) * 3)}.p-4{padding:calc(var(--spacing) * 4)}.px-1{padding-inline:calc(var(--spacing) * 1)}.px-4{padding-inline:calc(var(--spacing) * 4)}.px-6{padding-inline:calc(var(--spacing) * 6)}.py-1{padding-block:calc(var(--spacing) * 1)}.py-3{padding-block:calc(var(--spacing) * 3)}.pt-6{padding-top:calc(var(--spacing) * 6)}.pb-4{padding-bottom:calc(var(--spacing) * 4)}.text-center{text-align:center}.text-left{text-align:left}.font-mono{font-family:var(--font-mono)}.text-base{font-size:var(--text-base);line-height:var(--tw-leading,var(--text-base--line-height))}.text-lg{font-size:var(--text-lg);line-height:var(--tw-leading,var(--text-lg--line-height))}.text-sm{font-size:var(--text-sm);line-height:var(--tw-leading,var(--text-sm--line-height))}.text-xl{font-size:var(--text-xl);line-height:var(--tw-leading,var(--text-xl--line-height))}.text-xs{font-size:var(--text-xs);line-height:var(--tw-leading,var(--text-xs--line-height))}.text-\[11px\]{font-size:11px}.leading-tight{--tw-leading:var(--leading-tight);line-height:var(--leading-tight)}.font-bold{--tw-font-weight:var(--font-weight-bold);font-weight:var(--font-weight-bold)}.font-medium{--tw-font-weight:var(--font-weight-medium);font-weight:var(--font-weight-medium)}.font-semibold{--tw-font-weight:var(--font-weight-semibold);font-weight:var(--font-weight-semibold)}.break-all{word-break:break-all}.text-blue-600{color:var(--color-blue-600)}.text-blue-800{color:var(--color-blue-800)}.text-blue-900{color:var(--color-blue-900)}.text-cf-orange{color:var(--color-cf-orange)}.text-gray-400{color:var(--color-gray-400)}.text-gray-500{color:var(--color-gray-500)}.text-gray-600{color:var(--color-gray-600)}.text-gray-700{color:var(--color-gray-700)}.text-gray-900{color:var(--color-gray-900)}.text-green-400{color:var(--color-green-400)}.text-green-500{color:var(--color-green-500)}.text-green-600{color:var(--color-green-600)}.text-green-700{color:var(--color-green-700)}.text-green-800{color:var(--color-green-800)}.text-red-400{color:var(--color-red-400)}.text-red-500{color:var(--color-red-500)}.text-red-600{color:var(--color-red-600)}.text-red-700{color:var(--color-red-700)}.text-red-800{color:var(--color-red-800)}.text-white{color:var(--color-white)}.text-yellow-400{color:var(--color-yellow-400)}.text-yellow-600{color:var(--color-yellow-600)}.text-yellow-700{color:var(--color-yellow-700)}.text-yellow-800{color:var(--color-yellow-800)}.underline{text-decoration-line:underline}.antialiased{-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}.opacity-0{opacity:0}.opacity-100{opacity:1}.shadow-lg{--tw-shadow:0 10px 15px -3px var(--tw-shadow-color,#0000001a), 0 4px 6px -4px var(--tw-shadow-color,#0000001a);box-shadow:var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow)}.transition{transition-property:color,background-color,border-color,outline-color,text-decoration-color,fill,stroke,--tw-gradient-from,--tw-gradient-via,--tw-gradient-to,opacity,box-shadow,transform,translate,scale,rotate,filter,-webkit-backdrop-filter,backdrop-filter,display,content-visibility,overlay,pointer-events;transition-timing-function:var(--tw-ease,var(--default-transition-timing-function));transition-duration:var(--tw-duration,var(--default-transition-duration))}.transition-all{transition-property:all;transition-timing-function:var(--tw-ease,var(--default-transition-timing-function));transition-duration:var(--tw-duration,var(--default-transition-duration))}.transition-colors{transition-property:color,background-color,border-color,outline-color,text-decoration-color,fill,stroke,--tw-gradient-from,--tw-gradient-via,--tw-gradient-to;transition-timing-function:var(--tw-ease,var(--default-transition-timing-function));transition-duration:var(--tw-duration,var(--default-transition-duration))}.transition-transform{transition-property:transform,translate,scale,rotate;transition-timing-function:var(--tw-ease,var(--default-transition-timing-function));transition-duration:var(--tw-duration,var(--default-transition-duration))}.duration-200{--tw-duration:.2s;transition-duration:.2s}.duration-300{--tw-duration:.3s;transition-duration:.3s}@media (hover:hover){.hover\:bg-cf-orange-bright:hover{background-color:var(--color-cf-orange-bright)}.hover\:bg-gray-100:hover{background-color:var(--color-gray-100)}.hover\:bg-gray-200:hover{background-color:var(--color-gray-200)}.hover\:bg-gray-800:hover{background-color:var(--color-gray-800)}.hover\:text-gray-900:hover{color:var(--color-gray-900)}}.focus\:not-sr-only:focus{clip-path:none;white-space:normal;width:auto;height:auto;margin:0;padding:0;position:static;overflow:visible}.focus\:fixed:focus{position:fixed}.focus\:top-2:focus{top:calc(var(--spacing) * 2)}.focus\:left-2:focus{left:calc(var(--spacing) * 2)}.focus\:z-50:focus{z-index:50}.focus\:rounded-lg:focus{border-radius:var(--radius-lg)}.focus\:bg-cf-orange:focus{background-color:var(--color-cf-orange)}.focus\:px-4:focus{padding-inline:calc(var(--spacing) * 4)}.focus\:py-2:focus{padding-block:calc(var(--spacing) * 2)}.focus\:text-sm:focus{font-size:var(--text-sm);line-height:var(--tw-leading,var(--text-sm--line-height))}.focus\:font-medium:focus{--tw-font-weight:var(--font-weight-medium);font-weight:var(--font-weight-medium)}.focus\:text-white:focus{color:var(--color-white)}.focus\:shadow-lg:focus{--tw-shadow:0 10px 15px -3px var(--tw-shadow-color,#0000001a), 0 4px 6px -4px var(--tw-shadow-color,#0000001a);box-shadow:var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow)}@media (min-width:40rem){.sm\:my-6{margin-block:calc(var(--spacing) * 6)}.sm\:mb-3{margin-bottom:calc(var(--spacing) * 3)}.sm\:mb-4{margin-bottom:calc(var(--spacing) * 4)}.sm\:mb-6{margin-bottom:calc(var(--spacing) * 6)}.sm\:block{display:block}.sm\:hidden{display:none}.sm\:h-2\.5{height:calc(var(--spacing) * 2.5)}.sm\:h-8{height:calc(var(--spacing) * 8)}.sm\:min-h-\[80px\]{min-height:80px}.sm\:w-8{width:calc(var(--spacing) * 8)}.sm\:w-auto{width:auto}.sm\:flex-row{flex-direction:row}.sm\:items-start{align-items:flex-start}.sm\:justify-between{justify-content:space-between}.sm\:justify-start{justify-content:flex-start}.sm\:gap-4{gap:calc(var(--spacing) * 4)}.sm\:p-1{padding:calc(var(--spacing) * 1)}.sm\:p-3{padding:calc(var(--spacing) * 3)}.sm\:p-4{padding:calc(var(--spacing) * 4)}.sm\:p-6{padding:calc(var(--spacing) * 6)}.sm\:py-2\.5{padding-block:calc(var(--spacing) * 2.5)}.sm\:text-left{text-align:left}.sm\:text-3xl{font-size:var(--text-3xl);line-height:var(--tw-leading,var(--text-3xl--line-height))}.sm\:text-base{font-size:var(--text-base);line-height:var(--tw-leading,var(--text-base--line-height))}.sm\:text-lg{font-size:var(--text-lg);line-height:var(--tw-leading,var(--text-lg--line-height))}.sm\:text-sm{font-size:var(--text-sm);line-height:var(--tw-leading,var(--text-sm--line-height))}.sm\:text-xl{font-size:var(--text-xl);line-height:var(--tw-leading,var(--text-xl--line-height))}.sm\:text-xs{font-size:var(--text-xs);line-height:var(--tw-leading,var(--text-xs--line-height))}}@media (min-width:64rem){.lg\:p-6{padding:calc(var(--spacing) * 6)}.lg\:p-8{padding:calc(var(--spacing) * 8)}}.dark\:border-gray-700:where(.dark,.dark *){border-color:var(--color-gray-700)}.dark\:border-red-700:where(.dark,.dark *){border-color:var(--color-red-700)}.dark\:bg-gray-600:where(.dark,.dark *){background-color:var(--color-gray-600)}.dark\:bg-gray-700:where(.dark,.dark *){background-color:var(--color-gray-700)}.dark\:bg-gray-800:where(.dark,.dark *){background-color:var(--color-gray-800)}.dark\:bg-gray-900:where(.dark,.dark *){background-color:var(--color-gray-900)}.dark\:bg-red-900\/20:where(.dark,.dark *){background-color:#82181a33}@supports (color:color-mix(in lab, red, red)){.dark\:bg-red-900\/20:where(.dark,.dark *){background-color:color-mix(in oklab, var(--color-red-900) 20%, transparent)}}.dark\:text-gray-100:where(.dark,.dark *){color:var(--color-gray-100)}.dark\:text-gray-300:where(.dark,.dark *){color:var(--color-gray-300)}.dark\:text-gray-400:where(.dark,.dark *){color:var(--color-gray-400)}.dark\:text-gray-500:where(.dark,.dark *){color:var(--color-gray-500)}.dark\:text-green-400:where(.dark,.dark *){color:var(--color-green-400)}.dark\:text-red-400:where(.dark,.dark *){color:var(--color-red-400)}.dark\:text-yellow-400:where(.dark,.dark *){color:var(--color-yellow-400)}@media (hover:hover){.dark\:hover\:bg-gray-500:where(.dark,.dark *):hover{background-color:var(--color-gray-500)}.dark\:hover\:bg-gray-700:where(.dark,.dark *):hover{background-color:var(--color-gray-700)}.dark\:hover\:text-gray-100:where(.dark,.dark *):hover{color:var(--color-gray-100)}}}.fade-in{animation:.3s ease-out fadeIn}@keyframes fadeIn{0%{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}.checkmark{animation:.4s ease-out checkmark}@keyframes checkmark{0%{transform:scale(0)}60%{transform:scale(1.15)}to{transform:scale(1)}}details summary{cursor:pointer;-webkit-user-select:none;user-select:none}details summary::-webkit-details-marker{display:none}details summary::marker{display:none}details[open] summary .chevron-icon{transform:rotate(180deg)}:focus-visible,button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid var(--color-cf-orange);outline-offset:2px}.touch-target{min-width:48px;min-height:48px}.progress-bar-animated{transform-origin:0;transition:transform .3s ease-out}@media (prefers-reduced-motion:reduce){*,:before,:after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}}.toast-base{transform:translate(-50%)}.toast-enter{opacity:0;transform:translate(-50%)translateY(1rem)}.toast-visible{opacity:1;transform:translate(-50%)translateY(0)}.theme-btn-active{color:#1d1d1d;background-color:#fff;box-shadow:0 1px 2px #00000014}.dark .theme-btn-active{color:#fff;background-color:#374151}@property --tw-rotate-x{syntax:"*";inherits:false}@property --tw-rotate-y{syntax:"*";inherits:false}@property --tw-rotate-z{syntax:"*";inherits:false}@property --tw-skew-x{syntax:"*";inherits:false}@property --tw-skew-y{syntax:"*";inherits:false}@property --tw-space-y-reverse{syntax:"*";inherits:false;initial-value:0}@property --tw-border-style{syntax:"*";inherits:false;initial-value:solid}@property --tw-leading{syntax:"*";inherits:false}@property --tw-font-weight{syntax:"*";inherits:false}@property --tw-shadow{syntax:"*";inherits:false;initial-value:0 0 #0000}@property --tw-shadow-color{syntax:"*";inherits:false}@property --tw-shadow-alpha{syntax:"&lt;percentage&gt;";inherits:false;initial-value:100%}@property --tw-inset-shadow{syntax:"*";inherits:false;initial-value:0 0 #0000}@property --tw-inset-shadow-color{syntax:"*";inherits:false}@property --tw-inset-shadow-alpha{syntax:"&lt;percentage&gt;";inherits:false;initial-value:100%}@property --tw-ring-color{syntax:"*";inherits:false}@property --tw-ring-shadow{syntax:"*";inherits:false;initial-value:0 0 #0000}@property --tw-inset-ring-color{syntax:"*";inherits:false}@property --tw-inset-ring-shadow{syntax:"*";inherits:false;initial-value:0 0 #0000}@property --tw-ring-inset{syntax:"*";inherits:false}@property --tw-ring-offset-width{syntax:"&lt;length&gt;";inherits:false;initial-value:0}@property --tw-ring-offset-color{syntax:"*";inherits:false;initial-value:#fff}@property --tw-ring-offset-shadow{syntax:"*";inherits:false;initial-value:0 0 #0000}@property --tw-duration{syntax:"*";inherits:false}@keyframes spin{to{transform:rotate(360deg)}}</style>
+
+    
+    
+</head>
+
+<body class="bg-gray-50 dark:bg-gray-900 min-h-screen p-2 sm:p-4 lg:p-6 antialiased">
+    
+<noscript>
+    <style>
+        .noscript-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%);
+            z-index: 9999;
+            overflow-y: auto;
+            padding: 16px;
+        }
+        .noscript-container {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            max-width: 600px;
+            margin: 24px auto;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            overflow: hidden;
+        }
+        .noscript-header {
+            text-align: center;
+            padding: 32px 24px 24px;
+            background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+            border-bottom: 1px solid #fcd34d;
+        }
+        .noscript-icon {
+            font-size: 56px;
+            margin-bottom: 16px;
+            line-height: 1;
+        }
+        .noscript-title {
+            font-size: 24px;
+            font-weight: 700;
+            color: #92400e;
+            margin: 0 0 8px 0;
+            line-height: 1.2;
+        }
+        .noscript-subtitle {
+            color: #a16207;
+            margin: 0;
+            font-size: 15px;
+            line-height: 1.5;
+        }
+        .noscript-body {
+            padding: 24px;
+        }
+        .noscript-section {
+            margin-bottom: 24px;
+        }
+        .noscript-section:last-child {
+            margin-bottom: 0;
+        }
+        .noscript-section-title {
+            font-size: 17px;
+            font-weight: 600;
+            color: #1f2937;
+            margin: 0 0 16px 0;
+        }
+        .noscript-details {
+            background: #f9fafb;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            margin-bottom: 8px;
+            overflow: hidden;
+        }
+        .noscript-details:last-child {
+            margin-bottom: 0;
+        }
+        .noscript-summary {
+            padding: 14px 16px;
+            cursor: pointer;
+            font-weight: 500;
+            color: #374151;
+            list-style: none;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            user-select: none;
+        }
+        .noscript-summary::-webkit-details-marker {
+            display: none;
+        }
+        .noscript-summary::before {
+            content: '▶';
+            font-size: 10px;
+            color: #9ca3af;
+            transition: transform 0.2s;
+        }
+        details[open] .noscript-summary::before {
+            transform: rotate(90deg);
+        }
+        .noscript-summary:hover {
+            background: #f3f4f6;
+        }
+        .noscript-steps {
+            padding: 0 16px 16px 36px;
+            margin: 0;
+            color: #4b5563;
+            line-height: 1.7;
+            font-size: 14px;
+        }
+        .noscript-steps li {
+            margin-bottom: 10px;
+            padding-left: 4px;
+        }
+        .noscript-steps li:last-child {
+            margin-bottom: 0;
+        }
+        .noscript-steps strong {
+            color: #1f2937;
+            font-weight: 600;
+        }
+        .noscript-why {
+            background: #f9fafb;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 16px;
+        }
+        .noscript-why-title {
+            font-weight: 600;
+            color: #374151;
+            margin: 0 0 8px 0;
+            font-size: 15px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .noscript-why-text {
+            color: #374151;
+            margin: 0;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        .noscript-refresh {
+            margin-top: 24px;
+            padding: 20px;
+            background: #fff7ed;
+            border: 1px solid #fed7aa;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .noscript-refresh-text {
+            color: #9a3412;
+            margin: 0 0 12px 0;
+            font-size: 14px;
+        }
+        .noscript-refresh-btn {
+            display: inline-block;
+            background: #f6821f;
+            color: white;
+            font-weight: 600;
+            padding: 12px 24px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-size: 14px;
+        }
+        .noscript-refresh-btn:hover {
+            background: #ee730a;
+        }
+        @media (max-width: 640px) {
+            .noscript-container {
+                margin: 12px auto;
+                border-radius: 12px;
+            }
+            .noscript-header {
+                padding: 24px 16px 20px;
+            }
+            .noscript-icon {
+                font-size: 48px;
+            }
+            .noscript-title {
+                font-size: 20px;
+            }
+            .noscript-body {
+                padding: 16px;
+            }
+            .noscript-section-title {
+                font-size: 16px;
+            }
+            .noscript-summary {
+                padding: 12px 14px;
+                font-size: 14px;
+            }
+            .noscript-steps {
+                padding: 0 14px 14px 32px;
+                font-size: 13px;
+            }
+        }
+    </style>
+    <div class="noscript-overlay">
+        <div class="noscript-container">
+            <div class="noscript-header">
+                <h1 class="noscript-title">JavaScript is Required</h1>
+                <p class="noscript-subtitle">This troubleshooter needs JavaScript to test your browser and diagnose issues.</p>
+            </div>
+            
+            <div class="noscript-body">
+                <div class="noscript-section">
+                    <h2 class="noscript-section-title">How to Enable JavaScript:</h2>
+                    
+                    <details class="noscript-details">
+                        <summary class="noscript-summary">Chrome, Edge, or Brave</summary>
+                        <ol class="noscript-steps">
+                            <li>Click the <strong>⋮ menu</strong> (three dots) in the top-right corner</li>
+                            <li>Select <strong>Settings</strong></li>
+                            <li>Click <strong>Privacy and security</strong> in the left sidebar</li>
+                            <li>Click <strong>Site settings</strong></li>
+                            <li>Scroll down and click <strong>JavaScript</strong></li>
+                            <li>Make sure <strong>"Sites can use JavaScript"</strong> is turned ON</li>
+                            <li>Come back to this page and refresh</li>
+                        </ol>
+                    </details>
+                    
+                    <details class="noscript-details">
+                        <summary class="noscript-summary">Firefox</summary>
+                        <ol class="noscript-steps">
+                            <li>Type <strong>about:config</strong> in the address bar and press Enter</li>
+                            <li>Click <strong>"Accept the Risk and Continue"</strong> if prompted</li>
+                            <li>In the search box, type <strong>javascript.enabled</strong></li>
+                            <li>If it says <strong>false</strong>, double-click to change it to <strong>true</strong></li>
+                            <li>Come back to this page and refresh</li>
+                        </ol>
+                    </details>
+                    
+                    <details class="noscript-details">
+                        <summary class="noscript-summary">Safari (Mac)</summary>
+                        <ol class="noscript-steps">
+                            <li>Click <strong>Safari</strong> in the menu bar at the top of your screen</li>
+                            <li>Select <strong>Settings</strong> (or <strong>Preferences</strong> on older versions)</li>
+                            <li>Click the <strong>Security</strong> tab</li>
+                            <li>Check the box next to <strong>"Enable JavaScript"</strong></li>
+                            <li>Close Settings and refresh this page</li>
+                        </ol>
+                    </details>
+                    
+                    <details class="noscript-details">
+                        <summary class="noscript-summary">Safari (iPhone / iPad)</summary>
+                        <ol class="noscript-steps">
+                            <li>Open the <strong>Settings</strong> app on your device</li>
+                            <li>Scroll down and tap <strong>Safari</strong></li>
+                            <li>Scroll to the bottom and tap <strong>Advanced</strong></li>
+                            <li>Toggle <strong>JavaScript</strong> to ON (green)</li>
+                            <li>Go back to Safari and refresh this page</li>
+                        </ol>
+                    </details>
+
+                    <details class="noscript-details">
+                        <summary class="noscript-summary">Chrome (Android)</summary>
+                        <ol class="noscript-steps">
+                            <li>Tap the <strong>⋮ menu</strong> (three dots) in the top-right</li>
+                            <li>Tap <strong>Settings</strong></li>
+                            <li>Tap <strong>Site settings</strong></li>
+                            <li>Tap <strong>JavaScript</strong></li>
+                            <li>Make sure it's toggled <strong>ON</strong></li>
+                            <li>Go back and refresh this page</li>
+                        </ol>
+                    </details>
+                </div>
+                
+                <div class="noscript-section">
+                    <div class="noscript-why">
+                        <h3 class="noscript-why-title">Why is JavaScript needed?</h3>
+                        <p class="noscript-why-text">
+                            Turnstile (the security check you're trying to pass) requires JavaScript to work.
+                            This troubleshooter tests whether your browser can run Turnstile correctly by checking
+                            automation flags, system clock, and connectivity to Cloudflare's servers.
+                            Without JavaScript, we can't run any of these tests.
+                        </p>
+                    </div>
+                </div>
+                
+                <div class="noscript-refresh">
+                    <p class="noscript-refresh-text">After enabling JavaScript, click below to reload:</p>
+                    <a href="." class="noscript-refresh-btn">
+                        Refresh page
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</noscript>
+
+
+    <a href="#main-content" class="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:bg-cf-orange focus:text-white focus:px-4 focus:py-2 focus:rounded-lg focus:text-sm focus:font-medium focus:shadow-lg">Skip to content</a>
+
+    <main id="main-content" class="max-w-4xl mx-auto">
+        
+<header class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg p-3 sm:p-6 lg:p-8 mb-2 sm:mb-6">
+    <div class="flex items-start justify-between gap-3 mb-2 sm:mb-3">
+        <div>
+            <h1 class="text-xl sm:text-3xl font-bold leading-tight text-gray-900 dark:text-gray-100">
+                Turnstile Troubleshooter
+            </h1>
+        </div>
+        <div id="theme-toggle" class="flex items-center bg-gray-100 dark:bg-gray-800 rounded-lg p-1 gap-0.5 flex-shrink-0" role="radiogroup" aria-label="Theme">
+            <button data-theme-btn="light" class="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-md transition-colors text-gray-500 dark:text-gray-400" role="radio" aria-checked="false" aria-label="Light theme" title="Light">
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <circle cx="12" cy="12" r="5"></circle><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"></path>
+                </svg>
+            </button>
+            <button data-theme-btn="dark" class="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-md transition-colors text-gray-500 dark:text-gray-400" role="radio" aria-checked="false" aria-label="Dark theme" title="Dark">
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"></path>
+                </svg>
+            </button>
+            <button data-theme-btn="system" class="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-md transition-colors text-gray-500 dark:text-gray-400 theme-btn-active" role="radio" aria-checked="true" aria-label="System theme" title="System">
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <rect x="2" y="3" width="20" height="14" rx="2"></rect><path d="M8 21h8M12 17v4"></path>
+                </svg>
+            </button>
+        </div>
+    </div>
+
+    <div id="session-id-display" class="p-2 sm:p-3 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg">
+        <div class="flex items-center gap-2 sm:gap-4">
+            <div id="qrcode" class="bg-white p-0.5 sm:p-1 rounded border border-gray-200 flex-shrink-0" aria-label="QR code containing session ID" title="19FAD50F6C0454CE4F3"><canvas width="72" height="72"></canvas><img style="display: none;"></div>
+            <div class="flex-1 min-w-0">
+                <p class="text-[11px] sm:text-xs text-gray-500 dark:text-gray-400 mb-0.5">Reference</p>
+                <div class="flex items-center gap-2">
+                    <p class="text-xs sm:text-base font-mono font-semibold text-gray-900 dark:text-gray-100 truncate" id="session-id-value" aria-label="Session ID">19FAD50F6C0454CE4F3</p>
+                    <button id="copy-session-btn" class="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400
+                                    hover:text-gray-900 dark:hover:text-gray-100 transition-colors flex-shrink-0" title="Copy" aria-label="Copy reference number">
+                        <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z">
+                            </path>
+                        </svg>
+                    </button>
+                </div>
+                <p class="hidden sm:block text-xs text-gray-400 dark:text-gray-500 mt-1">Share with support if asked.</p>
+            </div>
+        </div>
+    </div>
+</header>
+
+        
+<div id="turnstile-section" class="my-3 sm:my-6">
+    <div id="turnstile-container" class="flex items-center justify-center min-h-[72px] sm:min-h-[80px] overflow-x-auto" role="region" aria-label="Security verification widget"><div><iframe style="border: none; overflow: hidden; width: 300px; height: 65px;" src="https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/turnstile/f/av0/rch5w1ZBRLWdVjOGOpscDEnEEnKVDneO_975fDiXxDPXVc-1785319192-1.3.1.1-oC8dFr59VVs.Ig0V9HNUJ5UtUEmiUOEcpra7LTXWnGw/kwy6b/0x4AAAAAABFlBOxeiHIxst8q/dark/fbE/crashed_retry/normal?lang=auto" allow="cross-origin-isolated; fullscreen; autoplay; keyboard-map; gamepad; xr-spatial-tracking" sandbox="allow-same-origin allow-scripts allow-popups" id="cf-chl-widget-kwy6b" tabindex="0" title="Widget containing a Cloudflare security challenge">
+<!DOCTYPE html><base href="https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/turnstile/f/av0/rch5w1ZBRLWdVjOGOpscDEnEEnKVDneO_975fDiXxDPXVc-1785319192-1.3.1.1-oC8dFr59VVs.Ig0V9HNUJ5UtUEmiUOEcpra7LTXWnGw/kwy6b/0x4AAAAAABFlBOxeiHIxst8q/dark/fbE/crashed_retry/normal?lang=auto"></base>
+</iframe></div></div>
+    <div id="turnstile-status" class="mt-2 text-center text-xs sm:text-sm text-gray-600 dark:text-gray-400" role="status" aria-live="polite"><div class="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-lg p-3 text-left"><p class="font-medium text-red-800 dark:text-red-400 text-sm">Security Check Failed</p><p class="text-xs text-red-700 dark:text-red-400 mt-1">An unexpected error occurred with the security check.</p><p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Error: 300031 (Unknown)</p></div></div>
+</div>
+
+        
+<div id="status-card" class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 border-t-2 border-t-cf-orange rounded-lg p-3 sm:p-6 lg:p-8 mb-2 sm:mb-6 hidden">
+    <div id="progress-container" class="mb-2 sm:mb-4">
+        <div class="flex justify-between text-xs sm:text-sm text-gray-600 dark:text-gray-400 mb-1.5">
+            <span id="progress-text">Checking server connection...</span>
+            <span id="progress-count" class="font-medium">3 / 3</span>
+        </div>
+        <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 sm:h-2.5 overflow-hidden" role="progressbar" aria-valuenow="3" aria-valuemin="0" aria-valuemax="4" aria-label="Diagnostic progress" id="progress-bar-container">
+            <div id="progress-bar" class="bg-cf-orange h-full w-full rounded-full progress-bar-animated" style="transform: scaleX(1);">
+            </div>
+        </div>
+    </div>
+    
+    <div id="status-content" class="flex items-center justify-center gap-2" role="status" aria-live="polite" aria-atomic="true"><div class="text-center"><p class="text-base font-semibold text-green-700 dark:text-green-400 mb-1">Diagnostics complete</p><p class="text-gray-600 dark:text-gray-400 text-sm">Waiting for Turnstile to finish.</p></div></div>
+</div>
+
+        
+<div id="issue-alert" class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg p-4 sm:p-6 lg:p-8 mb-4 sm:mb-6 border-l-4 border-l-red-500 fade-in" role="alert" aria-labelledby="issue-title" aria-describedby="issue-description" tabindex="-1">
+    <div class="flex flex-col sm:flex-row sm:items-start gap-4">
+        <div class="flex-shrink-0 hidden sm:block">
+            <svg class="h-8 w-8 text-red-500" width="24" height="24" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+            </svg>
+        </div>
+        <div class="flex-1">
+            <div class="flex items-center gap-2 sm:block">
+                <svg class="h-6 w-6 text-red-500 sm:hidden" width="24" height="24" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                </svg>
+                <h2 class="text-lg sm:text-xl font-semibold text-red-800 dark:text-red-400" id="issue-title">Turnstile Failed Despite Passing All Checks</h2>
+            </div>
+            <p class="text-gray-700 dark:text-gray-300 mt-2 text-sm sm:text-base" id="issue-description">All diagnostics passed, but Turnstile still couldn't complete successfully. This is unusual and may indicate an edge case.</p>
+            <div id="issue-solution" class="bg-red-50 dark:bg-red-900/20 rounded-lg p-4 mt-4 text-sm sm:text-base"><div class="space-y-3">
+            <p class="font-semibold">Recommended actions:</p>
+            <ol class="list-decimal ml-5 space-y-2 text-sm">
+                <li><strong>Try refreshing the page</strong> - The issue may be temporary</li>
+                <li><strong>Check for network interference</strong> - Try disabling VPN or proxy temporarily</li>
+                <li><strong>Test on a different network</strong> - Your network may have unusual restrictions</li>
+                <li><strong>Wait a few minutes and try again</strong> - There may be temporary service issues</li>
+            </ol>
+            <div class="bg-blue-50 border border-blue-300 rounded-lg p-4 mt-4">
+                <p class="font-semibold text-blue-900 mb-2">Report to support</p>
+                <p class="text-sm text-blue-800 mb-2">
+                    Since the local diagnostics did not find a clear cause, this may require investigation by Cloudflare.
+                </p>
+                <ul class="list-disc ml-5 space-y-1 text-sm text-blue-800">
+                    <li><strong>Copy your Session ID</strong> from the top of this page</li>
+                    <li><strong>Click "Copy Full Results"</strong> in Technical Details below</li>
+                    <li>Share both with Cloudflare support</li>
+                </ul>
+            </div>
+        </div></div>
+            <button id="retry-button" class="w-full sm:w-auto mt-4 bg-cf-orange hover:bg-cf-orange-bright text-white 
+                           font-semibold py-3 sm:py-2.5 px-6 rounded-lg transition duration-200 
+                           min-h-[48px] touch-target" aria-label="Retry all diagnostic tests">
+                Retest
+            </button>
+        </div>
+    </div>
+</div>
+
+        
+<div id="success-card" class="hidden bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg p-4 sm:p-6 lg:p-8 mb-4 sm:mb-6 border-l-4 border-l-green-500" role="status" aria-live="assertive" tabindex="-1">
+    <div class="flex flex-col sm:flex-row sm:items-start gap-4">
+        <div class="flex-shrink-0 hidden sm:block">
+            <svg class="h-8 w-8 text-green-500 checkmark" width="24" height="24" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+            </svg>
+        </div>
+        <div class="flex-1 text-center sm:text-left">
+            <div class="flex items-center justify-center sm:justify-start gap-2">
+                <svg class="h-6 w-6 text-green-500 sm:hidden checkmark" width="24" height="24" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                </svg>
+                <h2 class="text-lg sm:text-xl font-semibold text-green-800 dark:text-green-400">
+                    Diagnostics passed
+                </h2>
+            </div>
+            <p class="text-gray-700 dark:text-gray-300 mt-2 text-sm sm:text-base">
+                Turnstile completed successfully, and the local diagnostics did not find any blocking conditions.
+            </p>
+            <p class="text-gray-600 dark:text-gray-400 mt-3 text-sm">
+                You can now return to the original page — the security check should work.
+            </p>
+        </div>
+    </div>
+</div>
+
+        
+<details id="tech-details" class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg mb-4 sm:mb-6 overflow-hidden">
+    <summary class="p-4 sm:p-6 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition duration-200 
+                    flex items-center justify-between cursor-pointer">
+        <span class="text-base sm:text-lg font-semibold text-gray-900 dark:text-gray-100">
+            Technical details
+        </span>
+        <svg class="chevron-icon h-5 w-5 text-gray-600 dark:text-gray-400 transition-transform duration-200" width="24" height="24" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+        </svg>
+    </summary>
+    <div class="p-4 sm:p-6 border-t border-gray-200 dark:border-gray-700" role="region" aria-label="Technical diagnostic details">
+        <div id="technical-details" class="space-y-4"><div class="space-y-3 text-sm"><div class="flex flex-col sm:flex-row sm:justify-between gap-1"><span class="text-gray-600 dark:text-gray-400">Session ID:</span><span class="font-mono text-gray-900 dark:text-gray-100 break-all">19FAD50F6C0454CE4F3</span></div><div class="flex flex-col sm:flex-row sm:justify-between gap-1"><span class="text-gray-600 dark:text-gray-400">Your IP Address:</span><span class="font-mono text-gray-900 dark:text-gray-100">2402:800:61c3:c20a:197:d6e9:3856:5d5e</span></div><div class="flex flex-col sm:flex-row sm:justify-between gap-1"><span class="text-gray-600 dark:text-gray-400">Timestamp:</span><span class="font-mono text-gray-900 dark:text-gray-100 text-xs sm:text-sm">2026-07-29T10:00:49.303Z</span></div><div><span class="text-gray-600 dark:text-gray-400">Browser:</span><div class="font-mono text-xs text-gray-900 dark:text-gray-100 mt-1 break-all bg-gray-50 dark:bg-gray-800 p-2 rounded">Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36</div></div><div class="flex flex-col sm:flex-row sm:justify-between gap-1"><span class="text-gray-600 dark:text-gray-400">Turnstile Status:</span><span class="font-semibold text-red-600">failed</span></div></div></div>
+        
+        <div class="mt-6">
+            <h2 class="font-semibold text-gray-900 dark:text-gray-100 mb-3">Diagnostic results</h2>
+            <div id="all-tests" class="bg-gray-50 dark:bg-gray-800 rounded-lg p-4 space-y-2 text-sm max-h-64 overflow-y-auto"><div class="flex items-start gap-2 py-1"><span class="inline-block w-2 h-2 rounded-full mt-1.5 flex-shrink-0 bg-green-500" aria-hidden="true"></span><div class="flex-1 min-w-0"><div class="text-green-700 dark:text-green-400 font-medium text-sm">Automation Check</div><div class="text-gray-600 dark:text-gray-400 text-xs truncate">No automation detected</div></div></div><div class="flex items-start gap-2 py-1"><span class="inline-block w-2 h-2 rounded-full mt-1.5 flex-shrink-0 bg-green-500" aria-hidden="true"></span><div class="flex-1 min-w-0"><div class="text-green-700 dark:text-green-400 font-medium text-sm">System Clock</div><div class="text-gray-600 dark:text-gray-400 text-xs truncate">Clock synchronized</div></div></div><div class="flex items-start gap-2 py-1"><span class="inline-block w-2 h-2 rounded-full mt-1.5 flex-shrink-0 bg-green-500" aria-hidden="true"></span><div class="flex-1 min-w-0"><div class="text-green-700 dark:text-green-400 font-medium text-sm">Server Connection</div><div class="text-gray-600 dark:text-gray-400 text-xs truncate">Can reach Cloudflare</div></div></div></div>
+        </div>
+        
+        <div class="mt-4 flex flex-col sm:flex-row gap-2">
+            <button id="copy-full-results-btn" class="w-full sm:w-auto text-sm bg-gray-700 dark:bg-gray-600 hover:bg-gray-800 dark:hover:bg-gray-500 text-white 
+                           px-4 py-3 sm:py-2.5 rounded-lg min-h-[48px] touch-target
+                           flex items-center justify-center gap-2 transition-colors" aria-label="Copy full diagnostic results to clipboard">
+                Copy full results
+            </button>
+        </div>
+    </div>
+</details>
+
+        
+<footer class="border-t border-gray-200 dark:border-gray-700 pt-6 pb-4 text-center">
+    <p class="text-xs sm:text-sm text-gray-600 dark:text-gray-400">
+        Share the reference above with support if the issue persists.
+    </p>
+    <p class="text-xs text-gray-600 dark:text-gray-400 mt-4">
+        v1.3.4 • 2026-06-12T16:02:14.499Z
+    </p>
+</footer>
+
+    </main>
+
+    
+<div id="toast" class="fixed bottom-4 left-1/2 z-50
+            bg-gray-900 text-white px-4 py-3 rounded-lg shadow-lg
+            flex items-center gap-2 text-sm
+            opacity-0 transition-all duration-300 pointer-events-none toast-base toast-enter" role="status" aria-live="polite">
+    <svg id="toast-icon" class="w-4 h-4 text-green-400 flex-shrink-0" width="24" height="24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+    </svg>
+    <span id="toast-message">Copied!</span>
+</div>
+
+
+    
+    
+    
+
+    
+
+</body></html>
