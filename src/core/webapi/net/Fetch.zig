@@ -1406,3 +1406,7 @@ const testing = @import("../../../testing/testing.zig");
 test "WebApi: fetch" {
     try testing.htmlRunner("net/fetch.html", .{});
 }
+
+test "WebApi: fetch uses callback creation realm" {
+    try testing.htmlRunner("regression/realm_callback_fetch.html", .{});
+}

@@ -1,0 +1,9 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>API trace smoke fixture</title>
+<script>
+  navigator.userAgent;
+  const canvas = document.createElement("canvas");
+  canvas.getContext("2d").measureText("trace");
+  new FontFace("missing", "local(velora-api-trace-missing)").load().catch(() => {});
+</script>

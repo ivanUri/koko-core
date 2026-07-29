@@ -47,6 +47,23 @@ _canvas: ?*Canvas = null,
 /// https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext/canvas
 _offscreen_canvas: ?*OffscreenCanvas = null,
 _is_webgl2: bool = false,
+/// WebGL has one sticky error slot per context. Commands preserve the first
+/// error until getError() consumes it.
+_error: u32 = NO_ERROR,
+
+pub const NO_ERROR: u32 = 0;
+pub const INVALID_ENUM: u32 = 0x0500;
+pub const RENDERBUFFER: u32 = 0x8D41;
+pub const SAMPLES: u32 = 0x80A9;
+pub const R8: u32 = 0x8229;
+pub const RG8: u32 = 0x822B;
+pub const RGB8: u32 = 0x8051;
+pub const RGB565: u32 = 0x8D62;
+pub const RGBA8: u32 = 0x8058;
+pub const SRGB8_ALPHA8: u32 = 0x8C43;
+pub const RGB5_A1: u32 = 0x8057;
+pub const RGBA4: u32 = 0x8056;
+pub const RGB10_A2: u32 = 0x8059;
 
 pub const ARRAY_BUFFER: u64 = 0x8892;
 pub const ELEMENT_ARRAY_BUFFER: u64 = 0x8893;
@@ -93,7 +110,7 @@ pub const HIGH_INT: u64 = 0x8DF5;
 pub const MEDIUM_INT: u64 = 0x8DF4;
 pub const LOW_INT: u64 = 0x8DF3;
 pub const STENCIL_VALUE_MASK: u64 = 0x0B93;
-pub const STENCIL_WRITEMASK: u64 = 0x0B94;
+pub const STENCIL_WRITEMASK: u64 = 0x0B98;
 pub const STENCIL_BACK_VALUE_MASK: u64 = 0x8CA4;
 pub const STENCIL_BACK_WRITEMASK: u64 = 0x8CA5;
 pub const SUBPIXEL_BITS: u64 = 0x0D50;
@@ -128,6 +145,49 @@ pub const MAX_CLIENT_WAIT_TIMEOUT_WEBGL: u64 = 0x9247;
 // Pixel format / type constants used in readPixels
 pub const RGBA: u64 = 0x1908;
 pub const UNSIGNED_BYTE: u64 = 0x1401;
+
+const InitialParameter = union(enum) {
+    boolean: bool,
+    number: u32,
+    float2: [2]f32,
+    float4: [4]f32,
+    int4_drawing_buffer,
+    bool4: [4]bool,
+    uint32_empty,
+    null_value,
+};
+
+/// Initial WebGL context state defined by the WebGL/OpenGL ES state tables.
+/// Capability limits and identity strings remain profile-owned; this table is
+/// only the deterministic state of a newly-created context.
+fn initialParameter(pname: u32) ?InitialParameter {
+    return switch (pname) {
+        0x8009, 0x883D => .{ .number = 0x8006 }, // BLEND_EQUATION(_RGB/_ALPHA): FUNC_ADD
+        0x80C8, 0x80CA => .{ .number = 0 }, // BLEND_DST_RGB / BLEND_DST_ALPHA: ZERO
+        0x80C9, 0x80CB => .{ .number = 1 }, // BLEND_SRC_RGB / BLEND_SRC_ALPHA: ONE
+        0x8005, 0x0C22 => .{ .float4 = .{ 0, 0, 0, 0 } }, // BLEND_COLOR / COLOR_CLEAR_VALUE
+        0x0B44, 0x0BE2, 0x0B71, 0x0C11, 0x8037, 0x809E, 0x80A0, 0x80AB => .{ .boolean = false },
+        0x0BD0, 0x0B72 => .{ .boolean = true }, // DITHER / DEPTH_WRITEMASK
+        0x0B21, 0x0B73, 0x80AA => .{ .number = 1 }, // LINE_WIDTH / DEPTH_CLEAR_VALUE / SAMPLE_COVERAGE_VALUE
+        0x0B45 => .{ .number = 0x0405 }, // CULL_FACE_MODE: BACK
+        0x0B46 => .{ .number = 0x0901 }, // FRONT_FACE: CCW
+        0x0B70 => .{ .float2 = .{ 0, 1 } }, // DEPTH_RANGE
+        0x0B74 => .{ .number = 0x0201 }, // DEPTH_FUNC: LESS
+        0x0B91, 0x0B97, 0x8CA3 => .{ .number = 0 }, // STENCIL_CLEAR_VALUE / refs
+        0x0B92, 0x8800 => .{ .number = 0x0207 }, // STENCIL_FUNC(_BACK): ALWAYS
+        0x0B93, 0x0B98, 0x8CA4, 0x8CA5 => .{ .number = 0xFFFFFFFF },
+        0x0B94, 0x0B95, 0x0B96, 0x8801, 0x8802, 0x8803 => .{ .number = 0x1E00 }, // KEEP
+        0x0BA2, 0x0C10 => .int4_drawing_buffer, // VIEWPORT / SCISSOR_BOX
+        0x0C23 => .{ .bool4 = .{ true, true, true, true } },
+        0x0D05, 0x0CF5 => .{ .number = 4 }, // PACK/UNPACK_ALIGNMENT
+        RED_BITS, GREEN_BITS, BLUE_BITS, ALPHA_BITS => .{ .number = 8 },
+        DEPTH_BITS => .{ .number = 24 },
+        STENCIL_BITS => .{ .number = 0 },
+        0x86A3 => .uint32_empty, // COMPRESSED_TEXTURE_FORMATS
+        0x8B8D, 0x8894, 0x8895, 0x8069, 0x8514, 0x8CA6, 0x8CA7 => .null_value,
+        else => null,
+    };
+}
 
 /// Empty extension object payload. Must be a struct (not `void`):
 /// `zigValueToJs(void)` is JS `undefined`, so Fingerprint Pro marks every
@@ -344,6 +404,38 @@ pub fn getDrawingBufferHeight(self: *const WebGLRenderingContext) u32 {
 /// support any though.
 pub fn getParameter(self: *const WebGLRenderingContext, pname: u32, exec: *Execution) !js.Value {
     const local = exec.context.local orelse return error.NotHandled;
+    if (initialParameter(pname)) |initial| {
+        switch (initial) {
+            .boolean => |value| return try local.zigValueToJs(value, .{}),
+            .number => |value| return try local.zigValueToJs(value, .{}),
+            .float2 => |values| {
+                const arr = local.createTypedArray(.float32, values.len);
+                fillTypedArray(.float32, arr, values[0..]);
+                return .{ .local = local, .handle = arr.handle };
+            },
+            .float4 => |values| {
+                const arr = local.createTypedArray(.float32, values.len);
+                fillTypedArray(.float32, arr, values[0..]);
+                return .{ .local = local, .handle = arr.handle };
+            },
+            .int4_drawing_buffer => {
+                const values = [_]i32{ 0, 0, @intCast(self.getDrawingBufferWidth()), @intCast(self.getDrawingBufferHeight()) };
+                const arr = local.createTypedArray(.int32, values.len);
+                fillTypedArray(.int32, arr, values[0..]);
+                return .{ .local = local, .handle = arr.handle };
+            },
+            .bool4 => |values| {
+                const arr = local.newArray(values.len);
+                for (values, 0..) |value, i| _ = try arr.set(@intCast(i), value, .{});
+                return arr.toValue();
+            },
+            .uint32_empty => {
+                const arr = local.createTypedArray(.uint32, 0);
+                return .{ .local = local, .handle = arr.handle };
+            },
+            .null_value => return .{ .local = local, .handle = local.isolate.initNull() },
+        }
+    }
     if (exec.loadedProfile().mode == .antidetect) {
         const frame = switch (exec.context.global) {
             .frame => |f| f,
@@ -515,8 +607,14 @@ pub fn getProgramInfoLog(_: *const WebGLRenderingContext, _: *const WebGLProgram
     return "";
 }
 
-pub fn getError(_: *const WebGLRenderingContext) u32 {
-    return 0;
+pub fn setError(self: *WebGLRenderingContext, err: u32) void {
+    if (self._error == NO_ERROR) self._error = err;
+}
+
+pub fn getError(self: *WebGLRenderingContext) u32 {
+    const err = self._error;
+    self._error = NO_ERROR;
+    return err;
 }
 
 pub fn createBuffer(_: *const WebGLRenderingContext, exec: *Execution) !*WebGLBuffer {
@@ -658,6 +756,9 @@ pub const JsApi = struct {
     pub const getExtension = bridge.function(WebGLRenderingContext.getExtension, .{});
     pub const getSupportedExtensions = bridge.function(WebGLRenderingContext.getSupportedExtensions, .{});
 
+    pub const NO_ERROR = bridge.property(WebGLRenderingContext.NO_ERROR, .{ .template = false, .readonly = true });
+    pub const INVALID_ENUM = bridge.property(WebGLRenderingContext.INVALID_ENUM, .{ .template = false, .readonly = true });
+
     pub const canvas = bridge.accessor(WebGLRenderingContext.getCanvas, null, .{});
     pub const drawingBufferWidth = bridge.accessor(WebGLRenderingContext.getDrawingBufferWidth, null, .{});
     pub const drawingBufferHeight = bridge.accessor(WebGLRenderingContext.getDrawingBufferHeight, null, .{});
@@ -747,6 +848,19 @@ fn opaqueResource(comptime type_name: []const u8) type {
             };
         };
     };
+}
+
+test "WebGL initial state matches context defaults" {
+    try std.testing.expectEqual(@as(u32, 0xFFFFFFFF), initialParameter(0x0B98).?.number);
+    try std.testing.expectEqual(@as(u32, 0x1E00), initialParameter(0x8803).?.number);
+    try std.testing.expectEqual(true, initialParameter(0x0BD0).?.boolean);
+    try std.testing.expectEqual(false, initialParameter(0x0BE2).?.boolean);
+    try std.testing.expectEqual(@as(f32, 1), initialParameter(0x0B70).?.float2[1]);
+    try std.testing.expect(initialParameter(0x0BA2).? == .int4_drawing_buffer);
+    try std.testing.expect(initialParameter(0x86A3).? == .uint32_empty);
+    try std.testing.expect(initialParameter(0x8B8D).? == .null_value);
+    try std.testing.expectEqual(@as(u32, 8), initialParameter(RED_BITS).?.number);
+    try std.testing.expectEqual(@as(u32, 24), initialParameter(DEPTH_BITS).?.number);
 }
 
 // getContext('web-gl') currently returns null, so this cannot be tested

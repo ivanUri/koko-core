@@ -54,8 +54,7 @@ pub const scrub_script: []const u8 =
 ;
 
 pub fn applyOnce(frame: *Frame) void {
-    if (frame._automation_scrubbed) return;
-    frame._automation_scrubbed = true;
     const local = frame.js.local orelse return;
+    if (!frame.claimAutomationScrubForCurrentRealm()) return;
     local.eval(scrub_script, "velora-automation-scrub") catch {};
 }

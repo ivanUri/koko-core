@@ -86,28 +86,8 @@ pub fn getProduct(_: *const WorkerNavigator, _: *Page) []const u8 {
     return "Gecko";
 }
 
-pub fn getProductSub(_: *const WorkerNavigator, page: *Page) []const u8 {
-    return page.navigatorState().productSub();
-}
-
-pub fn getWebdriver(_: *const WorkerNavigator, _: *Page) bool {
-    return false;
-}
-
-pub fn getDoNotTrack(_: *const WorkerNavigator, _: *Page) ?[]const u8 {
-    return null;
-}
-
 pub fn getDeviceMemory(_: *const WorkerNavigator, page: *Page) f64 {
     return page.navigatorState().deviceMemory();
-}
-
-pub fn getMaxTouchPoints(_: *const WorkerNavigator, page: *Page) u32 {
-    return page.navigatorState().maxTouchPoints();
-}
-
-pub fn getVendor(_: *const WorkerNavigator, page: *Page) []const u8 {
-    return page.navigatorState().vendor();
 }
 
 pub fn getGpu(self: *WorkerNavigator) *navigator_extras.GPU {
@@ -120,10 +100,6 @@ pub fn getPermissions(self: *WorkerNavigator) *Permissions {
 
 pub fn getStorage(self: *WorkerNavigator) *StorageManager {
     return &self._storage;
-}
-
-pub fn getPdfViewerEnabled(_: *const WorkerNavigator, page: *Page) bool {
-    return page.navigatorState().pdfViewerEnabled();
 }
 
 pub const JsApi = struct {
@@ -145,16 +121,18 @@ pub const JsApi = struct {
     pub const onLine = bridge.accessor(WorkerNavigator.getOnLine, null, .{});
     pub const hardwareConcurrency = bridge.accessor(WorkerNavigator.getHardwareConcurrency, null, .{});
     pub const deviceMemory = bridge.accessor(WorkerNavigator.getDeviceMemory, null, .{});
-    pub const maxTouchPoints = bridge.accessor(WorkerNavigator.getMaxTouchPoints, null, .{});
-    pub const vendor = bridge.accessor(WorkerNavigator.getVendor, null, .{});
     pub const product = bridge.accessor(WorkerNavigator.getProduct, null, .{});
-    pub const productSub = bridge.accessor(WorkerNavigator.getProductSub, null, .{});
-    pub const webdriver = bridge.accessor(WorkerNavigator.getWebdriver, null, .{});
-    pub const doNotTrack = bridge.accessor(WorkerNavigator.getDoNotTrack, null, .{});
     pub const userAgentData = bridge.accessor(WorkerNavigator.getUserAgentData, null, .{});
     pub const gpu = bridge.accessor(WorkerNavigator.getGpu, null, .{});
-    pub const cookieEnabled = bridge.attribute(true, .{});
-    pub const pdfViewerEnabled = bridge.accessor(WorkerNavigator.getPdfViewerEnabled, null, .{});
     pub const permissions = bridge.accessor(WorkerNavigator.getPermissions, null, .{});
     pub const storage = bridge.accessor(WorkerNavigator.getStorage, null, .{});
 };
+
+test "WorkerNavigator excludes Window-only navigator mixins" {
+    try std.testing.expect(!@hasDecl(JsApi, "vendor"));
+    try std.testing.expect(!@hasDecl(JsApi, "productSub"));
+    try std.testing.expect(!@hasDecl(JsApi, "webdriver"));
+    try std.testing.expect(!@hasDecl(JsApi, "maxTouchPoints"));
+    try std.testing.expect(!@hasDecl(JsApi, "cookieEnabled"));
+    try std.testing.expect(!@hasDecl(JsApi, "pdfViewerEnabled"));
+}

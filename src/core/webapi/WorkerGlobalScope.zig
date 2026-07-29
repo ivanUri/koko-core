@@ -249,7 +249,12 @@ pub fn dispatch(
         event,
         handler,
         self._page,
-        opts,
+        .{
+            .context = opts.context,
+            .inject_target = opts.inject_target,
+            .global_this = true,
+            .skip_post_dispatch_microtasks = opts.skip_post_dispatch_microtasks,
+        },
     );
 }
 
@@ -413,7 +418,11 @@ pub fn flushPendingUndelivered(self: *WorkerGlobalScope) !void {
     const target = self.asEventTarget();
 
     while (self._pending_undelivered.items.len > 0) {
-        const on_message = handlerFromCurrentGlobal(&ls.local, "onmessage");
+        // The Zig slot owns a strong v8::Global for the worker realm lifetime.
+        // Do not retain a bare Local obtained from the global object across
+        // event construction/dispatch: those operations can allocate and let
+        // V8 invalidate an unrooted handler/context before Function::Call.
+        const on_message = self._on_message;
         if (!self._event_manager.hasDirectListeners(target, "message", on_message)) {
             break;
         }
@@ -524,12 +533,6 @@ pub fn syncScriptHandlerSlotsFromLocal(self: *WorkerGlobalScope, local: *const J
     if (self._worker._shared_mode) {
         syncHandlerSlotFromLocal(local, "onconnect", &self._on_connect);
     }
-}
-
-fn handlerFromCurrentGlobal(local: *const JS.Local, comptime field: []const u8) ?JS.Function {
-    const global_handle = v8.v8__Context__Global(local.handle).?;
-    const global = JS.Object{ .local = local, .handle = global_handle };
-    return global.getFunction(field) catch null;
 }
 
 /// Notify a shared-worker's `onerror` handler for a runtime throw when the
@@ -1377,7 +1380,7 @@ const ReceiveMessageCallback = struct {
 
         // If data is null, structured clone failed - fire messageerror
         if (self.data == null) {
-            const on_messageerror = handlerFromCurrentGlobal(&ls.local, "onmessageerror");
+            const on_messageerror = worker_scope._on_messageerror;
             if (!worker_scope._event_manager.hasDirectListeners(target, "messageerror", on_messageerror)) {
                 return null;
             }
@@ -1389,7 +1392,10 @@ const ReceiveMessageCallback = struct {
             return null;
         }
 
-        const on_message = handlerFromCurrentGlobal(&ls.local, "onmessage");
+        // syncScriptHandlerSlotsFromLocal persisted this handler as a strong
+        // realm-owned Global. Dispatch through that owner, not a transient
+        // Local read from globalThis.
+        const on_message = worker_scope._on_message;
 
         // Queue until onmessage / addEventListener is registered (reCAPTCHA worker setup).
         if (!worker_scope._event_manager.hasDirectListeners(target, "message", on_message)) {

@@ -192,6 +192,7 @@ const Commands = cli.Builder(.{
                 },
             },
             .{ .name = "wait_selector", .type = ?[:0]const u8 },
+            .{ .name = "click_frame_selector", .type = ?[:0]const u8 },
             .{ .name = "click_selector", .type = ?[:0]const u8 },
             .{ .name = "click_offset_x", .type = u16, .default = 28 },
             .{ .name = "click_offset_y", .type = ?u16 },

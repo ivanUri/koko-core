@@ -35,6 +35,14 @@ pub const JsApi = struct {
         pub const prototype_chain = bridge.prototypeChain();
         pub var class_id: bridge.ClassId = undefined;
         pub const empty_with_no_proto = true;
+        // This is a WPT/testdriver implementation detail, not a Web IDL
+        // interface object. Keep its template available for the wpt_only
+        // Window.webdriver accessor without publishing window.WebDriver.
+        pub const skip_global = true;
     };
     pub const deleteAllCookies = bridge.function(WebDriver.deleteAllCookies, .{});
 };
+
+test "WebDriver helper has no global interface object" {
+    try std.testing.expect(JsApi.Meta.skip_global);
+}

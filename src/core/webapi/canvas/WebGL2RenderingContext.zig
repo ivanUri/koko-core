@@ -1,3 +1,4 @@
+const std = @import("std");
 const WebGLRenderingContext = @import("WebGLRenderingContext.zig");
 const js = @import("../../js/js.zig");
 const Execution = js.Execution;
@@ -10,6 +11,9 @@ pub const WebGL2RenderingContext = struct {
     _canvas: ?*Canvas = null,
     _offscreen_canvas: ?*OffscreenCanvas = null,
     _is_webgl2: bool = true,
+    // Keep this layout exactly aligned with WebGLRenderingContext; forwarding
+    // methods cast between the two context structs.
+    _error: u32 = WebGLRenderingContext.NO_ERROR,
 
     fn asWebGL(self: *const WebGL2RenderingContext) *const WebGLRenderingContext {
         return @ptrCast(@alignCast(self));
@@ -36,8 +40,18 @@ pub const WebGL2RenderingContext = struct {
     pub fn getProgramInfoLog(self: *const WebGL2RenderingContext, program: *const WebGLRenderingContext.WebGLProgram) []const u8 {
         return WebGLRenderingContext.getProgramInfoLog(@constCast(self.asWebGL()), program);
     }
-    pub fn getError(self: *const WebGL2RenderingContext) u32 {
+    pub fn getError(self: *WebGL2RenderingContext) u32 {
         return WebGLRenderingContext.getError(@constCast(self.asWebGL()));
+    }
+    pub fn getInternalformatParameter(self: *WebGL2RenderingContext, target: u32, internalformat: u32, pname: u32) ?js.TypedArray(i32) {
+        // WebGL 2 §3.7.4 accepts only RENDERBUFFER/SAMPLES and color-renderable
+        // sized formats. Unsupported extension formats are INVALID_ENUM until
+        // their defining extension is enabled.
+        if (target != WebGLRenderingContext.RENDERBUFFER or pname != WebGLRenderingContext.SAMPLES or !isCoreColorRenderableFormat(internalformat)) {
+            WebGLRenderingContext.setError(@constCast(self.asWebGL()), WebGLRenderingContext.INVALID_ENUM);
+            return null;
+        }
+        return .{ .values = &.{4} };
     }
     pub fn getShaderPrecisionFormat(self: *const WebGL2RenderingContext, shader_type: u32, precision_type: u32, exec: *Execution) !js.Value {
         return WebGLRenderingContext.getShaderPrecisionFormat(@constCast(self.asWebGL()), shader_type, precision_type, exec);
@@ -103,6 +117,7 @@ pub const WebGL2RenderingContext = struct {
         pub const getShaderInfoLog = bridge.function(WebGL2RenderingContext.getShaderInfoLog, .{});
         pub const getProgramInfoLog = bridge.function(WebGL2RenderingContext.getProgramInfoLog, .{});
         pub const getError = bridge.function(WebGL2RenderingContext.getError, .{});
+        pub const getInternalformatParameter = bridge.function(WebGL2RenderingContext.getInternalformatParameter, .{});
         pub const getShaderPrecisionFormat = bridge.function(WebGL2RenderingContext.getShaderPrecisionFormat, .{});
         pub const readPixels = bridge.function(WebGL2RenderingContext.readPixels, .{});
         pub const createBuffer = bridge.function(WebGL2RenderingContext.createBuffer, .{});
@@ -156,6 +171,20 @@ pub const WebGL2RenderingContext = struct {
         pub const canvas = bridge.accessor(WebGL2RenderingContext.getCanvas, null, .{});
         pub const drawingBufferWidth = bridge.accessor(WebGL2RenderingContext.getDrawingBufferWidth, null, .{});
         pub const drawingBufferHeight = bridge.accessor(WebGL2RenderingContext.getDrawingBufferHeight, null, .{});
+
+        pub const NO_ERROR = bridge.property(WebGLRenderingContext.NO_ERROR, .{ .template = false, .readonly = true });
+        pub const INVALID_ENUM = bridge.property(WebGLRenderingContext.INVALID_ENUM, .{ .template = false, .readonly = true });
+        pub const RENDERBUFFER = bridge.property(WebGLRenderingContext.RENDERBUFFER, .{ .template = false, .readonly = true });
+        pub const SAMPLES = bridge.property(WebGLRenderingContext.SAMPLES, .{ .template = false, .readonly = true });
+        pub const R8 = bridge.property(WebGLRenderingContext.R8, .{ .template = false, .readonly = true });
+        pub const RG8 = bridge.property(WebGLRenderingContext.RG8, .{ .template = false, .readonly = true });
+        pub const RGB8 = bridge.property(WebGLRenderingContext.RGB8, .{ .template = false, .readonly = true });
+        pub const RGB565 = bridge.property(WebGLRenderingContext.RGB565, .{ .template = false, .readonly = true });
+        pub const RGBA8 = bridge.property(WebGLRenderingContext.RGBA8, .{ .template = false, .readonly = true });
+        pub const SRGB8_ALPHA8 = bridge.property(WebGLRenderingContext.SRGB8_ALPHA8, .{ .template = false, .readonly = true });
+        pub const RGB5_A1 = bridge.property(WebGLRenderingContext.RGB5_A1, .{ .template = false, .readonly = true });
+        pub const RGBA4 = bridge.property(WebGLRenderingContext.RGBA4, .{ .template = false, .readonly = true });
+        pub const RGB10_A2 = bridge.property(WebGLRenderingContext.RGB10_A2, .{ .template = false, .readonly = true });
 
         pub const ALIASED_POINT_SIZE_RANGE = bridge.property(WebGLRenderingContext.ALIASED_POINT_SIZE_RANGE, .{ .template = false, .readonly = true });
         pub const ALIASED_LINE_WIDTH_RANGE = bridge.property(WebGLRenderingContext.ALIASED_LINE_WIDTH_RANGE, .{ .template = false, .readonly = true });
@@ -231,3 +260,60 @@ pub const WebGL2RenderingContext = struct {
         pub const UNSIGNED_BYTE = bridge.property(WebGLRenderingContext.UNSIGNED_BYTE, .{ .template = false, .readonly = true });
     };
 };
+
+fn isCoreColorRenderableFormat(internalformat: u32) bool {
+    return switch (internalformat) {
+        // R8, RG8, RGB8, RGB565, RGBA8, SRGB8_ALPHA8, RGB5_A1, RGBA4,
+        // RGB10_A2 and their signed/unsigned integer variants.
+        0x8229,
+        0x822B,
+        0x8051,
+        0x8D62,
+        0x8058,
+        0x8C43,
+        0x8057,
+        0x8056,
+        0x8059,
+        0x8231,
+        0x8232,
+        0x8237,
+        0x8238,
+        0x8D7C,
+        0x8D8F,
+        0x8D7D,
+        0x8D7E,
+        0x8233,
+        0x8234,
+        0x8239,
+        0x823A,
+        0x8D82,
+        0x8D83,
+        0x8D84,
+        0x8D85,
+        0x8D86,
+        0x8D87,
+        0x8D88,
+        0x8D89,
+        => true,
+        else => false,
+    };
+}
+
+test "WebGL2: getInternalformatParameter preserves and consumes INVALID_ENUM" {
+    var context = WebGL2RenderingContext{};
+
+    try std.testing.expect(context.getInternalformatParameter(WebGLRenderingContext.RENDERBUFFER, 0x881A, WebGLRenderingContext.SAMPLES) == null);
+    // The first error is sticky until consumed, even if another invalid call follows.
+    try std.testing.expect(context.getInternalformatParameter(0, 0x8058, WebGLRenderingContext.SAMPLES) == null);
+    try std.testing.expectEqual(WebGLRenderingContext.INVALID_ENUM, context.getError());
+    try std.testing.expectEqual(WebGLRenderingContext.NO_ERROR, context.getError());
+
+    const supported = context.getInternalformatParameter(WebGLRenderingContext.RENDERBUFFER, 0x8058, WebGLRenderingContext.SAMPLES).?;
+    try std.testing.expectEqualSlices(i32, &.{4}, supported.values);
+    try std.testing.expectEqual(WebGLRenderingContext.NO_ERROR, context.getError());
+}
+
+test "WebGL2: forwarding layout matches WebGLRenderingContext" {
+    try std.testing.expectEqual(@sizeOf(WebGLRenderingContext), @sizeOf(WebGL2RenderingContext));
+    try std.testing.expectEqual(@alignOf(WebGLRenderingContext), @alignOf(WebGL2RenderingContext));
+}

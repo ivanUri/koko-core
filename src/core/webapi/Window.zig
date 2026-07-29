@@ -479,8 +479,16 @@ pub fn setOnUnhandledRejection(self: *Window, setter: ?FunctionSetter) void {
     self._on_unhandled_rejection = getFunctionFromSetter(setter);
 }
 
-pub fn fetch(_: *const Window, input: Fetch.Input, options: ?Fetch.InitOpts, exec: *const js.Execution) !js.Promise {
-    return Fetch.init(input, options, exec);
+pub fn getFetch(self: *Window, exec: *const js.Execution) js.Function {
+    // WindowOrWorkerGlobalScope functions have a relevant settings object even
+    // when invoked from another realm. Materialize a realm-owned callback and
+    // keep the Window owner in callback data instead of recovering it from the
+    // invocation's sloppy-mode `this` value.
+    return exec.context.local.?.newCallback(fetchForWindow, self);
+}
+
+fn fetchForWindow(self: *Window, input: Fetch.Input, options: ?Fetch.InitOpts, _: *const js.Execution) !js.Promise {
+    return Fetch.init(input, options, &self._frame.js.execution);
 }
 
 pub fn setTimeout(self: *Window, handler: Timers.LegacyHandler, delay_ms: ?u32, params: []js.Value.Temp, exec: *js.Execution) !u32 {
@@ -1267,7 +1275,7 @@ pub const JsApi = struct {
     pub const onrejectionhandled = bridge.accessor(Window.getOnRejectionHandled, Window.setOnRejectionHandled, .{});
     pub const onunhandledrejection = bridge.accessor(Window.getOnUnhandledRejection, Window.setOnUnhandledRejection, .{});
     pub const event = bridge.accessor(Window.getEvent, null, .{ .null_as_undefined = true });
-    pub const fetch = bridge.function(Window.fetch, .{});
+    pub const fetch = bridge.accessor(Window.getFetch, null, .{ .cache = .{ .private = "window_fetch" } });
     pub const queueMicrotask = bridge.function(Window.queueMicrotask, .{});
     pub const setTimeout = bridge.function(Window.setTimeout, .{});
     pub const clearTimeout = bridge.function(Window.clearTimeout, .{});

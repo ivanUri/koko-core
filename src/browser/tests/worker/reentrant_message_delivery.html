@@ -10,7 +10,11 @@
   // The browser must deliver it in a later task, never recursively enter the
   // worker scheduler while this callback still owns its event and V8 locals.
   const source = `
-    onmessage = ({ data }) => {
+    onmessage = function ({ data }) {
+      if (this !== self) throw new Error("WorkerGlobalScope listener receiver was not self");
+      // Allocate between deliveries so the receiver and callback must remain
+      // rooted for the complete worker-realm lifetime.
+      Array.from({ length: 256 }, (_, i) => ({ i, data }));
       postMessage(data);
     };
   `;

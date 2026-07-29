@@ -29,6 +29,15 @@ site-independent abstraction and must preserve browser semantics:
 - Match standards and real browser behavior where practical. If Velora uses an
   intentional approximation, document the invariant and its limits rather
   than naming a site that exposed it.
+- Treat automation as an input source for the browser, not as a substitute for
+  browser behavior. Selector-, node-, coordinate-, CDP-, and CLI-driven actions
+  must converge on the shared input pipeline and preserve frame targeting,
+  trusted event order, focus, activation behavior, and default actions. Never
+  mutate DOM state or call page-script helpers merely to imitate a user action.
+- Cross-origin frame isolation constrains page script, not the browser's own
+  input router. Browser-internal automation may locate a browsing context, but
+  it must dispatch through that context's lifecycle-owned input state and fail
+  safely if the frame navigates, detaches, or changes generation.
 
 For every fix:
 

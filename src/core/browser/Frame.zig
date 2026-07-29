@@ -355,7 +355,10 @@ workers: std.ArrayList(*Worker) = .{},
 _input_press_hit: ?InputHit = null,
 _last_pointer_x: f64 = 120,
 _last_pointer_y: f64 = 120,
-_automation_scrubbed: bool = false,
+/// Navigation generation whose global received the automation-marker scrub.
+/// Pre-page-script initialization is realm-owned, not Frame-owned: a Frame can
+/// host many successive documents and each replacement realm must receive it.
+_automation_scrub_epoch: ?RealmLifecycleKernel.Epoch = null,
 
 // Coordinates for independently scheduled CDP mouse press/release halves.
 // Press must dispatch immediately so a real hold duration exists before release.
@@ -509,6 +512,14 @@ pub fn init(self: *Frame, frame_id: u32, page: *Page, parent: ?*Frame) !void {
 
 pub fn realmEpoch(self: *const Frame) RealmLifecycleKernel.Epoch {
     return self._realm_epoch;
+}
+
+/// Claim installation of realm-scoped automation cleanup. Returns true once
+/// per navigation generation and false for duplicate attempts in that realm.
+pub fn claimAutomationScrubForCurrentRealm(self: *Frame) bool {
+    if (self._automation_scrub_epoch == self._realm_epoch) return false;
+    self._automation_scrub_epoch = self._realm_epoch;
+    return true;
 }
 
 pub fn realmSchedulingActive(self: *const Frame) bool {
@@ -1761,7 +1772,7 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
     }
 
     if (use_chrome_transport) {
-        return http_client.requestChromeTransport(.{
+        http_client.requestChromeTransport(.{
             .ctx = self,
             .params = .{
                 .url = self.url,
@@ -1791,7 +1802,15 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
             .data_callback = frameDataCallback,
             .done_callback = frameDoneCallback,
             .error_callback = frameErrorCallback,
-        });
+        }) catch |err| {
+            log.err(.frame, "navigate request start", .{ .url = self.url, .err = err, .type = self._type, .transport = "chrome" });
+            // Request-start failure is a terminal navigation outcome just like
+            // an asynchronous transfer error. The realm was already moved to
+            // `initializing`; returning the raw error would strand that realm
+            // (and a pending Page) with no single terminal owner.
+            frameErrorCallback(self, err);
+        };
+        return;
     }
 
     http_client.request(.{
@@ -1826,8 +1845,8 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
         .done_callback = frameDoneCallback,
         .error_callback = frameErrorCallback,
     }) catch |err| {
-        log.err(.frame, "navigate request", .{ .url = self.url, .err = err, .type = self._type });
-        return err;
+        log.err(.frame, "navigate request start", .{ .url = self.url, .err = err, .type = self._type, .transport = "native" });
+        frameErrorCallback(self, err);
     };
 }
 
@@ -7121,6 +7140,19 @@ test "Page: isSameOrigin" {
     try testing.expectEqual(false, frame.isSameOrigin(""));
     try testing.expectEqual(false, frame.isSameOrigin("not-a-url"));
     try testing.expectEqual(false, frame.isSameOrigin("//origin.com/foo"));
+}
+
+test "automation scrub ownership follows realm generation" {
+    var frame: Frame = undefined;
+    frame._realm_epoch = 7;
+    frame._automation_scrub_epoch = null;
+
+    try testing.expect(frame.claimAutomationScrubForCurrentRealm());
+    try testing.expect(!frame.claimAutomationScrubForCurrentRealm());
+
+    frame._realm_epoch = 8;
+    try testing.expect(frame.claimAutomationScrubForCurrentRealm());
+    try testing.expect(!frame.claimAutomationScrubForCurrentRealm());
 }
 
 test "ParseState: deferred HTML transfers arena ownership" {

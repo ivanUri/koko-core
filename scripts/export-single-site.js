@@ -5,7 +5,18 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
-const url = "https://www.adobe.com/";
+const url = "https://demo.fingerprint.com/playground";
+
+function clickInFrame(frameSelector, selector) {
+  if (typeof frameSelector !== "string" || frameSelector.length === 0) {
+    throw new TypeError("clickInFrame requires a non-empty frame selector");
+  }
+  if (typeof selector !== "string" || selector.length === 0) {
+    throw new TypeError("clickInFrame requires a non-empty target selector");
+  }
+  return { frameSelector, selector };
+}
+
 // Chỉ cần sửa cấu hình trong khối này.
 const CONFIG = {
   url,
@@ -16,12 +27,16 @@ const CONFIG = {
   // Point these two values at another profile explicitly when persistence is
   // required; the exporter itself does not select an identity for a site.
   userDataDir: path.join(os.homedir(), "Library", "Application Support", "velora"),
-  profile: "huynew",
+  profile: "huynew-recapture-20260727",
   keepScripts: false,
   includeFrames: true,
   waitUntil: "done",
-  waitMs: 40_000,
+  waitMs: 30_000,
   terminateMs: 40_000,
+  // Optional browser-input action before serialization. `frameSelector`
+  // selects a child browsing context and `selector` selects its target.
+  // Example: click: clickInFrame("iframe", "input[type=checkbox]")
+  click: null,
   // Wait for finite presentation animations to settle before serializing.
   // Infinite decorative animations are intentionally ignored.
   waitScript: null,
@@ -63,6 +78,29 @@ function normalizeTransientAnimationStyles(html) {
   );
 }
 
+function embedCapturedFramesAsSrcdoc(html) {
+  // `--with-frames` serializes a frame document between the iframe tags.
+  // Browsers treat that markup as fallback content and ignore it whenever
+  // iframe support is available, then try to navigate `src` again. A static
+  // export must instead put the captured document in `srcdoc`, which has the
+  // same nested browsing-context presentation without depending on a new
+  // network request or the original browser session.
+  return html.replace(
+    /<iframe\b([^>]*)>(\s*(?:<!doctype\s+html[^>]*>\s*)?<html\b[\s\S]*?<\/html>\s*)<\/iframe\s*>/gi,
+    (_match, attributes, frameDocument) => {
+      const attributesWithoutSrcdoc = attributes.replace(
+        /\s+srcdoc\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi,
+        "",
+      );
+      const escapedDocument = frameDocument
+        .trim()
+        .replace(/&/g, "&amp;")
+        .replace(/"/g, "&quot;");
+      return `<iframe${attributesWithoutSrcdoc} srcdoc="${escapedDocument}"></iframe>`;
+    },
+  );
+}
+
 function classifyExportState(html) {
   const text = html
     .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, " ")
@@ -92,6 +130,9 @@ function validateConfig() {
   }
   if (!fs.existsSync(velora)) {
     throw new Error(`Velora binary not found: ${velora}`);
+  }
+  if (CONFIG.click && !CONFIG.click.selector) {
+    throw new Error("CONFIG.click.selector must be a non-empty CSS selector");
   }
   return url;
 }
@@ -125,6 +166,17 @@ function main() {
   }
   if (CONFIG.waitScript) {
     args.splice(args.length - 1, 0, "--wait-script", CONFIG.waitScript);
+  }
+  if (CONFIG.click) {
+    if (CONFIG.click.frameSelector) {
+      args.splice(
+        args.length - 1,
+        0,
+        "--click-frame-selector",
+        CONFIG.click.frameSelector,
+      );
+    }
+    args.splice(args.length - 1, 0, "--click-selector", CONFIG.click.selector);
   }
 
   console.log(`Exporting: ${url.href}`);
@@ -173,7 +225,9 @@ function main() {
       return;
     }
 
-    const normalizedHtml = normalizeTransientAnimationStyles(rawHtml);
+    const normalizedHtml = embedCapturedFramesAsSrcdoc(
+      normalizeTransientAnimationStyles(rawHtml),
+    );
     const result = CONFIG.keepScripts
       ? { html: normalizedHtml, removed: 0 }
       : stripScriptElements(normalizedHtml);

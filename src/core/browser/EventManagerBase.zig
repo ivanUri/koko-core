@@ -381,6 +381,10 @@ pub const DispatchError = error{
 pub const DispatchDirectOptions = struct {
     context: []const u8 = "dispatchDirect",
     inject_target: bool = true,
+    /// Global-scope event targets (Window/WorkerGlobalScope) invoke listeners
+    /// with the realm global as `this`, not with a separately materialized
+    /// EventTarget wrapper.
+    global_this: bool = false,
     /// Iframe unload/pagehide during parent DOM removal: do not drain microtasks
     /// before returning to the outer V8 API callback.
     skip_post_dispatch_microtasks: bool = false,
@@ -431,10 +435,15 @@ pub fn dispatchDirect(
         owned_scope.deinit();
     };
 
+    const listener_this = if (comptime opts.global_this)
+        js.Object{ .local = local, .handle = js.v8.v8__Context__Global(local.handle).? }
+    else
+        target;
+
     // Call the property handler (e.g., onmessage) if present
     if (getFunction(handler, local)) |func| {
         event._current_target = target;
-        invokeListener(local, ctx, func, target, event, opts.context);
+        invokeListener(local, ctx, func, listener_this, event, opts.context);
     }
 
     // Call listeners registered via addEventListener
@@ -487,7 +496,7 @@ pub fn dispatchDirect(
         switch (listener.function) {
             .value => |value| {
                 const func = globalToFunction(value, local) orelse continue;
-                invokeListener(local, ctx, func, target, event, opts.context);
+                invokeListener(local, ctx, func, listener_this, event, opts.context);
             },
             .string => |string| invokeListenerString(arena, local, ctx, string.str(), opts.context),
             .object => |obj_global| invokeListenerObject(local, ctx, local.toLocal(obj_global), event, opts.context),

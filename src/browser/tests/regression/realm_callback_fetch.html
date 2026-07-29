@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+  window.testing = {
+    assertOk: () => document.body.id === "realm-callback-fetch-pass",
+    printTimeoutState: () => console.log(document.body.textContent),
+  };
+
+  // This function belongs to the parent realm. A child invokes it, but its
+  // relative Fetch URL must still use the parent's API base URL.
+  window.fetchFromParentRealm = async () => {
+    const response = await fetch("realm_parent_marker.html");
+    const text = await response.text();
+    if (text.trim() !== "parent-realm") {
+      throw new Error(`wrong callback base URL: ${response.url} => ${text}`);
+    }
+    document.body.id = "realm-callback-fetch-pass";
+    document.body.textContent = "realm-callback-fetch-pass";
+  };
+
+  addEventListener("message", event => {
+    if (event.data === "invoke-parent-fetch") fetchFromParentRealm();
+  });
+
+  const iframe = document.createElement("iframe");
+  iframe.src = "http://localhost:9582/src/browser/tests/regression/realm_child/invoke_parent.html";
+  document.body.appendChild(iframe);
+</script>

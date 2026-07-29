@@ -22,6 +22,7 @@ const HostIdle = @import("HostIdle.zig");
 
 const Node = @import("../dom/Node.zig");
 const Selector = @import("../webapi/selector/Selector.zig");
+const IFrame = @import("../webapi/element/html/IFrame.zig");
 
 const log = @import("../../support/log.zig");
 const IS_DEBUG = builtin.mode == .Debug;
@@ -480,6 +481,60 @@ pub fn waitForSelector(self: *Runner, selector: [:0]const u8, timeout_ms: u32) !
     }
 }
 
+pub const FrameElement = struct {
+    element: *Node.Element,
+    frame: *Frame,
+};
+
+/// Resolve an automation target inside a child browsing context.
+///
+/// This is browser-internal frame traversal, not DOM `contentDocument`
+/// access, so a cross-origin child remains script-isolated while still being
+/// targetable by browser input in the same way as a native UI click.
+pub fn waitForSelectorInFrame(
+    self: *Runner,
+    frame_selector: [:0]const u8,
+    selector: [:0]const u8,
+    timeout_ms: u32,
+) !FrameElement {
+    const arena = try self.session.getArena(.small, "Runner.waitForSelectorInFrame");
+    defer self.session.releaseArena(arena);
+
+    const parsed_frame_selector = try Selector.parseLeaky(arena, frame_selector);
+    const parsed_selector = try Selector.parseLeaky(arena, selector);
+    var timer = try std.time.Timer.start();
+
+    while (true) {
+        const root = self.frame;
+        if (try parsed_frame_selector.query(root.document.asNode(), root)) |frame_element| {
+            if (frame_element.asNode().is(IFrame)) |iframe| {
+                if (iframe._window) |child_window| {
+                    const child = child_window._frame;
+                    if (!child._detach_pending and child.document._frame == child) {
+                        if (try parsed_selector.query(child.document.asNode(), child)) |element| {
+                            return .{ .element = element, .frame = child };
+                        }
+                    }
+                }
+            } else {
+                return error.InvalidFrameSelector;
+            }
+        }
+
+        const elapsed: u32 = @intCast(timer.read() / std.time.ns_per_ms);
+        if (elapsed >= timeout_ms) return error.Timeout;
+        switch (try self.tick(.{ .ms = timeout_ms - elapsed })) {
+            .done => {
+                js.EventLoop.spin(&self.frame.js.execution, .{ .max_tasks = 16, .stop_when_idle = true });
+                std.Thread.sleep(std.time.ns_per_ms * 5);
+            },
+            .ok => |recommended_sleep_ms| if (recommended_sleep_ms > 0) {
+                std.Thread.sleep(std.time.ns_per_ms * recommended_sleep_ms);
+            },
+        }
+    }
+}
+
 pub fn waitForScript(runner: *Runner, script: [:0]const u8, timeout_ms: u32) !void {
     var timer = try std.time.Timer.start();
 
@@ -546,6 +601,41 @@ test "Runner: waitForSelector" {
     var runner = try frame._session.runner(.{});
     const el = try runner.waitForSelector("#sel1", 10);
     try testing.expectEqual("selector-1-content", try el.asNode().getTextContentAlloc(testing.arena_allocator));
+}
+
+test "Runner: click target inside child browsing context" {
+    defer testing.reset();
+    const frame = try testing.pageTest("runner/frame_click_parent.html", .{});
+    defer frame._session.removePage();
+
+    var runner = try frame._session.runner(.{});
+    const located = try runner.waitForSelectorInFrame("#child", "#target", 2_000);
+    try @import("actions.zig").click(located.element.asNode(), located.frame);
+
+    const input = located.element.is(Node.Element.Html.Input).?;
+    try testing.expect(input._checked);
+
+    var scope: js.Local.Scope = undefined;
+    located.frame.js.localScope(&scope);
+    defer scope.deinit();
+    const events = try scope.local.exec("window.inputEvents.join(',')", null);
+    const actual = try events.toStringSliceWithAlloc(located.frame.call_arena);
+    try testing.expectEqualStrings(
+        "pointerdown:true,mousedown:true,pointerup:true,mouseup:true,click:true,input:true,change:true",
+        actual,
+    );
+}
+
+test "Runner: frame selector must identify an iframe" {
+    defer testing.reset();
+    const frame = try testing.pageTest("runner/frame_click_parent.html", .{});
+    defer frame._session.removePage();
+
+    var runner = try frame._session.runner(.{});
+    try testing.expectError(
+        error.InvalidFrameSelector,
+        runner.waitForSelectorInFrame("#not-a-frame", "#target", 100),
+    );
 }
 
 test "Runner: waitForScript timeout" {

@@ -1,0 +1,6 @@
+<!doctype html>
+<script>
+  // Cross-origin WindowProxy uses the same routing path; path separation makes
+  // this fixture detect a message accidentally dispatched back to the child.
+  parent.postMessage("invoke-parent-fetch", "*");
+</script>

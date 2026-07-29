@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+  <body>
+    <label>
+      <input id="target" type="checkbox">
+      Enable option
+    </label>
+    <script>
+      window.inputEvents = [];
+      const target = document.querySelector("#target");
+      for (const type of [
+        "pointerdown",
+        "mousedown",
+        "pointerup",
+        "mouseup",
+        "click",
+        "input",
+        "change",
+      ]) {
+        target.addEventListener(type, (event) => {
+          window.inputEvents.push(`${event.type}:${event.isTrusted}`);
+        });
+      }
+    </script>
+  </body>
+</html>
