@@ -101,6 +101,23 @@ pub fn redactedEndpoint(proxy: []const u8) []const u8 {
     return if (userinfo_end) |at| authority[at + 1 ..] else authority;
 }
 
+/// Return the proxy endpoint as an IP identity when its host is already an IP
+/// literal. This is deliberately not a DNS lookup: a gateway hostname may
+/// rotate to an exit address unrelated to the gateway itself. Callers must
+/// fail closed when the actual exit identity is unknown.
+pub fn literalHostAddress(proxy: []const u8) ?std.net.Address {
+    const endpoint = redactedEndpoint(proxy);
+    if (endpoint.len == 0) return null;
+
+    if (endpoint[0] == '[') {
+        const end = std.mem.indexOfScalar(u8, endpoint, ']') orelse return null;
+        return std.net.Address.parseIp(endpoint[1..end], 0) catch null;
+    }
+
+    const colon = std.mem.lastIndexOfScalar(u8, endpoint, ':') orelse return null;
+    return std.net.Address.parseIp(endpoint[0..colon], 0) catch null;
+}
+
 fn containsAsciiWhitespace(value: []const u8) bool {
     for (value) |c| if (std.ascii.isWhitespace(c)) return true;
     return false;
@@ -146,6 +163,14 @@ test "proxy pool redacts credentials from diagnostics" {
         "127.0.0.1:8080",
         redactedEndpoint("http://secret-user:secret-pass@127.0.0.1:8080"),
     );
+}
+
+test "proxy pool exposes only literal endpoint identity" {
+    const ipv4 = literalHostAddress("http://user:pass@103.99.2.15:20211") orelse
+        return error.MissingLiteralProxyIp;
+    const expected = try std.net.Address.parseIp("103.99.2.15", 0);
+    try std.testing.expect(ipv4.eql(expected));
+    try std.testing.expect(literalHostAddress("http://gateway.example:8080") == null);
 }
 
 test "proxy pool rejects malformed entries" {

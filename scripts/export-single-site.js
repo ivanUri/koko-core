@@ -5,21 +5,24 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
-const url = "https://browserleaks.com/webrtc";
+const url = "https://browser-compat.turnstile.workers.dev/";
 // Chỉ cần sửa cấu hình trong khối này.
 const CONFIG = {
   url,
-  output: `exports/single/${new URL(url).hostname}.html`,
-  log: `export-logs/${new URL(url).hostname}.log`,
+  output: "exports/single/browser-compat.turnstile.workers.dev-firefox-cookies.html",
+  log: "export-logs/browser-compat.turnstile.workers.dev-firefox-cookies.log",
 
   // Keep single-page exports isolated from profiles created by other runners.
   // Point these two values at another profile explicitly when persistence is
   // required; the exporter itself does not select an identity for a site.
-  userDataDir: path.join(os.homedir(), "Library", "Application Support", "velora"),
+  // Isolated run directory: avoids locks/ACLs from the existing desktop
+  // profile while testing imported Firefox session data.
+  userDataDir: "/tmp/velora-firefox-run",
   profile: "chrome-current",
   // Optional proxy pool. Velora selects one entry at process startup and keeps
   // it for the complete browser session; it never rotates per request.
   proxyFile: "/tmp/velora-alive-proxies.txt",
+  cookieJar: "exports/firefox-cookies.json",
   keepScripts: false,
   includeFrames: true,
   waitUntil: "done",
@@ -131,6 +134,9 @@ function main() {
   }
   if (CONFIG.proxyFile) {
     args.splice(args.length - 1, 0, "--proxy-file", path.resolve(projectRoot, CONFIG.proxyFile));
+  }
+  if (CONFIG.cookieJar) {
+    args.splice(args.length - 1, 0, "--cookie-jar", path.resolve(projectRoot, CONFIG.cookieJar));
   }
 
   console.log(`Exporting: ${url.href}`);

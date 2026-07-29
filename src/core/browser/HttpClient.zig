@@ -25,6 +25,7 @@ const libcurl = @import("../../support/sys/libcurl.zig");
 const Network = @import("../../runtime/network/Network.zig");
 const build_config = @import("build_config");
 const Robots = @import("../../runtime/network/Robots.zig");
+const ProxyPool = @import("../../runtime/network/ProxyPool.zig");
 const timestamp = @import("../../support/datetime.zig").timestamp;
 
 const log = @import("../../support/log.zig");
@@ -388,6 +389,13 @@ pub fn changeProxy(self: *Client, proxy: ?[:0]const u8) !void {
 /// such as WebSocket must use the same route as HTTP fetch/navigation.
 pub fn currentProxy(self: *const Client) ?[:0]const u8 {
     return self.http_proxy;
+}
+
+/// Stable observable proxy identity for privacy-sensitive APIs. Only literal
+/// proxy endpoints are accepted; hostname gateways require an explicit exit-IP
+/// discovery mechanism and therefore fail closed here.
+pub fn currentProxyPublicIp(self: *const Client) ?std.net.Address {
+    return ProxyPool.literalHostAddress(self.http_proxy orelse return null);
 }
 
 pub fn newHeaders(self: *const Client) !http.Headers {

@@ -39,6 +39,7 @@
 
 const std = @import("std");
 const posix = std.posix;
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
 const log = @import("../../../../support/log.zig");
@@ -46,6 +47,14 @@ const StunClient = @import("StunClient.zig");
 const RtcEventQueue = @import("../../../../runtime/network/RtcEventQueue.zig");
 
 const IceAgent = @This();
+const net_c = @cImport({
+    @cInclude("ifaddrs.h");
+    @cInclude("net/if.h");
+    if (builtin.os.tag == .macos) {
+        @cInclude("sys/ioctl.h");
+        @cInclude("netinet6/in6_var.h");
+    }
+});
 
 fn FixedList(comptime T: type, comptime capacity: usize) type {
     return struct {
@@ -86,6 +95,8 @@ pub const Candidate = struct {
     addr: std.net.Address,
     typ: CandidateType,
     related_addr: ?std.net.Address,
+    expose: bool = true,
+    temporary_ipv6: bool = false,
 };
 
 pub const CandidatePair = struct {
@@ -144,6 +155,7 @@ _have_remote_creds: bool,
 // Browser network policy. False means the configured proxy cannot carry UDP,
 // so host enumeration, STUN, and ICE connectivity checks must remain inert.
 _allow_non_proxied_udp: bool,
+_masked_public_ip: ?std.net.Address,
 
 // UDP socket (single socket for all candidates per RFC 8445 §4.1.1.2)
 _sock: posix.socket_t,
@@ -185,6 +197,7 @@ pub fn init(
     local_pwd: [24]u8,
     role: Role,
     allow_non_proxied_udp: bool,
+    masked_public_ip: ?std.net.Address,
 ) !IceAgent {
     // Open a single non-blocking UDP socket bound to any local port.
     const sock = try posix.socket(
@@ -214,6 +227,7 @@ pub fn init(
         ._remote_pwd = std.mem.zeroes([24]u8),
         ._have_remote_creds = false,
         ._allow_non_proxied_udp = allow_non_proxied_udp,
+        ._masked_public_ip = masked_public_ip,
         ._sock = sock,
         ._sock_port = port,
         ._role = role,
@@ -274,6 +288,24 @@ pub fn startGathering(self: *IceAgent, stun_server: ?std.net.Address) !void {
     // with no candidates instead of exposing host/srflx addresses over the
     // machine's direct interface. This preserves the WebRTC event lifecycle.
     if (!self._allow_non_proxied_udp) {
+        if (self._masked_public_ip) |masked_ip| {
+            // Exposure-only candidate: it makes the observable WebRTC public
+            // identity consistent with the browser proxy, but is intentionally
+            // absent from `_local`, so ICE never sends connectivity checks to
+            // an address the HTTP proxy cannot relay.
+            var foundation = std.mem.zeroes([32]u8);
+            @memcpy(foundation[0..5], "proxy");
+            const masked = Candidate{
+                .foundation = foundation,
+                .foundation_len = 5,
+                .component = 1,
+                .priority = computePriority(TYPE_PREF_SRFLX, 0, 1),
+                .addr = withPort(masked_ip, 9),
+                .typ = .srflx,
+                .related_addr = null,
+            };
+            try self.emitCandidate(&masked);
+        }
         self._gathering = .complete;
         try self.emitGatheringComplete();
         return;
@@ -364,20 +396,16 @@ pub fn handleIncoming(self: *IceAgent, data: []const u8, from: std.net.Address, 
 fn gatherHostCandidates(self: *IceAgent) !usize {
     var count: usize = 0;
 
-    const c = @cImport({
-        @cInclude("ifaddrs.h");
-        @cInclude("net/if.h");
-    });
-
-    var ifaddr: ?*c.struct_ifaddrs = null;
-    if (c.getifaddrs(&ifaddr) != 0) {
+    var ifaddr: ?*net_c.struct_ifaddrs = null;
+    if (net_c.getifaddrs(&ifaddr) != 0) {
         // Fallback: add loopback only
         return self.addHostCandidate(
             std.net.Address.initIp4(.{ 127, 0, 0, 1 }, self._sock_port),
             65534,
+            false,
         );
     }
-    defer c.freeifaddrs(ifaddr);
+    defer net_c.freeifaddrs(ifaddr);
 
     var ifa = ifaddr;
     while (ifa) |iface| : (ifa = iface.ifa_next) {
@@ -385,8 +413,8 @@ fn gatherHostCandidates(self: *IceAgent) !usize {
         const sa_generic: *posix.sockaddr = @ptrCast(@alignCast(sa));
 
         // Skip loopback and down interfaces
-        if (iface.ifa_flags & @as(c_uint, @bitCast(c.IFF_LOOPBACK)) != 0) continue;
-        if (iface.ifa_flags & @as(c_uint, @bitCast(c.IFF_UP)) == 0) continue;
+        if (iface.ifa_flags & @as(c_uint, @bitCast(net_c.IFF_LOOPBACK)) != 0) continue;
+        if (iface.ifa_flags & @as(c_uint, @bitCast(net_c.IFF_UP)) == 0) continue;
 
         if (sa_generic.family == posix.AF.INET) {
             const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(sa_generic));
@@ -394,7 +422,7 @@ fn gatherHostCandidates(self: *IceAgent) !usize {
             const addr = std.net.Address.initIp4(ip_bytes, self._sock_port);
             // local_pref: default route interface gets higher pref
             const local_pref: u16 = if (isDefaultRouteIface(iface.ifa_name)) 65535 else 65000;
-            _ = try self.addHostCandidate(addr, local_pref);
+            _ = try self.addHostCandidate(addr, local_pref, false);
             count += 1;
         } else if (sa_generic.family == posix.AF.INET6) {
             const sin6: *const posix.sockaddr.in6 = @ptrCast(@alignCast(sa_generic));
@@ -402,7 +430,11 @@ fn gatherHostCandidates(self: *IceAgent) !usize {
             // Skip link-local (fe80::)
             if (ip_bytes[0] == 0xFE and ip_bytes[1] == 0x80) continue;
             const addr = std.net.Address.initIp6(ip_bytes, self._sock_port, sin6.flowinfo, sin6.scope_id);
-            _ = try self.addHostCandidate(addr, 64000);
+            _ = try self.addHostCandidate(
+                addr,
+                64000,
+                isTemporaryIpv6(iface.ifa_name, sin6),
+            );
             count += 1;
         }
 
@@ -414,13 +446,42 @@ fn gatherHostCandidates(self: *IceAgent) !usize {
         _ = try self.addHostCandidate(
             std.net.Address.initIp4(.{ 127, 0, 0, 1 }, self._sock_port),
             65534,
+            false,
         );
     }
+
+    // RFC 6724 source selection prefers temporary addresses for outbound
+    // public connections when privacy addressing is enabled. Keep stable IPv6
+    // candidates for transport fallback, but expose only temporary candidates
+    // when the OS reports that such an address is available.
+    applyIpv6ExposurePreference(self._local.sliceMut());
 
     return count;
 }
 
-fn addHostCandidate(self: *IceAgent, addr: std.net.Address, local_pref: u16) !usize {
+fn applyIpv6ExposurePreference(candidates: []Candidate) void {
+    var has_temporary_ipv6 = false;
+    for (candidates) |cand| {
+        if (cand.temporary_ipv6) {
+            has_temporary_ipv6 = true;
+            break;
+        }
+    }
+    if (!has_temporary_ipv6) return;
+
+    for (candidates) |*cand| {
+        if (cand.addr.any.family == posix.AF.INET6 and !cand.temporary_ipv6) {
+            cand.expose = false;
+        }
+    }
+}
+
+fn addHostCandidate(
+    self: *IceAgent,
+    addr: std.net.Address,
+    local_pref: u16,
+    temporary_ipv6: bool,
+) !usize {
     if (self._local.len >= MAX_LOCAL_CANDIDATES) return 0;
 
     const priority = computePriority(TYPE_PREF_HOST, local_pref, 1);
@@ -442,9 +503,32 @@ fn addHostCandidate(self: *IceAgent, addr: std.net.Address, local_pref: u16) !us
         .addr = addr,
         .typ = .host,
         .related_addr = null,
+        .temporary_ipv6 = temporary_ipv6,
     });
 
     return 1;
+}
+
+fn isTemporaryIpv6(ifname: [*:0]u8, sin6: *const posix.sockaddr.in6) bool {
+    if (comptime builtin.os.tag != .macos) return false;
+
+    const sock = posix.socket(
+        posix.AF.INET6,
+        posix.SOCK.DGRAM | posix.SOCK.CLOEXEC,
+        posix.IPPROTO.UDP,
+    ) catch return false;
+    defer posix.close(sock);
+
+    var req = std.mem.zeroes(net_c.struct_in6_ifreq);
+    const name = std.mem.span(ifname);
+    const name_len = @min(name.len, req.ifr_name.len - 1);
+    @memcpy(req.ifr_name[0..name_len], name[0..name_len]);
+    req.ifr_ifru.ifru_addr = @bitCast(sin6.*);
+
+    if (net_c.ioctl(sock, net_c.SIOCGIFAFLAG_IN6, &req) != 0) return false;
+    const flags = req.ifr_ifru.ifru_flags6;
+    return flags & net_c.IN6_IFF_TEMPORARY != 0 and
+        flags & (net_c.IN6_IFF_DEPRECATED | net_c.IN6_IFF_NOTREADY) == 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -761,24 +845,29 @@ fn formatCandidateAddress(addr: std.net.Address, out: *[64]u8) ?u8 {
             return @intCast(written.len);
         },
         posix.AF.INET6 => {
-            const sin6: *const posix.sockaddr.in6 = @ptrCast(@alignCast(&addr.any));
-            const written = std.fmt.bufPrint(out, "{x:0>4}:{x:0>4}:{x:0>4}:{x:0>4}:{x:0>4}:{x:0>4}:{x:0>4}:{x:0>4}", .{
-                std.mem.readInt(u16, sin6.addr[0..2], .big),
-                std.mem.readInt(u16, sin6.addr[2..4], .big),
-                std.mem.readInt(u16, sin6.addr[4..6], .big),
-                std.mem.readInt(u16, sin6.addr[6..8], .big),
-                std.mem.readInt(u16, sin6.addr[8..10], .big),
-                std.mem.readInt(u16, sin6.addr[10..12], .big),
-                std.mem.readInt(u16, sin6.addr[12..14], .big),
-                std.mem.readInt(u16, sin6.addr[14..16], .big),
-            }) catch return null;
-            return @intCast(written.len);
+            // std.net owns canonical RFC 5952 compression. Address.format also
+            // includes brackets and a port for IPv6, so expose only the text
+            // between '[' and ']'.
+            var formatted_buf: [96]u8 = undefined;
+            const formatted = std.fmt.bufPrint(&formatted_buf, "{f}", .{addr}) catch return null;
+            if (formatted.len < 2 or formatted[0] != '[') return null;
+            const end = std.mem.indexOfScalar(u8, formatted, ']') orelse return null;
+            if (end - 1 > out.len) return null;
+            @memcpy(out[0 .. end - 1], formatted[1..end]);
+            return @intCast(end - 1);
         },
         else => return null,
     }
 }
 
 fn emitCandidate(self: *IceAgent, cand: *const Candidate) !void {
+    if (!cand.expose) return;
+    // Raw LAN addresses are transport state, not script-visible identity.
+    // Chrome protects these host candidates with mDNS. Until Velora owns an
+    // mDNS responder, omit only the exposure event while retaining the real
+    // candidate internally for ICE connectivity.
+    if (cand.typ == .host and isPrivateOrLocalAddress(cand.addr)) return;
+
     var ev = RtcEventQueue.RtcEvent.IceCandidateEvent{
         .foundation = cand.foundation,
         .foundation_len = cand.foundation_len,
@@ -813,6 +902,29 @@ fn emitCandidate(self: *IceAgent, cand: *const Candidate) !void {
     const node = try self._alloc.create(RtcEventQueue.Node);
     node.* = .{ .event = .{ .ice_candidate = ev } };
     self._event_queue.push(node);
+}
+
+fn isPrivateOrLocalAddress(addr: std.net.Address) bool {
+    switch (addr.any.family) {
+        posix.AF.INET => {
+            const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&addr.any));
+            const ip: [4]u8 = @bitCast(sin.addr);
+            return ip[0] == 10 or
+                ip[0] == 127 or
+                (ip[0] == 169 and ip[1] == 254) or
+                (ip[0] == 172 and ip[1] >= 16 and ip[1] <= 31) or
+                (ip[0] == 192 and ip[1] == 168);
+        },
+        posix.AF.INET6 => {
+            const sin6: *const posix.sockaddr.in6 = @ptrCast(@alignCast(&addr.any));
+            const ip = sin6.addr;
+            const loopback = std.mem.allEqual(u8, ip[0..15], 0) and ip[15] == 1;
+            return loopback or
+                (ip[0] & 0xfe) == 0xfc or
+                (ip[0] == 0xfe and (ip[1] & 0xc0) == 0x80);
+        },
+        else => return true,
+    }
 }
 
 fn emitGatheringComplete(self: *IceAgent) !void {
@@ -870,6 +982,12 @@ fn currentMs() u64 {
     return @intCast(std.time.milliTimestamp());
 }
 
+fn withPort(address: std.net.Address, port: u16) std.net.Address {
+    var result = address;
+    result.setPort(port);
+    return result;
+}
+
 test "proxy network policy completes ICE without direct candidates" {
     const alloc = std.testing.allocator;
     var events = RtcEventQueue.init();
@@ -880,6 +998,7 @@ test "proxy network policy completes ICE without direct candidates" {
         [_]u8{'p'} ** 24,
         .controlling,
         false,
+        null,
     );
     defer agent.deinit();
 
@@ -895,4 +1014,100 @@ test "proxy network policy completes ICE without direct candidates" {
     defer alloc.destroy(node);
     try std.testing.expect(node.event == .ice_gathering_complete);
     try std.testing.expect(events.pop() == null);
+}
+
+test "proxy masking exposes identity without creating a transport candidate" {
+    const alloc = std.testing.allocator;
+    var events = RtcEventQueue.init();
+    const proxy_ip = try std.net.Address.parseIp("203.0.113.9", 0);
+    var agent = try IceAgent.init(
+        alloc,
+        &events,
+        [_]u8{'u'} ** 8,
+        [_]u8{'p'} ** 24,
+        .controlling,
+        false,
+        proxy_ip,
+    );
+    defer agent.deinit();
+
+    try agent.startGathering(std.net.Address.initIp4(.{ 198, 51, 100, 1 }, 3478));
+    try std.testing.expectEqual(@as(usize, 0), agent._local.len);
+    try std.testing.expectEqual(StunState.idle, agent._stun_state);
+
+    const complete = events.pop() orelse return error.MissingGatheringComplete;
+    defer alloc.destroy(complete);
+    try std.testing.expect(complete.event == .ice_gathering_complete);
+    const candidate = events.pop() orelse return error.MissingMaskedCandidate;
+    defer alloc.destroy(candidate);
+    try std.testing.expect(candidate.event == .ice_candidate);
+    const ice = candidate.event.ice_candidate;
+    try std.testing.expectEqual(RtcEventQueue.RtcEvent.IceCandidateEvent.CandidateType.srflx, ice.typ);
+    try std.testing.expectEqualStrings("203.0.113.9", ice.address[0..ice.address_len]);
+    try std.testing.expect(events.pop() == null);
+}
+
+test "ICE exposure canonicalizes IPv6 and classifies local addresses" {
+    const ipv6 = try std.net.Address.parseIp(
+        "2402:0800:61c3:c20a:0197:d6e9:3856:5d5e",
+        50689,
+    );
+    var text: [64]u8 = undefined;
+    const len = formatCandidateAddress(ipv6, &text) orelse
+        return error.CouldNotFormatCandidate;
+    try std.testing.expectEqualStrings(
+        "2402:800:61c3:c20a:197:d6e9:3856:5d5e",
+        text[0..len],
+    );
+
+    try std.testing.expect(isPrivateOrLocalAddress(
+        try std.net.Address.parseIp("192.168.1.21", 1234),
+    ));
+    try std.testing.expect(isPrivateOrLocalAddress(
+        try std.net.Address.parseIp("fd00::1", 1234),
+    ));
+    try std.testing.expect(!isPrivateOrLocalAddress(ipv6));
+}
+
+test "ICE exposure prefers OS temporary IPv6 without removing transport state" {
+    const stable = try std.net.Address.parseIp("2001:db8::1", 5000);
+    const temporary = try std.net.Address.parseIp("2001:db8::2", 5000);
+    const ipv4 = try std.net.Address.parseIp("198.51.100.8", 5000);
+    var candidates = [_]Candidate{
+        .{
+            .foundation = std.mem.zeroes([32]u8),
+            .foundation_len = 0,
+            .component = 1,
+            .priority = 1,
+            .addr = stable,
+            .typ = .host,
+            .related_addr = null,
+        },
+        .{
+            .foundation = std.mem.zeroes([32]u8),
+            .foundation_len = 0,
+            .component = 1,
+            .priority = 1,
+            .addr = temporary,
+            .typ = .host,
+            .related_addr = null,
+            .temporary_ipv6 = true,
+        },
+        .{
+            .foundation = std.mem.zeroes([32]u8),
+            .foundation_len = 0,
+            .component = 1,
+            .priority = 1,
+            .addr = ipv4,
+            .typ = .srflx,
+            .related_addr = null,
+        },
+    };
+
+    applyIpv6ExposurePreference(&candidates);
+    try std.testing.expect(!candidates[0].expose);
+    try std.testing.expect(candidates[1].expose);
+    try std.testing.expect(candidates[2].expose);
+    // Selection changes only script exposure; all transport candidates remain.
+    try std.testing.expectEqual(@as(usize, 3), candidates.len);
 }
