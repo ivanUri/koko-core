@@ -391,10 +391,10 @@ pub fn currentProxy(self: *const Client) ?[:0]const u8 {
     return self.http_proxy;
 }
 
-/// Stable observable proxy identity for privacy-sensitive APIs. Only literal
-/// proxy endpoints are accepted; hostname gateways require an explicit exit-IP
-/// discovery mechanism and therefore fail closed here.
-pub fn currentProxyPublicIp(self: *const Client) ?std.net.Address {
+/// Return the literal address of the configured proxy endpoint, when present.
+/// This is a gateway address only; it is not the HTTP exit/public IP. Hostname
+/// proxies intentionally fail closed and are never DNS-resolved here.
+pub fn currentProxyEndpointIp(self: *const Client) ?std.net.Address {
     return ProxyPool.literalHostAddress(self.http_proxy orelse return null);
 }
 

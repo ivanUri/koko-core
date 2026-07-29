@@ -239,8 +239,6 @@ pub const RTCPeerConnectionJs = struct {
         // gathering must be disabled rather than bypassing that context.
         native_config.allow_non_proxied_udp =
             frame._session.browser.http_client.currentProxy() == null;
-        native_config.masked_public_ip =
-            frame._session.browser.http_client.currentProxyPublicIp();
         const native = try RTCPeerConnectionNative.create(frame.arena, native_config);
 
         const self = try frame._factory.eventTarget(RTCPeerConnectionJs{

@@ -119,9 +119,6 @@ pub const Config = struct {
     /// route. A future TURN-over-TCP/TLS transport can provide relay
     /// candidates without enabling this flag.
     allow_non_proxied_udp: bool = true,
-    /// Public identity exposed to ICE observers while direct UDP is blocked.
-    /// This is presentation-only and is never added to connectivity pairs.
-    masked_public_ip: ?std.net.Address = null,
 };
 
 pub const OfferOptions = struct {
@@ -245,7 +242,6 @@ pub fn create(alloc: Allocator, config: Config) !*RTCPeerConnection {
         .stun_server = stun_addr,
         .ice_role = if (config.is_offerer) .controlling else .controlled,
         .allow_non_proxied_udp = config.allow_non_proxied_udp,
-        .masked_public_ip = config.masked_public_ip,
     };
     const thread = try WebRtcThread.create(alloc, event_queue, cmd_queue, thread_config);
     errdefer thread.destroy();

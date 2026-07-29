@@ -155,7 +155,6 @@ _have_remote_creds: bool,
 // Browser network policy. False means the configured proxy cannot carry UDP,
 // so host enumeration, STUN, and ICE connectivity checks must remain inert.
 _allow_non_proxied_udp: bool,
-_masked_public_ip: ?std.net.Address,
 
 // UDP socket (single socket for all candidates per RFC 8445 §4.1.1.2)
 _sock: posix.socket_t,
@@ -197,7 +196,6 @@ pub fn init(
     local_pwd: [24]u8,
     role: Role,
     allow_non_proxied_udp: bool,
-    masked_public_ip: ?std.net.Address,
 ) !IceAgent {
     // Open a single non-blocking UDP socket bound to any local port.
     const sock = try posix.socket(
@@ -227,7 +225,6 @@ pub fn init(
         ._remote_pwd = std.mem.zeroes([24]u8),
         ._have_remote_creds = false,
         ._allow_non_proxied_udp = allow_non_proxied_udp,
-        ._masked_public_ip = masked_public_ip,
         ._sock = sock,
         ._sock_port = port,
         ._role = role,
@@ -288,24 +285,9 @@ pub fn startGathering(self: *IceAgent, stun_server: ?std.net.Address) !void {
     // with no candidates instead of exposing host/srflx addresses over the
     // machine's direct interface. This preserves the WebRTC event lifecycle.
     if (!self._allow_non_proxied_udp) {
-        if (self._masked_public_ip) |masked_ip| {
-            // Exposure-only candidate: it makes the observable WebRTC public
-            // identity consistent with the browser proxy, but is intentionally
-            // absent from `_local`, so ICE never sends connectivity checks to
-            // an address the HTTP proxy cannot relay.
-            var foundation = std.mem.zeroes([32]u8);
-            @memcpy(foundation[0..5], "proxy");
-            const masked = Candidate{
-                .foundation = foundation,
-                .foundation_len = 5,
-                .component = 1,
-                .priority = computePriority(TYPE_PREF_SRFLX, 0, 1),
-                .addr = withPort(masked_ip, 9),
-                .typ = .srflx,
-                .related_addr = null,
-            };
-            try self.emitCandidate(&masked);
-        }
+        // An HTTP proxy does not provide an ICE transport. Do not synthesize
+        // a host/srflx/relay candidate from the proxy gateway address: it was
+        // not learned from STUN and cannot participate in connectivity checks.
         self._gathering = .complete;
         try self.emitGatheringComplete();
         return;
@@ -982,12 +964,6 @@ fn currentMs() u64 {
     return @intCast(std.time.milliTimestamp());
 }
 
-fn withPort(address: std.net.Address, port: u16) std.net.Address {
-    var result = address;
-    result.setPort(port);
-    return result;
-}
-
 test "proxy network policy completes ICE without direct candidates" {
     const alloc = std.testing.allocator;
     var events = RtcEventQueue.init();
@@ -998,7 +974,6 @@ test "proxy network policy completes ICE without direct candidates" {
         [_]u8{'p'} ** 24,
         .controlling,
         false,
-        null,
     );
     defer agent.deinit();
 
@@ -1016,10 +991,9 @@ test "proxy network policy completes ICE without direct candidates" {
     try std.testing.expect(events.pop() == null);
 }
 
-test "proxy masking exposes identity without creating a transport candidate" {
+test "proxy policy never emits a synthetic candidate" {
     const alloc = std.testing.allocator;
     var events = RtcEventQueue.init();
-    const proxy_ip = try std.net.Address.parseIp("203.0.113.9", 0);
     var agent = try IceAgent.init(
         alloc,
         &events,
@@ -1027,7 +1001,6 @@ test "proxy masking exposes identity without creating a transport candidate" {
         [_]u8{'p'} ** 24,
         .controlling,
         false,
-        proxy_ip,
     );
     defer agent.deinit();
 
@@ -1038,12 +1011,6 @@ test "proxy masking exposes identity without creating a transport candidate" {
     const complete = events.pop() orelse return error.MissingGatheringComplete;
     defer alloc.destroy(complete);
     try std.testing.expect(complete.event == .ice_gathering_complete);
-    const candidate = events.pop() orelse return error.MissingMaskedCandidate;
-    defer alloc.destroy(candidate);
-    try std.testing.expect(candidate.event == .ice_candidate);
-    const ice = candidate.event.ice_candidate;
-    try std.testing.expectEqual(RtcEventQueue.RtcEvent.IceCandidateEvent.CandidateType.srflx, ice.typ);
-    try std.testing.expectEqualStrings("203.0.113.9", ice.address[0..ice.address_len]);
     try std.testing.expect(events.pop() == null);
 }
 

@@ -63,7 +63,6 @@ pub const Config = struct {
     /// ICE role (offerer = controlling)
     ice_role: IceAgent.Role = .controlling,
     allow_non_proxied_udp: bool = true,
-    masked_public_ip: ?std.net.Address = null,
 };
 
 // ---------------------------------------------------------------------------
@@ -126,7 +125,6 @@ pub fn create(alloc: Allocator, event_queue: *RtcEventQueue, cmd_queue: *RtcComm
         pwd,
         config.ice_role,
         config.allow_non_proxied_udp,
-        config.masked_public_ip,
     );
 
     // Init DTLS transport (generates certificate)
