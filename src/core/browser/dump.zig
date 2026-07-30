@@ -46,6 +46,9 @@ pub const Opts = struct {
 };
 
 pub fn root(doc: *Node.Document, opts: Opts, writer: *std.Io.Writer, frame: *Frame) !void {
+    const previous_suppression = frame._suppress_dom_mutation_microtasks;
+    frame._suppress_dom_mutation_microtasks = true;
+    defer frame._suppress_dom_mutation_microtasks = previous_suppression;
     if (doc.is(Node.Document.HTMLDocument)) |html_doc| {
         blk: {
             // Ideally we just render the doctype which is part of the document

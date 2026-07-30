@@ -774,6 +774,16 @@ pub fn performMicrotaskCheckpoint(self: *Env, ctx: *Context) void {
 pub fn performMicrotaskCheckpointFp(self: *Env, ctx: *Context) void {
     if (v8.v8__Isolate__IsExecutionTerminating(self.isolate.handle)) return;
     if (ctx.execution.realmState() == .dead) return;
+    // V8 does not permit a microtask checkpoint to re-enter itself. DOM
+    // serialization can synchronously trigger mutations while an outer
+    // checkpoint is draining (for example, a MutationObserver callback that
+    // updates the page). Preserve the work for the owning checkpoint instead
+    // of invoking PerformCheckpoint recursively and tripping V8's debug
+    // invariant (maybe_result.is_null()).
+    if (self.checkpoint_active) {
+        self.checkpoint_pending = true;
+        return;
+    }
     v8.v8__MicrotaskQueue__PerformCheckpoint(ctx.microtask_queue, self.isolate.handle);
     if (self.checkpoint_active) self.checkpoint_pending = true;
 }
@@ -783,6 +793,10 @@ pub fn performMicrotaskCheckpointFp(self: *Env, ctx: *Context) void {
 /// on which queue V8 associates with the active Context.
 pub fn drainAllRealmMicrotasks(self: *Env) void {
     if (v8.v8__Isolate__IsExecutionTerminating(self.isolate.handle)) return;
+    if (self.checkpoint_active) {
+        self.checkpoint_pending = true;
+        return;
+    }
     // Snapshot — destroyContext can run from a reaction.
     var snapshot: [64]*Context = undefined;
     const n = self.context_count;

@@ -233,6 +233,7 @@ _live_ranges: std.DoublyLinkedList = .{},
 // List of active MutationObservers
 _mutation_observers: std.DoublyLinkedList = .{},
 _mutation_delivery_scheduled: bool = false,
+_suppress_dom_mutation_microtasks: bool = false,
 _mutation_delivery_depth: u32 = 0,
 
 // List of active IntersectionObservers
@@ -1412,6 +1413,10 @@ pub fn drainClassicScriptMicrotasks(self: *Frame) void {
 /// After DOM insertion that may resolve pure-JS Promises. Delegates to
 /// `EventLoop.afterDomMutation` (nested-safe vs top-level spin).
 pub fn drainMicrotasksAfterDomInsertion(self: *Frame) void {
+    // DOM serialization may insert an implementation-only <base> node. Those
+    // mutations are not page script mutations and must not re-enter V8's
+    // microtask checkpoint while the serializer is already on the JS stack.
+    if (self._suppress_dom_mutation_microtasks) return;
     const js_mod = @import("../js/js.zig");
     // Local scope for any Zig→JS that reactions may need.
     var owned_scope: JS.Local.Scope = undefined;
