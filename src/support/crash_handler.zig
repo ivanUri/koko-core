@@ -38,8 +38,7 @@ pub noinline fn crash(
                 writer.writeAll(
                     \\
                     \\Velora has crashed. Please report the issue:
-                    \\https://github.com/velora-io/browser/issues
-                    \\or let us know on discord: https://discord.gg/g24PtgD6
+                    \\https://github.com/ivanUri/velora/issues
                     \\
                 ) catch abort();
 

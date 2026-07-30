@@ -491,7 +491,7 @@ pub fn scriptList(self: *ScriptManagerBase, script: *const Script) *std.DoublyLi
         .frame => |fe| switch (fe.mode) {
             .normal => unreachable, // not added to a list, executed immediately
             .@"defer" => &self.defer_scripts,
-            .async => &self.async_scripts,
+            .async, .ordered => &self.async_scripts,
         },
     };
 }
@@ -844,7 +844,7 @@ fn hasIncompleteLifecycleScripts(self: *const ScriptManagerBase) bool {
         const script: *const Script = @fieldParentPtr("node", node);
         switch (script.extra) {
             .frame => |fe| {
-                if (fe.mode == .async and !script.complete) return true;
+                if (fe.mode == .ordered and !script.complete) return true;
             },
             else => {},
         }
@@ -860,7 +860,7 @@ fn hasPendingEvaluateWork(self: *const ScriptManagerBase) bool {
         const script: *const Script = @fieldParentPtr("node", node);
         switch (script.extra) {
             .frame => |fe| {
-                if (fe.mode == .async and script.complete) return true;
+                if (fe.mode == .ordered and script.complete) return true;
             },
             else => {},
         }
@@ -1005,7 +1005,7 @@ pub fn drainOrderedAsyncScripts(self: *ScriptManagerBase) void {
             const next = node.next;
             switch (script.extra) {
                 .frame => |fe| {
-                    if (fe.mode != .async) {
+                    if (fe.mode != .ordered) {
                         n = next;
                         continue;
                     }
@@ -1132,7 +1132,7 @@ pub fn evaluate(self: *ScriptManagerBase) void {
                 const next = node.next;
                 switch (script.extra) {
                     .frame => |fe| {
-                        if (fe.mode != .async) {
+                        if (fe.mode != .ordered) {
                             n = next;
                             continue;
                         }
@@ -1243,10 +1243,11 @@ pub const Script = struct {
                 // <script defer> / <script type=module> — queued in
                 // defer_scripts, drained in document order.
                 @"defer",
-                // <script async> / dynamically-inserted scripts — queued in
-                // async_scripts; doneCallback marks complete and evaluate()
-                // drains in insertion order.
+                // <script async> — executes as soon as its fetch completes.
                 async,
+                // Dynamically inserted classic script with async=false:
+                // fetch concurrently, execute strictly in insertion order.
+                ordered,
             };
         };
     };
@@ -1495,6 +1496,7 @@ pub const Script = struct {
                         manager.ready_scripts.append(&self.node);
                     }
                 },
+                .ordered => {}, // stays queued; drained in insertion order
                 .@"defer" => {}, // stays in defer_scripts; drained in order
                 .normal => unreachable, // syncRequest path doesn't go through callbacks
             },

@@ -5,12 +5,12 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
-const url = "https://browser-compat.turnstile.workers.dev/";
+const url = "https://demo.fingerprint.com/playground";
 // Chỉ cần sửa cấu hình trong khối này.
 const CONFIG = {
   url,
-  output: "exports/single/browser-compat.turnstile.workers.dev-firefox-cookies.html",
-  log: "export-logs/browser-compat.turnstile.workers.dev-firefox-cookies.log",
+  output: "exports/single/demo.fingerprint.com-direct-rerun.html",
+  log: "export-logs/demo.fingerprint.com-direct-rerun.log",
 
   // Keep single-page exports isolated from profiles created by other runners.
   // Point these two values at another profile explicitly when persistence is
@@ -21,7 +21,7 @@ const CONFIG = {
   profile: "chrome-current",
   // Optional proxy pool. Velora selects one entry at process startup and keeps
   // it for the complete browser session; it never rotates per request.
-  proxyFile: "/tmp/velora-alive-proxies.txt",
+  proxyFile: null,
   cookieJar: "exports/firefox-cookies.json",
   keepScripts: false,
   includeFrames: true,

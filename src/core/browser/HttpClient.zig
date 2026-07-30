@@ -802,7 +802,7 @@ fn abortConnections(list: std.DoublyLinkedList, comptime abort_all: bool, frame_
                     ws.kill();
                 }
             },
-            .none => unreachable,
+            .none => @panic("HttpClient.abortConnections: active connection has no transport"),
         }
     }
 }
@@ -1305,7 +1305,10 @@ fn makeRequest(self: *Client, conn: *http.Connection, transfer: *Transfer) anyer
             return err;
         };
     }
-    _ = try self.perform(0);
+    // Async request initiation must not synchronously drive curl. perform()
+    // can dispatch completions for unrelated transfers, re-entering browser
+    // lifecycle code while a navigation is still being installed. Runner.tick
+    // owns network progress and will drive this newly tracked connection.
 }
 
 pub const PerformStatus = enum {
@@ -1780,7 +1783,7 @@ fn processMessages(self: *Client) !bool {
 
                 processed = true;
             },
-            .none => unreachable,
+            .none => @panic("HttpClient.processMessages: completed connection has no transport"),
         }
     }
     return processed;
@@ -1829,7 +1832,7 @@ pub fn trackConn(self: *Client, conn: *http.Connection) !void {
     switch (conn.transport) {
         .http => self.http_active += 1,
         .websocket => self.ws_active += 1,
-        else => unreachable,
+        .none => @panic("HttpClient.trackConn: connection has no transport"),
     }
 }
 
@@ -1845,7 +1848,7 @@ pub fn removeConn(self: *Client, conn: *http.Connection) void {
     switch (conn.transport) {
         .http => self.http_active -= 1,
         .websocket => self.ws_active -= 1,
-        else => unreachable,
+        .none => @panic("HttpClient.removeConn: active connection has no transport"),
     }
     if (!conn.in_multi) {
         conn.in_multi = false;

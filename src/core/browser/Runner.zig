@@ -154,12 +154,20 @@ pub const TickResult = union(enum) {
     done,
     ok: u32,
 };
-pub fn tick(self: *Runner, opts: TickOpts) !TickResult {
-    return switch (try self._tick(false, opts)) {
+
+fn nonCdpTickResult(result: CDPTickResult) TickResult {
+    return switch (result) {
         .ok => |ms| .{ .ok = ms },
         .done => .done,
-        .cdp_socket => unreachable,
+        // HttpClient multiplexes browser traffic and the optional CDP socket.
+        // Readability is a wake-up for a non-CDP runner too; it is not an
+        // impossible state.
+        .cdp_socket => .{ .ok = 0 },
     };
+}
+
+pub fn tick(self: *Runner, opts: TickOpts) !TickResult {
+    return nonCdpTickResult(try self._tick(false, opts));
 }
 
 pub const CDPTickResult = union(enum) {
@@ -167,6 +175,11 @@ pub const CDPTickResult = union(enum) {
     cdp_socket,
     ok: u32,
 };
+
+test "Runner: CDP socket readiness wakes a non-CDP runner" {
+    const result = nonCdpTickResult(.cdp_socket);
+    try std.testing.expectEqual(@as(u32, 0), result.ok);
+}
 pub fn tickCDP(self: *Runner, opts: TickOpts) !CDPTickResult {
     return self._tick(true, opts);
 }
@@ -291,11 +304,16 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
                     // Root navigations (e.g. Google sg_ss via location.replace) may
                     // promote a pending Page; follow it so the next state machine
                     // pass ticks the in-flight document transfer.
-                    self.frame = session.pendingOrCurrentFrame() orelse session.currentFrame().?;
-                    // Queued navigations are often scheduled from frameDoneCallback
-                    // while curl_multi_perform is active; kick curl immediately
-                    // instead of waiting for the next CDP poll window.
-                    _ = http_client.tick(0) catch {};
+                    // Navigation callbacks may synchronously close the last
+                    // browsing context. Absence of both pending and active
+                    // pages is a terminal runner state, not an invariant
+                    // violation.
+                    self.frame = session.pendingOrCurrentFrame() orelse return .done;
+                    // Do not drive curl from the same stack that installs the
+                    // navigation. A transfer completion may enter browser
+                    // lifecycle code before the pending page/realm transition
+                    // has reached a stable boundary. The next Runner tick owns
+                    // network progress.
                     return .{ .ok = 0 };
                 }
             }
@@ -331,8 +349,7 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
             if (session.currentPage()) |page| {
                 if (page.queued_navigation.items.len != 0) {
                     try session.processQueuedNavigation();
-                    self.frame = session.pendingOrCurrentFrame() orelse session.currentFrame().?;
-                    _ = http_client.tick(0) catch {};
+                    self.frame = session.pendingOrCurrentFrame() orelse return .done;
                     return .{ .ok = 0 };
                 }
             }
@@ -353,8 +370,7 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
             if (session.currentPage()) |page| {
                 if (page.queued_navigation.items.len != 0) {
                     try session.processQueuedNavigation();
-                    self.frame = session.pendingOrCurrentFrame() orelse session.currentFrame().?;
-                    _ = http_client.tick(0) catch {};
+                    self.frame = session.pendingOrCurrentFrame() orelse return .done;
                     return .{ .ok = 0 };
                 }
             }
@@ -480,29 +496,36 @@ pub fn waitForSelector(self: *Runner, selector: [:0]const u8, timeout_ms: u32) !
     }
 }
 
+fn evaluateWaitScript(frame: *Frame, script: [:0]const u8) !bool {
+    var ls: js.Local.Scope = undefined;
+    frame.js.localScope(&ls);
+    defer ls.deinit();
+
+    var try_catch: js.TryCatch = undefined;
+    try_catch.init(&ls.local);
+    defer try_catch.deinit();
+
+    const value = ls.local.exec(script, "wait_script") catch |err| {
+        const caught = try_catch.caughtOrError(frame.call_arena, err);
+        log.warn(.app, "wait script retry after exception", .{ .err = caught });
+        return false;
+    };
+    return value.toBool();
+}
+
 pub fn waitForScript(runner: *Runner, script: [:0]const u8, timeout_ms: u32) !void {
     var timer = try std.time.Timer.start();
 
     while (true) {
-        const frame = runner.frame;
-
-        // Execute the script and check if it returns truthy
-        var ls: js.Local.Scope = undefined;
-        frame.js.localScope(&ls);
-        defer ls.deinit();
-
-        var try_catch: js.TryCatch = undefined;
-        try_catch.init(&ls.local);
-        defer try_catch.deinit();
-
-        const value = ls.local.exec(script, "wait_script") catch |err| {
-            const caught = try_catch.caughtOrError(frame.call_arena, err);
-            log.err(.app, "wait script error", .{ .err = caught });
-            return error.ScriptError;
-        };
-
-        if (value.toBool()) {
-            return;
+        // Evaluation owns a short-lived V8 handle scope. It must be closed
+        // before runner.tick(), because tick may commit a navigation and
+        // replace the active realm/context.
+        // runner.frame may point at a pending document so the load state
+        // machine can progress it. Script evaluation, like browser automation,
+        // remains bound to the active browsing context until navigation
+        // commits.
+        if (runner.session.currentFrame()) |active_frame| {
+            if (try evaluateWaitScript(active_frame, script)) return;
         }
 
         const elapsed: u32 = @intCast(timer.read() / std.time.ns_per_ms);
@@ -513,7 +536,9 @@ pub fn waitForScript(runner: *Runner, script: [:0]const u8, timeout_ms: u32) !vo
         switch (try runner.tick(.{ .ms = timeout_ms - elapsed })) {
             .done => {
                 const js_mod = @import("../js/js.zig");
-                js_mod.EventLoop.spin(&runner.frame.js.execution, .{ .max_tasks = 16, .stop_when_idle = true });
+                if (runner.session.currentFrame()) |active_frame| {
+                    js_mod.EventLoop.spin(&active_frame.js.execution, .{ .max_tasks = 16, .stop_when_idle = true });
+                }
                 std.Thread.sleep(std.time.ns_per_ms * 5);
             },
             .ok => |recommended_sleep_ms| {

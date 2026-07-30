@@ -190,10 +190,9 @@ pub fn addFromElement(self: *ScriptManager, comptime from_parser: bool, script_e
             break :blk .@"defer";
         }
 
-        if (comptime !from_parser) {
-            break :blk .async;
-        }
-
+        // Dynamic script.async=false clears force-async and belongs to the
+        // ordered script-inserted set: async fetch, insertion-order execution.
+        if (comptime !from_parser) break :blk .ordered;
         break :blk .normal;
     };
 
