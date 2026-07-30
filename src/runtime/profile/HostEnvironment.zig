@@ -28,7 +28,10 @@ pub const Snapshot = struct {
     device_memory: ?f64 = null,
     screen: ?Screen = null,
     window: ?Window = null,
-    gpu_brand: ?[]const u8 = null,
+    // CPU brand is intentionally kept separate from graphics identity. A
+    // CPU model is not evidence of the WebGL vendor/renderer exposed by the
+    // browser and must never be used to synthesize one.
+    cpu_brand: ?[]const u8 = null,
 };
 
 pub fn detect(allocator: std.mem.Allocator) !Snapshot {
@@ -56,7 +59,7 @@ fn detectMacos(allocator: std.mem.Allocator) !Snapshot {
         snap.window = defaultWindowForScreen(screen);
     }
     if (try readSysctlString(allocator, "machdep.cpu.brand_string")) |brand| {
-        snap.gpu_brand = brand;
+        snap.cpu_brand = brand;
     }
 
     return snap;
@@ -201,15 +204,9 @@ pub fn applyIdentity(profile: *Profile.IdentityProfile, snap: Snapshot, allocato
         profile.window.outer_width = window.outer_width;
         profile.window.outer_height = window.outer_height;
     }
-    if (snap.gpu_brand) |brand| {
-        if (std.mem.startsWith(u8, brand, "Apple ")) {
-            profile.webgl.unmasked_renderer = try std.fmt.allocPrint(
-                allocator,
-                "ANGLE (Apple, ANGLE Metal Renderer: {s}, Unspecified Version)",
-                .{brand},
-            );
-        }
-    }
+    // Do not derive WebGL identity from `cpu_brand`. A real renderer must
+    // come from a graphics capability probe or an explicitly imported
+    // profile; otherwise retain the profile's declared value.
 }
 
 const testing = @import("../../testing/testing.zig");
@@ -219,4 +216,12 @@ test "HostEnvironment: roundChromeDeviceMemory" {
     try testing.expectEqual(@as(f64, 8), roundChromeDeviceMemory(12 * 1024 * 1024 * 1024));
     try testing.expectEqual(@as(f64, 4), roundChromeDeviceMemory(6 * 1024 * 1024 * 1024));
     try testing.expectEqual(@as(f64, 0.5), roundChromeDeviceMemory(600 * 1024 * 1024));
+}
+
+test "HostEnvironment: CPU brand does not rewrite WebGL identity" {
+    var identity = Profile.defaultIdentity().*;
+    const before = identity.webgl.unmasked_renderer;
+    const snapshot = Snapshot{ .cpu_brand = "Apple M3" };
+    try applyIdentity(&identity, snapshot, std.testing.allocator);
+    try std.testing.expectEqualStrings(before, identity.webgl.unmasked_renderer);
 }
