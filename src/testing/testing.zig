@@ -585,6 +585,25 @@ fn serveCDP(wg: *std.Thread.WaitGroup) !void {
 fn testHTTPHandler(req: *std.http.Server.Request) !void {
     const path = req.head.target;
 
+    if (std.mem.eql(u8, path, "/fetch-stream-hold")) {
+        var send_buffer: [1024]u8 = undefined;
+        var res = try req.respondStreaming(&send_buffer, .{
+            .respond_options = .{
+                .extra_headers = &.{
+                    .{ .name = "Content-Type", .value = "text/plain" },
+                },
+            },
+        });
+        try res.writer.writeAll("first-");
+        try res.writer.flush();
+        try res.flush();
+
+        std.Thread.sleep(1500 * std.time.ns_per_ms);
+        try res.writer.writeAll("second");
+        try res.writer.flush();
+        return res.end();
+    }
+
     if (std.mem.eql(u8, path, "/xhr")) {
         return req.respond("1234567890" ** 10, .{
             .extra_headers = &.{

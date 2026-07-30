@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+const channel = new MessageChannel();
+let phase = "before-post";
+
+channel.port1.onmessage = () => {
+  if (phase === "after-post") {
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+  } else {
+    document.body.id = "fail";
+    document.body.textContent =
+      `message delivered synchronously (phase=${phase})`;
+  }
+  channel.port1.close();
+  channel.port2.close();
+};
+
+channel.port2.postMessage("ping");
+phase = "after-post";
+</script>

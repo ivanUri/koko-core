@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+const iframe = document.createElement("iframe");
+let detached = false;
+iframe.onload = () => {
+  if (detached) return;
+  detached = true;
+  // Leave a replacement navigation queued when the element is detached.
+  // Parent teardown must still have exactly one terminal owner for this
+  // browsing context and its cross-origin Context.
+  iframe.src =
+    "http://localhost:9582/src/browser/tests/regression/iframe_child_static.html?replacement";
+  iframe.remove();
+  setTimeout(() => {
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+  }, 0);
+};
+iframe.src =
+  "http://localhost:9582/src/browser/tests/regression/iframe_child_static.html";
+document.body.appendChild(iframe);
+</script>

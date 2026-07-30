@@ -4,6 +4,7 @@ const Frame = @import("../../../browser/Frame.zig");
 const HttpClient = @import("../../../browser/HttpClient.zig");
 const LoadGuard = @import("../../../browser/LoadGuard.zig");
 const URL = @import("../../../browser/URL.zig");
+const DataUrl = @import("../../../browser/DataUrl.zig");
 const Event = @import("../../Event.zig");
 const Node = @import("../../../dom/Node.zig");
 const Element = @import("../../../dom/Element.zig");
@@ -16,6 +17,9 @@ _loading: bool = false,
 _complete: bool = false,
 _failed: bool = false,
 _load_url: ?[:0]const u8 = null,
+/// Monotonic request generation. Resource completion and its queued event are
+/// deliverable only while they still belong to the element's current `src`.
+_load_generation: u64 = 0,
 /// Intrinsic size after successful load (attr or CSS default object size 300×150).
 _natural_width: u32 = 0,
 _natural_height: u32 = 0,
@@ -293,6 +297,23 @@ fn encodedImageDimensions(bytes: []const u8) ?ImageDimensions {
     return null;
 }
 
+fn decodedImageDimensions(self: *const Image, bytes: []const u8) ?ImageDimensions {
+    if (encodedImageDimensions(bytes)) |dims| return dims;
+
+    // SVG has no binary dimension header. Treat a syntactically recognizable
+    // SVG document as decoded and use its explicit attributes/default object
+    // size. A 2xx response containing arbitrary HTML/JSON is not an image:
+    // browsers fire `error` and keep naturalWidth/naturalHeight at zero.
+    const trimmed = std.mem.trimLeft(u8, bytes, " \t\r\n");
+    if (std.mem.startsWith(u8, trimmed, "<svg") or
+        (std.mem.startsWith(u8, trimmed, "<?xml") and
+            std.mem.indexOf(u8, trimmed[0..@min(trimmed.len, 1024)], "<svg") != null))
+    {
+        return self.resolveNaturalDimensions();
+    }
+    return null;
+}
+
 /// Used in `Page.nodeIsReady`.
 pub fn imageAddedCallback(self: *Image, frame: *Frame) !void {
     // if we're planning on navigating to another frame, don't trigger load event.
@@ -303,7 +324,6 @@ pub fn imageAddedCallback(self: *Image, frame: *Frame) !void {
     const element = self.asElement();
     const src = element.getAttributeSafe(comptime .wrap("src")) orelse return;
     if (src.len == 0) return;
-
     const scratch = try frame.getArena(.small, "Image.load");
     var caller_owns_scratch = true;
     errdefer if (caller_owns_scratch) frame.releaseArena(scratch);
@@ -332,6 +352,8 @@ pub fn imageAddedCallback(self: *Image, frame: *Frame) !void {
     self._natural_width = 0;
     self._natural_height = 0;
     self._load_url = owned_url;
+    self._load_generation +%= 1;
+    if (self._load_generation == 0) self._load_generation = 1;
 
     const arena = scratch;
     const load = try arena.create(ImageLoad);
@@ -340,7 +362,24 @@ pub fn imageAddedCallback(self: *Image, frame: *Frame) !void {
         .frame = frame,
         .arena = arena,
         .guard = LoadGuard.Guard.init(&frame.js.execution),
+        .generation = self._load_generation,
     };
+
+    // `data:` is a local resource fetch. The image loader captures and decodes
+    // it directly; sending it through the HTTP client produces a transport
+    // error and incorrectly fires `error` for valid inline images.
+    if (std.mem.startsWith(u8, owned_url, "data:")) {
+        const bytes = DataUrl.decodeBody(arena, owned_url) catch {
+            caller_owns_scratch = false;
+            ImageLoad.errorCallback(load, error.InvalidDataUrl);
+            return;
+        };
+        try load.probe.appendSlice(arena, bytes[0..@min(bytes.len, ImageLoad.max_probe_bytes)]);
+        load.status = 200;
+        caller_owns_scratch = false;
+        try ImageLoad.doneCallback(load);
+        return;
+    }
 
     const preload_key = try frame.imagePreloadKey(
         arena,
@@ -405,12 +444,18 @@ const ImageLoad = struct {
     arena: std.mem.Allocator,
     status: u16 = 0,
     guard: LoadGuard.Guard,
+    generation: u64,
     probe: std.ArrayList(u8) = .empty,
 
     const max_probe_bytes = 512 * 1024;
 
+    fn isCurrent(self: *const ImageLoad) bool {
+        return self.image._load_generation == self.generation;
+    }
+
     fn deliverable(self: *const ImageLoad) bool {
         const frame = self.frame;
+        if (!self.isCurrent()) return false;
         return self.guard.isDeliverableForRealm(.{
             .realm_id = frame._frame_id,
             .epoch = frame._realm_epoch,
@@ -438,7 +483,7 @@ const ImageLoad = struct {
         const self: *ImageLoad = @ptrCast(@alignCast(ctx));
         // Never leave the element stuck with complete=false — SPA image
         // pipelines treat that as "still loading" and never paint.
-        if (self.image._loading) {
+        if (self.image._load_generation == self.generation and self.image._loading) {
             self.image._loading = false;
             self.image._complete = true;
             self.image._failed = true;
@@ -451,92 +496,115 @@ const ImageLoad = struct {
     fn doneCallback(ctx: *anyopaque) !void {
         const self: *ImageLoad = @ptrCast(@alignCast(ctx));
         defer self.finish();
+        if (!self.isCurrent()) return;
 
-        // Always settle load state first. Skipping when !deliverable left
-        // images with complete=false forever (Nike/etc. keep opacity 0).
-        const ok = self.status >= 200 and self.status <= 299;
-        self.image._loading = false;
-        self.image._complete = true;
-        self.image._failed = !ok;
-        if (ok) {
-            // Header probing preserves the encoded image's aspect ratio without
-            // paying the cost of decoding pixels. Fall back to HTML/CSS defaults
-            // only for unsupported or malformed formats.
-            const dims = encodedImageDimensions(self.probe.items) orelse
-                self.image.resolveNaturalDimensions();
-            self.image._natural_width = dims.w;
-            self.image._natural_height = dims.h;
-            // Intrinsic size is an input to replaced-element layout. Any boxes
-            // cached before the response completed must be recomputed.
-            self.frame.domChanged();
-        } else {
-            self.image._natural_width = 0;
-            self.image._natural_height = 0;
-        }
-
-        if (!self.deliverable()) return;
-
-        if (ok) {
-            try self.frame.queueLoad(self.image._proto);
-        } else {
-            try self.dispatchError();
-        }
+        const dimensions = if (self.status >= 200 and self.status <= 299)
+            self.image.decodedImageDimensions(self.probe.items)
+        else
+            null;
+        try self.scheduleCompletion(if (dimensions) |dims|
+            .{ .success = dims }
+        else
+            .failure);
     }
 
     fn preloadResultCallback(ctx: *anyopaque, result: Frame.ImagePreloadResult) !void {
         const self: *ImageLoad = @ptrCast(@alignCast(ctx));
         defer self.finish();
+        if (!self.isCurrent()) return;
 
-        self.image._loading = false;
-        self.image._complete = true;
-        self.image._failed = !result.ok;
-        if (result.ok) {
-            const dims = encodedImageDimensions(result.probe) orelse
-                self.image.resolveNaturalDimensions();
-            self.image._natural_width = dims.w;
-            self.image._natural_height = dims.h;
-            self.frame.domChanged();
-        } else {
-            self.image._natural_width = 0;
-            self.image._natural_height = 0;
-        }
-
-        if (!self.deliverable()) return;
-        if (result.ok) {
-            try self.frame.queueLoad(self.image._proto);
-        } else {
+        const dimensions = if (result.ok)
+            self.image.decodedImageDimensions(result.probe)
+        else
+            null;
+        if (dimensions) |dims| {
+            try self.scheduleCompletion(.{ .success = dims });
+        } else if (!result.ok) {
             // A failed resource hint does not make the consumer fail. The
             // registry removes failed entries before notifying waiters, so the
             // image can perform its own normal fetch without recursing back
             // into the failed preload generation.
-            self.image._complete = false;
-            self.image._failed = false;
-            try self.image.imageAddedCallback(self.frame);
+            try self.scheduleCompletion(.retry);
+        } else {
+            try self.scheduleCompletion(.failure);
         }
     }
 
     fn errorCallback(ctx: *anyopaque, _: anyerror) void {
         const self: *ImageLoad = @ptrCast(@alignCast(ctx));
         defer self.finish();
-        self.image._loading = false;
-        self.image._complete = true;
-        self.image._failed = true;
-        self.image._natural_width = 0;
-        self.image._natural_height = 0;
-        if (!self.deliverable()) return;
-        self.dispatchError() catch {};
+        if (!self.isCurrent()) return;
+        self.scheduleCompletion(.failure) catch {};
     }
 
-    fn dispatchError(self: *ImageLoad) !void {
-        // Always fire error for listeners (property or addEventListener).
-        const event = try Event.initTrusted(comptime .wrap("error"), .{}, self.frame._page);
-        try self.frame._event_manager.dispatch(self.image._proto.asEventTarget(), event);
+    fn scheduleCompletion(self: *ImageLoad, result: ImageCompletionCallback.Result) !void {
+        const callback = try self.frame.arena.create(ImageCompletionCallback);
+        callback.* = .{
+            .frame = self.frame,
+            .image = self.image,
+            .task_owner = self.frame.js.execution.captureTaskOwner(),
+            .generation = self.generation,
+            .result = result,
+        };
+        try self.frame.js.scheduler.add(callback, ImageCompletionCallback.run, 0, .{
+            .name = "Image.complete",
+            .low_priority = false,
+        });
     }
 
     fn finish(self: *ImageLoad) void {
         if (self.guard.isFinished()) return;
         self.guard.finished = true;
         self.frame.releaseArena(self.arena);
+    }
+};
+
+const ImageCompletionCallback = struct {
+    const Result = union(enum) {
+        success: ImageDimensions,
+        failure,
+        retry,
+    };
+
+    frame: *Frame,
+    image: *Image,
+    task_owner: @import("../../../../runtime/RealmLifecycleKernel.zig").TaskOwner,
+    generation: u64,
+    result: Result,
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *ImageCompletionCallback = @ptrCast(@alignCast(ctx));
+        if (self.frame.js.execution.isTaskOwnerStale(self.task_owner)) return null;
+        if (self.image._load_generation != self.generation) return null;
+
+        if (self.result == .retry) {
+            self.image._loading = false;
+            self.image._complete = false;
+            self.image._failed = false;
+            try self.image.imageAddedCallback(self.frame);
+            return null;
+        }
+
+        self.image._loading = false;
+        self.image._complete = true;
+        self.image._failed = self.result == .failure;
+        const typ = switch (self.result) {
+            .success => |dims| blk: {
+                self.image._natural_width = dims.w;
+                self.image._natural_height = dims.h;
+                self.frame.domChanged();
+                break :blk String.wrap("load");
+            },
+            .failure => blk: {
+                self.image._natural_width = 0;
+                self.image._natural_height = 0;
+                break :blk String.wrap("error");
+            },
+            .retry => unreachable,
+        };
+        const event = try Event.initTrusted(typ, .{}, self.frame._page);
+        try self.frame._event_manager.dispatch(self.image._proto.asEventTarget(), event);
+        return null;
     }
 };
 

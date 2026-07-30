@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+try {
+    const context = new OfflineAudioContext(1, 5000, 44100);
+    if (context.currentTime !== 0)
+      throw new Error(`currentTime was ${context.currentTime}`);
+
+    const oscillator = context.createOscillator();
+    const returned = oscillator.frequency.setValueAtTime(10000, context.currentTime);
+    if (returned !== oscillator.frequency)
+      throw new Error("setValueAtTime did not chain");
+    if (oscillator.frequency.value !== 10000)
+      throw new Error(`frequency was ${oscillator.frequency.value}`);
+
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+} catch (error) {
+    document.body.id = "fail";
+    document.body.textContent = String(error && error.stack || error);
+}
+</script>

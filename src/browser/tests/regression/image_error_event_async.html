@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+const image = new Image();
+let phase = "before-src";
+
+image.onerror = () => {
+  const queued = phase === "after-src";
+  document.body.id = queued ? "pass" : "fail";
+  document.body.textContent = queued
+    ? "pass"
+    : `image error dispatched synchronously (phase=${phase})`;
+};
+
+image.src = "data:not-a-valid-data-url";
+if (image.complete) {
+  document.body.id = "fail";
+  document.body.textContent = "image state completed synchronously inside src setter";
+}
+phase = "after-src";
+</script>

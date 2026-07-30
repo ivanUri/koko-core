@@ -76,6 +76,31 @@ pub fn getBottom(self: *const DOMRect) f64 {
     return self.getTop() + self.getHeight();
 }
 
+/// DOMRect inherits the platform serialization contract used by DOMRectReadOnly.
+/// Geometry APIs such as getBoundingClientRect() return a DOMRect, and callers
+/// may pass it through JSON serialization or explicitly call toJSON().
+pub fn toJSON(self: *const DOMRect) struct {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    top: f64,
+    right: f64,
+    bottom: f64,
+    left: f64,
+} {
+    return .{
+        .x = self.getX(),
+        .y = self.getY(),
+        .width = self.getWidth(),
+        .height = self.getHeight(),
+        .top = self.getTop(),
+        .right = self.getRight(),
+        .bottom = self.getBottom(),
+        .left = self.getLeft(),
+    };
+}
+
 pub fn snap(self: DOMRect) DOMRect {
     return .{
         ._x = quantizeCoord(self._x),
@@ -103,4 +128,5 @@ pub const JsApi = struct {
     pub const right = bridge.accessor(DOMRect.getRight, null, .{});
     pub const bottom = bridge.accessor(DOMRect.getBottom, null, .{});
     pub const left = bridge.accessor(DOMRect.getLeft, null, .{});
+    pub const toJSON = bridge.function(DOMRect.toJSON, .{});
 };

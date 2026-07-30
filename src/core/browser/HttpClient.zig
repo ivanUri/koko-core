@@ -157,6 +157,7 @@ obey_robots: bool,
 // Both fields are allocated from self.allocator when set, null otherwise.
 user_agent_override: ?[:0]const u8 = null,
 user_agent_header_override: ?[:0]const u8 = null,
+accept_language_header_override: ?[:0]const u8 = null,
 
 cdp_client: ?CDPClient = null,
 
@@ -330,12 +331,43 @@ pub fn layer(self: *Client) Layer {
 // Set a user agent override. Both the raw UA string and the pre-formatted
 // "User-Agent: <ua>" header string are allocated from self.allocator.
 pub fn setUserAgentOverride(self: *Client, ua: []const u8) !void {
-    self.clearUserAgentOverride();
+    return self.setIdentityOverride(ua, null);
+}
+
+/// Atomically replace the runtime identity overlay. All allocations complete
+/// before the previous overlay is released, so OOM cannot leave JavaScript
+/// and the network context observing different generations.
+pub fn setIdentityOverride(
+    self: *Client,
+    ua: []const u8,
+    accept_language: ?[]const u8,
+) !void {
     const override = try self.allocator.dupeZ(u8, ua);
     errdefer self.allocator.free(override);
     const header = try std.fmt.allocPrintSentinel(self.allocator, "User-Agent: {s}", .{ua}, 0);
+    errdefer self.allocator.free(header);
+    const language_header: ?[:0]const u8 = if (accept_language) |language|
+        try std.fmt.allocPrintSentinel(
+            self.allocator,
+            "Accept-Language: {s}",
+            .{language},
+            0,
+        )
+    else
+        null;
+    errdefer if (language_header) |language| self.allocator.free(language);
+
+    self.clearUserAgentOverride();
     self.user_agent_override = override;
     self.user_agent_header_override = header;
+    self.accept_language_header_override = language_header;
+}
+
+/// Set the Accept-Language request header overlay owned by this network
+/// context. The value is the CDP language list, not a preformatted header.
+pub fn setAcceptLanguageOverride(self: *Client, value: ?[]const u8) !void {
+    const ua = self.getUserAgent();
+    try self.setIdentityOverride(ua, value);
 }
 
 // Clear any user agent override, restoring the default from config.
@@ -347,6 +379,10 @@ pub fn clearUserAgentOverride(self: *Client) void {
     if (self.user_agent_header_override) |uah| {
         self.allocator.free(uah);
         self.user_agent_header_override = null;
+    }
+    if (self.accept_language_header_override) |language| {
+        self.allocator.free(language);
+        self.accept_language_header_override = null;
     }
 }
 
@@ -405,7 +441,11 @@ pub fn newHeaders(self: *const Client) !http.Headers {
     }
     const headers = &self.network.config.http_headers;
     const ua_header = self.user_agent_header_override orelse headers.user_agent_header;
-    return http.Headers.init(ua_header, headers.sec_ch_ua_header, headers.accept_language_header);
+    return http.Headers.init(
+        ua_header,
+        self.getSecChUaHeader(),
+        self.getAcceptLanguageHeader(),
+    );
 }
 
 pub fn getUserAgentHeader(self: *const Client) [:0]const u8 {
@@ -414,6 +454,18 @@ pub fn getUserAgentHeader(self: *const Client) [:0]const u8 {
 
 pub fn getUserAgent(self: *const Client) [:0]const u8 {
     return self.user_agent_override orelse self.network.config.http_headers.user_agent;
+}
+
+/// Legacy UA overrides without userAgentMetadata cannot safely reuse the base
+/// persona's UA client hints. An empty curl header removes the field.
+pub fn getSecChUaHeader(self: *const Client) [:0]const u8 {
+    if (self.user_agent_override != null) return "Sec-Ch-Ua:";
+    return self.network.config.http_headers.sec_ch_ua_header;
+}
+
+pub fn getAcceptLanguageHeader(self: *const Client) [:0]const u8 {
+    return self.accept_language_header_override orelse
+        self.network.config.http_headers.accept_language_header;
 }
 
 const AbortScope = enum { normal, full };
@@ -1100,8 +1152,10 @@ pub fn syncRequest(self: *Client, allocator: Allocator, params: RequestParams) !
     var sync_ctx = SyncContext{ .allocator = allocator, .body = .empty };
     errdefer sync_ctx.body.deinit(allocator);
 
+    var blocking_params = params;
+    blocking_params.blocks_caller = true;
     try self.request(.{
-        .params = params,
+        .params = blocking_params,
         .ctx = &sync_ctx,
         .header_callback = SyncContext.headerCallback,
         .data_callback = SyncContext.dataCallback,
@@ -1168,7 +1222,23 @@ fn process(self: *Client, transfer: *Transfer) !void {
         }
     }
 
-    self.queue.append(&transfer._node);
+    enqueueTransfer(&self.queue, &transfer._node, transfer.req.params.blocks_caller);
+}
+
+/// A request whose caller cannot make progress until completion must be the
+/// next request admitted when the bounded connection pool frees a slot.
+/// This does not preempt active transfers; it only prevents background
+/// fetches queued earlier from starving parser-blocking scripts/importScripts.
+fn enqueueTransfer(
+    queue: *std.DoublyLinkedList,
+    node: *std.DoublyLinkedList.Node,
+    blocks_caller: bool,
+) void {
+    if (blocks_caller) {
+        queue.prepend(node);
+    } else {
+        queue.append(node);
+    }
 }
 
 /// Start transfers deferred because they were requested mid-callback/perform.
@@ -1180,11 +1250,11 @@ fn tryStartQueuedTransfers(self: *Client) void {
     defer self._starting_queued = false;
 
     while (self.queue.popFirst()) |queue_node| {
+        const transfer: *Transfer = @fieldParentPtr("_node", queue_node);
         const conn = self.network.getConnection() orelse {
             self.queue.prepend(queue_node);
             break;
         };
-        const transfer: *Transfer = @fieldParentPtr("_node", queue_node);
         // Once makeRequest starts, it owns the transfer on every failure path.
         // In particular, configure/track/start failures deinit it before
         // returning.  Never inspect `transfer` in this catch: MemoryPool poisons
@@ -1703,6 +1773,16 @@ pub fn inTransferCallback(self: *const Client) bool {
     return self._transfer_callback_depth > 0;
 }
 
+/// Whether starting/driving another curl transfer on the current stack would
+/// violate libcurl's non-reentrancy contract.
+pub fn mutationsBlocked(self: *const Client) bool {
+    return curlMutationBlocked(
+        self.performing,
+        self._processing_messages,
+        self.inTransferCallback(),
+    );
+}
+
 /// Drain one inbound CDP command while nested inside curl perform / HTTP callbacks.
 ///
 /// Architecture: curl sets `performing=true` for the whole multi_perform +
@@ -1913,6 +1993,10 @@ pub const RequestParams = struct {
     /// (superseding root navigation discards pending page mid-redirect).
     browser_session: ?*Session = null,
     timeout_ms: u32 = 0,
+    /// The initiating execution context or document lifecycle cannot progress
+    /// without this response (classic parser-blocking script or importScripts).
+    /// Used solely for bounded connection-pool admission ordering.
+    blocks_caller: bool = false,
 
     // Set on an in-flight root-navigation transfer that was issued against a
     // pending Page. The old Page's frame.deinit (called from Session.commit
@@ -2318,6 +2402,16 @@ pub const Transfer = struct {
 
         // Reject unusable URLs before curl (avoids CURLE_URL_MALFORMAT storms).
         if (!isCurlSupportedTransferUrl(req.params.url)) {
+            // Log while RequestParams still owns the URL. makeRequest's error
+            // path releases the request arena before its caller can safely
+            // inspect the Transfer.
+            log.warn(.http, "unsupported transfer URL", .{
+                .request_id = req.params.request_id,
+                .frame_id = req.params.frame_id,
+                .resource_type = req.params.resource_type.string(),
+                .method = req.params.method,
+                .url = req.params.url,
+            });
             return error.UrlMalformat;
         }
         try conn.setURL(req.params.url);
@@ -2960,4 +3054,19 @@ test "active HTTP receives an I/O fairness quantum at a due-now scheduler deadli
     try std.testing.expectEqual(@as(c_int, 1), networkFairPollTimeout(-1, true));
     try std.testing.expectEqual(@as(c_int, 0), networkFairPollTimeout(0, false));
     try std.testing.expectEqual(@as(c_int, 25), networkFairPollTimeout(25, true));
+}
+
+test "caller-blocking transfer is admitted before queued background work" {
+    var queue: std.DoublyLinkedList = .{};
+    var background_1: std.DoublyLinkedList.Node = .{};
+    var background_2: std.DoublyLinkedList.Node = .{};
+    var blocking: std.DoublyLinkedList.Node = .{};
+
+    enqueueTransfer(&queue, &background_1, false);
+    enqueueTransfer(&queue, &background_2, false);
+    enqueueTransfer(&queue, &blocking, true);
+
+    try std.testing.expect(queue.popFirst() == &blocking);
+    try std.testing.expect(queue.popFirst() == &background_1);
+    try std.testing.expect(queue.popFirst() == &background_2);
 }

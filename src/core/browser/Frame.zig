@@ -83,6 +83,16 @@ fn assert(ok: bool, comptime msg: []const u8, args: anytype) void {
     std.debug.assert(ok);
 }
 
+pub fn historyStore(self: *Frame) *@import("../webapi/History.zig") {
+    if (self.parent == null) return &self._session.history;
+    return &self.window._child_history;
+}
+
+pub fn navigationStore(self: *Frame) *@import("../webapi/navigation/Navigation.zig") {
+    if (self.parent == null) return &self._session.navigation;
+    return &self.window._child_navigation;
+}
+
 var default_url = WebApiURL{ ._raw = "about:blank" };
 pub var default_location: Location = Location{ ._url = &default_url };
 
@@ -474,6 +484,15 @@ pub fn init(self: *Frame, frame_id: u32, page: *Page, parent: ?*Frame) !void {
         ._cross_origin_wrapper = undefined,
     });
     self.window._cross_origin_wrapper = .{ .window = self.window };
+    if (parent != null) {
+        try self.window._child_navigation.onNewFrame(self);
+        // Every newly-created nested browsing context starts with an initial
+        // about:blank session-history entry. Parser scripts in srcdoc or a
+        // fast response may synchronously call history.replaceState() before
+        // the first navigation reaches frameDoneCallback.
+        self.window._child_navigation._current_navigation_kind = .{ .push = null };
+        try self.window._child_navigation.commitNavigation(self);
+    }
     self._realm_has_window = true;
 
     self._style_manager = try StyleManager.init(self);
@@ -591,10 +610,11 @@ const DeferIframeChildDeinitCallback = struct {
 
     fn cancelled(ctx: *anyopaque) void {
         const self: *DeferIframeChildDeinitCallback = @ptrCast(@alignCast(ctx));
-        // Skip if already torn down, re-init'd, or processFrameNavigation owns it.
+        // Scheduler cancellation is a terminal path (normally parent/Page
+        // teardown). A queued navigation cannot still own this detached frame:
+        // the page navigation queues are being discarded with the page.
         if (self.child_frame._deinit_done) return;
         if (!self.child_frame._detach_pending) return;
-        if (self.child_frame._queued_navigation != null) return;
         self.child_frame.deinit();
     }
 
@@ -602,8 +622,9 @@ const DeferIframeChildDeinitCallback = struct {
         const self: *DeferIframeChildDeinitCallback = @ptrCast(@alignCast(ctx));
         if (self.child_frame._deinit_done) return null;
         if (!self.child_frame._detach_pending) return null;
-        // Queued re-nav owns teardown + qn.arena (processFrameNavigation).
-        if (self.child_frame._queued_navigation != null) return null;
+        // Detachment cancels navigation of this browsing context. Frame.deinit
+        // releases the QueuedNavigation arena; the page queue treats this
+        // pointer as stale and skips it.
         self.child_frame.deinit();
         return null;
     }
@@ -1200,14 +1221,13 @@ fn refererHeaderForRequest(self: *Frame, opts: HeadersForRequestOpts) ![:0]const
 pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: HeadersForRequestOpts) !void {
     const identity = self._session.browser.app.config.profile.identityPtr();
     const http_client = &self._session.browser.http_client;
-    const profile_headers = &http_client.network.config.http_headers;
     const request_url = opts.request_url orelse return;
     const hdr_alloc = opts.header_arena orelse self.arena;
 
     const static = HttpProfile.StaticHeaders{
         .user_agent_header = http_client.getUserAgentHeader(),
-        .sec_ch_ua_header = profile_headers.sec_ch_ua_header,
-        .accept_language_header = profile_headers.accept_language_header,
+        .sec_ch_ua_header = http_client.getSecChUaHeader(),
+        .accept_language_header = http_client.getAcceptLanguageHeader(),
     };
 
     const origin = if (opts.resource_type != .document and opts.include_origin_header)
@@ -1237,8 +1257,8 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
             if (!profile.isFirefox()) {
                 const chrome_opts = HttpProfile.ChromeHeadersOpts{
                     .full_client_hints = true,
-                    .brands = profile.http.brands,
-                    .color_scheme = profile.http.prefers_color_scheme,
+                    .brands = profile.persona.network.brands,
+                    .color_scheme = profile.persona.network.prefers_color_scheme,
                 };
                 try HttpProfile.appendCurlImpersonateColdHopSupplements(
                     headers,
@@ -1275,8 +1295,8 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
             // already used full headers (omit_sec_fetch_user path).
             const chrome_opts = HttpProfile.ChromeHeadersOpts{
                 .full_client_hints = full_hints,
-                .brands = profile.http.brands,
-                .color_scheme = profile.http.prefers_color_scheme,
+                .brands = profile.persona.network.brands,
+                .color_scheme = profile.persona.network.prefers_color_scheme,
                 .omit_sec_fetch_user = opts.omit_sec_fetch_user,
                 // Referer is navigation provenance, independent of whether the
                 // navigation has transient user activation. In particular,
@@ -1299,8 +1319,8 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
                 self.highEntropyClientHintsEnabledForUrl(request_url);
             const chrome_opts = HttpProfile.ChromeHeadersOpts{
                 .full_client_hints = full_hints,
-                .brands = profile.http.brands,
-                .color_scheme = profile.http.prefers_color_scheme,
+                .brands = profile.persona.network.brands,
+                .color_scheme = profile.persona.network.prefers_color_scheme,
                 .omit_sec_fetch_user = opts.omit_sec_fetch_user,
                 .referer_url = if (opts.omit_sec_fetch_user) opts.referer else null,
             };
@@ -1380,21 +1400,23 @@ pub fn releaseArena(self: *Frame, allocator: Allocator) void {
 pub fn pumpSameTurnPromiseContinuations(self: *Frame) void {
     const env = &self._session.browser.env;
     const exec = &self.js.execution;
-    const js_mod = @import("../js/js.zig");
-    const nested = js_mod.EventLoop.isHostNested(exec);
+    // Returning from a DOM binding resumes the suspended JavaScript stack; it
+    // is not a microtask checkpoint. Running Promise reactions here re-enters
+    // framework commit phases between synchronous DOM operations (for example
+    // appendChild), which violates HTML event-loop ordering and can turn a
+    // stable ref update into an infinite render loop. The script/task runner
+    // owns the checkpoint after V8 unwinds.
+    if (exec.context.call_depth > 0) {
+        env.checkpoint_pending = true;
+        return;
+    }
     var pass: u8 = 0;
     while (pass < 48) : (pass += 1) {
         // Unrestricted checkpoint: pure-JS Promise.resolve from onload.
         env.performMicrotaskCheckpointFp(self.js);
         if (@mod(pass, 4) == 3) {
-            if (nested) {
-                self.scheduleDeferredMacrotaskPump(0) catch |err| {
-                    log.warn(.frame, "defer nested dom timer pump", .{ .err = err });
-                };
-            } else {
-                _ = self.runOwnedSchedulerOne() catch {};
-                self.pumpDueTimersNow(10);
-            }
+            _ = self.runOwnedSchedulerOne() catch {};
+            self.pumpDueTimersNow(10);
         }
     }
 }
@@ -1417,6 +1439,10 @@ pub fn drainMicrotasksAfterDomInsertion(self: *Frame) void {
     // mutations are not page script mutations and must not re-enter V8's
     // microtask checkpoint while the serializer is already on the JS stack.
     if (self._suppress_dom_mutation_microtasks) return;
+    if (self.js.call_depth > 0) {
+        self._session.browser.env.checkpoint_pending = true;
+        return;
+    }
     const js_mod = @import("../js/js.zig");
     // Local scope for any Zig→JS that reactions may need.
     var owned_scope: JS.Local.Scope = undefined;
@@ -1497,6 +1523,17 @@ fn applySandboxOrigin(self: *Frame, url_origin: ?[]const u8) !void {
     try self.js.setOrigin(self.origin);
 }
 
+/// Install the creator browsing context's origin identity on an inline child.
+/// This preserves opaque-origin identity for about:blank/about:srcdoc. A
+/// serialized `null` origin cannot represent that relationship.
+fn inheritCreatorOrigin(self: *Frame, creator: *Frame) !void {
+    if (IFrameSandbox.usesOpaqueOrigin(self.iframeSandboxFlags())) {
+        return self.applySandboxOrigin(null);
+    }
+    self.origin = creator.origin;
+    self.js.inheritOrigin(creator.js.origin);
+}
+
 pub fn isSameOrigin(self: *const Frame, url: [:0]const u8) bool {
     const current_origin = self.origin orelse return false;
 
@@ -1508,6 +1545,43 @@ pub fn isSameOrigin(self: *const Frame, url: [:0]const u8) bool {
     // Starting here, at least protocols are equals.
     // Compare hosts (domain:port) strictly
     return std.mem.eql(u8, URL.getHost(url), URL.getHost(current_origin));
+}
+
+/// Whether this browsing context is potentially trustworthy for APIs marked
+/// [SecureContext]. Inline documents inherit their creator's serialized
+/// origin, so checking the active origin also covers about:blank/srcdoc.
+pub fn isSecureContext(self: *const Frame) bool {
+    return potentiallyTrustworthyOrigin(self.origin orelse self.url);
+}
+
+fn potentiallyTrustworthyOrigin(raw: []const u8) bool {
+    if (std.mem.startsWith(u8, raw, "https:") or std.mem.startsWith(u8, raw, "file:")) return true;
+    if (!std.mem.startsWith(u8, raw, "http://")) return false;
+
+    const authority = raw["http://".len..];
+    const end = std.mem.indexOfAny(u8, authority, "/?#") orelse authority.len;
+    const host_port = authority[0..end];
+    const hostname = if (host_port.len > 0 and host_port[0] == '[') blk: {
+        const close = std.mem.indexOfScalar(u8, host_port, ']') orelse return false;
+        break :blk host_port[0 .. close + 1];
+    } else blk: {
+        const colon = std.mem.indexOfScalar(u8, host_port, ':') orelse host_port.len;
+        break :blk host_port[0..colon];
+    };
+    return std.mem.eql(u8, hostname, "localhost") or
+        std.mem.eql(u8, hostname, "127.0.0.1") or
+        std.mem.eql(u8, hostname, "[::1]");
+}
+
+test "Frame: potentially trustworthy origins gate secure-context APIs" {
+    try std.testing.expect(potentiallyTrustworthyOrigin("https://example.test"));
+    try std.testing.expect(potentiallyTrustworthyOrigin("file:///tmp/page.html"));
+    try std.testing.expect(potentiallyTrustworthyOrigin("http://localhost:8080"));
+    try std.testing.expect(potentiallyTrustworthyOrigin("http://127.0.0.1/path"));
+    try std.testing.expect(potentiallyTrustworthyOrigin("http://[::1]:9222"));
+    try std.testing.expect(!potentiallyTrustworthyOrigin("about:blank"));
+    try std.testing.expect(!potentiallyTrustworthyOrigin("http://example.test"));
+    try std.testing.expect(!potentiallyTrustworthyOrigin("http://localhost.example.test"));
 }
 
 /// URL of the root frame in this frame tree (top-level browsing context).
@@ -1589,21 +1663,21 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
         // address and thus be mapped to the same v8::Object in the identity map.
         self.window._location = try Location.init(self.url, self);
 
-        const inherited_origin: ?[]const u8 = blk: {
-            // Network-error style about:srcdoc block → unique opaque origin.
-            if (opts.opaque_about_error) break :blk null;
-            if (is_blob) {
-                break :blk try URL.getOrigin(self.arena, request_url[5.. :0]);
-            }
+        if (is_about_blank and !opts.opaque_about_error) {
             if (self.parent) |parent| {
-                break :blk parent.origin;
+                try self.inheritCreatorOrigin(parent);
+            } else if (self.window._opener) |opener| {
+                try self.inheritCreatorOrigin(opener._frame);
+            } else {
+                try self.applySandboxOrigin(null);
             }
-            if (self.window._opener) |opener| {
-                break :blk opener._frame.origin;
-            }
-            break :blk null;
-        };
-        try self.applySandboxOrigin(inherited_origin);
+        } else {
+            const inline_origin = if (is_blob)
+                try URL.getOrigin(self.arena, request_url[5.. :0])
+            else
+                null;
+            try self.applySandboxOrigin(inline_origin);
+        }
 
         // Assume we parsed the document.
         // It's important to force a reset during the following navigation.
@@ -1680,10 +1754,9 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
         // force next request id manually b/c we won't create a real req.
         _ = session.browser.http_client.incrReqId();
 
-        if (self.parent == null) {
-            session.navigation._current_navigation_kind = opts.kind;
-            try session.navigation.commitNavigation(self);
-        }
+        const navigation = self.navigationStore();
+        navigation._current_navigation_kind = opts.kind;
+        try navigation.commitNavigation(self);
 
         self.documentIsComplete();
         return;
@@ -1765,9 +1838,7 @@ pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !vo
         .proxy = session.browser.app.config.httpProxy() != null,
     } });
 
-    if (self.parent == null) {
-        session.navigation._current_navigation_kind = opts.kind;
-    }
+    self.navigationStore()._current_navigation_kind = opts.kind;
 
     if (use_chrome_transport) {
         return http_client.requestChromeTransport(.{
@@ -2150,10 +2221,12 @@ pub fn flushPendingSyncIframeLoads(self: *Frame) void {
         self.flushPendingSyncIframeLoads();
     }
 
-    // EventLoop.afterDomMutation: nested → microtasks only; top → spin/timers.
-    self.pumpSameTurnPromiseContinuations();
-    const js_mod = @import("../js/js.zig");
-    js_mod.EventLoop.afterDomMutation(&self.js.execution);
+    // This function is called directly from Node insertion as well as from its
+    // deferred scheduler task. It may queue iframe load work, but must not run
+    // a checkpoint itself: during insertion the originating JavaScript call is
+    // still active, and during the deferred path the outer task runner owns the
+    // checkpoint. A private drain here can split a framework commit between ref
+    // detach and attach callbacks.
 }
 
 /// Parser-inserted about:blank iframes queue sync `load` during HTML parse.
@@ -2404,11 +2477,9 @@ pub fn iframeCompletedLoading(self: *Frame, iframe: *IFrame) void {
                 self.pendingLoadCompleted();
             };
         };
-        // Promise reactions are driven by the load event's microtask checkpoint
-        // and the shared event loop. Do not keep polling this realm on a private
-        // wall-clock schedule.
-        self.pumpSameTurnPromiseContinuations();
-        self.settleIframePromisesNow();
+        // Promise reactions are driven after the queued load task returns.
+        // Do not checkpoint while iframeCompletedLoading is reached from the
+        // originating appendChild call.
         return;
     }
     self.queueIframeLoad(iframe) catch |err| {
@@ -3230,14 +3301,12 @@ fn frameDoneCallback(ctx: *anyopaque) !void {
         if (self._page._state == .pending and retryPendingRootNavigation(self)) return;
     }
 
-    // Session Navigation is per browsing context (root only). Iframe loads must
-    // not push child URLs into the top-level navigation stack — Cloudflare
-    // challenge scripts read navigation.currentEntry on the parent page.
-    if (self.parent == null) {
-        log.debug(.frame, "commit navigation start", .{ .type = self._type, .url = self.url });
-        try self._session.navigation.commitNavigation(self);
-        log.debug(.frame, "commit navigation done", .{ .type = self._type, .url = self.url });
-    }
+    // Session history belongs to a browsing context. Root Documents retain the
+    // Session store across replacement realms; nested contexts use their
+    // Window-owned store and must never publish entries into the root stack.
+    log.debug(.frame, "commit navigation start", .{ .type = self._type, .url = self.url });
+    try self.navigationStore().commitNavigation(self);
+    log.debug(.frame, "commit navigation done", .{ .type = self._type, .url = self.url });
 
     defer if (comptime IS_DEBUG) {
         log.debug(.frame, "frame load complete", .{
@@ -3580,11 +3649,7 @@ fn loadIframeSrcdoc(self: *Frame, iframe: *IFrame, srcdoc: []const u8) !void {
     child.url = "about:srcdoc";
     child.window._location = try Location.init("about:srcdoc", child);
 
-    const inherited_origin: ?[]const u8 = blk: {
-        if (IFrameSandbox.usesOpaqueOrigin(child.iframeSandboxFlags())) break :blk null;
-        break :blk self.origin;
-    };
-    try child.applySandboxOrigin(inherited_origin);
+    try child.inheritCreatorOrigin(self);
 
     child._parse_state = .complete;
 
@@ -7086,6 +7151,112 @@ test "WebApi: Frames" {
 
 test "WebApi: Integration" {
     try testing.htmlRunner("integration", .{});
+}
+
+test "Frame: initial about blank inherits creator origin identity" {
+    try testing.htmlRunner("regression/iframe_initial_about_blank.html", .{});
+}
+
+test "Frame: appendChild does not checkpoint microtasks inside DOM call" {
+    try testing.htmlRunner("regression/append_child_microtask_order.html", .{});
+}
+
+test "Frame: iframe append does not checkpoint microtasks inside DOM call" {
+    try testing.htmlRunner("regression/append_iframe_microtask_order.html", .{});
+}
+
+test "Frame: iframe contentWindow exists while child document is loading" {
+    try testing.htmlRunner("regression/iframe_content_window_while_loading.html", .{});
+}
+
+test "Frame: iframe src reflects content attribute changes" {
+    try testing.htmlRunner("regression/iframe_src_reflects_content_attribute.html", .{});
+    try testing.htmlRunner("regression/dom_rect_to_json.html", .{});
+    try testing.htmlRunner("regression/performance_timing_to_json.html", .{});
+}
+
+test "Frame: iframe Window postMessage round-trips source origin and data" {
+    try testing.htmlRunner("regression/iframe_window_post_message_roundtrip.html", .{});
+}
+
+test "Frame: iframe Window hierarchy preserves browsing-context identity" {
+    try testing.htmlRunner("regression/iframe_window_hierarchy_identity.html", .{});
+}
+
+test "Frame: iframe Location uses its owning browsing context" {
+    try testing.htmlRunner("regression/iframe_location_owner_browsing_context.html", .{});
+}
+
+test "Frame: iframe history and navigation are isolated from parent" {
+    try testing.htmlRunner("regression/iframe_history_isolated_from_parent.html", .{});
+}
+
+test "Frame: iframe Window postMessage transfers a MessagePort" {
+    try testing.htmlRunner("regression/iframe_window_message_port_transfer.html", .{});
+}
+
+test "Frame: removing cross-origin iframe releases child Context origin" {
+    const frame = try testing.pageTest(
+        "regression/iframe_cross_origin_remove_releases_context.html",
+        .{},
+    );
+    defer testing.reset();
+    defer frame._session.removePage();
+
+    var runner = try frame._session.runner(.{});
+    try runner.wait(.{ .ms = 2000 });
+    try frame.runOwnedScheduler();
+
+    try std.testing.expectEqual(@as(usize, 1), frame._page.origins.count());
+    try std.testing.expectEqual(@as(usize, 1), frame.js.origin.rc);
+}
+
+test "Frame: MessagePort postMessage queues a task" {
+    try testing.htmlRunner("regression/message_port_async_delivery.html", .{});
+}
+
+test "Frame: MessagePort tasks have a microtask checkpoint between deliveries" {
+    try testing.htmlRunner("regression/message_port_intertask_microtask.html", .{});
+}
+
+test "Frame: timer scheduling does not checkpoint microtasks inside host call" {
+    try testing.htmlRunner("regression/timer_scheduling_microtask_order.html", .{});
+}
+
+test "Frame: Window omits non-browser immediate timer APIs" {
+    try testing.htmlRunner("regression/window_omits_set_immediate.html", .{});
+}
+
+test "Frame: image error event is queued after src setter returns" {
+    try testing.htmlRunner("regression/image_error_event_async.html", .{});
+}
+
+test "Frame: stale image request generation cannot dispatch events" {
+    try testing.htmlRunner("regression/image_stale_generation_event.html", .{});
+}
+
+test "Frame: link preload error event is queued after DOM insertion" {
+    try testing.htmlRunner("regression/link_error_event_async.html", .{});
+}
+
+test "Frame: script load event is queued after DOM insertion" {
+    try testing.htmlRunner("regression/script_load_event_async.html", .{});
+}
+
+test "Frame: ReadableStream closes only after queued chunks drain" {
+    try testing.htmlRunner("regression/readable_stream_close_after_queue.html", .{});
+}
+
+test "Frame: fetch resolves on headers and streams body chunks" {
+    try testing.htmlRunner("regression/fetch_resolves_on_headers_streaming.html", .{});
+}
+
+test "Frame: DOM wrappers preserve object identity across traversal" {
+    try testing.htmlRunner("regression/dom_wrapper_identity.html", .{});
+}
+
+test "Frame: OfflineAudioContext currentTime schedules AudioParam" {
+    try testing.htmlRunner("regression/offline_audio_current_time.html", .{});
 }
 
 test "Page: isSameOrigin" {

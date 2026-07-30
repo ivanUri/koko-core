@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+const image = new Image();
+let loads = 0;
+let errors = 0;
+image.onload = () => {
+  loads += 1;
+};
+image.onerror = () => {
+  errors += 1;
+};
+
+image.src =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB";
+image.src = "data:not-a-valid-data-url";
+
+setTimeout(() => {
+  const pass = loads === 0 && errors === 1
+    && image.complete && image.naturalWidth === 0;
+  document.body.id = pass ? "pass" : "fail";
+  document.body.textContent = pass
+    ? "pass"
+    : `stale image event delivered (load=${loads}, error=${errors})`;
+}, 0);
+</script>

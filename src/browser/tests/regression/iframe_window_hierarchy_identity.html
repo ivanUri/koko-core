@@ -1,0 +1,51 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  attempts: 0,
+  assertOk() {
+    if (document.body.id === "pass") return true;
+    this.attempts += 1;
+    if (this.attempts > 80) throw new Error(document.body.textContent);
+    return false;
+  },
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+addEventListener("message", event => {
+  if (event.data?.kind !== "identity") return;
+  const child = frame.contentWindow;
+  const result = {
+    childWindowStable: child === frame.contentWindow,
+    childDiffersFromParent: child !== window,
+    childWindowIsSelf: child.window === child && child.self === child,
+    childParentIsParent: child.parent === window,
+    childTopIsParent: child.top === window,
+    childFrameElementIsFrame: child.frameElement === frame,
+    reported: event.data.result,
+  };
+  if (Object.values(result).every(Boolean)) {
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+  } else {
+    document.body.textContent = JSON.stringify(result);
+  }
+});
+
+const frame = document.createElement("iframe");
+frame.srcdoc = `
+  <script>
+    parent.postMessage({
+      kind: "identity",
+      result: {
+        windowIsSelf: window === self,
+        parentDiffersFromWindow: parent !== window,
+        topIsParent: top === parent,
+        frameElementPresent: frameElement !== null
+      }
+    }, "*");
+  <\/script>
+`;
+document.body.appendChild(frame);
+</script>

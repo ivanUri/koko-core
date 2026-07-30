@@ -687,11 +687,11 @@ pub const Connection = struct {
     ) !void {
         const easy = self._easy;
         // chrome150 → curl target chrome146; ML-DSA applied in applyChromeTlsKnobs.
-        const target = config.profile.transport.impersonate;
+        const target = config.profile.persona.network.impersonate;
         try libcurl.setImpersonate(easy, target, default_headers);
         // Firefox/Safari: leave vendor impersonate defaults (h2 for Safari 260, no ML-DSA).
         if (config.profile.isChromium()) {
-            try applyChromeTlsKnobs(easy, config.profile.transport.target, version);
+            try applyChromeTlsKnobs(easy, config.profile.persona.network.transport_target, version);
             const http_version: c_long = switch (version) {
                 .h2 => libcurl.HTTP_VERSION_2TLS,
                 .h3 => libcurl.HTTP_VERSION_3,

@@ -40,17 +40,18 @@ pub fn promise(self: PromiseResolver) js.Promise {
 }
 
 pub fn resolve(self: PromiseResolver, comptime source: []const u8, value: anytype) void {
-    self._resolve(value) catch |err| {
+    self._resolve(source, value) catch |err| {
         log.err(.bug, "resolve", .{ .source = source, .err = err, .persistent = false });
     };
 }
 
-fn _resolve(self: PromiseResolver, value: anytype) !void {
+fn _resolve(self: PromiseResolver, comptime source: []const u8, value: anytype) !void {
     const local = self.local;
     const env = local.ctx.env;
 
     if (builtin.mode == .Debug) {
         log.info(.browser, "promise.resolve", .{
+            .source = source,
             .checkpoint_active = env.checkpoint_active,
             .checkpoint_pending = env.checkpoint_pending,
         });

@@ -43,6 +43,9 @@ _execution: *const Execution,
 _reader: ?*ReadableStreamDefaultReader,
 _controller: *ReadableStreamDefaultController,
 _stored_error: ?[]const u8,
+/// HTML Streams close-requested flag. A close request does not transition the
+/// stream to `closed` until every queued chunk has been consumed.
+_close_requested: bool = false,
 _closed_resolver: ?js.PromiseResolver.Global = null,
 _pull_fn: ?js.Function.Global = null,
 _pulling: bool = false,
@@ -208,6 +211,7 @@ fn shouldCallPull(self: *const ReadableStream) bool {
     if (self._state != .readable) {
         return false;
     }
+    if (self._close_requested) return false;
 
     if (self._pull_fn == null) {
         return false;
@@ -253,6 +257,7 @@ pub fn cancel(self: *ReadableStream, reason: ?[]const u8, exec: *const Execution
     }
 
     self._state = .closed;
+    self._close_requested = false;
     self._controller._queue.clearRetainingCapacity();
 
     const result = ReadableStreamDefaultReader.ReadResult{

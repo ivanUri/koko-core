@@ -33,6 +33,7 @@ const http = require("node:http");
 
 const PROFILE_ID = process.argv[2] || "chrome-probe";
 const CDP_HTTP   = (process.argv[3] || "http://127.0.0.1:9222").replace(/\/+$/, "");
+const CAPTURE_URL = process.argv[4] || "https://tls.peet.ws/";
 const VELORA_ROOT = path.resolve(__dirname, "..");
 const FINAL_DIR  = path.join(VELORA_ROOT, "browser", "fingerprints", PROFILE_ID);
 const OUT_DIR    = `${FINAL_DIR}.staging-${process.pid}`;
@@ -75,11 +76,11 @@ function connectCDP(wsUrl) {
     const pending = new Map();
 
     const client = {
-      send(method, params = {}) {
+      send(method, params = {}, sessionId) {
         const id = idCounter++;
         return new Promise((res, rej) => {
           pending.set(id, { res, rej });
-          ws.send(JSON.stringify({ id, method, params }));
+          ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
         });
       },
       close() { ws.close(); },
@@ -124,6 +125,21 @@ async function evalJS(cdp, expression) {
     throw new Error(msg);
   }
   return res.result?.value ?? null;
+}
+
+async function waitForCaptureDocument(cdp, timeoutMs = 20000) {
+  const deadline = Date.now() + timeoutMs;
+  await cdp.send("Runtime.enable");
+  await cdp.send("Page.enable");
+  while (Date.now() < deadline) {
+    const ready = await evalJS(cdp, `Boolean(
+      document.body &&
+      (document.readyState === "interactive" || document.readyState === "complete")
+    )`).catch(() => false);
+    if (ready) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`capture document was not ready after ${timeoutMs}ms`);
 }
 
 // ─── Probe scripts ────────────────────────────────────────────────────────────
@@ -602,17 +618,42 @@ async function main() {
   const targets = await cdpFetch("/json/list");
   const pages = (Array.isArray(targets) ? targets : [])
     .filter(t => t.type === "page" && t.webSocketDebuggerUrl);
+  let target;
+  let cdp;
   if (!pages.length) {
-    throw new Error(
-      "Không tìm thấy page target.\n" +
-      "Đảm bảo Chrome đang chạy với --remote-debugging-port=9222"
-    );
+    const version = await cdpFetch("/json/version");
+    if (!version.webSocketDebuggerUrl) {
+      throw new Error(
+        "Không tìm thấy page target hoặc browser WebSocket.\n" +
+        "Đảm bảo browser đang chạy với remote debugging"
+      );
+    }
+    const browserCdp = await connectCDP(version.webSocketDebuggerUrl);
+    const created = await browserCdp.send("Target.createTarget", { url: CAPTURE_URL });
+    const attached = await browserCdp.send("Target.attachToTarget", {
+      targetId: created.targetId,
+      flatten: true,
+    });
+    cdp = {
+      send(method, params = {}) {
+        return browserCdp.send(method, params, attached.sessionId);
+      },
+      close() {
+        browserCdp.close();
+      },
+    };
+    target = {
+      title: "(created through Target.createTarget)",
+      url: CAPTURE_URL,
+    };
+  } else {
+    target = pages[0];
+    cdp = await connectCDP(target.webSocketDebuggerUrl);
   }
-  const target = pages[0];
   console.log(`📌 Target : ${target.title || "(no title)"}`);
   console.log(`   URL    : ${target.url}\n`);
 
-  const cdp = await connectCDP(target.webSocketDebuggerUrl);
+  await waitForCaptureDocument(cdp);
 
   // queryLocalFonts() requires an explicit local-fonts permission on a secure
   // origin. localhost is secure-context eligible; grant only for the current
@@ -689,6 +730,7 @@ async function main() {
   }
 
   if (results.audio)            writeAsset("audio-probe.json", results.audio, true);
+  if (results.canvas)           writeAsset("canvas-probe.json", results.canvas, true);
   if (results.fonts)            writeAsset("fonts.json", results.fonts, true);
   if (results.measureText)      writeAsset("measuretext.json", results.measureText);
   if (results.voices)           writeAsset("voices.json", results.voices, true);
@@ -780,6 +822,10 @@ async function main() {
       maxTextureImageUnits: results.webgl1.maxTextureImageUnits,
       maxFragmentUniformVectors: results.webgl1.maxFragmentUniformVectors,
       maxDrawBuffers: results.webgl1.maxDrawBuffers,
+      maxColorAttachmentsWebGL2: results.webgl2?.maxColorAttachments ?? 8,
+      maxSamplesWebGL2: results.webgl2?.maxSamples ?? 4,
+      max3dTextureSizeWebGL2: results.webgl2?.max3dTextureSize ?? 2048,
+      maxArrayTextureLayersWebGL2: results.webgl2?.maxArrayTextureLayers ?? 2048,
       maxTextureMaxAnisotropy: results.webgl1.maxTextureMaxAnisotropy,
       maxViewportDims: results.webgl1.maxViewportDims,
       aliasedLineWidthRange: results.webgl1.aliasedLineWidthRange,
@@ -837,6 +883,9 @@ async function main() {
 
     // Extra fields (not yet implemented in Velora engine — reserved for future)
     _future: {
+      canvasProbe: results.canvas ? {
+        dataFile: assetRef["canvas-probe.json"],
+      } : undefined,
       webgpu: results.webgpu,
       webgl2: results.webgl2,
       mediaDevices: results.mediaDevices,

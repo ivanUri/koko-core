@@ -143,7 +143,10 @@ pub fn loadedProfile(self: *const Page) *const ProfileStore.LoadedProfile {
 }
 
 pub fn navigatorState(self: *const Page) NavigatorState {
-    return .{ .profile = self.identityProfile() };
+    return .{
+        .profile = self.identityProfile(),
+        .emulation = self.session.emulation,
+    };
 }
 
 pub fn init(self: *Page, session: *Session, frame_id: u32) !void {

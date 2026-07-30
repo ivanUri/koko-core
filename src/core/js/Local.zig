@@ -1545,6 +1545,11 @@ pub fn rejectErrorPromise(self: *const Local, value: js.PromiseResolver.RejectEr
 }
 
 pub fn resolvePromise(self: *const Local, value: anytype) !js.Promise {
+    if (std.posix.getenv("VELORA_PROMISE_STACK") != null) {
+        log.info(.browser, "Local.resolvePromise caller", .{
+            .stack = self.stackTrace() catch null,
+        });
+    }
     var resolver = js.PromiseResolver.init(self);
     resolver.resolve("Local.resolvePromise", value);
     return resolver.promise();

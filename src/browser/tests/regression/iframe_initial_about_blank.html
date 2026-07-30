@@ -1,0 +1,59 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+try {
+  const iframe = document.createElement("iframe");
+  document.documentElement.appendChild(iframe);
+
+  const childDocument = iframe.contentDocument;
+  if (!childDocument) throw new Error("missing initial contentDocument");
+  if (!childDocument.documentElement || !childDocument.body)
+    throw new Error("initial about:blank document was not injected synchronously");
+
+  const div = childDocument.createElement("div");
+  if (!div) throw new Error("child document createElement failed");
+
+  const childWindow = iframe.contentWindow;
+  if (!childWindow) throw new Error("missing initial contentWindow");
+  if (childWindow.document !== childDocument)
+    throw new Error("contentWindow.document does not match contentDocument");
+  if (!childWindow.navigator)
+    throw new Error("same-origin child navigator is inaccessible");
+  const windowKeys = [];
+  for (const key in childWindow) windowKeys.push(key);
+  const navigatorKeys = [];
+  for (const key in childWindow.navigator) navigatorKeys.push(key);
+  if (!navigatorKeys.length)
+    throw new Error("same-origin child navigator was not enumerable");
+  iframe.remove();
+
+  setTimeout(() => {
+    try {
+      const second = document.createElement("iframe");
+      document.documentElement.appendChild(second);
+      if (!second.contentWindow || !second.contentWindow.navigator)
+        throw new Error("second same-origin child navigator is inaccessible");
+      const secondNavigatorKeys = [];
+      for (const key in second.contentWindow.navigator) secondNavigatorKeys.push(key);
+      if (!secondNavigatorKeys.length)
+        throw new Error("second same-origin child navigator was not enumerable");
+      second.remove();
+
+      document.body.id = "pass";
+      document.body.textContent = "pass";
+    } catch (error) {
+      document.body.id = "fail";
+      document.body.textContent = String(error && error.stack || error);
+    }
+  }, 0);
+} catch (error) {
+  document.body.id = "fail";
+  document.body.textContent = String(error && error.stack || error);
+}
+</script>

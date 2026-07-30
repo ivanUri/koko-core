@@ -297,15 +297,39 @@ const PreloadLoad = struct {
     }
 
     fn dispatchError(self: *PreloadLoad) !void {
-        // Always fire for listeners (property or addEventListener), like Image.
-        const event = try Event.initTrusted(comptime .wrap("error"), .{}, self.frame._page);
-        try self.frame._event_manager.dispatch(self.link._proto.asEventTarget(), event);
+        // Link resource errors are queued tasks. A preload can fail while a
+        // framework is synchronously committing href/rel attributes; firing
+        // the listener on that stack re-enters the commit before it unwinds.
+        const callback = try self.frame.arena.create(LinkErrorCallback);
+        callback.* = .{
+            .frame = self.frame,
+            .link = self.link,
+            .task_owner = self.frame.js.execution.captureTaskOwner(),
+        };
+        try self.frame.js.scheduler.add(callback, LinkErrorCallback.run, 0, .{
+            .name = "Link.error",
+            .low_priority = false,
+        });
     }
 
     fn finish(self: *PreloadLoad) void {
         if (self.guard.isFinished()) return;
         self.guard.finished = true;
         self.frame.releaseArena(self.arena);
+    }
+};
+
+const LinkErrorCallback = struct {
+    frame: *Frame,
+    link: *Link,
+    task_owner: @import("../../../../runtime/RealmLifecycleKernel.zig").TaskOwner,
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *LinkErrorCallback = @ptrCast(@alignCast(ctx));
+        if (self.frame.js.execution.isTaskOwnerStale(self.task_owner)) return null;
+        const event = try Event.initTrusted(comptime .wrap("error"), .{}, self.frame._page);
+        try self.frame._event_manager.dispatch(self.link._proto.asEventTarget(), event);
+        return null;
     }
 };
 

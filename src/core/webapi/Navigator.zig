@@ -59,7 +59,7 @@ _login: NavigatorLogin = .{},
 pub const init: Navigator = .{};
 
 pub fn getUserAgent(_: *const Navigator, frame: *Frame) []const u8 {
-    return frame.navigatorState().userAgent(&frame._session.browser.http_client);
+    return frame.navigatorState().userAgent();
 }
 
 pub fn getLanguages(_: *const Navigator, frame: *Frame) []const []const u8 {
@@ -115,7 +115,10 @@ pub fn getStorage(self: *Navigator) *StorageManager {
     return &self._storage;
 }
 
-pub fn getUserAgentData(self: *Navigator) *NavigatorUAData {
+pub fn getUserAgentData(self: *Navigator, frame: *Frame) ?*NavigatorUAData {
+    if (!frame.navigatorState().userAgentDataEnabled(
+        frame.loadedProfile().persona.features.user_agent_data,
+    )) return null;
     return &self._ua_data;
 }
 
@@ -183,7 +186,11 @@ pub fn getBluetooth(self: *Navigator) *navigator_extras.Bluetooth {
     return &self._bluetooth;
 }
 
-pub fn getGpu(self: *Navigator) *navigator_extras.GPU {
+pub fn getGpu(self: *Navigator, frame: *Frame) ?*navigator_extras.GPU {
+    // WebGPU is a secure-context API. Returning no implementation for an
+    // untrustworthy realm avoids advertising an adapter that the browser
+    // cannot actually make available there.
+    if (!frame.isSecureContext()) return null;
     return &self._gpu;
 }
 

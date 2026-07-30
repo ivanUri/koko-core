@@ -456,7 +456,11 @@ pub fn processQueuedNavigation(self: *Session) !void {
 
     // First pass: process async navigations (non-about:blank)
     for (navigations.items) |frame| {
-        const qn = frame._queued_navigation.?;
+        // Detached iframe teardown can leave a stale pointer in this
+        // double-buffered queue. Its scheduler finalizer owns Frame.deinit;
+        // the queue no longer owns or may dereference its navigation.
+        if (frame._deinit_done) continue;
+        const qn = frame._queued_navigation orelse continue;
 
         if (qn.is_about_blank) {
             // Defer about:blank to second pass
@@ -474,7 +478,8 @@ pub fn processQueuedNavigation(self: *Session) !void {
     // Second pass: process synchronous navigations (about:blank)
     // These may trigger new navigations which go into queued_navigation
     for (about_blank_queue.items) |frame| {
-        const qn = frame._queued_navigation.?;
+        if (frame._deinit_done) continue;
+        const qn = frame._queued_navigation orelse continue;
         try self.processFrameNavigation(frame, qn);
     }
 

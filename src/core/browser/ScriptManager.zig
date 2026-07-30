@@ -247,7 +247,7 @@ pub fn addFromElement(self: *ScriptManager, comptime from_parser: bool, script_e
         // libcurl cannot multi_add/perform from inside a transfer callback
         // (SPA injects scripts during another script's doneCallback). Blocking
         // syncRequest would raise RecursiveApiCall — demote to async fetch+eval.
-        const reentrant_http = self.base.client.performing or self.base.client.inTransferCallback();
+        const reentrant_http = self.base.client.mutationsBlocked();
         const use_sync = is_blocking and !reentrant_http;
 
         if (use_sync) {
@@ -293,6 +293,10 @@ pub fn addFromElement(self: *ScriptManager, comptime from_parser: bool, script_e
                     .cookie_origin = frame.url,
                     .top_level_cookie_url = frame.topLevelUrl(),
                     .resource_type = .script,
+                    // A parser-blocking script demoted only to avoid libcurl
+                    // reentrancy still blocks document lifecycle and must keep
+                    // its network admission priority.
+                    .blocks_caller = is_blocking,
                     .notification = frame._session.notification,
                 },
                 .start_callback = if (log.enabled(.http, .debug)) Script.HttpCtx.startCallback else null,

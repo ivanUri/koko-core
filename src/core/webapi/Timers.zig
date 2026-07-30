@@ -134,11 +134,13 @@ pub fn schedule(
     });
 
     // Nested host stack: never pumpDueTimersNow (IsOnCentralStack / iframe race).
-    // JsEntryGate owns “must queue”; EventLoop.spin on wait edges runs due timers.
+    // Scheduling a timer is not a microtask checkpoint: JavaScript must resume
+    // after setTimeout/setImmediate and finish the current synchronous job
+    // before Promise reactions may run. JsEntryGate owns “must queue”;
+    // EventLoop.spin on wait edges runs the queued timer after V8 has unwound.
     if (opts.mode == .normal and effective_delay <= 10 and js.JsEntryGate.mustQueueAsTask(exec)) {
         switch (exec.context.global) {
             .frame => |frame| {
-                js.EventLoop.drainMicrotasksNested(exec);
                 frame.scheduleDeferredMacrotaskPump(0) catch |err| {
                     log.warn(.js, "timer defer pump", .{ .err = err, .delay = effective_delay });
                 };
@@ -146,7 +148,6 @@ pub fn schedule(
             .worker => |wgs| {
                 // Nested worker setTimeout(≤10ms): defer pump so clearTimeout in
                 // the same handler runs first.
-                js.EventLoop.drainMicrotasksNested(exec);
                 wgs._worker._frame.scheduleDeferredMacrotaskPump(0) catch |err| {
                     log.warn(.js, "worker timer defer pump", .{ .err = err, .delay = effective_delay });
                 };

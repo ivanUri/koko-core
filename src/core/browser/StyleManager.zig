@@ -108,7 +108,7 @@ fn parseSheet(self: *StyleManager, sheet: *CSSStyleSheet) !void {
 fn mediaViewport(self: *StyleManager) MediaQueryEval.Viewport {
     const profile = self.frame.identityProfile();
     const screen = profile.screen;
-    const scheme = self.frame.loadedProfile().http.prefers_color_scheme;
+    const scheme = self.frame.loadedProfile().persona.network.prefers_color_scheme;
     const color_scheme: MediaQueryEval.Viewport.ColorScheme = if (std.ascii.eqlIgnoreCase(scheme, "dark")) .dark else .light;
     // Match MediaQueryList: continuous-media width is the layout viewport.
     return .{

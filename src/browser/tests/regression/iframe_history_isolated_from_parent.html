@@ -1,0 +1,61 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  attempts: 0,
+  assertOk() {
+    if (document.body.id === "pass") return true;
+    this.attempts += 1;
+    if (this.attempts > 80) throw new Error(document.body.textContent);
+    return false;
+  },
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+history.replaceState({ owner: "parent" }, "", "?parent");
+const parentUrl = location.href;
+const parentLength = history.length;
+
+addEventListener("message", event => {
+  if (event.data?.kind !== "child-history") return;
+  const result = {
+    parentUrlUnchanged: location.href === parentUrl,
+    parentStateUnchanged: history.state?.owner === "parent",
+    parentLengthUnchanged: history.length === parentLength,
+    childUrlChanged: event.data.url.endsWith("?child"),
+    childStateIsolated: event.data.state?.owner === "child",
+    childNavigationEntryChanged:
+      event.data.navigationUrl?.endsWith("?child") === true,
+  };
+  console.log("iframe-history-result", JSON.stringify({ result, child: event.data }));
+  if (Object.values(result).every(Boolean)) {
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+  } else {
+    document.body.textContent = JSON.stringify({ result, child: event.data });
+  }
+});
+
+const frame = document.createElement("iframe");
+frame.srcdoc = `
+  <script>
+    try {
+      history.replaceState({ owner: "child" }, "", "?child");
+      parent.postMessage({
+        kind: "child-history",
+        url: location.href,
+        state: history.state,
+        navigationUrl: navigation.currentEntry?.url
+      }, "*");
+    } catch (error) {
+      parent.postMessage({
+        kind: "child-history",
+        error: String(error),
+        stack: error?.stack ?? ""
+      }, "*");
+    }
+  <\/script>
+`;
+document.body.appendChild(frame);
+</script>

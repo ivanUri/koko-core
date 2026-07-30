@@ -513,6 +513,10 @@ pub const BrowserContext = struct {
     // Scripts registered via Page.addScriptToEvaluateOnNewDocument.
     // Evaluated in each new document after navigation completes.
     scripts_on_new_document: std.ArrayList(ScriptOnNewDocument) = .empty,
+    // Last main-world V8 context observed for each frame. Loader ids can change
+    // during same-realm SPA/history transitions, but new-document hooks belong
+    // to a JavaScript realm and must execute exactly once in that realm.
+    new_document_script_contexts: std.AutoHashMapUnmanaged(u32, usize) = .empty,
     next_script_id: u32 = 1,
 
     http_proxy_changed: bool = false,
@@ -666,6 +670,7 @@ pub const BrowserContext = struct {
         self.intercept_state.deinit();
         self.emulation.deinit(self.arena);
         self.frame_sessions.deinit();
+        self.new_document_script_contexts.deinit(self.arena);
     }
 
     pub fn reset(self: *BrowserContext) void {

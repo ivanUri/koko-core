@@ -33,7 +33,7 @@ pub fn id(self: *const NavigationHistoryEntry) []const u8 {
 }
 
 pub fn index(self: *const NavigationHistoryEntry, frame: *Frame) i32 {
-    const navigation = &frame._session.navigation;
+    const navigation = frame.navigationStore();
 
     for (navigation._entries.items, 0..) |entry, i| {
         if (std.mem.eql(u8, entry._id, self._id)) {

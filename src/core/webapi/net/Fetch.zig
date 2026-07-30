@@ -50,6 +50,7 @@ _integrity: []const u8,
 _method: []const u8,
 _fetch_resolved: bool = false,
 _stream: ?*ReadableStream = null,
+_pending_chunk_tasks: usize = 0,
 _keepalive: bool = false,
 
 pub const Input = Request.Input;
@@ -88,6 +89,7 @@ pub fn init(input: Input, options: ?InitOpts, exec: *const Execution) !js.Promis
     }
 
     const response = try Response.init(null, .{ .status = 0 }, exec);
+    response._network_response = true;
     errdefer response.deinit(exec.context.page);
 
     const arena = response._arena;
@@ -668,22 +670,21 @@ fn httpHeaderDoneCallback(response: HttpClient.Response) !bool {
         return true;
     }
 
-    // Body always lands in `_buf` via data_callback.
-    //
-    // Do **not** resolve fetch() on headers for responses with a body.
-    // Early resolve + ReadableStream left Fingerprint `await res.arrayBuffer()`
-    // hanging when enqueue raced JS gates (identify 200 on wire, no /api/event,
-    // UI stuck on "Running Device Intelligence"). Chrome HAR shows identify
-    // completes as a full JSON body (~0.5–1s) then the app calls /api/event.
-    // Resolve only from settleFetchDone with `.bytes` once the transfer ends.
-    // Null-body responses still resolve on headers.
-    if (responseHasNullBody(status, self._method)) {
-        if (!fetchJsUnavailable(self)) {
-            try resolveFetchOnHeaders(self);
-        }
-        // else: settleFetchDone will resolve empty body on transfer end
+    // Fetch resolves when the final response headers are available. Non-null
+    // bodies remain live streams; waiting for transfer completion deadlocks
+    // incremental protocols whose response intentionally remains open.
+    if (!responseHasNullBody(status, self._method)) {
+        const stream = try ReadableStream.init(null, null, exec);
+        self._stream = stream;
+        res._body = .{ .stream = stream };
     }
-    // else: wait for done_callback → settleFetchDone with full `_buf` bytes
+    // Resolving a Promise queues its reactions as microtasks; it does not run
+    // consumer JavaScript on this transport callback stack.
+    if (!fetchJsUnavailable(self)) {
+        try resolveFetchOnHeaders(self);
+    } else {
+        try scheduleDeferredFetchHeaders(self);
+    }
 
     return true;
 }
@@ -852,6 +853,17 @@ fn isSameOriginResolved(exec: *const Execution, url: []const u8) bool {
 
 fn resolveFetchOnHeaders(self: *Fetch) !void {
     const exec = self._exec;
+    // Fetch exposes a non-null body stream for every response whose status and
+    // request method permit a body. Keep this invariant at the Promise
+    // resolution boundary even if a transport/header callback was interrupted
+    // after receiving headers but before installing the stream.
+    if (!responseHasNullBody(self._response._status, self._method) and
+        self._response._body == .empty)
+    {
+        const stream = try ReadableStream.init(null, null, exec);
+        self._response._body = .{ .stream = stream };
+        self._stream = stream;
+    }
     var blocked = exec.isTaskOwnerStale(self._task_owner);
     if (!blocked) {
         exec.validateJsEntry(.allow_draining, .fetch_completion) catch {
@@ -930,11 +942,9 @@ fn httpDataCallback(response: HttpClient.Response, data: []const u8) !void {
 
     try self._buf.appendSlice(self._response._arena, data);
 
-    if (fetchJsUnavailable(self)) return;
-
     if (self._stream) |stream| {
         const copy = try self._response._arena.dupe(u8, data);
-        try stream._controller.enqueue(.{ .uint8array = .{ .values = copy } });
+        try scheduleDeferredFetchChunk(self, stream, copy);
     }
 }
 
@@ -966,6 +976,14 @@ fn settleFetchDone(self: *Fetch) !void {
         return;
     }
 
+    // Scheduler ordering is not a transport-order guarantee. The terminal
+    // close may run before chunk-delivery tasks queued earlier, so explicitly
+    // wait until every acquired chunk task has released its ownership.
+    if (self._pending_chunk_tasks != 0) {
+        try scheduleDeferredFetchDone(self);
+        return;
+    }
+
     var response = self._response;
 
     if (self._exec.isTaskOwnerStale(self._task_owner) or self._exec.realmState() == .dead) {
@@ -990,40 +1008,29 @@ fn settleFetchDone(self: *Fetch) !void {
         return;
     }
 
-    // Always materialize the full wire buffer as `.bytes` when the transfer is
-    // finished. Streaming bodies that missed enqueue (JS gated mid-body) left
-    // `response.arrayBuffer()` hanging forever — Fingerprint identify returned
-    // 200 with visitor_id on the wire but agent never settled, so no
-    // `/api/event` and no "Your Visitor ID" UI (see demo.fingerprint.com.har).
-    if (self._buf.items.len > 0 or self._stream != null) {
-        if (self._integrity.len > 0) {
-            const is_opaque = response._type == .@"opaque";
-            const ok = !is_opaque and Integrity.verify(self._integrity, self._buf.items, exec.call_arena);
-            if (!ok) {
-                if (self._stream) |stream| {
-                    if (stream._state == .readable) {
-                        try stream._controller.doError("Failed to fetch");
-                    }
+    if (self._integrity.len > 0) {
+        const is_opaque = response._type == .@"opaque";
+        const ok = !is_opaque and Integrity.verify(self._integrity, self._buf.items, exec.call_arena);
+        if (!ok) {
+            if (self._stream) |stream| {
+                if (stream._state == .readable) {
+                    try stream._controller.doError("Failed to fetch");
                 }
-                if (!self._fetch_resolved) {
-                    try rejectFetchIntegrity(self);
-                }
-                return;
             }
+            if (!self._fetch_resolved) {
+                try rejectFetchIntegrity(self);
+            }
+            return;
         }
-        // Close any open stream controller so late readers do not hang, then
-        // point body at the complete buffer for arrayBuffer/text/json.
+    }
+
+    if (self._fetch_resolved) {
         if (self._stream) |stream| {
             if (stream._state == .readable) {
-                // Prefer error-free close; body consumers should use .bytes.
                 stream._controller.close() catch {};
             }
             self._stream = null;
         }
-        response._body = .{ .bytes = self._buf.items };
-    }
-
-    if (self._fetch_resolved) {
         return;
     }
 
@@ -1183,6 +1190,84 @@ const DeferredFetchContinueCallback = struct {
     }
 };
 
+fn scheduleDeferredFetchHeaders(self: *Fetch) !void {
+    const exec = self._exec;
+    const callback = try exec.arena.create(DeferredFetchHeadersCallback);
+    callback.* = .{
+        .fetch = self,
+        .task_owner = exec.captureTaskOwner(),
+    };
+    try exec._scheduler.add(callback, DeferredFetchHeadersCallback.run, 0, .{
+        .name = "Fetch.headers",
+        .low_priority = false,
+    });
+    switch (exec.context.global) {
+        .frame => |frame| frame.scheduleDeferredMacrotaskPump(0) catch {},
+        .worker => |wgs| wgs._worker._frame.scheduleDeferredMacrotaskPump(0) catch {},
+    }
+}
+
+const DeferredFetchHeadersCallback = struct {
+    fetch: *Fetch,
+    task_owner: RealmLifecycleKernel.TaskOwner,
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *DeferredFetchHeadersCallback = @ptrCast(@alignCast(ctx));
+        const fetch = self.fetch;
+        if (fetch._fetch_resolved) return null;
+        if (fetch._exec.isTaskOwnerStale(self.task_owner) or fetch._exec.realmState() == .dead) {
+            releaseFetchResponse(fetch);
+            return null;
+        }
+        if (fetchJsUnavailable(fetch)) return 1;
+        try resolveFetchOnHeaders(fetch);
+        return null;
+    }
+};
+
+fn scheduleDeferredFetchChunk(self: *Fetch, stream: *ReadableStream, data: []const u8) !void {
+    const exec = self._exec;
+    const callback = try exec.arena.create(DeferredFetchChunkCallback);
+    callback.* = .{
+        .fetch = self,
+        .stream = stream,
+        .data = data,
+        .task_owner = exec.captureTaskOwner(),
+    };
+    self._pending_chunk_tasks += 1;
+    errdefer self._pending_chunk_tasks -= 1;
+    try exec._scheduler.add(callback, DeferredFetchChunkCallback.run, 0, .{
+        .name = "Fetch.chunk",
+        .low_priority = false,
+    });
+    switch (exec.context.global) {
+        .frame => |frame| frame.scheduleDeferredMacrotaskPump(0) catch {},
+        .worker => |wgs| wgs._worker._frame.scheduleDeferredMacrotaskPump(0) catch {},
+    }
+}
+
+const DeferredFetchChunkCallback = struct {
+    fetch: *Fetch,
+    stream: *ReadableStream,
+    data: []const u8,
+    task_owner: RealmLifecycleKernel.TaskOwner,
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *DeferredFetchChunkCallback = @ptrCast(@alignCast(ctx));
+        const fetch = self.fetch;
+        if (fetch._exec.isTaskOwnerStale(self.task_owner) or fetch._exec.realmState() == .dead) {
+            fetch._pending_chunk_tasks -= 1;
+            return null;
+        }
+        if (fetchJsUnavailable(fetch)) return 1;
+        defer fetch._pending_chunk_tasks -= 1;
+        if (self.stream._state == .readable and !self.stream._close_requested) {
+            try self.stream._controller.enqueue(.{ .uint8array = .{ .values = self.data } });
+        }
+        return null;
+    }
+};
+
 fn scheduleDeferredFetchDone(self: *Fetch) !void {
     const exec = self._exec;
     const callback = try exec.arena.create(DeferredFetchDoneCallback);
@@ -1216,7 +1301,6 @@ const DeferredFetchDoneCallback = struct {
                 .realm = @tagName(fetch._exec.realmState()),
             });
         }
-        if (fetch._fetch_resolved) return null;
         if (fetch._exec.isTaskOwnerStale(self.task_owner)) {
             // Give up without hang: release; resolve path already abandoned.
             releaseFetchResponse(fetch);

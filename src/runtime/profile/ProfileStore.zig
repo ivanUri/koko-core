@@ -11,6 +11,8 @@ const CanvasIntelligent = @import("CanvasIntelligent.zig");
 const WebGLParameters = @import("WebGLParameters.zig");
 const MathsNative = @import("MathsNative.zig");
 const FingerprintStore = @import("FingerprintStore.zig");
+const BrowserPersonaModule = @import("BrowserPersona.zig");
+const BrowserPersona = BrowserPersonaModule.BrowserPersona;
 
 fn resolveAssetPath(allocator: std.mem.Allocator, root: []const u8, path: []const u8) ![]const u8 {
     if (path.len == 0) return error.EmptyPath;
@@ -45,40 +47,10 @@ pub const Mode = enum {
     }
 };
 
-pub const BrowserFamily = enum {
-    chrome,
-    firefox,
-    safari,
+pub const BrowserFamily = BrowserPersona.Family;
+pub const Brand = BrowserPersona.Brand;
 
-    pub fn parse(raw: []const u8) ?BrowserFamily {
-        if (std.mem.eql(u8, raw, "chrome")) return .chrome;
-        if (std.mem.eql(u8, raw, "firefox")) return .firefox;
-        if (std.mem.eql(u8, raw, "safari")) return .safari;
-        return null;
-    }
-
-    pub fn inferFromUserAgent(user_agent: []const u8) BrowserFamily {
-        if (std.mem.indexOf(u8, user_agent, "Firefox/") != null) return .firefox;
-        if (std.mem.indexOf(u8, user_agent, "Safari/") != null and
-            std.mem.indexOf(u8, user_agent, "Chrome/") == null and
-            std.mem.indexOf(u8, user_agent, "Chromium/") == null)
-            return .safari;
-        return .chrome;
-    }
-};
-
-pub const Brand = struct {
-    brand: []const u8,
-    version: []const u8,
-};
-
-pub const PluginSpec = struct {
-    name: []const u8,
-    filename: []const u8,
-    description: []const u8,
-    mime_type: []const u8,
-    mime_suffixes: []const u8,
-};
+pub const PluginSpec = BrowserPersona.PluginSpec;
 
 pub const SpeechVoiceSpec = struct {
     name: []const u8,
@@ -91,24 +63,12 @@ pub const SpeechVoiceSpec = struct {
 pub const LoadedProfile = struct {
     arena: std.heap.ArenaAllocator,
     mode: Mode,
-    browser_family: BrowserFamily = .chrome,
     id: []const u8,
-    identity: Profile.IdentityProfile,
+    persona: BrowserPersona,
     languages: []const []const u8,
     fonts: []const []const u8,
     webgl_extensions: []const []const u8,
     webgl_extensions2: []const []const u8 = &.{},
-    http: struct {
-        user_agent: [:0]const u8,
-        brands: []Brand,
-        sec_ch_ua: [:0]const u8,
-        accept_language: [:0]const u8,
-        prefers_color_scheme: []const u8 = "light",
-    },
-    transport: struct {
-        target: TransportProfile.Target,
-        impersonate: [:0]const u8,
-    },
     plugins: []const PluginSpec,
     /// Chrome-captured data URL for the standard 240×60 canvas probe (antidetect only).
     canvas_probe_data_url: ?[]const u8 = null,
@@ -160,7 +120,7 @@ pub const LoadedProfile = struct {
     }
 
     pub fn identityPtr(self: *const LoadedProfile) *const Profile.IdentityProfile {
-        return &self.identity;
+        return &self.persona.identity;
     }
 
     pub fn allowsMozillaUserAgent(self: *const LoadedProfile) bool {
@@ -168,16 +128,16 @@ pub const LoadedProfile = struct {
     }
 
     pub fn isFirefox(self: *const LoadedProfile) bool {
-        return self.browser_family == .firefox;
+        return self.persona.family == .firefox;
     }
 
     pub fn isSafari(self: *const LoadedProfile) bool {
-        return self.browser_family == .safari;
+        return self.persona.family == .safari;
     }
 
     /// Chrome/Chromium client-hints + X-Browser + ML-DSA knobs.
     pub fn isChromium(self: *const LoadedProfile) bool {
-        return self.browser_family == .chrome;
+        return self.persona.family == .chrome;
     }
 
     pub fn canvas_probe_data_url_for(self: *const LoadedProfile, probe: CanvasIntelligent.ProbeId) ?[]const u8 {
@@ -266,6 +226,10 @@ const JsonWebGL = struct {
     maxTextureImageUnits: u32 = 16,
     maxFragmentUniformVectors: u32 = 1024,
     maxDrawBuffers: u32 = 8,
+    maxColorAttachmentsWebGL2: u32 = 8,
+    maxSamplesWebGL2: u32 = 4,
+    max3dTextureSizeWebGL2: u32 = 2048,
+    maxArrayTextureLayersWebGL2: u32 = 2048,
     maxTextureMaxAnisotropy: u32 = 16,
     maxViewportDims: [2]i32 = .{ 16384, 16384 },
     aliasedLineWidthRange: [2]f32 = .{ 1, 1 },
@@ -437,6 +401,44 @@ pub fn resolve(paths: *const ProfilePaths.ProfilePaths) !LoadedProfile {
     return loaded;
 }
 
+/// Apply a startup UA overlay to the persona itself so JavaScript, HTTP,
+/// WebSocket and header plugins observe one value. A full override is accepted
+/// only when it still describes the selected persona's Chrome build/platform;
+/// changing browser identity requires importing a matching fingerprint.
+pub fn applyUserAgentOverlay(
+    profile: *LoadedProfile,
+    explicit: ?[]const u8,
+    suffix: ?[]const u8,
+) !void {
+    if (explicit != null and suffix != null) return error.ConflictingUserAgentOptions;
+    if (explicit == null and suffix == null) return;
+
+    const allocator = profile.arena.allocator();
+    const candidate = if (explicit) |ua|
+        try allocator.dupeZ(u8, ua)
+    else
+        try std.fmt.allocPrintSentinel(
+            allocator,
+            "{s} {s}",
+            .{ profile.persona.network.user_agent, suffix.? },
+            0,
+        );
+
+    if (explicit != null) {
+        const current = Spoofing.extractChromeVersion(profile.persona.network.user_agent) orelse
+            return error.PersonaUserAgentOverrideInconsistent;
+        const replacement = Spoofing.extractChromeVersion(candidate) orelse
+            return error.PersonaUserAgentOverrideInconsistent;
+        if (current.major != replacement.major or
+            !Spoofing.uaPlatformMatchesNavigator(candidate, profile.persona.identity.navigator_platform))
+            return error.PersonaUserAgentOverrideInconsistent;
+    }
+
+    profile.persona.network.user_agent = candidate;
+    profile.persona.identity.user_agent_fallback = candidate;
+    try profile.persona.validate();
+}
+
 fn applyHostEnvironment(profile: *LoadedProfile) !void {
     if (profile.mode != .antidetect) return;
     var snap = HostEnvironment.detect(profile.arena.allocator()) catch return;
@@ -447,11 +449,12 @@ fn applyHostEnvironment(profile: *LoadedProfile) !void {
     snap.device_memory = null;
     snap.hardware_concurrency = null;
     snap.timezone = null;
-    try HostEnvironment.applyIdentity(&profile.identity, snap, profile.arena.allocator());
+    try HostEnvironment.applyIdentity(&profile.persona.identity, snap, profile.arena.allocator());
+    try profile.persona.validate();
 }
 
 fn applyProcessTimezone(profile: *const LoadedProfile) void {
-    const tz = profile.identity.timezone;
+    const tz = profile.persona.identity.timezone;
     if (tz.len == 0 or tz.len >= 96) return;
     var buf: [96:0]u8 = undefined;
     @memcpy(buf[0..tz.len], tz);
@@ -466,12 +469,10 @@ fn fromEmbedded(name: ?[]const u8) !LoadedProfile {
         .arena = std.heap.ArenaAllocator.init(std.heap.page_allocator),
         .mode = .velora,
         .id = "velora",
-        .identity = src.*,
+        .persona = undefined,
         .languages = src.languages,
         .fonts = src.fonts,
         .webgl_extensions = src.webgl.extensions,
-        .http = undefined,
-        .transport = undefined,
         .plugins = &.{},
         .policies = &.{},
     };
@@ -479,14 +480,34 @@ fn fromEmbedded(name: ?[]const u8) !LoadedProfile {
 
     const allocator = profile.arena.allocator();
     profile.id = try allocator.dupe(u8, "velora");
-    profile.http.user_agent = try allocator.dupeZ(u8, src.user_agent_fallback);
-    profile.http.brands = try allocator.alloc(Brand, 1);
-    profile.http.brands[0] = .{ .brand = "Velora", .version = "1" };
-    profile.http.sec_ch_ua = try buildSecChUa(allocator, profile.http.brands);
-    profile.http.accept_language = try buildAcceptLanguage(allocator, src.languages);
-    profile.http.prefers_color_scheme = "light";
-    profile.transport.target = TransportProfile.Target.chrome146;
-    profile.transport.impersonate = try allocator.dupeZ(u8, profile.transport.target.curlImpersonate());
+    const user_agent = try allocator.dupeZ(u8, src.user_agent_fallback);
+    const brands = try allocator.alloc(Brand, 1);
+    brands[0] = .{ .brand = "Velora", .version = "1" };
+    const transport_target = TransportProfile.Target.chrome146;
+    profile.persona = .{
+        .family = BrowserFamily.inferFromUserAgent(user_agent),
+        .version = BrowserPersona.Version.fromIdentity(
+            BrowserFamily.inferFromUserAgent(user_agent),
+            user_agent,
+            src.ua_full_version,
+        ),
+        .identity = src.*,
+        .network = .{
+            .user_agent = user_agent,
+            .brands = brands,
+            .sec_ch_ua = try buildSecChUa(allocator, brands),
+            .accept_language = try buildAcceptLanguage(allocator, src.languages),
+            .prefers_color_scheme = "light",
+            .transport_target = transport_target,
+            .impersonate = try allocator.dupeZ(u8, transport_target.curlImpersonate()),
+        },
+        .features = BrowserPersona.FeatureMatrix.forIdentity(
+            BrowserFamily.inferFromUserAgent(user_agent),
+            user_agent,
+        ),
+        .surfaces = .{ .plugins = profile.plugins },
+    };
+    try profile.persona.validate();
     profile.plugins = &.{};
     return profile;
 }
@@ -539,14 +560,11 @@ fn parseJson(bytes: []const u8, asset_root: []const u8) !LoadedProfile {
     var profile: LoadedProfile = .{
         .arena = std.heap.ArenaAllocator.init(std.heap.page_allocator),
         .mode = mode,
-        .browser_family = browser_family,
         .id = "",
-        .identity = undefined,
+        .persona = undefined,
         .languages = &.{},
         .fonts = &.{},
         .webgl_extensions = &.{},
-        .http = undefined,
-        .transport = undefined,
         .plugins = &.{},
     };
     errdefer profile.deinit();
@@ -563,33 +581,31 @@ fn parseJson(bytes: []const u8, asset_root: []const u8) !LoadedProfile {
     else
         &.{};
 
-    profile.http.user_agent = try allocator.dupeZ(u8, doc.navigator.userAgent);
-    profile.http.brands = try allocator.alloc(Brand, doc.userAgentData.brands.len);
+    const user_agent = try allocator.dupeZ(u8, doc.navigator.userAgent);
+    const brands = try allocator.alloc(Brand, doc.userAgentData.brands.len);
     for (doc.userAgentData.brands, 0..) |brand, i| {
-        profile.http.brands[i] = .{
+        brands[i] = .{
             .brand = try allocator.dupe(u8, brand.brand),
             .version = try allocator.dupe(u8, brand.version),
         };
     }
-    profile.http.sec_ch_ua = try buildSecChUa(allocator, profile.http.brands);
-    profile.http.accept_language = try buildAcceptLanguage(allocator, doc.navigator.languages);
-    profile.http.prefers_color_scheme = try allocator.dupe(u8, doc.userAgentData.prefersColorScheme);
+    const sec_ch_ua = try buildSecChUa(allocator, brands);
+    const accept_language = try buildAcceptLanguage(allocator, doc.navigator.languages);
+    const prefers_color_scheme = try allocator.dupe(u8, doc.userAgentData.prefersColorScheme);
 
     const transport_target = TransportProfile.Target.resolve(
         if (doc.transport.impersonate.len > 0) doc.transport.impersonate else null,
         doc.navigator.userAgent,
     );
 
-    profile.transport.target = transport_target;
-    // chrome150 → curl --impersonate chrome146; ML-DSA applied after in http.zig.
-    profile.transport.impersonate = try allocator.dupeZ(u8, transport_target.curlImpersonate());
+    const impersonate = try allocator.dupeZ(u8, transport_target.curlImpersonate());
 
     profile.plugins = if (doc.plugins.len > 0)
         try parsePlugins(allocator, doc.plugins)
     else
         &.{};
 
-    profile.identity = .{
+    const identity: Profile.IdentityProfile = .{
         .persona_id = try parsePersonaId(doc.personaId, doc.navigator.platform),
         .navigator_platform = try allocator.dupe(u8, doc.navigator.platform),
         .ua_data_platform = try allocator.dupe(u8, doc.userAgentData.platform),
@@ -604,7 +620,7 @@ fn parseJson(bytes: []const u8, asset_root: []const u8) !LoadedProfile {
         .pdf_viewer_enabled = doc.navigator.pdfViewerEnabled,
         .global_privacy_control = false,
         .vendor = try allocator.dupe(u8, doc.navigator.vendor),
-        .user_agent_fallback = profile.http.user_agent,
+        .user_agent_fallback = user_agent,
         .app_version = try allocator.dupe(u8, doc.navigator.appVersion),
         .platform_version = try allocator.dupe(u8, doc.userAgentData.platformVersion),
         .ua_full_version = try allocator.dupe(u8, doc.userAgentData.uaFullVersion),
@@ -652,6 +668,10 @@ fn parseJson(bytes: []const u8, asset_root: []const u8) !LoadedProfile {
             .max_texture_image_units = doc.webgl.maxTextureImageUnits,
             .max_fragment_uniform_vectors = doc.webgl.maxFragmentUniformVectors,
             .max_draw_buffers = doc.webgl.maxDrawBuffers,
+            .max_color_attachments_webgl2 = doc.webgl.maxColorAttachmentsWebGL2,
+            .max_samples_webgl2 = doc.webgl.maxSamplesWebGL2,
+            .max_3d_texture_size_webgl2 = doc.webgl.max3dTextureSizeWebGL2,
+            .max_array_texture_layers_webgl2 = doc.webgl.maxArrayTextureLayersWebGL2,
             .max_texture_max_anisotropy = doc.webgl.maxTextureMaxAnisotropy,
             .max_viewport_dims = doc.webgl.maxViewportDims,
             .aliased_line_width_range = doc.webgl.aliasedLineWidthRange,
@@ -660,6 +680,27 @@ fn parseJson(bytes: []const u8, asset_root: []const u8) !LoadedProfile {
             .extensions_webgl2 = profile.webgl_extensions2,
         },
         .fonts = profile.fonts,
+    };
+
+    profile.persona = .{
+        .family = browser_family,
+        .version = BrowserPersona.Version.fromIdentity(
+            browser_family,
+            user_agent,
+            identity.ua_full_version,
+        ),
+        .identity = identity,
+        .network = .{
+            .user_agent = user_agent,
+            .brands = brands,
+            .sec_ch_ua = sec_ch_ua,
+            .accept_language = accept_language,
+            .prefers_color_scheme = prefers_color_scheme,
+            .transport_target = transport_target,
+            .impersonate = impersonate,
+        },
+        .features = BrowserPersona.FeatureMatrix.forIdentity(browser_family, user_agent),
+        .surfaces = .{ .plugins = profile.plugins },
     };
 
     profile.canvas_probe_data_url = try loadCanvasProbe(allocator, asset_root, doc.canvasProbe);
@@ -676,7 +717,38 @@ fn parseJson(bytes: []const u8, asset_root: []const u8) !LoadedProfile {
     try loadClientRectsBaseline(allocator, asset_root, doc.clientRectsBaseline, &profile);
     try loadSvgBaseline(allocator, asset_root, doc.svgBaseline, &profile);
 
+    profile.persona.surfaces.has_canvas_probe = hasCanvasProbe(&profile);
+    profile.persona.surfaces.has_audio_probe =
+        profile.audio_probe_samples != null and profile.audio_probe_freq != null;
+    profile.persona.surfaces.has_webgl_probe =
+        profile.webgl_probe_pixels != null or profile.webgl_probe_pixels2 != null;
+    try profile.persona.validate();
+    try validateProbeConsistency(&profile);
     return profile;
+}
+
+fn validateProbeConsistency(profile: *const LoadedProfile) !void {
+    const has_canvas_probe = hasCanvasProbe(profile);
+    if (has_canvas_probe and profile.fonts.len == 0)
+        return error.PersonaCanvasFontsMismatch;
+
+    if (profile.webgl_probe_pixels != null and
+        (profile.webgl_probe_read_width <= 0 or profile.webgl_probe_read_height <= 0))
+        return error.PersonaWebGlProbeDimensionsInvalid;
+
+    const has_audio_samples = profile.audio_probe_samples != null;
+    const has_audio_frequency = profile.audio_probe_freq != null;
+    if (has_audio_samples != has_audio_frequency)
+        return error.PersonaAudioProbeIncomplete;
+}
+
+fn hasCanvasProbe(profile: *const LoadedProfile) bool {
+    return profile.canvas_probe_data_url != null or
+        profile.canvas_probe_50_text != null or
+        profile.canvas_probe_50_emoji != null or
+        profile.canvas_probe_75_data != null or
+        profile.canvas_probe_75_paint != null or
+        profile.canvas_probe_2_pixels != null;
 }
 
 fn loadMeasureTextBaseline(allocator: std.mem.Allocator, root: []const u8, spec: JsonMeasureTextBaseline) ![]const MeasureTextIntelligent.Entry {
@@ -1231,7 +1303,7 @@ test "ProfileStore: load velora profile" {
     var profile = try resolve(&paths);
     defer profile.deinit();
     try testing.expectEqual(Mode.velora, profile.mode);
-    try testing.expect(profile.http.brands.len >= 1);
+    try testing.expect(profile.persona.network.brands.len >= 1);
 }
 
 test "ProfileStore: load chrome antidetect profile" {
@@ -1240,7 +1312,7 @@ test "ProfileStore: load chrome antidetect profile" {
     var profile = try resolve(&paths);
     defer profile.deinit();
     try testing.expectEqual(Mode.antidetect, profile.mode);
-    try testing.expect(std.mem.indexOf(u8, profile.http.user_agent, "Chrome") != null);
+    try testing.expect(std.mem.indexOf(u8, profile.persona.network.user_agent, "Chrome") != null);
 }
 
 test "ProfileStore: load captured Chrome profile with transport" {
@@ -1249,13 +1321,48 @@ test "ProfileStore: load captured Chrome profile with transport" {
     var profile = try resolve(&paths);
     defer profile.deinit();
     try testing.expectEqual(Mode.antidetect, profile.mode);
-    try testing.expectEqual(BrowserFamily.chrome, profile.browser_family);
-    try testing.expectEqual(TransportProfile.Target.chrome150, profile.transport.target);
-    try testing.expect(std.mem.indexOf(u8, profile.http.user_agent, "Chrome/150") != null);
+    try testing.expectEqual(BrowserFamily.chrome, profile.persona.family);
+    try testing.expectEqual(TransportProfile.Target.chrome150, profile.persona.network.transport_target);
+    try testing.expect(std.mem.indexOf(u8, profile.persona.network.user_agent, "Chrome/150") != null);
     try testing.expectEqual(@as(usize, 5), profile.plugins.len);
+    try testing.expectEqual(profile.plugins.len, profile.persona.surfaces.plugins.len);
     try testing.expect(profile.fonts.len > 0);
     try testing.expect(profile.speech_voices.len > 0);
-    try testing.expectEqual(@as(u8, 24), profile.identity.screen.color_depth);
+    try testing.expectEqual(@as(u8, 24), profile.persona.identity.screen.color_depth);
+}
+
+test "ProfileStore: startup UA suffix updates the canonical persona" {
+    var paths = try testPaths(std.testing.allocator, "huynew");
+    defer paths.deinit();
+    var profile = try resolve(&paths);
+    defer profile.deinit();
+
+    try applyUserAgentOverlay(&profile, null, "ProductMarker/1.0");
+    try testing.expect(std.mem.endsWith(
+        u8,
+        profile.persona.network.user_agent,
+        " ProductMarker/1.0",
+    ));
+    try testing.expectEqualStrings(
+        profile.persona.network.user_agent,
+        profile.persona.identity.user_agent_fallback,
+    );
+}
+
+test "ProfileStore: startup UA cannot select another Chrome persona" {
+    var paths = try testPaths(std.testing.allocator, "huynew");
+    defer paths.deinit();
+    var profile = try resolve(&paths);
+    defer profile.deinit();
+
+    try testing.expectError(
+        error.PersonaUserAgentOverrideInconsistent,
+        applyUserAgentOverlay(
+            &profile,
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/149.0.0.0 Safari/537.36",
+            null,
+        ),
+    );
 }
 
 test "ProfileStore: velora profile has no site policies" {

@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+const link = document.createElement("link");
+let phase = "before-insert";
+
+link.rel = "preload";
+link.as = "image";
+link.href = "data:not-a-valid-data-url";
+link.onerror = () => {
+  const queued = phase === "after-insert";
+  document.body.id = queued ? "pass" : "fail";
+  document.body.textContent = queued
+    ? "pass"
+    : `link error dispatched synchronously (phase=${phase})`;
+};
+
+document.head.appendChild(link);
+phase = "after-insert";
+</script>

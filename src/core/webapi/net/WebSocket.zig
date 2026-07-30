@@ -316,6 +316,7 @@ pub fn pollNative(self: *WebSocket) !bool {
             .tls_verify = self._http_client.tls_verify,
             .cookie_header = cookie_header,
             .proxy = self._http_client.currentProxy(),
+            .user_agent = self._http_client.getUserAgent(),
         });
         if (client.state == .closed) {
             self.disconnected(error.ConnectionRefused);

@@ -442,7 +442,23 @@ pub const Entry = struct {
         pub const deliveryType = bridge.accessor(Entry.getNavigationDeliveryType, null, .{});
         pub const transferSize = bridge.accessor(Entry.getNavigationTransferSize, null, .{});
         pub const nextHopProtocol = bridge.accessor(Entry.getNavigationNextHopProtocol, null, .{});
+        pub const toJSON = bridge.function(Entry.toJSON, .{});
     };
+
+    /// PerformanceEntry serialization is inherited by timing subclasses.
+    pub fn toJSON(self: *const Entry) struct {
+        name: []const u8,
+        entryType: []const u8,
+        startTime: f64,
+        duration: f64,
+    } {
+        return .{
+            .name = self.getName(),
+            .entryType = self.getEntryType(),
+            .startTime = self.getStartTime(),
+            .duration = self.getDuration(),
+        };
+    }
 };
 
 pub const NavigationTimingEntry = struct {
@@ -493,7 +509,48 @@ pub const NavigationTimingEntry = struct {
             pub const prototype_chain = bridge.prototypeChain();
             pub var class_id: bridge.ClassId = undefined;
         };
+        pub const toJSON = bridge.function(NavigationTimingEntry.toJSON, .{});
     };
+
+    /// Navigation entries extend PerformanceEntry but expose navigation timing
+    /// fields from their own serialization algorithm. Values not yet observed
+    /// by this lightweight timing model are the platform's zero defaults.
+    pub fn toJSON(self: *const NavigationTimingEntry) struct {
+        name: []const u8,
+        entryType: []const u8,
+        startTime: f64,
+        duration: f64,
+        domComplete: f64,
+        domContentLoadedEventEnd: f64,
+        domContentLoadedEventStart: f64,
+        domInteractive: f64,
+        loadEventEnd: f64,
+        loadEventStart: f64,
+        redirectCount: u32,
+        responseStatus: u16,
+        type: []const u8,
+        unloadEventEnd: f64,
+        unloadEventStart: f64,
+    } {
+        const entry = self._proto;
+        return .{
+            .name = entry.getName(),
+            .entryType = entry.getEntryType(),
+            .startTime = entry.getStartTime(),
+            .duration = entry.getDuration(),
+            .domComplete = 0,
+            .domContentLoadedEventEnd = 0,
+            .domContentLoadedEventStart = 0,
+            .domInteractive = 0,
+            .loadEventEnd = 0,
+            .loadEventStart = 0,
+            .redirectCount = 0,
+            .responseStatus = 0,
+            .type = self.getType(),
+            .unloadEventEnd = 0,
+            .unloadEventStart = 0,
+        };
+    }
 };
 
 pub const Mark = struct {
@@ -740,6 +797,7 @@ pub const PerformanceTiming = struct {
         pub const domComplete = bridge.accessor(PerformanceTiming.getDomComplete, null, .{ .deletable = false });
         pub const loadEventStart = bridge.accessor(PerformanceTiming.getLoadEventStart, null, .{ .deletable = false });
         pub const loadEventEnd = bridge.accessor(PerformanceTiming.getLoadEventEnd, null, .{ .deletable = false });
+        pub const toJSON = bridge.function(PerformanceTiming.toJSON, .{});
     };
 
     pub fn getNavigationStart(self: *const PerformanceTiming) f64 {
@@ -804,6 +862,57 @@ pub const PerformanceTiming = struct {
     }
     pub fn getLoadEventEnd(self: *const PerformanceTiming) f64 {
         return self.load_event_end;
+    }
+
+    /// Navigation Timing Level 1 exposes a serializable snapshot of the
+    /// legacy `performance.timing` object. Keep this derived from public
+    /// getters so its values match direct property reads.
+    pub fn toJSON(self: *const PerformanceTiming) struct {
+        navigationStart: f64,
+        unloadEventStart: f64,
+        unloadEventEnd: f64,
+        redirectStart: f64,
+        redirectEnd: f64,
+        fetchStart: f64,
+        domainLookupStart: f64,
+        domainLookupEnd: f64,
+        connectStart: f64,
+        connectEnd: f64,
+        secureConnectionStart: f64,
+        requestStart: f64,
+        responseStart: f64,
+        responseEnd: f64,
+        domLoading: f64,
+        domInteractive: f64,
+        domContentLoadedEventStart: f64,
+        domContentLoadedEventEnd: f64,
+        domComplete: f64,
+        loadEventStart: f64,
+        loadEventEnd: f64,
+    } {
+        return .{
+            .navigationStart = self.getNavigationStart(),
+            .unloadEventStart = self.getUnloadEventStart(),
+            .unloadEventEnd = self.getUnloadEventEnd(),
+            .redirectStart = self.getRedirectStart(),
+            .redirectEnd = self.getRedirectEnd(),
+            .fetchStart = self.getFetchStart(),
+            .domainLookupStart = self.getDomainLookupStart(),
+            .domainLookupEnd = self.getDomainLookupEnd(),
+            .connectStart = self.getConnectStart(),
+            .connectEnd = self.getConnectEnd(),
+            .secureConnectionStart = self.getSecureConnectionStart(),
+            .requestStart = self.getRequestStart(),
+            .responseStart = self.getResponseStart(),
+            .responseEnd = self.getResponseEnd(),
+            .domLoading = self.getDomLoading(),
+            .domInteractive = self.getDomInteractive(),
+            .domContentLoadedEventStart = self.getDomContentLoadedEventStart(),
+            .domContentLoadedEventEnd = self.getDomContentLoadedEventEnd(),
+            .domComplete = self.getDomComplete(),
+            .loadEventStart = self.getLoadEventStart(),
+            .loadEventEnd = self.getLoadEventEnd(),
+        };
     }
 };
 

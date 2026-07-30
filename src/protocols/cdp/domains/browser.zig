@@ -13,23 +13,13 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
+const v8 = @import("v8");
 const CDP = @import("../CDP.zig");
 
 // TODO: hard coded data
 const PROTOCOL_VERSION = "1.3";
 const REVISION = "@9e6ded5ac1ff5e38d930ae52bd9aec09bd1a68e4";
 
-// CDP_USER_AGENT const is used by the CDP server only to identify itself to
-// the CDP clients.
-// Many clients check the CDP server is a Chrome browser.
-//
-// CDP_USER_AGENT const is not used by the browser for the HTTP client (see
-// src/http/client.zig) nor exposed to the JS (see
-// src/browser/html/navigator.zig).
-const CDP_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-const PRODUCT = "Chrome/124.0.6367.29";
-
-const JS_VERSION = "12.4.254.8";
 const DEV_TOOLS_WINDOW_ID = 1923710101;
 
 pub fn processMessage(cmd: *CDP.Command) !void {
@@ -55,13 +45,23 @@ pub fn processMessage(cmd: *CDP.Command) !void {
 }
 
 fn getVersion(cmd: *CDP.Command) !void {
-    // TODO: pre-serialize?
+    const persona = &cmd.cdp.browser.app.config.profile.persona;
+    const product_family = switch (persona.family) {
+        .chrome => "Chrome",
+        .firefox => "Firefox",
+        .safari => "Safari",
+    };
+    const product = try std.fmt.allocPrint(
+        cmd.arena,
+        "{s}/{s}",
+        .{ product_family, persona.version.full },
+    );
     return cmd.sendResult(.{
         .protocolVersion = PROTOCOL_VERSION,
-        .product = PRODUCT,
+        .product = product,
         .revision = REVISION,
-        .userAgent = CDP_USER_AGENT,
-        .jsVersion = JS_VERSION,
+        .userAgent = persona.network.user_agent,
+        .jsVersion = v8.getVersion(),
     }, .{ .include_session_id = false });
 }
 
@@ -153,12 +153,24 @@ test "cdp.browser: getVersion" {
     });
 
     try ctx.expectSentCount(1);
+    const persona = &ctx.cdp_.browser.app.config.profile.persona;
+    const product_family = switch (persona.family) {
+        .chrome => "Chrome",
+        .firefox => "Firefox",
+        .safari => "Safari",
+    };
+    const product = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/{s}",
+        .{ product_family, persona.version.full },
+    );
+    defer testing.allocator.free(product);
     try ctx.expectSentResult(.{
         .protocolVersion = PROTOCOL_VERSION,
-        .product = PRODUCT,
+        .product = product,
         .revision = REVISION,
-        .userAgent = CDP_USER_AGENT,
-        .jsVersion = JS_VERSION,
+        .userAgent = persona.network.user_agent,
+        .jsVersion = v8.getVersion(),
     }, .{ .id = 32, .index = 0, .session_id = null });
 }
 

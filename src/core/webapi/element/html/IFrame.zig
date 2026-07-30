@@ -61,11 +61,10 @@ fn inlineChildReadyForAccess(child: *Frame) bool {
 
 pub fn getContentWindow(self: *const IFrame, frame: *Frame) ?Window.Access {
     const frame_window = self._window orelse return null;
-    if (!inlineChildReadyForAccess(frame_window._frame)) return null;
+    // HTML exposes the nested browsing context's WindowProxy as soon as that
+    // context exists. It does not wait for the child Document to finish
+    // loading; cross-origin callers still receive the restricted WindowProxy.
     // DOM access to the iframe element is mediated by its owning document.
-    // The bridge's injected relevant realm can be the child while a callback
-    // entered from that child is executing on the parent. Using it would return
-    // the actual cross-origin global and let V8 reject even `postMessage`.
     const accessor = @constCast(self).asNode().ownerFrame(frame);
     return Window.Access.init(accessor.window, frame_window);
 }
@@ -82,13 +81,17 @@ pub fn getContentDocument(self: *const IFrame, frame: *Frame) ?*Document {
 }
 
 pub fn getSrc(self: *IFrame, frame: *Frame) ![:0]const u8 {
-    if (self._src.len == 0) return "";
-    return self.asNode().resolveURL(self._src, frame, .{});
+    // `src` is a reflected content attribute. Frameworks commonly update it
+    // through Element.setAttribute(), which does not pass through the IDL
+    // setter and therefore cannot keep an element-local cache authoritative.
+    const src = self.asElement().getAttributeSafe(comptime .wrap("src")) orelse "";
+    if (src.len == 0) return "";
+    return self.asNode().resolveURL(src, frame, .{});
 }
 
 pub fn setSrc(self: *IFrame, src: []const u8, frame: *Frame) !void {
     const element = self.asElement();
-    const old_src = self._src;
+    const old_src = element.getAttributeSafe(comptime .wrap("src")) orelse "";
     try element.setAttributeSafe(comptime .wrap("src"), .wrap(src), frame);
     self._src = element.getAttributeSafe(comptime .wrap("src")) orelse unreachable;
     // HTML: srcdoc overrides src for navigation.

@@ -682,11 +682,22 @@ pub fn frameNavigated(arena: Allocator, bc: *CDP.BrowserContext, event: *const N
         frame._inspector_context_published = true;
     }
 
+    // frameNavigated also fires for same-document history/fragment changes,
+    // and Velora may assign a fresh loader id to those transitions. The V8
+    // context id is the actual realm identity: it changes with a replacement
+    // Document and remains stable for an SPA/history transition.
+    const context_id = frame.js.id;
+    const previous_context = bc.new_document_script_contexts.get(event.frame_id);
+    const is_new_document = previous_context == null or previous_context.? != context_id;
+    if (is_new_document) {
+        try bc.new_document_script_contexts.put(bc.arena, event.frame_id, context_id);
+    }
+
     // Evaluate scripts registered via Page.addScriptToEvaluateOnNewDocument.
     // Must run after the execution context is created but before the client
     // receives frameNavigated/loadEventFired so polyfills are available for
     // subsequent CDP commands.
-    if (bc.scripts_on_new_document.items.len > 0) {
+    if (is_new_document and bc.scripts_on_new_document.items.len > 0) {
         var ls: js.Local.Scope = undefined;
         frame.js.localScope(&ls);
         defer ls.deinit();
@@ -1416,7 +1427,7 @@ test "cdp.frame: addScriptToEvaluateOnNewDocument" {
 
     {
         // Register another script — should return identifier "2"
-        try ctx.processMessage(.{ .id = 21, .method = "Page.addScriptToEvaluateOnNewDocument", .params = .{ .source = "window.__test2 = 2" } });
+        try ctx.processMessage(.{ .id = 21, .method = "Page.addScriptToEvaluateOnNewDocument", .params = .{ .source = "window.__newDocumentRuns = (window.__newDocumentRuns || 0) + 1" } });
         try ctx.expectSentResult(.{
             .identifier = "2",
         }, .{ .id = 21 });
@@ -1443,11 +1454,30 @@ test "cdp.frame: addScriptToEvaluateOnNewDocument" {
 
         const frame = bc.session.currentFrame() orelse unreachable;
 
+        {
+            var ls: js.Local.Scope = undefined;
+            frame.js.localScope(&ls);
+            defer ls.deinit();
+
+            const test_val = try ls.local.exec("window.__newDocumentRuns", null);
+            try testing.expectEqual(1, try test_val.toI32());
+        }
+
+        // A same-document navigation emits frameNavigated with the existing
+        // loader. It must not re-run new-document hooks in the same realm.
+        try frameNavigated(bc.notification_arena, bc, &.{
+            .req_id = frame._req_id,
+            .frame_id = frame._frame_id,
+            .loader_id = frame._loader_id,
+            .timestamp = 1,
+            .url = frame.url,
+            .opts = .{ .reason = .history },
+        });
+
         var ls: js.Local.Scope = undefined;
         frame.js.localScope(&ls);
         defer ls.deinit();
-
-        const test_val = try ls.local.exec("window.__test2", null);
-        try testing.expectEqual(2, try test_val.toI32());
+        const runs_after_history = try ls.local.exec("window.__newDocumentRuns", null);
+        try testing.expectEqual(1, try runs_after_history.toI32());
     }
 }

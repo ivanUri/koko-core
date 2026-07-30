@@ -24,7 +24,9 @@ pub const State = struct {
     timezone_id: ?[]const u8 = null,
     locale: ?[]const u8 = null,
     accept_language: ?[]const u8 = null,
+    languages: ?[]const []const u8 = null,
     platform: ?[]const u8 = null,
+    user_agent: ?[]const u8 = null,
     geolocation: ?Geolocation = null,
     granted_permissions: std.StringHashMapUnmanaged(void) = .{},
 
@@ -70,6 +72,31 @@ pub const State = struct {
 
     pub fn dupString(_: *State, arena: std.mem.Allocator, value: []const u8) ![]const u8 {
         return try arena.dupe(u8, value);
+    }
+
+    /// Parse the CDP Accept-Language preference list into the values exposed
+    /// by navigator.languages. Quality weights belong to HTTP only.
+    pub fn setAcceptLanguages(self: *State, arena: std.mem.Allocator, value: []const u8) !void {
+        self.accept_language = try arena.dupe(u8, value);
+        var count: usize = 0;
+        var count_it = std.mem.splitScalar(u8, value, ',');
+        while (count_it.next()) |raw| {
+            if (std.mem.trim(u8, raw, " \t").len != 0) count += 1;
+        }
+
+        const parsed = try arena.alloc([]const u8, count);
+        var index: usize = 0;
+        var it = std.mem.splitScalar(u8, self.accept_language.?, ',');
+        while (it.next()) |raw| {
+            const item = std.mem.trim(u8, raw, " \t");
+            if (item.len == 0) continue;
+            const semi = std.mem.indexOfScalar(u8, item, ';') orelse item.len;
+            const language = std.mem.trim(u8, item[0..semi], " \t");
+            if (language.len == 0) continue;
+            parsed[index] = language;
+            index += 1;
+        }
+        self.languages = parsed[0..index];
     }
 
     pub fn grantPermission(self: *State, arena: std.mem.Allocator, name: []const u8) !void {

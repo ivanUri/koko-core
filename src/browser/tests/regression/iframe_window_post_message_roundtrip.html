@@ -1,0 +1,59 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  attempts: 0,
+  assertOk() {
+    if (document.body.id === "pass") return true;
+    this.attempts += 1;
+    if (this.attempts > 80) throw new Error(document.body.textContent);
+    return false;
+  },
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+addEventListener("message", event => {
+  if (event.data?.kind === "ready") {
+    frame.contentWindow.postMessage({ kind: "ping", value: 42 }, "*");
+    return;
+  }
+  if (
+    event.data?.kind === "pong" &&
+    event.data.value === 42 &&
+    event.origin === location.origin &&
+    event.source === frame.contentWindow
+  ) {
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+    return;
+  }
+  document.body.textContent = JSON.stringify({
+    stage: "unexpected-parent-message",
+    data: event.data,
+    sourceMatches: event.source === frame.contentWindow,
+    origin: event.origin,
+  });
+});
+
+const frame = document.createElement("iframe");
+frame.onload = () => {
+  if (document.body.id !== "pass" && document.body.textContent === "pending") {
+    document.body.textContent = "iframe-loaded-without-ready-message";
+  }
+};
+frame.srcdoc = `
+  <script>
+    addEventListener("message", event => {
+      if (event.data?.kind === "ping") {
+        event.source.postMessage({
+          kind: "pong",
+          value: event.data.value
+        }, "*");
+      }
+    });
+    parent.postMessage({ kind: "ready" }, "*");
+  <\/script>
+`;
+document.body.appendChild(frame);
+</script>

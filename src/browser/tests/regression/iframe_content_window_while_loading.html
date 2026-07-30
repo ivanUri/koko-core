@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+try {
+  const iframe = document.createElement("iframe");
+  iframe.src = "/fetch-stream-hold";
+  document.body.appendChild(iframe);
+
+  if (iframe.contentWindow === null) {
+    throw new Error("contentWindow was null while child Document was loading");
+  }
+
+  document.body.id = "pass";
+  document.body.textContent = "pass";
+} catch (error) {
+  document.body.id = "fail";
+  document.body.textContent = String(error && error.stack || error);
+}
+</script>

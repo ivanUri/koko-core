@@ -12,7 +12,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-const std = @import("std");
 const RC = @import("../../../support/rc.zig").RC;
 
 const js = @import("../../js/js.zig");
@@ -26,26 +25,23 @@ const FontFace = @import("FontFace.zig");
 const FingerprintProfile = @import("../../profile/types.zig");
 const TextMetrics = @import("../canvas/TextMetrics.zig");
 
-const Allocator = std.mem.Allocator;
-
 const FontFaceSet = @This();
 
 _rc: RC(u8) = .{},
 _proto: *EventTarget,
-_arena: Allocator,
 
 pub fn init(frame: *Frame) !*FontFaceSet {
-    const arena = try frame.getArena(.tiny, "FontFaceSet");
-    errdefer frame.releaseArena(arena);
-
-    return frame._factory.eventTargetWithAllocator(arena, FontFaceSet{
+    // document.fonts is a Document singleton. Allocate its prototype chain
+    // from the owning frame/Page arena so a late V8 weak callback cannot
+    // return a separately-pooled arena after Document teardown has already
+    // released the native owner.
+    return frame._factory.eventTargetWithAllocator(frame.arena, FontFaceSet{
         ._proto = undefined,
-        ._arena = arena,
     });
 }
 
-pub fn deinit(self: *FontFaceSet, page: *Page) void {
-    page.releaseArena(self._arena);
+pub fn deinit(_: *FontFaceSet, _: *Page) void {
+    // Storage is owned by the frame/Page arena.
 }
 
 pub fn releaseRef(self: *FontFaceSet, page: *Page) void {

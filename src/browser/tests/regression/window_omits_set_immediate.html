@@ -1,0 +1,20 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+const omitted =
+  typeof window.setImmediate === "undefined" &&
+  typeof window.clearImmediate === "undefined" &&
+  !("setImmediate" in window) &&
+  !("clearImmediate" in window);
+
+document.body.id = omitted ? "pass" : "fail";
+document.body.textContent = omitted
+  ? "pass"
+  : "Window exposed non-browser immediate timer APIs";
+
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+</script>

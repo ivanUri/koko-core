@@ -64,7 +64,7 @@ pub fn addPendingRead(self: *ReadableStreamDefaultController) !js.Promise {
 }
 
 pub fn enqueue(self: *ReadableStreamDefaultController, chunk: Chunk) !void {
-    if (self._stream._state != .readable) {
+    if (self._stream._state != .readable or self._stream._close_requested) {
         return error.StreamNotReadable;
     }
 
@@ -92,7 +92,7 @@ pub fn enqueue(self: *ReadableStreamDefaultController, chunk: Chunk) !void {
 /// Enqueue a raw JS value, preserving its type (number, bool, object, etc.).
 /// Used by the JS-facing API; internal Zig callers should use enqueue(Chunk).
 pub fn enqueueValue(self: *ReadableStreamDefaultController, value: js.Value) !void {
-    if (self._stream._state != .readable) {
+    if (self._stream._state != .readable or self._stream._close_requested) {
         return error.StreamNotReadable;
     }
 
@@ -118,12 +118,18 @@ pub fn enqueueValue(self: *ReadableStreamDefaultController, value: js.Value) !vo
 }
 
 pub fn close(self: *ReadableStreamDefaultController) !void {
-    if (self._stream._state != .readable) {
+    if (self._stream._state != .readable or self._stream._close_requested) {
         return error.StreamNotReadable;
     }
 
-    self._stream._state = .closed;
+    self._stream._close_requested = true;
+    if (self._queue.items.len != 0) return;
+    try self.finishClose();
+}
 
+fn finishClose(self: *ReadableStreamDefaultController) !void {
+    self._stream._close_requested = false;
+    self._stream._state = .closed;
     // Resolve all pending reads with done=true
     const result = ReadableStreamDefaultReader.ReadResult{
         .done = true,
@@ -178,13 +184,20 @@ pub fn dequeue(self: *ReadableStreamDefaultController) ?Chunk {
     }
     const chunk = self._queue.orderedRemove(0);
 
-    // After dequeueing, we may need to pull more data
-    self._stream.callPullIfNeeded() catch {};
+    if (self._queue.items.len == 0 and self._stream._close_requested) {
+        self.finishClose() catch |err| {
+            log.warn(.js, "ReadableStream finish close", .{ .err = err });
+        };
+    } else {
+        // After dequeueing, we may need to pull more data.
+        self._stream.callPullIfNeeded() catch {};
+    }
 
     return chunk;
 }
 
 pub fn getDesiredSize(self: *const ReadableStreamDefaultController) ?i32 {
+    if (self._stream._close_requested) return 0;
     switch (self._stream._state) {
         .errored => return null,
         .closed => return 0,

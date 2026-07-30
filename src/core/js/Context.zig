@@ -256,33 +256,36 @@ pub fn deinit(self: *Context) void {
     // turns a recoverable teardown race into a debug panic.
     self.scheduler.deinit();
 
-    var hs: js.HandleScope = undefined;
-    const entered = self.enter(&hs) orelse return;
-    defer entered.exit();
+    // These are Context-owned terminal resources, not operations on the JS
+    // realm. A detached/stale iframe can no longer be entered, but it must
+    // still release them exactly once.
+    defer self.page.releaseOrigin(self.origin);
+    defer v8.v8__Global__Reset(&self.handle);
+    defer v8.v8__MicrotaskQueue__DELETE(self.microtask_queue);
 
     for (self.global_modules.items) |*global| {
         v8.v8__Global__Reset(global);
     }
 
-    self.page.releaseOrigin(self.origin);
+    var hs: js.HandleScope = undefined;
+    const entered = self.enter(&hs) orelse {
+        env.isolate.notifyContextDisposed();
+        return;
+    };
+    defer entered.exit();
 
     // Clear the embedder data so that if V8 keeps this context alive
     // (because objects created in it are still referenced), we don't
     // have a dangling pointer to our freed Context struct.
     v8.v8__Context__SetAlignedPointerInEmbedderData(entered.handle, 1, null);
 
-    v8.v8__Global__Reset(&self.handle);
     env.isolate.notifyContextDisposed();
     // There can be other tasks associated with this context that we need to
     // purge while the context is still alive.
     _ = env.pumpMessageLoop();
-    v8.v8__MicrotaskQueue__DELETE(self.microtask_queue);
 }
 
 pub fn setOrigin(self: *Context, key: ?[]const u8) !void {
-    const env = self.env;
-    const isolate = env.isolate;
-
     if (comptime IS_DEBUG) {
         // A frame starts off with an opaque origin. The first setOrigin call must
         // release that opaque origin (not stored in Page.origins). Redirects may
@@ -298,6 +301,25 @@ pub fn setOrigin(self: *Context, key: ?[]const u8) !void {
     self.page.releaseOrigin(self.origin);
     self.origin = origin;
 
+    self.installOriginSecurityToken(origin);
+}
+
+/// Inherit an existing origin identity, including an opaque origin.
+///
+/// `about:blank` and `about:srcdoc` child browsing contexts inherit the
+/// creator's origin object. Reconstructing that identity from the serialized
+/// origin is insufficient: opaque origins deliberately have no serialized
+/// key and two independently-created opaque origins are cross-origin.
+pub fn inheritOrigin(self: *Context, origin: *Origin) void {
+    if (self.origin == origin) return;
+    origin.rc += 1;
+    self.page.releaseOrigin(self.origin);
+    self.origin = origin;
+    self.installOriginSecurityToken(origin);
+}
+
+fn installOriginSecurityToken(self: *Context, origin: *Origin) void {
+    const isolate = self.env.isolate;
     {
         var ls: js.Local.Scope = undefined;
         self.localScope(&ls);
@@ -480,6 +502,8 @@ pub fn module(self: *Context, comptime want_result: bool, local: *const js.Local
                 }
             } else {
                 // first time seeing this
+                const owned_key = try arena.dupeZ(u8, url);
+                gop.key_ptr.* = owned_key;
                 gop.value_ptr.* = .{};
             }
         }
@@ -1005,6 +1029,15 @@ const DynamicModuleResolveState = struct {
 
 fn _dynamicModuleCallback(self: *Context, specifier: [:0]const u8, referrer: []const u8, local: *const js.Local) !js.Promise {
     const gop = try self.module_cache.getOrPut(self.arena, specifier);
+    const owned_specifier: [:0]const u8 = if (gop.found_existing) blk: {
+        const key = gop.key_ptr.*;
+        break :blk key.ptr[0..key.len :0];
+    } else blk: {
+        const key = try self.arena.dupeZ(u8, specifier);
+        gop.key_ptr.* = key;
+        gop.value_ptr.* = .{};
+        break :blk key;
+    };
     if (gop.found_existing) {
         if (gop.value_ptr.resolver_promise) |rp| {
             return local.toLocal(rp);
@@ -1017,7 +1050,7 @@ fn _dynamicModuleCallback(self: *Context, specifier: [:0]const u8, referrer: []c
     state.* = .{
         .module = null,
         .context = self,
-        .specifier = specifier,
+        .specifier = owned_specifier,
         .context_id = self.id,
         .resolver = try resolver.persist(),
     };
@@ -1041,7 +1074,7 @@ fn _dynamicModuleCallback(self: *Context, specifier: [:0]const u8, referrer: []c
         };
 
         // Next, we need to actually load it.
-        self.script_manager.getAsyncImport(specifier, dynamicModuleSourceCallback, state, referrer) catch |err| {
+        self.script_manager.getAsyncImport(owned_specifier, dynamicModuleSourceCallback, state, referrer) catch |err| {
             const error_msg = local.newString(@errorName(err));
             _ = resolver.reject("dynamic module get async", error_msg);
         };

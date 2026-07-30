@@ -128,7 +128,7 @@ const chrome_mime_types = [_]struct {
 pub fn ensureChrome(self: *PluginArray, frame: *Frame) !void {
     if (self._initialized) return;
 
-    const specs = frame._session.browser.app.config.profile.plugins;
+    const specs = frame._session.browser.app.config.profile.persona.surfaces.plugins;
     if (specs.len == 0) {
         self._initialized = true;
         return;

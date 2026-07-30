@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+const container = document.createElement("div");
+container.id = "identity-container";
+const image = document.createElement("img");
+container.appendChild(image);
+document.body.appendChild(container);
+
+const stable =
+  image.parentElement === container &&
+  image.parentNode === container &&
+  container.firstElementChild === image &&
+  container.firstChild === image &&
+  document.querySelector("#identity-container") === container &&
+  document.getElementById("identity-container") === container &&
+  document.querySelector("img") === image;
+
+document.body.id = stable ? "pass" : "fail";
+document.body.textContent = stable
+  ? "pass"
+  : "the same native DOM node produced multiple JavaScript wrappers";
+</script>

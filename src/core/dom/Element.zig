@@ -2463,6 +2463,13 @@ pub fn getBoundingClientRect(self: *Element, frame: *Frame) DOMRect {
     return self.getBoundingClientRectForVisible(frame);
 }
 
+// The internal layout API returns a value for inexpensive geometry arithmetic.
+// The Web API, however, must return a branded DOMRect object so its prototype
+// methods (notably toJSON()) are available to JavaScript callers.
+fn getBoundingClientRectForJs(self: *Element, frame: *Frame) !*DOMRect {
+    return frame._factory.create(self.getBoundingClientRect(frame));
+}
+
 // Some cases need a the BoundingClientRect but have already done the
 // visibility check.
 pub fn getBoundingClientRectForVisible(self: *Element, frame: *Frame) DOMRect {
@@ -3233,7 +3240,7 @@ pub const JsApi = struct {
     pub const offsetWidth = bridge.accessor(Element.getOffsetWidth, null, .{});
     pub const offsetHeight = bridge.accessor(Element.getOffsetHeight, null, .{});
     pub const getClientRects = bridge.function(Element.getClientRects, .{});
-    pub const getBoundingClientRect = bridge.function(Element.getBoundingClientRect, .{});
+    pub const getBoundingClientRect = bridge.function(Element.getBoundingClientRectForJs, .{});
     pub const getElementsByTagName = bridge.function(Element.getElementsByTagName, .{});
     pub const getElementsByTagNameNS = bridge.function(Element.getElementsByTagNameNS, .{});
     pub const getElementsByClassName = bridge.function(Element.getElementsByClassName, .{});

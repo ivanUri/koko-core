@@ -1,0 +1,49 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+(async () => {
+  try {
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue("first");
+        controller.enqueue("second");
+        controller.close();
+      },
+    });
+    const reader = stream.getReader();
+    let closed = false;
+    reader.closed.then(() => {
+      closed = true;
+    });
+
+    await Promise.resolve();
+    if (closed) throw new Error("reader.closed resolved with queued chunks");
+
+    const first = await reader.read();
+    await Promise.resolve();
+    if (first.done || first.value !== "first")
+      throw new Error("first queued chunk was not preserved");
+    if (closed) throw new Error("reader.closed resolved before final chunk");
+
+    const second = await reader.read();
+    if (second.done || second.value !== "second")
+      throw new Error("second queued chunk was not preserved");
+    await reader.closed;
+    const end = await reader.read();
+    if (!end.done || end.value !== undefined)
+      throw new Error("stream did not finish after queue drained");
+
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+  } catch (error) {
+    document.body.id = "fail";
+    document.body.textContent = String(error && error.stack || error);
+  }
+})();
+</script>

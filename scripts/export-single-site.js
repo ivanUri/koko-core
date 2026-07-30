@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
@@ -9,25 +8,23 @@ const url = "https://demo.fingerprint.com/playground";
 // Chỉ cần sửa cấu hình trong khối này.
 const CONFIG = {
   url,
-  output: "exports/single/demo.fingerprint.com-direct-rerun.html",
-  log: "export-logs/demo.fingerprint.com-direct-rerun.log",
+  output: "exports/single/demo.fingerprint.com.playground.html",
+  log: "export-logs/demo.fingerprint.com.playground.log",
 
   // Keep single-page exports isolated from profiles created by other runners.
-  // Point these two values at another profile explicitly when persistence is
-  // required; the exporter itself does not select an identity for a site.
-  // Isolated run directory: avoids locks/ACLs from the existing desktop
-  // profile while testing imported Firefox session data.
-  userDataDir: "/tmp/velora-firefox-run",
+  // The run starts without cookies or origin storage, while retaining the
+  // selected fingerprint identity and browser preferences.
+  userDataDir: "/tmp/velora-export-single-site",
   profile: "chrome-current",
   // Optional proxy pool. Velora selects one entry at process startup and keeps
   // it for the complete browser session; it never rotates per request.
   proxyFile: null,
-  cookieJar: "exports/firefox-cookies.json",
+  cookieJar: null,
   keepScripts: false,
   includeFrames: true,
   waitUntil: "done",
-  waitMs: 40_000,
-  terminateMs: 40_000,
+  waitMs: 60_000,
+  terminateMs: 60_000,
   // Wait for finite presentation animations to settle before serializing.
   // Infinite decorative animations are intentionally ignored.
   waitScript: null,
@@ -102,8 +99,27 @@ function validateConfig() {
   return url;
 }
 
+function cleanBrowserState() {
+  const profileDir = path.resolve(projectRoot, CONFIG.userDataDir, CONFIG.profile);
+  const statePaths = [
+    path.join(profileDir, "Cookies.json"),
+    path.join(profileDir, "Local Storage"),
+    path.join(profileDir, "Session Storage"),
+    path.join(profileDir, "IndexedDB"),
+  ];
+  if (CONFIG.cookieJar) {
+    statePaths.push(path.resolve(projectRoot, CONFIG.cookieJar));
+  }
+
+  for (const statePath of statePaths) {
+    fs.rmSync(statePath, { recursive: true, force: true });
+  }
+  console.log(`Clean browser state: ${profileDir}`);
+}
+
 function main() {
   const url = validateConfig();
+  cleanBrowserState();
   fs.mkdirSync(path.dirname(output), { recursive: true });
   fs.mkdirSync(path.dirname(logPath), { recursive: true });
 

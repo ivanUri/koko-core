@@ -62,11 +62,12 @@ fn run(allocator: Allocator, main_arena: Allocator) !void {
     // while the main thread is in network.run(). Stack-allocated Config caused
     // torn reads of profile.policies (segfault in PolicyRegistry.policyEnabled).
     const config = try allocator.create(Config);
+    var config_owned_by_error_path = true;
     try Config.parseArgsInPlace(config, main_arena, allocator);
-    errdefer {
+    errdefer if (config_owned_by_error_path) {
         config.deinit(allocator);
         allocator.destroy(config);
-    }
+    };
 
     switch (config.mode) {
         .profile => |opts| {
@@ -140,6 +141,10 @@ fn run(allocator: Allocator, main_arena: Allocator) !void {
     defer app.deinit();
     defer allocator.destroy(config);
     defer config.deinit(allocator);
+    // From this point the ordinary defers own Config. The outer errdefer is
+    // still active for errors from this function, so explicitly transfer
+    // ownership to prevent error unwinding from freeing Config twice.
+    config_owned_by_error_path = false;
 
     try sighandler.on(v.Network.stop, .{&app.network});
 

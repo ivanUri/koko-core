@@ -36,7 +36,7 @@ pub fn getMedia(self: *const MediaQueryList) []const u8 {
 }
 
 fn colorSchemeFromProfile(frame: *Frame) MediaQueryEval.Viewport.ColorScheme {
-    const scheme = frame.loadedProfile().http.prefers_color_scheme;
+    const scheme = frame.loadedProfile().persona.network.prefers_color_scheme;
     if (std.ascii.eqlIgnoreCase(scheme, "dark")) return .dark;
     return .light;
 }

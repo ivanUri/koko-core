@@ -26,11 +26,11 @@ const ScrollRestoration = enum { auto, manual };
 _scroll_restoration: ScrollRestoration = .auto,
 
 pub fn getLength(_: *const History, frame: *Frame) u32 {
-    return @intCast(frame._session.navigation._entries.items.len);
+    return @intCast(frame.navigationStore()._entries.items.len);
 }
 
 pub fn getState(_: *const History, frame: *Frame) !?js.Value {
-    if (frame._session.navigation.getCurrentEntry()._state.value) |state| {
+    if (frame.navigationStore().getCurrentEntry()._state.value) |state| {
         const value = try frame.js.local.?.parseJSON(state);
         return value;
     } else return null;
@@ -64,7 +64,7 @@ pub fn pushState(_: *History, state: js.Value, _: ?[]const u8, _url: ?[]const u8
         try arena.dupeZ(u8, frame.url);
 
     const json = state.toJson(arena) catch return error.DataClone;
-    _ = try frame._session.navigation.pushEntry(url, .{ .source = .history, .value = json }, frame, true);
+    _ = try frame.navigationStore().pushEntry(url, .{ .source = .history, .value = json }, frame, true);
 
     try applyHistoryUrl(frame, url);
 }
@@ -77,7 +77,7 @@ pub fn replaceState(_: *History, state: js.Value, _: ?[]const u8, _url: ?[]const
         try arena.dupeZ(u8, frame.url);
 
     const json = state.toJson(arena) catch return error.DataClone;
-    _ = try frame._session.navigation.replaceEntry(url, .{ .source = .history, .value = json }, frame, true);
+    _ = try frame.navigationStore().replaceEntry(url, .{ .source = .history, .value = json }, frame, true);
 
     try applyHistoryUrl(frame, url);
 }
@@ -85,14 +85,15 @@ pub fn replaceState(_: *History, state: js.Value, _: ?[]const u8, _url: ?[]const
 fn goInner(delta: i32, frame: *Frame) !void {
     // 0 behaves the same as no argument, both reloading the frame.
 
-    const current = frame._session.navigation._index;
+    const navigation = frame.navigationStore();
+    const current = navigation._index;
     const index_s: i64 = @intCast(@as(i64, @intCast(current)) + @as(i64, @intCast(delta)));
-    if (index_s < 0 or index_s > frame._session.navigation._entries.items.len - 1) {
+    if (index_s < 0 or index_s > navigation._entries.items.len - 1) {
         return;
     }
 
     const index = @as(usize, @intCast(index_s));
-    const entry = frame._session.navigation._entries.items[index];
+    const entry = navigation._entries.items[index];
 
     if (entry._url) |url| {
         if (frame.isSameOrigin(url)) {
@@ -104,7 +105,7 @@ fn goInner(delta: i32, frame: *Frame) !void {
         }
     }
 
-    _ = try frame._session.navigation.navigateInner(entry._url, .{ .traverse = index }, frame);
+    _ = try navigation.navigateInner(entry._url, .{ .traverse = index }, frame);
 }
 
 pub fn back(_: *History, frame: *Frame) !void {

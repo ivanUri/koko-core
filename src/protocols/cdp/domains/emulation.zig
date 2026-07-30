@@ -190,13 +190,6 @@ pub fn setUserAgentOverride(cmd: *CDP.Command) !void {
 
     const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
 
-    if (params.acceptLanguage) |v| {
-        bc.emulation.accept_language = try bc.emulation.dupString(bc.arena, v);
-    }
-    if (params.platform) |v| {
-        bc.emulation.platform = try bc.emulation.dupString(bc.arena, v);
-    }
-
     const ua = params.userAgent;
     const allow_mozilla = cmd.cdp.browser.app.config.profile.allowsMozillaUserAgent();
     Config.validateUserAgent(ua, allow_mozilla) catch |err| switch (err) {
@@ -208,7 +201,19 @@ pub fn setUserAgentOverride(cmd: *CDP.Command) !void {
     };
 
     const http_client = &cmd.cdp.browser.http_client;
-    try http_client.setUserAgentOverride(ua);
+    try http_client.setIdentityOverride(ua, params.acceptLanguage);
+    bc.emulation.user_agent = try bc.emulation.dupString(bc.arena, ua);
+    if (params.acceptLanguage) |value| {
+        try bc.emulation.setAcceptLanguages(bc.arena, value);
+    } else {
+        bc.emulation.accept_language = null;
+        bc.emulation.languages = null;
+    }
+    if (params.platform) |value| {
+        bc.emulation.platform = try bc.emulation.dupString(bc.arena, value);
+    } else {
+        bc.emulation.platform = null;
+    }
     bc.user_agent_changed = true;
 
     return cmd.sendResult(null, .{});
@@ -323,6 +328,43 @@ test "cdp.Emulation: setUserAgentOverride with optional params" {
     });
 
     try ctx.expectSentResult(null, .{ .id = 5 });
+
+    const bc = ctx.cdp().browser_context.?;
+    const http_client = &ctx.cdp().browser.http_client;
+    try testing.expectEqualSlices(u8, "CustomBot/2.0", http_client.getUserAgent());
+    try testing.expectEqualSlices(u8, "Sec-Ch-Ua:", http_client.getSecChUaHeader());
+    try testing.expectEqualSlices(u8, "Accept-Language: en-US", http_client.getAcceptLanguageHeader());
+    try testing.expectEqualSlices(u8, "CustomBot/2.0", bc.emulation.user_agent.?);
+    try testing.expectEqualSlices(u8, "Linux", bc.emulation.platform.?);
+    try testing.expectEqual(@as(usize, 1), bc.emulation.languages.?.len);
+    try testing.expectEqualSlices(u8, "en-US", bc.emulation.languages.?[0]);
+}
+
+test "cdp.Emulation: Accept-Language overlay parses weights without changing HTTP value" {
+    var ctx = try testing.context();
+    defer ctx.deinit();
+    _ = try ctx.loadBrowserContext(.{ .id = "BID-UA-LANG" });
+
+    try ctx.processMessage(.{
+        .id = 51,
+        .method = "Emulation.setUserAgentOverride",
+        .params = .{
+            .userAgent = "CustomBot/2.0",
+            .acceptLanguage = "fr-FR, fr;q=0.9, en;q=0.7",
+        },
+    });
+    try ctx.expectSentResult(null, .{ .id = 51 });
+
+    const languages = ctx.cdp().browser_context.?.emulation.languages.?;
+    try testing.expectEqual(@as(usize, 3), languages.len);
+    try testing.expectEqualSlices(u8, "fr-FR", languages[0]);
+    try testing.expectEqualSlices(u8, "fr", languages[1]);
+    try testing.expectEqualSlices(u8, "en", languages[2]);
+    try testing.expectEqualSlices(
+        u8,
+        "Accept-Language: fr-FR, fr;q=0.9, en;q=0.7",
+        ctx.cdp().browser.http_client.getAcceptLanguageHeader(),
+    );
 }
 
 test "cdp.Emulation: setUserAgentOverride can be called multiple times" {

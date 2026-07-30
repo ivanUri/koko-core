@@ -14,7 +14,6 @@ const std = @import("std");
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const FingerprintProfile = @import("../profile/types.zig");
-const HttpClient = @import("../browser/HttpClient.zig");
 const NavigatorUAData = @import("NavigatorUAData.zig");
 const EmulationState = @import("../../protocols/cdp/EmulationState.zig");
 
@@ -23,8 +22,20 @@ const NavigatorState = @This();
 profile: *const FingerprintProfile.IdentityProfile,
 emulation: ?*const EmulationState.State = null,
 
-pub fn userAgent(_: *const NavigatorState, http_client: *const HttpClient) []const u8 {
-    return http_client.getUserAgent();
+pub fn userAgent(self: *const NavigatorState) []const u8 {
+    if (self.emulation) |em| {
+        if (em.user_agent) |override| return override;
+    }
+    return self.profile.user_agent_fallback;
+}
+
+pub fn userAgentDataEnabled(self: *const NavigatorState, profile_enabled: bool) bool {
+    if (self.emulation) |em| {
+        // CDP UA override without userAgentMetadata must not expose the base
+        // persona's UA-CH identity beside the overridden legacy UA.
+        if (em.user_agent != null) return false;
+    }
+    return profile_enabled;
 }
 
 pub fn appName(_: *const NavigatorState) []const u8 {
@@ -62,6 +73,9 @@ pub fn language(self: *const NavigatorState) []const u8 {
 pub fn languages(self: *const NavigatorState) []const []const u8 {
     if (self.emulation) |em| {
         if (em.locale) |locale| return &.{locale};
+        if (em.languages) |languages_override| {
+            if (languages_override.len != 0) return languages_override;
+        }
     }
     return self.profile.languages;
 }

@@ -263,27 +263,8 @@ fn appendChromeDocumentNavigationHeaders(
     try headers.add(static.accept_language_header);
 
     const in_session = isInSessionDocument(opts);
-    // Pure A/B: VELORA_COLD_FULL_CH=1 forces sei-hop-like CH on cold docs
-    // (Downlink/RTT + Form-Factors + Full-Version) — matches Chrome HAR sei SERP hop shape.
-    const force_full_ch = blk: {
-        if (std.posix.getenv("VELORA_COLD_FULL_CH")) |v| {
-            break :blk !(std.mem.eql(u8, v, "0") or std.mem.eql(u8, v, "false"));
-        }
-        break :blk false;
-    };
-    const use_he_ch = in_session or force_full_ch;
-    // HAR sei hop used Downlink 1.5 / RTT 50 — reuse in_session estimates when forcing full CH.
-    const net_opts: ChromeHeadersOpts = if (force_full_ch and !in_session)
-        .{
-            .full_client_hints = opts.full_client_hints,
-            .brands = opts.brands,
-            .color_scheme = opts.color_scheme,
-            .omit_sec_fetch_user = true, // force isInSessionDocument path for net estimates
-            .referer_url = opts.referer_url,
-        }
-    else
-        opts;
-    const net = documentNetworkEstimates(net_opts);
+    const use_he_ch = in_session;
+    const net = documentNetworkEstimates(opts);
 
     if (opts.full_client_hints and use_he_ch) {
         const downlink_hdr = try std.fmt.allocPrintSentinel(

@@ -22,19 +22,27 @@ const log = @import("../../support/log.zig");
 const Location = @This();
 
 _url: *URL,
+// Location is tied to one browsing context. Calls through another WindowProxy
+// must continue to read and navigate this owner, not the caller's frame.
+_frame: ?*Frame = null,
 
 pub fn init(raw_url: [:0]const u8, frame: *Frame) !*Location {
     const url = try URL.init(raw_url, null, &frame.js.execution);
     return frame._factory.create(Location{
         ._url = url,
+        ._frame = frame,
     });
+}
+
+fn ownerFrame(self: *const Location, fallback: *Frame) *Frame {
+    return self._frame orelse fallback;
 }
 
 /// Browsing-context URL is the source of truth after history.pushState /
 /// replaceState. Relying only on cached `_url` can leave window.location
 /// stale while document.URL already moved (signup.live.com SPA routes).
-fn liveRaw(_: *const Location, frame: *Frame) [:0]const u8 {
-    return frame.url;
+fn liveRaw(self: *const Location, frame: *Frame) [:0]const u8 {
+    return self.ownerFrame(frame).url;
 }
 
 pub fn getPathname(self: *const Location, frame: *Frame) []const u8 {
@@ -58,8 +66,8 @@ pub fn getPort(self: *const Location, frame: *Frame) []const u8 {
 }
 
 pub fn getOrigin(self: *const Location, frame: *Frame) ![]const u8 {
-    _ = self;
-    return (try U.getOrigin(frame.call_arena, frame.url)) orelse "null";
+    const owner = self.ownerFrame(frame);
+    return (try U.getOrigin(owner.call_arena, owner.url)) orelse "null";
 }
 
 pub fn getSearch(self: *const Location, frame: *Frame) []const u8 {
@@ -70,26 +78,29 @@ pub fn getHash(self: *const Location, frame: *Frame) []const u8 {
     return U.getHash(self.liveRaw(frame));
 }
 
-pub fn setPathname(_: *const Location, pathname: []const u8, frame: *Frame) !void {
-    const new_url = try U.setPathname(frame.url, pathname, frame.call_arena);
-    return frame.scheduleNavigation(new_url, .{
+pub fn setPathname(self: *const Location, pathname: []const u8, frame: *Frame) !void {
+    const owner = self.ownerFrame(frame);
+    const new_url = try U.setPathname(owner.url, pathname, owner.call_arena);
+    return owner.scheduleNavigation(new_url, .{
         .reason = .script,
         .kind = .{ .push = null },
-    }, .{ .script = frame });
+    }, .{ .script = owner });
 }
 
-pub fn setSearch(_: *const Location, search: []const u8, frame: *Frame) !void {
-    const new_url = try U.setSearch(frame.url, search, frame.call_arena);
-    return frame.scheduleNavigation(new_url, .{
+pub fn setSearch(self: *const Location, search: []const u8, frame: *Frame) !void {
+    const owner = self.ownerFrame(frame);
+    const new_url = try U.setSearch(owner.url, search, owner.call_arena);
+    return owner.scheduleNavigation(new_url, .{
         .reason = .script,
         .kind = .{ .push = null },
-    }, .{ .script = frame });
+    }, .{ .script = owner });
 }
 
-pub fn setHash(_: *const Location, hash: []const u8, frame: *Frame) !void {
+pub fn setHash(self: *const Location, hash: []const u8, frame: *Frame) !void {
+    const owner = self.ownerFrame(frame);
     const normalized_hash = blk: {
         if (hash.len == 0) {
-            const old_url = frame.url;
+            const old_url = owner.url;
             // Already no fragment: no-op. Falling through with the same URL
             // would schedule a full reload (not a fragment nav) and hang tests /
             // SPA code that clears hash when it is already empty.
@@ -98,41 +109,44 @@ pub fn setHash(_: *const Location, hash: []const u8, frame: *Frame) !void {
         } else if (hash[0] == '#')
             break :blk hash
         else
-            break :blk try std.fmt.allocPrint(frame.call_arena, "#{s}", .{hash});
+            break :blk try std.fmt.allocPrint(owner.call_arena, "#{s}", .{hash});
     };
 
     // Fragment-only / clear-hash updates are same-document navigations.
-    return frame.scheduleNavigation(normalized_hash, .{
+    return owner.scheduleNavigation(normalized_hash, .{
         .reason = .script,
         .kind = .{ .replace = null },
-    }, .{ .script = frame });
+    }, .{ .script = owner });
 }
 
-pub fn assign(_: *const Location, url: [:0]const u8, frame: *Frame) !void {
-    return frame.scheduleNavigation(url, .{ .reason = .script, .kind = .{ .push = null } }, .{ .script = frame });
+pub fn assign(self: *const Location, url: [:0]const u8, frame: *Frame) !void {
+    const owner = self.ownerFrame(frame);
+    return owner.scheduleNavigation(url, .{ .reason = .script, .kind = .{ .push = null } }, .{ .script = owner });
 }
 
-pub fn replace(_: *const Location, url: [:0]const u8, frame: *Frame) !void {
-    return frame.scheduleNavigation(url, .{ .reason = .script, .kind = .{ .replace = null } }, .{ .script = frame });
+pub fn replace(self: *const Location, url: [:0]const u8, frame: *Frame) !void {
+    const owner = self.ownerFrame(frame);
+    return owner.scheduleNavigation(url, .{ .reason = .script, .kind = .{ .replace = null } }, .{ .script = owner });
 }
 
-pub fn reload(_: *const Location, frame: *Frame) !void {
+pub fn reload(self: *const Location, frame: *Frame) !void {
+    const owner = self.ownerFrame(frame);
     if (std.posix.getenv("VELORA_NAVIGATION_TRACE") != null) {
         log.info(.browser, "Location.reload", .{
-            .url = frame.url,
-            .frame_id = frame._frame_id,
-            .realm = frame.realmState(),
+            .url = owner.url,
+            .frame_id = owner._frame_id,
+            .realm = owner.realmState(),
         });
     }
     // Reload is a document navigation even though its target URL is identical
     // to the current URL. Without force, scheduleNavigation's same-URL guard
     // correctly treats ordinary location assignments as no-ops but incorrectly
     // swallows Location.reload().
-    return frame.scheduleNavigation(frame.url, .{
+    return owner.scheduleNavigation(owner.url, .{
         .reason = .script,
         .kind = .reload,
         .force = true,
-    }, .{ .script = frame });
+    }, .{ .script = owner });
 }
 
 pub fn toString(self: *const Location, frame: *Frame) [:0]const u8 {

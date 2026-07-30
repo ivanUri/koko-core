@@ -651,10 +651,11 @@ pub fn waitForImport(self: *ScriptManagerBase, url: [:0]const u8) !ModuleSource 
     var client = self.client;
 
     // mutate imported_modules (grow/rehash), invalidating a cached Entry pointer
-    // and stranding the wait on a stale `.loading` view (ebay.com module hang).
-    // Cap total wait so a stuck fetch cannot freeze the isolate (and CDP) forever.
-    const deadline_ms: u64 = 3_000;
-    const started = @import("../../support/datetime.zig").milliTimestamp(.monotonic);
+    // and stranding the wait on a stale `.loading` view. Re-lookup every pass
+    // and wait for the request's real terminal callback. A wall-clock cutoff
+    // here incorrectly turns a slow but successful module into a permanent
+    // graph compilation failure; transport/navigation cancellation already
+    // owns the error and shutdown terminal paths.
     while (true) {
         const entry = self.imported_modules.getEntry(url) orelse {
             // Should not happen unless preload was skipped / map cleared mid-nav.
@@ -662,13 +663,6 @@ pub fn waitForImport(self: *ScriptManagerBase, url: [:0]const u8) !ModuleSource 
         };
         switch (entry.value_ptr.state) {
             .loading => {
-                const now = @import("../../support/datetime.zig").milliTimestamp(.monotonic);
-                if (now -% started >= deadline_ms) {
-                    // Re-lookup after possible map growth from prior ticks.
-                    if (self.imported_modules.getPtr(url)) |ptr| ptr.state = .err;
-                    log.warn(.js, "waitForImport timeout", .{ .url = url, .ms = deadline_ms });
-                    return error.Failed;
-                }
                 _ = try client.tick(25);
                 // is_evaluating blocks blocksInboundCdp — briefly release so CDP
                 // (and other transfer completions) can progress while we wait.
@@ -1907,37 +1901,17 @@ pub const Script = struct {
     }
 
     fn executeCallback(self: *const Script, typ: String) void {
-        const fe = self.extra.frame;
-        const frame = self.activeFrame() orelse return;
         // Inline scripts do not have a resource-load lifecycle. Only external
         // scripts dispatch load/error on HTMLScriptElement.
         if (self.source == .@"inline") return;
-        // Do not recursively enter V8 from the lifecycle evaluator. Dropping
-        // this callback breaks real loaders (Cloudflare starts its challenge in
-        // script.onload), so queue it and keep it in the document load barrier.
-        if (self.manager.is_evaluating) {
-            const callback_typ: ElementCallbackType = if (typ.eql(comptime .wrap("load"))) .load else .@"error";
-            self.queueElementCallback(callback_typ) catch |err| {
-                log.warn(.js, "queue script callback", .{ .url = self.url, .type = typ, .err = err });
-            };
-            return;
-        }
-
-        const Event = @import("../webapi/Event.zig");
-        const event = Event.initTrusted(typ, .{}, frame._page) catch |err| {
-            log.warn(.js, "script internal callback", .{
-                .url = self.url,
-                .type = typ,
-                .err = err,
-            });
-            return;
-        };
-        frame._event_manager.dispatchOpts(fe.script_element.asNode().asEventTarget(), event, .{ .apply_ignore = true }) catch |err| {
-            log.warn(.js, "script callback", .{
-                .url = self.url,
-                .type = typ,
-                .err = err,
-            });
+        // Resource completion events are HTML tasks. Dispatching directly from
+        // the fetch/evaluation pipeline re-enters page JavaScript before the
+        // current host operation or framework commit has unwound. Keep every
+        // external-script terminal event on the same owned scheduler path,
+        // independent of whether the lifecycle evaluator happens to be active.
+        const callback_typ: ElementCallbackType = if (typ.eql(comptime .wrap("load"))) .load else .@"error";
+        self.queueElementCallback(callback_typ) catch |err| {
+            log.warn(.js, "queue script callback", .{ .url = self.url, .type = typ, .err = err });
         };
     }
 };

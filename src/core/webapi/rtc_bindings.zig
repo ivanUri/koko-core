@@ -237,8 +237,10 @@ pub const RTCPeerConnectionJs = struct {
         // RTCPeerConnection is part of the browser network context. An HTTP
         // proxy cannot relay its UDP/STUN traffic, therefore direct candidate
         // gathering must be disabled rather than bypassing that context.
-        native_config.allow_non_proxied_udp =
-            frame._session.browser.http_client.currentProxy() == null;
+        const persona_policy = frame.loadedProfile().persona.webRtcPolicy(
+            frame._session.browser.http_client.currentProxy() != null,
+        );
+        native_config.allow_non_proxied_udp = persona_policy.allow_non_proxied_udp;
         const native = try RTCPeerConnectionNative.create(frame.arena, native_config);
 
         const self = try frame._factory.eventTarget(RTCPeerConnectionJs{

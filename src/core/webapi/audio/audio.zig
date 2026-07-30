@@ -134,6 +134,18 @@ const AudioParam = struct {
         self._value = @max(self._min_value, @min(self._max_value, value));
     }
 
+    /// Schedule a value at an absolute context time.
+    ///
+    /// The current renderer consumes a block from time zero and does not yet
+    /// subdivide blocks at automation boundaries. Preserve the Web Audio API
+    /// surface and chaining semantics, and apply time-zero/past events to the
+    /// scalar consumed by that renderer. Future block automation can extend
+    /// this owner without changing AudioParam callers.
+    pub fn setValueAtTime(self: *AudioParam, value: f64, start_time: f64) *AudioParam {
+        if (start_time <= 0) self.setValue(value);
+        return self;
+    }
+
     pub fn getDefaultValue(self: *const AudioParam) f64 {
         return self._default_value;
     }
@@ -157,6 +169,7 @@ const AudioParam = struct {
         pub const defaultValue = bridge.accessor(AudioParam.getDefaultValue, null, .{});
         pub const minValue = bridge.accessor(AudioParam.getMinValue, null, .{});
         pub const maxValue = bridge.accessor(AudioParam.getMaxValue, null, .{});
+        pub const setValueAtTime = bridge.function(AudioParam.setValueAtTime, .{});
     };
 };
 
@@ -1497,6 +1510,11 @@ pub const OfflineAudioContext = struct {
                 return s._ctx.getSampleRate();
             }
         }.get, null, .{});
+        pub const currentTime = bridge.accessor(struct {
+            fn get(s: *OfflineAudioContext) f64 {
+                return s._ctx.getCurrentTime();
+            }
+        }.get, null, .{});
         pub const destination = bridge.accessor(struct {
             fn get(s: *OfflineAudioContext) *AudioDestinationNode {
                 return s._ctx.getDestination();
@@ -1558,4 +1576,17 @@ test "DynamicsCompressor time constants are sample-rate based" {
     const slow = DynamicsCompressorNode.smoothingCoefficient(0.25, 44100);
     try std.testing.expect(fast < slow);
     try std.testing.expect(fast > 0 and slow < 1);
+}
+
+test "AudioParam setValueAtTime applies time-zero automation and chains" {
+    var param = AudioParam{
+        ._value = 440,
+        ._default_value = 440,
+        ._min_value = -22050,
+        ._max_value = 22050,
+    };
+    try std.testing.expect(param.setValueAtTime(10000, 0) == &param);
+    try std.testing.expectEqual(@as(f64, 10000), param.getValue());
+    _ = param.setValueAtTime(20000, 1);
+    try std.testing.expectEqual(@as(f64, 10000), param.getValue());
 }

@@ -98,6 +98,11 @@ _speech_synthesis: SpeechSynthesis = .{},
 _trusted_types: TrustedTypePolicyFactory = .{},
 _cookie_store: CookieStore = .{},
 _task_scheduler: TaskScheduler = .{},
+// Nested browsing contexts own independent session history/navigation state.
+// The root Window continues to use Session's stores so history survives
+// replacement Documents in the top-level browsing context.
+_child_history: History = .{},
+_child_navigation: Navigation = .{ ._proto = undefined },
 _scroll_pos: struct {
     x: u32,
     y: u32,
@@ -263,15 +268,16 @@ pub fn getExternal(self: *Window) *Chrome.External {
 }
 
 pub fn setLocation(self: *Window, url: [:0]const u8, frame: *Frame) !void {
-    return frame.scheduleNavigation(url, .{ .reason = .script, .kind = .{ .push = null } }, .{ .script = self._frame });
+    _ = frame;
+    return self._frame.scheduleNavigation(url, .{ .reason = .script, .kind = .{ .push = null } }, .{ .script = self._frame });
 }
 
-pub fn getHistory(_: *Window, frame: *Frame) *History {
-    return &frame._session.history;
+pub fn getHistory(self: *Window, _: *Frame) *History {
+    return self._frame.historyStore();
 }
 
-pub fn getNavigation(_: *Window, frame: *Frame) *Navigation {
-    return &frame._session.navigation;
+pub fn getNavigation(self: *Window, _: *Frame) *Navigation {
+    return self._frame.navigationStore();
 }
 
 pub fn getCustomElements(self: *Window) *CustomElementRegistry {
@@ -303,14 +309,8 @@ pub fn getTaskScheduler(self: *Window) *TaskScheduler {
 }
 
 pub fn getIsSecureContext(self: *const Window, frame: *Frame) bool {
-    const protocol = self._location.getProtocol(frame);
-    if (std.mem.eql(u8, protocol, "https:")) return true;
-    if (std.mem.eql(u8, protocol, "file:")) return true;
-    const hostname = self._location.getHostname(frame);
-    if (std.mem.eql(u8, hostname, "localhost")) return true;
-    if (std.mem.eql(u8, hostname, "127.0.0.1")) return true;
-    if (std.mem.eql(u8, hostname, "[::1]")) return true;
-    return false;
+    _ = self;
+    return frame.isSecureContext();
 }
 
 pub fn getOnLoad(self: *const Window) ?js.Function.Global {
@@ -822,23 +822,18 @@ fn clearOpenerRefs(closed_window: *Window, page: *@import("../browser/Page.zig")
     closed_window._opener = null;
 }
 
-pub fn postMessage(self: *Window, message: js.Value.Temp, target_origin: ?[]const u8, transfer: ?[]js.Value, frame: *Frame) !void {
+pub fn postMessage(self: *Window, message: js.Value, target_origin: ?[]const u8, transfer: ?[]js.Value, _: *Frame) !void {
     // For now, we ignore targetOrigin checking and just dispatch the message
     // In a full implementation, we would validate the origin
     _ = target_origin;
 
     const target_frame = self._frame;
-    // MessageEvent.source reflects the incumbent settings object (HTML), not `this`.
-    // The injected `frame` belongs to the Window method receiver. For calls
-    // through another WindowProxy (for example child -> parent), that is the
-    // target realm, not the script's incumbent settings object. Snapshot the
-    // actively executing frame before this operation is queued; origin and
-    // source must continue to describe the sender when delivery happens.
-    const source_frame = frame.js.getEntryFrame() orelse
-        frame.js.getCurrentFrame() orelse
-        frame.js.getIncumbent();
+    // MessageEvent.source/origin describe the incumbent settings object, not
+    // the WindowProxy method receiver. V8's entered/current context is the
+    // receiver's relevant realm for a cross-realm platform object; its
+    // incumbent context preserves the actual script caller.
+    const source_frame = target_frame.js.getIncumbent();
     const source_window = source_frame.window;
-
     const arena = try target_frame.getArena(.medium, "Window.postMessage");
     errdefer target_frame.releaseArena(arena);
 
@@ -849,25 +844,20 @@ pub fn postMessage(self: *Window, message: js.Value.Temp, target_origin: ?[]cons
 
     // Clone from the sender realm into the target realm.
     const cloned_message = blk: {
-        var source_owned: js.Local.Scope = undefined;
-        const source_local: *const js.Local = blk2: {
-            if (source_frame.js.local) |active| break :blk2 active;
-            source_frame.js.localScope(&source_owned);
-            break :blk2 &source_owned.local;
-        };
-        defer if (source_frame.js.local == null) source_owned.deinit();
-
         var target_owned: js.Local.Scope = undefined;
         target_frame.js.localScope(&target_owned);
         defer target_owned.deinit();
 
-        const cloned = try message.local(source_local).structuredCloneTo(&target_owned.local, null);
+        const cloned = try message.structuredCloneTo(&target_owned.local, null);
         break :blk try cloned.temp();
     };
     errdefer cloned_message.release();
 
-    // Origin follows the incumbent settings object, same as MessageEvent.source.
-    const origin = try source_window._location.getOrigin(source_frame);
+    // Serialize the caller's effective security origin. Do not derive this
+    // from Location: about:blank/about:srcdoc retain those URLs while
+    // inheriting their creator's origin, and sandboxed opaque origins serialize
+    // as "null".
+    const origin = source_frame.origin orelse "null";
     const callback = try arena.create(PostMessageCallback);
     callback.* = .{
         .arena = arena,
@@ -1165,7 +1155,6 @@ const PostMessageCallback = struct {
         const window = frame.window;
         const event_target = window.asEventTarget();
         const has_listeners = frame._event_manager.hasDirectListeners(event_target, "message", window._on_message);
-
         if (!has_listeners) {
             window.queuePendingPostMessage(self) catch |err| {
                 log.warn(.browser, "queue pending postMessage", .{ .err = err });
@@ -1273,8 +1262,9 @@ pub const JsApi = struct {
     pub const clearTimeout = bridge.function(Window.clearTimeout, .{});
     pub const setInterval = bridge.function(Window.setInterval, .{});
     pub const clearInterval = bridge.function(Window.clearInterval, .{});
-    pub const setImmediate = bridge.function(Window.setImmediate, .{});
-    pub const clearImmediate = bridge.function(Window.clearImmediate, .{});
+    // `setImmediate` / `clearImmediate` are not Window APIs in web browsers.
+    // Exposing the Node/legacy-Edge names changes feature detection and makes
+    // browser libraries select a non-browser scheduling implementation.
     pub const requestAnimationFrame = bridge.function(Window.requestAnimationFrame, .{});
     pub const cancelAnimationFrame = bridge.function(Window.cancelAnimationFrame, .{});
     pub const requestIdleCallback = bridge.function(Window.requestIdleCallback, .{});
@@ -1386,7 +1376,7 @@ pub const JsApi = struct {
 const CrossOriginWindow = struct {
     window: *Window,
 
-    pub fn postMessage(self: *CrossOriginWindow, message: js.Value.Temp, target_origin: ?[]const u8, transfer: ?[]js.Value, frame: *Frame) !void {
+    pub fn postMessage(self: *CrossOriginWindow, message: js.Value, target_origin: ?[]const u8, transfer: ?[]js.Value, frame: *Frame) !void {
         return self.window.postMessage(message, target_origin, transfer, frame);
     }
 

@@ -23,7 +23,7 @@ _pad: bool = false,
 const Brand = ProfileStore.Brand;
 
 fn brandsFromProfile(profile: *const ProfileStore.LoadedProfile) []const Brand {
-    return profile.http.brands;
+    return profile.persona.network.brands;
 }
 
 pub fn getBrands(_: *const NavigatorUAData, exec: *js.Execution) []const Brand {

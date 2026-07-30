@@ -43,7 +43,7 @@ _gpu: navigator_extras.GPU = .{},
 pub const init: WorkerNavigator = .{};
 
 pub fn getUserAgent(_: *const WorkerNavigator, page: *Page) []const u8 {
-    return page.navigatorState().userAgent(&page.session.browser.http_client);
+    return page.navigatorState().userAgent();
 }
 
 pub fn getLanguages(_: *const WorkerNavigator, page: *Page) []const []const u8 {
@@ -74,7 +74,10 @@ pub fn getHardwareConcurrency(_: *const WorkerNavigator, page: *Page) u32 {
     return page.navigatorState().hardwareConcurrency();
 }
 
-pub fn getUserAgentData(self: *WorkerNavigator) *NavigatorUAData {
+pub fn getUserAgentData(self: *WorkerNavigator, page: *Page) ?*NavigatorUAData {
+    if (!page.navigatorState().userAgentDataEnabled(
+        page.loadedProfile().persona.features.user_agent_data,
+    )) return null;
     return &self._ua_data;
 }
 

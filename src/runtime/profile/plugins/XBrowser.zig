@@ -60,14 +60,11 @@ pub const Plugin = struct {
         user_agent: []const u8,
         fingerprint_seed: u64,
     ) !void {
-        // Pure-path A/B: VELORA_X_BROWSER_VALIDATION overrides the token.
-        // Chrome 150.0.7871.129 guest hop-1 ExtraInfo uses a digest that is NOT
-        // sha1(apiKey+UA) with the published AIza keys — use the captured value
-        // when UA is Chrome/150 so wire matches real Chrome (see chrome-hop1-extrainfo-ref.json).
+        // A diagnostic override remains available for capture comparison.
+        // Production behavior is derived from the current persona UA and its
+        // platform-specific key; it never selects a frozen browser capture.
         const validation = if (std.posix.getenv("VELORA_X_BROWSER_VALIDATION")) |override|
             try allocator.dupeZ(u8, override)
-        else if (chrome150MacosValidationOverride(user_agent)) |captured|
-            try allocator.dupeZ(u8, captured)
         else
             try validationToken(allocator, &self.config, user_agent);
         errdefer allocator.free(validation);
@@ -168,18 +165,6 @@ const JsonPlugin = struct {
     apiKeys: JsonApiKeys,
 };
 
-/// Live Chrome 150 macOS stable, cold google.com/search hop-1 (CDP ExtraInfo 2026-07-17).
-const CHROME150_MACOS_X_BROWSER_VALIDATION = "uemYFgH1pQp+sN1z7tIZXI0g3PI=";
-
-fn chrome150MacosValidationOverride(user_agent: []const u8) ?[]const u8 {
-    // Reduced UA form Chrome sends: Chrome/150.0.0.0 — match major 150 + Macintosh.
-    if (std.mem.indexOf(u8, user_agent, "Chrome/150.") == null) return null;
-    if (std.mem.indexOf(u8, user_agent, "Macintosh") == null and
-        std.mem.indexOf(u8, user_agent, "Mac OS X") == null)
-        return null;
-    return CHROME150_MACOS_X_BROWSER_VALIDATION;
-}
-
 fn apiKeyForUserAgent(config: *const Config, user_agent: []const u8) []const u8 {
     var lower_buf: [512]u8 = undefined;
     const ua_lower = if (user_agent.len <= lower_buf.len) blk: {
@@ -226,15 +211,6 @@ test "XBrowser: validation macOS Chrome 149" {
     const val = try validationToken(testing.allocator, &config, ua);
     defer testing.allocator.free(val);
     try testing.expectEqualStrings("H+o9v6cagVZd2pOTUnzHRIkqiWI=", val);
-}
-
-test "XBrowser: Chrome 150 macOS uses captured ExtraInfo validation" {
-    const ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
-    try testing.expectEqualStrings(
-        CHROME150_MACOS_X_BROWSER_VALIDATION,
-        chrome150MacosValidationOverride(ua).?,
-    );
-    try testing.expect(chrome150MacosValidationOverride("Chrome/149.0.0.0") == null);
 }
 
 test "XBrowser: loads plugin JSON without clientData hardcode" {

@@ -57,6 +57,8 @@ pub const StartOpts = struct {
     /// used for both ws:// and wss:// so the target never receives a direct
     /// socket from the browser process.
     proxy: ?[:0]const u8 = null,
+    /// Canonical BrowserPersona User-Agent used by both HTTP/1.1 and RFC 8441.
+    user_agent: []const u8 = "",
 };
 
 pub const WebSocketClient = @This();
@@ -73,6 +75,7 @@ negotiated_protocol: []const u8 = "",
 origin: []const u8 = "",
 protocols: []const []const u8 = &.{},
 cookie_header: ?[]const u8 = null,
+user_agent: []const u8 = "",
 state: State = .connecting,
 transport: Transport = .plain,
 tls: ?*TlsIo = null,
@@ -104,6 +107,7 @@ pub fn create(
 pub fn start(self: *WebSocketClient, url: [:0]const u8, opts: StartOpts) void {
     if (self.state != .connecting) return;
     self.cookie_header = opts.cookie_header;
+    self.user_agent = opts.user_agent;
     self.startImpl(url, opts) catch {
         self.state = .closed;
     };
@@ -297,6 +301,7 @@ fn startTls(self: *WebSocketClient, url: [:0]const u8, hostname: []const u8, tls
             pathname,
             search,
             self.origin,
+            self.user_agent,
             self.protocols,
             &self.set_cookies,
         ) catch |err| {
@@ -656,6 +661,9 @@ fn sendHandshake(self: *WebSocketClient, url: [:0]const u8, origin: []const u8, 
 
     if (origin.len > 0 and !std.mem.eql(u8, origin, "null")) {
         try req.writer(self.allocator).print("Origin: {s}\r\n", .{origin});
+    }
+    if (self.user_agent.len > 0) {
+        try req.writer(self.allocator).print("User-Agent: {s}\r\n", .{self.user_agent});
     }
 
     if (protocols.len > 0) {

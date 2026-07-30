@@ -52,10 +52,6 @@ const UserData = struct {
     h2: *H2WsSession,
 };
 
-/// Chrome-like User-Agent for WebSocket CONNECT handshakes (RFC 8441).
-const default_user_agent =
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-
 pub fn init(
     allocator: Allocator,
     tls: *TlsIo,
@@ -64,6 +60,7 @@ pub fn init(
     path: []const u8,
     search: []const u8,
     origin: []const u8,
+    user_agent: []const u8,
     protocols: []const []const u8,
     set_cookies_out: *std.ArrayList([]const u8),
 ) !H2WsSession {
@@ -141,8 +138,10 @@ pub fn init(
         nva_len += 1;
     }
 
-    nva_list[nva_len] = makeNv("user-agent", default_user_agent);
-    nva_len += 1;
+    if (user_agent.len > 0) {
+        nva_list[nva_len] = makeNv("user-agent", user_agent);
+        nva_len += 1;
+    }
     nva_list[nva_len] = makeNv("sec-websocket-version", "13");
     nva_len += 1;
 

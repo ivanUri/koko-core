@@ -136,9 +136,18 @@ pub fn drainMicrotasksNested(exec: *const Execution) void {
     const env = exec.context.env;
     const ctx = exec.context;
 
-    if (comptime IS_DEBUG) {
-        // Nested API may still be called when only slightly nested; assert we
-        // never grow a timer pump from this function (grep / review).
+    // A native DOM binding is still part of the currently running JavaScript
+    // task. Performing a checkpoint before that binding returns can split one
+    // framework commit into observable intermediate states (for example a
+    // callback ref's detach/attach pair), causing re-entrant rendering. The
+    // outer script/task runner owns the checkpoint after V8 unwinds.
+    if (ctx.call_depth > 0 or env.anyContextOnV8Stack()) {
+        env.checkpoint_pending = true;
+        switch (ctx.global) {
+            .frame => |frame| frame.scheduleDeferredMacrotaskPump(0) catch {},
+            .worker => |wgs| wgs._worker._frame.scheduleDeferredMacrotaskPump(0) catch {},
+        }
+        return;
     }
 
     var pass: u8 = 0;

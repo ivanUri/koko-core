@@ -1,0 +1,13 @@
+<!doctype html>
+<script>
+  const timing = performance.timing;
+  const json = timing.toJSON();
+  if (typeof timing.toJSON !== 'function') throw new Error('PerformanceTiming.toJSON missing');
+  if (json.navigationStart !== timing.navigationStart || json.loadEventEnd !== timing.loadEventEnd) {
+    throw new Error('PerformanceTiming.toJSON differs from public attributes');
+  }
+  const entry = performance.getEntriesByType('navigation')[0];
+  if (entry && (typeof entry.toJSON !== 'function' || entry.toJSON().entryType !== 'navigation')) {
+    throw new Error('PerformanceEntry.toJSON missing or invalid');
+  }
+</script>

@@ -45,6 +45,9 @@ _status: u16,
 _arena: Allocator,
 _headers: *Headers,
 _body: Body = .empty,
+/// True only for responses materialized by the Fetch pipeline. Constructor
+/// responses must retain the spec's null-body behavior for `new Response()`.
+_network_response: bool = false,
 _body_used: bool = false,
 _type: Type,
 _status_text: []const u8,
@@ -52,6 +55,12 @@ _url: [:0]const u8,
 _is_redirected: bool,
 _http_response: ?HttpClient.Response = null,
 _pending_fetch_page: ?*Page = null,
+_lifecycle: Lifecycle = .live,
+
+const Lifecycle = enum {
+    live,
+    releasing,
+};
 
 const Body = union(enum) {
     empty,
@@ -153,6 +162,12 @@ pub fn init(body_: ?BodyInit, opts_: ?InitOpts, exec: *const Execution) !*Respon
 }
 
 pub fn deinit(self: *Response, page: *Page) void {
+    // Aborting an active transfer synchronously invokes Fetch's terminal
+    // callback. Fetch lives in this Response arena and its callback calls back
+    // into Response.deinit(), so only the outermost release may return the
+    // arena to the pool.
+    if (!self.beginRelease()) return;
+
     if (self._pending_fetch_page) |owner_page| {
         owner_page.unregisterTerminalOwner(self);
         self._pending_fetch_page = null;
@@ -162,6 +177,12 @@ pub fn deinit(self: *Response, page: *Page) void {
         self._http_response = null;
     }
     page.releaseArena(self._arena);
+}
+
+fn beginRelease(self: *Response) bool {
+    if (self._lifecycle == .releasing) return false;
+    self._lifecycle = .releasing;
+    return true;
 }
 
 fn releasePendingFetch(ctx: *anyopaque, page: *Page) void {
@@ -190,6 +211,14 @@ pub fn acquireRef(self: *Response) void {
     self._rc.acquire();
 }
 
+test "Response release is single-owner across reentrant terminal callbacks" {
+    var response: Response = undefined;
+    response._lifecycle = .live;
+
+    try std.testing.expect(response.beginRelease());
+    try std.testing.expect(!response.beginRelease());
+}
+
 pub fn getStatus(self: *const Response) u16 {
     return self._status;
 }
@@ -216,7 +245,13 @@ pub fn getType(self: *const Response) []const u8 {
 
 pub fn getBody(self: *Response, exec: *const Execution) !?*ReadableStream {
     return switch (self._body) {
-        .empty => null,
+        .empty => if (self._network_response and self._status != 204 and
+            self._status != 205 and self._status != 304)
+        blk: {
+            const stream = try ReadableStream.init(null, null, exec);
+            self._body = .{ .stream = stream };
+            break :blk stream;
+        } else null,
         .stream => |stream| stream,
         .bytes => |body| {
             if (body.len == 0) {
@@ -596,6 +631,7 @@ pub fn clone(self: *const Response, exec: *const Execution) !*Response {
         ._status_text = status_text,
         ._url = url,
         ._body = body,
+        ._network_response = self._network_response,
         ._type = self._type,
         ._is_redirected = self._is_redirected,
         ._headers = try Headers.init(.{ .obj = self._headers }, exec),

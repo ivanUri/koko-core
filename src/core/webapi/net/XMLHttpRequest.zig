@@ -31,6 +31,7 @@ const XMLHttpRequestUpload = @import("XMLHttpRequestUpload.zig");
 
 const log = @import("../../../support/log.zig");
 const Execution = js.Execution;
+const RealmLifecycleKernel = @import("../../../runtime/RealmLifecycleKernel.zig");
 const Allocator = std.mem.Allocator;
 const IS_DEBUG = @import("builtin").mode == .Debug;
 
@@ -45,6 +46,9 @@ _active_request: bool = false,
 _send_flag: bool = false,
 _request_generation: u64 = 0,
 _active_request_generation: u64 = 0,
+/// Realm generation that initiated the active transfer. Network callbacks may
+/// arrive after a navigation has reused the same Execution object.
+_task_owner: ?RealmLifecycleKernel.TaskOwner = null,
 _queued_completion_generation: ?u64 = null,
 
 _url: [:0]const u8 = "",
@@ -167,6 +171,7 @@ fn releaseSelfRefForGeneration(self: *XMLHttpRequest, generation: u64) void {
     self.releaseRef(self._exec.context.page);
     if (self._active_request and self._active_request_generation == generation) {
         self._active_request = false;
+        self._task_owner = null;
     }
 }
 
@@ -312,6 +317,7 @@ pub fn send(self: *XMLHttpRequest, body_: ?[]const u8) !void {
     self.acquireRef();
     self._active_request = true;
     self._active_request_generation = self._request_generation;
+    self._task_owner = exec.captureTaskOwner();
     self._send_flag = true;
 
     http_client.request(.{
@@ -849,6 +855,7 @@ fn _handleError(self: *XMLHttpRequest, err: anyerror) !void {
 /// is on the V8 stack (HTML parse / script eval) — crashes with IsOnCentralStack.
 fn canDispatchXhrEvents(self: *const XMLHttpRequest, exec: *const Execution) bool {
     return self._active_request and
+        (self._task_owner == null or !exec.isTaskOwnerStale(self._task_owner.?)) and
         exec.canEnterJs(.strict_active) and
         exec.context.call_depth == 0;
 }

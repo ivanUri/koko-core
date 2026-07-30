@@ -122,22 +122,6 @@ const DeferMessageDeliveryCallback = struct {
     }
 };
 
-/// After a MessagePort `message` event, pump worker/page timer queues so the next
-/// `postMessage` round-trip is not stalled (WPT structured-clone Blob `compare_Blob`
-/// uses `await Response#arrayBuffer()` between sequential port tests).
-fn pumpMessagingAfterDispatch(exec: *const js.Execution) void {
-    const frame: *Frame = switch (exec.context.global) {
-        .frame => |f| f,
-        .worker => |wgs| wgs._worker._frame,
-    };
-    Worker.pumpMessageDelivery(frame);
-    if (exec.context.global == .frame) {
-        frame.scheduleDeferredMacrotaskPump(0) catch |err| {
-            log.warn(.browser, "MessagePort macrotask pump", .{ .err = err });
-        };
-    }
-}
-
 const MessagePort = @This();
 
 _proto: *EventTarget,
@@ -275,38 +259,11 @@ pub fn postMessage(
         return;
     }
 
-    // When listeners are already registered, deliver synchronously so worker
-    // onmessage → port.postMessage round-trips complete inside one postMessage
-    // (WPT structured-clone/shared.html reuses the same port across 152 tests).
-    if (try dispatchMessageNow(other, cloned_message, transferred_ports, receiver_exec)) {
-        scheduleDeferredPump(receiver_exec);
-        if (exec.context != receiver_exec.context) {
-            scheduleDeferredPump(exec);
-        }
-        return;
-    }
-
+    // HTML requires MessagePort delivery through the posted-message task
+    // source. It must never call the receiving listener before postMessage()
+    // returns. Synchronous delivery re-enters schedulers such as React's
+    // MessageChannel host callback in the middle of a commit.
     try other.enqueueMessage(cloned_message, transferred_ports, receiver_exec, exec);
-}
-
-fn dispatchMessageNow(
-    self: *MessagePort,
-    message: js.Value.Temp,
-    ports: []const *MessagePort,
-    exec: *const js.Execution,
-) !bool {
-    if (self._closed) return false;
-
-    // Sync path only when JsEntryGate allows — otherwise enqueue (HTML task).
-    if (js.JsEntryGate.mustQueueAsTask(exec)) return false;
-
-    const target = self.asEventTarget();
-    if (!exec.hasDirectListeners(target, "message", self._on_message)) {
-        return false;
-    }
-
-    try dispatchMessageForced(self, message, ports, exec);
-    return true;
 }
 
 /// Task-path delivery (no sync reentrancy gates). Host scheduler already owns
@@ -338,8 +295,10 @@ fn dispatchMessageForced(
         .source = null,
     }, page)).asEvent();
 
+    // The scheduler owns the terminal task boundary. Do not pump another
+    // MessagePort delivery here: HTML requires a microtask checkpoint after
+    // this event listener returns and before the next posted-message task.
     try exec.dispatch(target, event, self._on_message, .{ .context = "MessagePort message" });
-    pumpMessagingAfterDispatch(exec);
 }
 
 fn enqueueMessage(
@@ -436,8 +395,6 @@ pub fn flushPendingDeliveries(self: *MessagePort) !void {
         }
         try dispatchMessageForced(self, message, &.{}, exec);
     }
-
-    js.EventLoop.afterTask(exec);
 }
 
 pub fn getOnMessageError(self: *const MessagePort) ?js.Function.Global {
@@ -468,8 +425,11 @@ const PostMessageCallback = struct {
 
         // Task path: no sync gates (JsEntryGate rule — queued work never re-parks).
         try dispatchMessageForced(self.port, self.message, self.ports, self.exec);
-        // Chained port posts (React host scheduler) drain via shared EventLoop.
-        js.EventLoop.afterTask(self.exec);
+        // Do not call EventLoop.afterTask here. This callback is itself being
+        // executed by Scheduler.runOne; recursively spinning the same scheduler
+        // violates task boundaries and can free the active scheduler entry.
+        // The outer task runner performs the checkpoint and selects the next
+        // posted-message task after this callback returns.
         return null;
     }
 };

@@ -415,6 +415,22 @@ pub fn getParameter(self: *const WebGLRenderingContext, pname: u32, exec: *Execu
         },
         Extension.Type.EXT_texture_filter_anisotropic.MAX_TEXTURE_MAX_ANISOTROPY_EXT => return (try local.zigValueToJs(profile.max_texture_max_anisotropy, .{})),
         Extension.Type.WEBGL_draw_buffers.MAX_DRAW_BUFFERS_WEBGL => return (try local.zigValueToJs(profile.max_draw_buffers, .{})),
+        MAX_COLOR_ATTACHMENTS => return (try local.zigValueToJs(
+            if (self._is_webgl2) profile.max_color_attachments_webgl2 else @as(u32, 0),
+            .{},
+        )),
+        MAX_SAMPLES => return (try local.zigValueToJs(
+            if (self._is_webgl2) profile.max_samples_webgl2 else @as(u32, 0),
+            .{},
+        )),
+        MAX_3D_TEXTURE_SIZE => return (try local.zigValueToJs(
+            if (self._is_webgl2) profile.max_3d_texture_size_webgl2 else @as(u32, 0),
+            .{},
+        )),
+        MAX_ARRAY_TEXTURE_LAYERS => return (try local.zigValueToJs(
+            if (self._is_webgl2) profile.max_array_texture_layers_webgl2 else @as(u32, 0),
+            .{},
+        )),
         // Do not invent DRAW_BUFFER*/OES_* getParameter values without Chrome capture —
         // wrong digests re-triggered Fingerprint Pro Virtual Machine (suspect 15→29).
         else => return (try local.zigValueToJs(@as(u32, 0), .{})),

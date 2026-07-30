@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+let phase = "before-append";
+let reactionPhase = "not-run";
+Promise.resolve().then(() => {
+  reactionPhase = phase;
+});
+
+try {
+  const iframe = document.createElement("iframe");
+  document.documentElement.appendChild(iframe);
+  phase = "after-append";
+  const didNotReenter = reactionPhase === "not-run";
+  iframe.remove();
+  document.body.id = didNotReenter ? "pass" : "fail";
+  document.body.textContent = didNotReenter
+    ? "pass"
+    : `microtask ran during iframe append (phase=${reactionPhase})`;
+} catch (error) {
+  document.body.id = "fail";
+  document.body.textContent = String(error && error.stack || error);
+}
+</script>

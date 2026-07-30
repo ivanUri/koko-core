@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+const channel = new MessageChannel();
+let microtaskRan = false;
+
+channel.port1.onmessage = event => {
+  if (event.data === "first") {
+    Promise.resolve().then(() => {
+      microtaskRan = true;
+    });
+    channel.port2.postMessage("second");
+    return;
+  }
+
+  document.body.id = microtaskRan ? "pass" : "fail";
+  document.body.textContent = microtaskRan
+    ? "pass"
+    : "second message ran before the inter-task microtask checkpoint";
+  channel.port1.close();
+  channel.port2.close();
+};
+
+channel.port2.postMessage("first");
+</script>

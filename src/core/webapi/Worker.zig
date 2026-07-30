@@ -1594,6 +1594,10 @@ test "WebApi: Worker" {
     try testing.htmlRunner("worker", .{});
 }
 
+test "Worker: Blob URL revocation after construction preserves captured script" {
+    try testing.htmlRunner("regression/blob_worker_revoke_after_construct.html", .{});
+}
+
 test "Worker: every parent scheduler callback is owned by its worker" {
     const target: *Worker = @ptrFromInt(@alignOf(Worker));
 

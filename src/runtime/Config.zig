@@ -301,6 +301,11 @@ pub fn initInPlace(self: *Config, allocator: Allocator, exec_name: []const u8, m
 
     self.profile = try ProfileStore.resolve(&self.profile_paths);
     errdefer self.profile.deinit();
+    try ProfileStore.applyUserAgentOverlay(
+        &self.profile,
+        self.userAgent(),
+        self.userAgentSuffix(),
+    );
     self.profile_runtime = try ProfileRuntime.ProfileRuntime.init(allocator, &self.profile);
     errdefer self.profile_runtime.deinit(allocator);
     self.http_headers = try HttpHeaders.init(allocator, self);
@@ -701,24 +706,6 @@ pub const WaitUntil = enum {
 /// Pre-formatted HTTP headers for reuse across Http and Client.
 /// Must be initialized with an allocator that outlives all HTTP connections.
 pub const HttpHeaders = struct {
-    // The base UA includes the host OS family in parentheses, mirroring the
-    // long-standing convention used by every shipping browser (and by curl,
-    // wget, python-requests, etc). Sites use the OS hint for layout (e.g.
-    // serving WebP/AVIF on Linux/macOS) and fingerprint libraries cross-check
-    // it against `navigator.platform`; reporting only "Velora/1.0" makes us
-    // look inconsistent with our own platform string. The brand portion is
-    // still our honest identity — we don't pretend to be Chrome/Firefox.
-    const user_agent_base: [:0]const u8 = blk: {
-        const os_part: [:0]const u8 = switch (@import("builtin").os.tag) {
-            .macos => "Macintosh; Intel Mac OS X 10_15_7",
-            .windows => "Windows NT 10.0; Win64; x64",
-            .linux => "X11; Linux x86_64",
-            .freebsd => "X11; FreeBSD amd64",
-            else => "Unknown",
-        };
-        break :blk "Velora/1.0 (" ++ os_part ++ ")";
-    };
-
     user_agent: [:0]const u8,
     user_agent_header: [:0]const u8,
     sec_ch_ua_header: [:0]const u8,
@@ -729,21 +716,15 @@ pub const HttpHeaders = struct {
 
     pub fn init(allocator: Allocator, config: *const Config) !HttpHeaders {
         const profile = &config.profile;
-        const user_agent: [:0]const u8 = if (config.userAgent()) |ua| blk: {
-            break :blk try allocator.dupeZ(u8, ua);
-        } else if (config.userAgentSuffix()) |suffix| blk: {
-            break :blk try std.fmt.allocPrintSentinel(allocator, "{s} {s}", .{ profile.http.user_agent, suffix }, 0);
-        } else profile.http.user_agent;
-        const user_agent_owned = config.userAgent() != null or config.userAgentSuffix() != null;
-        errdefer if (user_agent_owned) allocator.free(user_agent);
+        const user_agent = profile.persona.network.user_agent;
 
         const user_agent_header = try std.fmt.allocPrintSentinel(allocator, "User-Agent: {s}", .{user_agent}, 0);
         errdefer allocator.free(user_agent_header);
 
-        const sec_ch_ua_header = try allocator.dupeZ(u8, profile.http.sec_ch_ua);
+        const sec_ch_ua_header = try allocator.dupeZ(u8, profile.persona.network.sec_ch_ua);
         errdefer allocator.free(sec_ch_ua_header);
 
-        const accept_language_header = try allocator.dupeZ(u8, profile.http.accept_language);
+        const accept_language_header = try allocator.dupeZ(u8, profile.persona.network.accept_language);
         errdefer allocator.free(accept_language_header);
 
         const proxy_bearer_header: ?[:0]const u8 = if (config.proxyBearerToken()) |token|
@@ -756,9 +737,9 @@ pub const HttpHeaders = struct {
             .user_agent_header = user_agent_header,
             .sec_ch_ua_header = sec_ch_ua_header,
             .accept_language_header = accept_language_header,
-            .brands = profile.http.brands,
+            .brands = profile.persona.network.brands,
             .proxy_bearer_header = proxy_bearer_header,
-            .user_agent_owned = user_agent_owned,
+            .user_agent_owned = false,
         };
     }
 

@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+const iframe = document.createElement("iframe");
+iframe.setAttribute("src", "/src/browser/tests/regression/iframe_child_static.html");
+const expected =
+  "http://127.0.0.1:9582/src/browser/tests/regression/iframe_child_static.html";
+if (
+  iframe.getAttribute("src") ===
+    "/src/browser/tests/regression/iframe_child_static.html" &&
+  iframe.src === expected
+) {
+  document.body.id = "pass";
+  document.body.textContent = "pass";
+} else {
+  document.body.textContent = JSON.stringify({
+    attr: iframe.getAttribute("src"),
+    src: iframe.src,
+    expected,
+  });
+}
+</script>
