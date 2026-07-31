@@ -16,24 +16,25 @@ window.testing = {
 const parentUrl = location.href;
 const frame = document.createElement("iframe");
 frame.srcdoc = "<!doctype html><title>child</title>";
-let navigated = false;
-frame.onload = () => {
-  if (navigated) return;
-  navigated = true;
-  frame.contentWindow.location.hash = "child-location";
-  setTimeout(() => {
-    const result = {
-      parentUnchanged: location.href === parentUrl,
-      childChanged: frame.contentWindow.location.hash === "#child-location",
-      childRemainsDistinct: frame.contentWindow.location.href !== location.href,
-    };
-    if (Object.values(result).every(Boolean)) {
-      document.body.id = "pass";
-      document.body.textContent = "pass";
-    } else {
-      document.body.textContent = JSON.stringify(result);
-    }
-  }, 0);
-};
 document.body.appendChild(frame);
+setTimeout(() => {
+  try {
+    frame.contentWindow.location.hash = "child-location";
+    setTimeout(() => {
+      const result = {
+        parentUnchanged: location.href === parentUrl,
+        childChanged: frame.contentWindow.location.hash === "#child-location",
+        childRemainsDistinct: frame.contentWindow.location.href !== location.href,
+      };
+      if (Object.values(result).every(Boolean)) {
+        document.body.id = "pass";
+        document.body.textContent = "pass";
+      } else {
+        document.body.textContent = JSON.stringify(result);
+      }
+    }, 20);
+  } catch (error) {
+    document.body.textContent = `child error: ${String(error)}`;
+  }
+}, 0);
 </script>

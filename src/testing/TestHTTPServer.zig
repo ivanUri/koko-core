@@ -123,7 +123,7 @@ pub fn sendFile(req: *std.http.Server.Request, file_path: []const u8) !void {
 
 fn getContentType(file_path: []const u8) []const u8 {
     if (std.mem.endsWith(u8, file_path, ".js")) {
-        return "application/json";
+        return "text/javascript";
     }
 
     if (std.mem.endsWith(u8, file_path, ".GB2312.html")) {
@@ -145,9 +145,14 @@ fn getContentType(file_path: []const u8) []const u8 {
 
     if (std.mem.endsWith(u8, file_path, ".mjs")) {
         // mjs are ECMAScript modules
-        return "application/json";
+        return "text/javascript";
     }
 
     std.debug.print("TestHTTPServer asked to serve an unknown file type: {s}\n", .{file_path});
     return "text/html";
+}
+
+test "TestHTTPServer: JavaScript resources use a script MIME type" {
+    try std.testing.expectEqualStrings("text/javascript", getContentType("fixture.js"));
+    try std.testing.expectEqualStrings("text/javascript", getContentType("fixture.mjs"));
 }

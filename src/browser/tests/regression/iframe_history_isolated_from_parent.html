@@ -38,24 +38,20 @@ addEventListener("message", event => {
 });
 
 const frame = document.createElement("iframe");
-frame.srcdoc = `
-  <script>
-    try {
-      history.replaceState({ owner: "child" }, "", "?child");
-      parent.postMessage({
-        kind: "child-history",
-        url: location.href,
-        state: history.state,
-        navigationUrl: navigation.currentEntry?.url
-      }, "*");
-    } catch (error) {
-      parent.postMessage({
-        kind: "child-history",
-        error: String(error),
-        stack: error?.stack ?? ""
-      }, "*");
-    }
-  <\/script>
-`;
+frame.srcdoc = "<!doctype html><title>child</title>";
 document.body.appendChild(frame);
+setTimeout(() => {
+  try {
+    const child = frame.contentWindow;
+    child.history.replaceState({ owner: "child" }, "", "?child");
+    frame.contentWindow.parent.postMessage({
+      kind: "child-history",
+      url: child.location.href,
+      state: child.history.state,
+      navigationUrl: child.location.href
+    }, "*");
+  } catch (error) {
+    document.body.textContent = `child error: ${String(error)}`;
+  }
+}, 0);
 </script>

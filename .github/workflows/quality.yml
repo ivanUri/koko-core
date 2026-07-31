@@ -1,0 +1,66 @@
+name: Quality
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/quality.yml"
+      - "build.zig"
+      - "build.zig.zon"
+      - "src/**"
+      - "vendor/v8-wrapper/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/quality.yml"
+      - "build.zig"
+      - "build.zig.zon"
+      - "src/**"
+      - "vendor/v8-wrapper/**"
+  workflow_dispatch:
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+      - name: Check formatting
+        run: zig fmt --check src build.zig build.zig.zon
+
+  check-and-test:
+    name: Check and test (macOS arm64)
+    needs: format
+    runs-on: macos-14
+    timeout-minutes: 90
+    env:
+      VELORA_DISABLE_TELEMETRY: "true"
+      TEST_FAIL_FIRST: "true"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .velora-cache
+            .zig-cache
+            ~/Library/Caches/zig
+          key: velora-macos-arm64-zig-0.15.2-${{ hashFiles('build.zig', 'build.zig.zon', 'vendor/v8-wrapper/**') }}
+          restore-keys: |
+            velora-macos-arm64-zig-0.15.2-
+      - name: Compile check
+        run: zig build check
+      - name: Run deterministic tests
+        run: zig build test

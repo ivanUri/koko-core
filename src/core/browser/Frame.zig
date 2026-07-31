@@ -485,6 +485,7 @@ pub fn init(self: *Frame, frame_id: u32, page: *Page, parent: ?*Frame) !void {
     });
     self.window._cross_origin_wrapper = .{ .window = self.window };
     if (parent != null) {
+        self.window._child_history.onNewFrame(self);
         try self.window._child_navigation.onNewFrame(self);
         // Every newly-created nested browsing context starts with an initial
         // about:blank session-history entry. Parser scripts in srcdoc or a
@@ -7171,7 +7172,13 @@ test "Frame: iframe contentWindow exists while child document is loading" {
 
 test "Frame: iframe src reflects content attribute changes" {
     try testing.htmlRunner("regression/iframe_src_reflects_content_attribute.html", .{});
+}
+
+test "Frame: DOMRect serializes through toJSON" {
     try testing.htmlRunner("regression/dom_rect_to_json.html", .{});
+}
+
+test "Frame: performance timing objects serialize through toJSON" {
     try testing.htmlRunner("regression/performance_timing_to_json.html", .{});
 }
 

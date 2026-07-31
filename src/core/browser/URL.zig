@@ -2275,26 +2275,49 @@ pub fn unescape(arena: Allocator, input: []const u8) ![]const u8 {
         return input;
     }
 
-    var result = try std.ArrayList(u8).initCapacity(arena, input.len);
+    // Determine the exact decoded size before allocating. Callers that receive
+    // an allocated result must be able to release it using the returned slice;
+    // allocating input.len and returning a shorter view violates that contract
+    // for allocators which validate the free size.
+    var decoded_len = input.len;
+    var size_index: usize = 0;
+    while (size_index < input.len) {
+        if (input[size_index] == '%' and size_index + 2 < input.len) {
+            _ = std.fmt.parseInt(u8, input[size_index + 1 .. size_index + 3], 16) catch {
+                size_index += 1;
+                continue;
+            };
+            decoded_len -= 2;
+            size_index += 3;
+        } else {
+            size_index += 1;
+        }
+    }
+
+    const result = try arena.alloc(u8, decoded_len);
 
     var i: usize = 0;
+    var output_index: usize = 0;
     while (i < input.len) {
         if (input[i] == '%' and i + 2 < input.len) {
             const hex = input[i + 1 .. i + 3];
             const byte = std.fmt.parseInt(u8, hex, 16) catch {
-                result.appendAssumeCapacity(input[i]);
+                result[output_index] = input[i];
+                output_index += 1;
                 i += 1;
                 continue;
             };
-            result.appendAssumeCapacity(byte);
+            result[output_index] = byte;
+            output_index += 1;
             i += 3;
         } else {
-            result.appendAssumeCapacity(input[i]);
+            result[output_index] = input[i];
+            output_index += 1;
             i += 1;
         }
     }
 
-    return result.items;
+    return result;
 }
 
 const AuthorityInfo = struct {
@@ -2997,6 +3020,13 @@ test "URL: unescape" {
         const result = try unescape(arena, "hello%2");
         try testing.expectEqual("hello%2", result);
     }
+}
+
+test "URL: unescape returns exactly sized owned storage when decoding" {
+    const result = try unescape(std.testing.allocator, "hello%20world");
+    defer std.testing.allocator.free(result);
+
+    try std.testing.expectEqualStrings("hello world", result);
 }
 
 test "URL: getHost" {

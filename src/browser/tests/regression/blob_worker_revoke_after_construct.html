@@ -1,17 +1,29 @@
 <!doctype html>
-<script src="/test.js"></script>
+<meta charset="utf-8">
+<body>pending</body>
 <script>
-  async_test((t) => {
-    const url = URL.createObjectURL(
-      new Blob(["postMessage('loaded')"], { type: "text/javascript" }),
-    );
-    const worker = new Worker(url);
-    URL.revokeObjectURL(url);
+  window.testing = {
+    assertOk: () => document.body.id === "pass",
+    printTimeoutState: () => console.log(document.body.textContent),
+  };
 
-    worker.onerror = t.unreached_func("revoked Blob worker must still load");
-    worker.onmessage = t.step_func_done((event) => {
-      assert_equals(event.data, "loaded");
+  const url = URL.createObjectURL(
+    new Blob(["postMessage('loaded')"], { type: "text/javascript" }),
+  );
+  const worker = new Worker(url);
+  URL.revokeObjectURL(url);
+
+  worker.onerror = (event) => {
+    document.body.textContent = `worker error: ${event.message || "unknown"}`;
+  };
+  worker.onmessage = (event) => {
+    if (event.data !== "loaded") {
+      document.body.textContent = `unexpected message: ${String(event.data)}`;
       worker.terminate();
-    });
-  }, "revoking a Blob URL after Worker construction does not cancel loading");
+      return;
+    }
+    worker.terminate();
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+  };
 </script>

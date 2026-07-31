@@ -1,14 +1,42 @@
 <!doctype html>
+<meta charset="utf-8">
 <div id="target"></div>
 <script>
-  const rect = document.querySelector('#target').getBoundingClientRect();
-  const json = rect.toJSON();
-  const expected = ['x', 'y', 'width', 'height', 'top', 'right', 'bottom', 'left'];
-  if (typeof rect.toJSON !== 'function') throw new Error('DOMRect.toJSON missing');
-  if (!expected.every(key => typeof json[key] === 'number')) {
-    throw new Error('DOMRect.toJSON has an invalid shape');
-  }
-  if (JSON.stringify(rect) !== JSON.stringify(json)) {
-    throw new Error('DOMRect JSON serialization differs from toJSON');
+  let failure = null;
+  window.testing = {
+    assertOk: () => {
+      if (failure) throw failure;
+      return document.body.id === "pass";
+    },
+    printTimeoutState: () => console.log(document.body.textContent),
+  };
+
+  try {
+    const rect = document.querySelector("#target").getBoundingClientRect();
+    const json = rect.toJSON();
+    const expected = [
+      "x",
+      "y",
+      "width",
+      "height",
+      "top",
+      "right",
+      "bottom",
+      "left",
+    ];
+    if (typeof rect.toJSON !== "function") {
+      throw new Error("DOMRect.toJSON missing");
+    }
+    if (!expected.every((key) => typeof json[key] === "number")) {
+      throw new Error("DOMRect.toJSON has an invalid shape");
+    }
+    if (JSON.stringify(rect) !== JSON.stringify(json)) {
+      throw new Error("DOMRect JSON serialization differs from toJSON");
+    }
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+  } catch (error) {
+    failure = error;
+    document.body.textContent = String(error);
   }
 </script>

@@ -274,6 +274,7 @@ fn tearDownActivePage(self: *Session) void {
     };
     self.destroyPage(page);
     self._active = null;
+    self.history.onRemoveFrame();
     self.navigation.onRemoveFrame();
     self.frame_id_gen = 0;
 }
@@ -294,6 +295,7 @@ fn installNewActivePage(self: *Session, frame_id: u32) !*Frame {
     errdefer self._active = null;
 
     const frame = &page.frame;
+    self.history.onNewFrame(frame);
     try self.navigation.onNewFrame(frame);
     // Inform CDP the main frame has been created such that additional
     // context for other Worlds can be created as well.
@@ -811,6 +813,7 @@ pub fn commitPendingPage(self: *Session) !void {
 
     // Step 1: clear the OLD page's CDP / V8 inspector state.
     self.notification.dispatch(.frame_remove, .{});
+    self.history.onRemoveFrame();
     self.navigation.onRemoveFrame();
 
     // Step 2: pointer flip. Page addresses are stable (heap-allocated),
@@ -818,6 +821,7 @@ pub fn commitPendingPage(self: *Session) !void {
     // document._frame, EventManager.frame, etc.) remains valid.
     self._active = pending;
     pending._state = .active;
+    self.history.onNewFrame(&pending.frame);
 
     // Step 3: register the new page with CDP. `pending` is still set at
     // this point — CDP's frameCreated handler reads `pendingPage() != null`

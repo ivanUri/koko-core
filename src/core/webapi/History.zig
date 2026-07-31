@@ -24,12 +24,30 @@ const History = @This();
 const ScrollRestoration = enum { auto, manual };
 
 _scroll_restoration: ScrollRestoration = .auto,
+// History belongs to a browsing context, not to whichever realm happened to
+// invoke a method through WindowProxy. The bridge-provided Frame is therefore
+// only a fallback before the context is published.
+_frame: ?*Frame = null,
 
-pub fn getLength(_: *const History, frame: *Frame) u32 {
+pub fn onNewFrame(self: *History, frame: *Frame) void {
+    self._frame = frame;
+}
+
+pub fn onRemoveFrame(self: *History) void {
+    self._frame = null;
+}
+
+fn ownerFrame(self: *const History, fallback: *Frame) *Frame {
+    return self._frame orelse fallback;
+}
+
+pub fn getLength(self: *const History, fallback: *Frame) u32 {
+    const frame = self.ownerFrame(fallback);
     return @intCast(frame.navigationStore()._entries.items.len);
 }
 
-pub fn getState(_: *const History, frame: *Frame) !?js.Value {
+pub fn getState(self: *const History, fallback: *Frame) !?js.Value {
+    const frame = self.ownerFrame(fallback);
     if (frame.navigationStore().getCurrentEntry()._state.value) |state| {
         const value = try frame.js.local.?.parseJSON(state);
         return value;
@@ -56,7 +74,8 @@ fn applyHistoryUrl(frame: *Frame, url: [:0]const u8) !void {
     frame.document._url = url;
 }
 
-pub fn pushState(_: *History, state: js.Value, _: ?[]const u8, _url: ?[]const u8, frame: *Frame) !void {
+pub fn pushState(self: *History, state: js.Value, _: ?[]const u8, _url: ?[]const u8, fallback: *Frame) !void {
+    const frame = self.ownerFrame(fallback);
     const arena = frame._session.arena;
     const url = if (_url) |u|
         try @import("../browser/URL.zig").resolve(arena, frame.url, u, .{ .always_dupe = true })
@@ -69,7 +88,8 @@ pub fn pushState(_: *History, state: js.Value, _: ?[]const u8, _url: ?[]const u8
     try applyHistoryUrl(frame, url);
 }
 
-pub fn replaceState(_: *History, state: js.Value, _: ?[]const u8, _url: ?[]const u8, frame: *Frame) !void {
+pub fn replaceState(self: *History, state: js.Value, _: ?[]const u8, _url: ?[]const u8, fallback: *Frame) !void {
+    const frame = self.ownerFrame(fallback);
     const arena = frame._session.arena;
     const url = if (_url) |u|
         try @import("../browser/URL.zig").resolve(arena, frame.url, u, .{ .always_dupe = true })
@@ -108,15 +128,18 @@ fn goInner(delta: i32, frame: *Frame) !void {
     _ = try navigation.navigateInner(entry._url, .{ .traverse = index }, frame);
 }
 
-pub fn back(_: *History, frame: *Frame) !void {
+pub fn back(self: *History, fallback: *Frame) !void {
+    const frame = self.ownerFrame(fallback);
     try goInner(-1, frame);
 }
 
-pub fn forward(_: *History, frame: *Frame) !void {
+pub fn forward(self: *History, fallback: *Frame) !void {
+    const frame = self.ownerFrame(fallback);
     try goInner(1, frame);
 }
 
-pub fn go(_: *History, delta: ?i32, frame: *Frame) !void {
+pub fn go(self: *History, delta: ?i32, fallback: *Frame) !void {
+    const frame = self.ownerFrame(fallback);
     try goInner(delta orelse 0, frame);
 }
 

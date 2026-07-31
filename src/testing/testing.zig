@@ -434,7 +434,14 @@ fn runWebApiTest(test_file: [:0]const u8) !void {
 
         const js_val = ls.local.exec("testing.assertOk()", "testing.assertOk()") catch |err| {
             const caught = try_catch.caughtOrError(arena_allocator, err);
-            std.debug.print("{s}: test failure\nError: {f}\n", .{ test_file, caught });
+            const state = blk: {
+                const value = ls.local.exec(
+                    "String(document.body?.textContent ?? '')",
+                    "testing.failureState()",
+                ) catch break :blk "";
+                break :blk value.toStringSliceWithAlloc(arena_allocator) catch "";
+            };
+            std.debug.print("{s}: test failure\nState: {s}\nError: {f}\n", .{ test_file, state, caught });
             return err;
         };
         if (js_val.isTrue()) {
@@ -752,8 +759,12 @@ fn testHTTPHandler(req: *std.http.Server.Request) !void {
     }
 
     std.debug.print("TestHTTPServer was asked to serve an unknown file: {s}\n", .{path});
-
-    unreachable;
+    return req.respond("not found", .{
+        .status = .not_found,
+        .extra_headers = &.{
+            .{ .name = "Content-Type", .value = "text/plain; charset=utf-8" },
+        },
+    });
 }
 
 /// LogFilter provides a scoped way to suppress specific log categories during tests.
