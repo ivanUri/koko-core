@@ -103,6 +103,7 @@ pub const ToolsCapability = struct {
 };
 
 pub const Tool = struct {
+    action: @import("../automation/ToolRegistry.zig").Action,
     name: []const u8,
     description: ?[]const u8 = null,
     inputSchema: []const u8,
@@ -317,6 +318,7 @@ test "MCP.protocol - JsonEscapingWriter" {
 test "MCP.protocol - Tool serialization" {
     defer testing.reset();
     const t = Tool{
+        .action = .goto,
         .name = "test",
         .inputSchema = minify(
             \\{

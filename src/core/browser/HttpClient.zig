@@ -1625,6 +1625,8 @@ fn processOneMessage(self: *Client, msg: http.Handles.MultiMessage, transfer: *T
     const is_conn_close_recv = blk: {
         const err = msg.err orelse break :blk false;
         if (err != error.RecvError and err != error.ChunkFailed) break :blk false;
+        const status = msg.conn.getResponseCode() catch 0;
+        if (status == 204 or status == 304 or transfer.req.params.method == .HEAD) break :blk true;
         if (msg.conn.getResponseHeader("transfer-encoding", 0)) |te| {
             if (std.mem.indexOf(u8, te.value, "chunked") != null) break :blk false;
         }
@@ -1641,6 +1643,7 @@ fn processOneMessage(self: *Client, msg: http.Handles.MultiMessage, transfer: *T
     defer transfer.client.leaveTransferCallback();
 
     if (msg.err != null and !is_conn_close_recv) {
+        transfer.emitInternetJourney(msg.conn, true);
         transfer.requestFailed(transfer._callback_error orelse msg.err.?, true);
         return true;
     }
@@ -1650,6 +1653,7 @@ fn processOneMessage(self: *Client, msg: http.Handles.MultiMessage, transfer: *T
         // callback now.
         const proceed = try transfer.headerDoneCallback(msg.conn);
         if (!proceed) {
+            transfer.emitInternetJourney(msg.conn, true);
             transfer.requestFailed(error.Abort, true);
             return true;
         }
@@ -1661,10 +1665,13 @@ fn processOneMessage(self: *Client, msg: http.Handles.MultiMessage, transfer: *T
         try transfer.req.data_callback(Response.fromTransfer(transfer), transfer._stream_buffer.items);
 
         if (transfer.aborted) {
+            transfer.emitInternetJourney(msg.conn, true);
             transfer.requestFailed(error.Abort, true);
             return true;
         }
     }
+
+    transfer.emitInternetJourney(msg.conn, false);
 
     // release conn ASAP so that it's available; some done_callbacks
     // will load more resources.
@@ -1827,6 +1834,7 @@ fn processMessages(self: *Client) !bool {
             .http => |transfer| {
                 const done = self.processOneMessage(msg, transfer) catch |err| blk: {
                     log.err(.http, "process_messages", .{ .err = err, .req = transfer });
+                    transfer.emitInternetJourney(msg.conn, true);
                     transfer.requestFailed(err, true);
                     if (transfer._detached_conn) |c| {
                         // Conn was removed from handles during redirect reconfiguration
@@ -2274,6 +2282,7 @@ pub const Transfer = struct {
 
     // Error captured in dataCallback to be reported in processMessages.
     _callback_error: ?anyerror = null,
+    _journey_emitted: bool = false,
 
     _wire_capture: ?*http.WireHeaderCapture.Session = null,
     /// Per-attempt header list passed to CURLOPT_HTTPHEADER. libcurl borrows
@@ -2582,10 +2591,22 @@ pub const Transfer = struct {
         self._tries += 1;
         self._stream_buffer.clearRetainingCapacity();
         self._callback_error = null;
+        self._journey_emitted = false;
         self._skip_body = false;
         self._first_data_received = false;
         self._streamed_to_user = false;
         self._header_done_called = false;
+    }
+
+    fn emitInternetJourney(self: *Transfer, conn: *const http.Connection, failed: bool) void {
+        if (self._journey_emitted) return;
+        self._journey_emitted = true;
+        const content_type = if (self.response_header) |*head| head.contentType() else null;
+        self.client.network.emitInternetJourney(conn, .{
+            .method = @tagName(self.req.params.method),
+            .redirect_count = self._redirect_count,
+            .content_type = content_type,
+        }, failed);
     }
 
     fn buildResponseHeader(self: *Transfer, conn: *const http.Connection) !void {

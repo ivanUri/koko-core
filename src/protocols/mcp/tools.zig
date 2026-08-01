@@ -7,6 +7,7 @@ const DOMNode = @import("../../core/dom/Node.zig");
 const protocol = @import("protocol.zig");
 const Server = @import("Server.zig");
 const CDPNode = @import("../cdp/Node.zig");
+const ToolRegistry = @import("../automation/ToolRegistry.zig");
 
 const goto_schema = protocol.minify(
     \\{
@@ -46,36 +47,60 @@ const evaluate_schema = protocol.minify(
 
 pub const tool_list = [_]protocol.Tool{
     .{
+        .action = .goto,
         .name = "goto",
         .description = "Navigate to a specified URL and load the page in memory so it can be reused later for info extraction.",
         .inputSchema = goto_schema,
     },
     .{
+        .action = .goto,
         .name = "navigate",
         .description = "Alias for goto. Navigate to a specified URL and load the page in memory.",
         .inputSchema = goto_schema,
     },
     .{
+        .action = .markdown,
         .name = "markdown",
         .description = "Get the page content in markdown format. If a url is provided, it navigates to that url first.",
         .inputSchema = url_params_schema,
     },
     .{
+        .action = .links,
         .name = "links",
         .description = "Extract all links in the opened frame. If a url is provided, it navigates to that url first.",
         .inputSchema = url_params_schema,
     },
     .{
+        .action = .extract,
+        .name = "extract",
+        .description = "Extract structured data from the current page with a selector schema. Supports scalar fields, lists, nested fields, text, HTML, attributes, required fields, and defaults.",
+        .inputSchema = protocol.minify(
+            \\{
+            \\  "type": "object",
+            \\  "properties": {
+            \\    "schema": { "type": "object", "description": "Object whose keys are output fields and values are extraction specifications." },
+            \\    "maxNodes": { "type": "integer", "minimum": 1, "description": "Maximum number of matched nodes. Defaults to 10000." },
+            \\    "maxBytes": { "type": "integer", "minimum": 1, "description": "Maximum extracted text/HTML bytes. Defaults to 4194304." },
+            \\    "maxDepth": { "type": "integer", "minimum": 1, "description": "Maximum nested schema depth. Defaults to 16." }
+            \\  },
+            \\  "required": ["schema"]
+            \\}
+        ),
+    },
+    .{
+        .action = .evaluate,
         .name = "evaluate",
         .description = "Evaluate JavaScript in the current page context. If a url is provided, it navigates to that url first.",
         .inputSchema = evaluate_schema,
     },
     .{
+        .action = .evaluate,
         .name = "eval",
         .description = "Alias for evaluate. Evaluate JavaScript in the current page context.",
         .inputSchema = evaluate_schema,
     },
     .{
+        .action = .semantic_tree,
         .name = "semantic_tree",
         .description = "Get the page content as a simplified semantic DOM tree for AI reasoning. If a url is provided, it navigates to that url first.",
         .inputSchema = protocol.minify(
@@ -92,6 +117,7 @@ pub const tool_list = [_]protocol.Tool{
         ),
     },
     .{
+        .action = .node_details,
         .name = "nodeDetails",
         .description = "Get detailed information about a specific node by its backend node ID. Returns tag, role, name, interactivity, disabled state, value, input type, placeholder, href, checked state, and select options.",
         .inputSchema = protocol.minify(
@@ -105,21 +131,25 @@ pub const tool_list = [_]protocol.Tool{
         ),
     },
     .{
+        .action = .interactive_elements,
         .name = "interactiveElements",
         .description = "Extract interactive elements from the opened frame. If a url is provided, it navigates to that url first.",
         .inputSchema = url_params_schema,
     },
     .{
+        .action = .structured_data,
         .name = "structuredData",
         .description = "Extract structured data (like JSON-LD, OpenGraph, etc) from the opened frame. If a url is provided, it navigates to that url first.",
         .inputSchema = url_params_schema,
     },
     .{
+        .action = .detect_forms,
         .name = "detectForms",
         .description = "Detect all forms on the page and return their structure including fields, types, and required status. If a url is provided, it navigates to that url first.",
         .inputSchema = url_params_schema,
     },
     .{
+        .action = .click,
         .name = "click",
         .description = "Click on an interactive element. Returns the current page URL and title after the click.",
         .inputSchema = protocol.minify(
@@ -133,6 +163,7 @@ pub const tool_list = [_]protocol.Tool{
         ),
     },
     .{
+        .action = .fill,
         .name = "fill",
         .description = "Fill text into an input element. Returns the filled value and current page URL and title.",
         .inputSchema = protocol.minify(
@@ -147,6 +178,7 @@ pub const tool_list = [_]protocol.Tool{
         ),
     },
     .{
+        .action = .scroll,
         .name = "scroll",
         .description = "Scroll the page or a specific element. Returns the scroll position and current page URL and title.",
         .inputSchema = protocol.minify(
@@ -161,6 +193,7 @@ pub const tool_list = [_]protocol.Tool{
         ),
     },
     .{
+        .action = .wait_for_selector,
         .name = "waitForSelector",
         .description = "Wait for an element matching a CSS selector to appear in the frame. Returns the backend node ID of the matched element.",
         .inputSchema = protocol.minify(
@@ -175,6 +208,7 @@ pub const tool_list = [_]protocol.Tool{
         ),
     },
     .{
+        .action = .hover,
         .name = "hover",
         .description = "Hover over an element, triggering mouseover and mouseenter events. Useful for menus, tooltips, and hover states.",
         .inputSchema = protocol.minify(
@@ -188,6 +222,7 @@ pub const tool_list = [_]protocol.Tool{
         ),
     },
     .{
+        .action = .press,
         .name = "press",
         .description = "Press a keyboard key, dispatching keydown and keyup events. Use key names like 'Enter', 'Tab', 'Escape', 'ArrowDown', 'Backspace', or single characters like 'a', '1'.",
         .inputSchema = protocol.minify(
@@ -202,6 +237,7 @@ pub const tool_list = [_]protocol.Tool{
         ),
     },
     .{
+        .action = .select_option,
         .name = "selectOption",
         .description = "Select an option in a <select> dropdown element by its value. Dispatches input and change events.",
         .inputSchema = protocol.minify(
@@ -216,6 +252,7 @@ pub const tool_list = [_]protocol.Tool{
         ),
     },
     .{
+        .action = .set_checked,
         .name = "setChecked",
         .description = "Check or uncheck a checkbox or radio button. Dispatches input, change, and click events.",
         .inputSchema = protocol.minify(
@@ -230,6 +267,7 @@ pub const tool_list = [_]protocol.Tool{
         ),
     },
     .{
+        .action = .find_element,
         .name = "findElement",
         .description = "Find interactive elements by role and/or accessible name. Returns matching elements with their backend node IDs. Useful for locating specific elements without parsing the full semantic tree.",
         .inputSchema = protocol.minify(
@@ -242,7 +280,62 @@ pub const tool_list = [_]protocol.Tool{
             \\}
         ),
     },
+    .{
+        .action = .recording_start,
+        .name = "recordingStart",
+        .description = "Start a new deterministic action recording. Any previous in-memory recording is cleared.",
+        .inputSchema = protocol.minify(
+            \\{"type":"object","properties":{}}
+        ),
+    },
+    .{
+        .action = .recording_stop,
+        .name = "recordingStop",
+        .description = "Stop action recording and return the versioned workflow JSON.",
+        .inputSchema = protocol.minify(
+            \\{"type":"object","properties":{}}
+        ),
+    },
+    .{
+        .action = .workflow_export,
+        .name = "workflowExport",
+        .description = "Export the current action journal as versioned JSON or JavaScript.",
+        .inputSchema = protocol.minify(
+            \\{
+            \\  "type":"object",
+            \\  "properties":{"format":{"type":"string","enum":["json","javascript"]}}
+            \\}
+        ),
+    },
+    .{
+        .action = .workflow_replay,
+        .name = "workflowReplay",
+        .description = "Replay a versioned deterministic workflow without an LLM.",
+        .inputSchema = protocol.minify(
+            \\{
+            \\  "type":"object",
+            \\  "properties":{"workflow":{"type":"object"}},
+            \\  "required":["workflow"]
+            \\}
+        ),
+    },
 };
+
+comptime {
+    const definitions = blk: {
+        var result: [tool_list.len]ToolRegistry.Definition = undefined;
+        for (tool_list, 0..) |tool, i| {
+            result[i] = .{
+                .action = tool.action,
+                .name = tool.name,
+                .description = tool.description,
+                .input_schema = tool.inputSchema,
+            };
+        }
+        break :blk result;
+    };
+    ToolRegistry.validate(&definitions);
+}
 
 pub fn handleList(server: *Server, arena: std.mem.Allocator, req: protocol.Request) !void {
     _ = arena;
@@ -333,51 +426,12 @@ const ToolStreamingText = struct {
     }
 };
 
-const ToolAction = enum {
-    goto,
-    navigate,
-    markdown,
-    links,
-    nodeDetails,
-    interactiveElements,
-    structuredData,
-    detectForms,
-    evaluate,
-    eval,
-    semantic_tree,
-    click,
-    fill,
-    scroll,
-    waitForSelector,
-    hover,
-    press,
-    selectOption,
-    setChecked,
-    findElement,
-};
-
-const tool_map = std.StaticStringMap(ToolAction).initComptime(.{
-    .{ "goto", .goto },
-    .{ "navigate", .navigate },
-    .{ "markdown", .markdown },
-    .{ "links", .links },
-    .{ "nodeDetails", .nodeDetails },
-    .{ "interactiveElements", .interactiveElements },
-    .{ "structuredData", .structuredData },
-    .{ "detectForms", .detectForms },
-    .{ "evaluate", .evaluate },
-    .{ "eval", .eval },
-    .{ "semantic_tree", .semantic_tree },
-    .{ "click", .click },
-    .{ "fill", .fill },
-    .{ "scroll", .scroll },
-    .{ "waitForSelector", .waitForSelector },
-    .{ "hover", .hover },
-    .{ "press", .press },
-    .{ "selectOption", .selectOption },
-    .{ "setChecked", .setChecked },
-    .{ "findElement", .findElement },
-});
+fn findTool(name: []const u8) ?*const protocol.Tool {
+    for (&tool_list) |*tool| {
+        if (std.mem.eql(u8, tool.name, name)) return tool;
+    }
+    return null;
+}
 
 pub fn handleCall(server: *Server, arena: std.mem.Allocator, req: protocol.Request) !void {
     if (req.params == null or req.id == null) {
@@ -393,29 +447,34 @@ pub fn handleCall(server: *Server, arena: std.mem.Allocator, req: protocol.Reque
         return server.sendError(req.id.?, .InvalidParams, "Invalid params");
     };
 
-    const action = tool_map.get(call_params.name) orelse {
+    const tool = findTool(call_params.name) orelse {
         return server.sendError(req.id.?, .MethodNotFound, "Tool not found");
     };
 
-    switch (action) {
-        .goto, .navigate => try handleGoto(server, arena, req.id.?, call_params.arguments),
+    switch (tool.action) {
+        .goto => try handleGoto(server, arena, req.id.?, call_params.arguments),
         .markdown => try handleMarkdown(server, arena, req.id.?, call_params.arguments),
         .links => try handleLinks(server, arena, req.id.?, call_params.arguments),
-        .nodeDetails => try handleNodeDetails(server, arena, req.id.?, call_params.arguments),
-        .interactiveElements => try handleInteractiveElements(server, arena, req.id.?, call_params.arguments),
-        .structuredData => try handleStructuredData(server, arena, req.id.?, call_params.arguments),
-        .detectForms => try handleDetectForms(server, arena, req.id.?, call_params.arguments),
-        .eval, .evaluate => try handleEvaluate(server, arena, req.id.?, call_params.arguments),
+        .extract => try handleExtract(server, arena, req.id.?, call_params.arguments),
+        .node_details => try handleNodeDetails(server, arena, req.id.?, call_params.arguments),
+        .interactive_elements => try handleInteractiveElements(server, arena, req.id.?, call_params.arguments),
+        .structured_data => try handleStructuredData(server, arena, req.id.?, call_params.arguments),
+        .detect_forms => try handleDetectForms(server, arena, req.id.?, call_params.arguments),
+        .evaluate => try handleEvaluate(server, arena, req.id.?, call_params.arguments),
         .semantic_tree => try handleSemanticTree(server, arena, req.id.?, call_params.arguments),
         .click => try handleClick(server, arena, req.id.?, call_params.arguments),
         .fill => try handleFill(server, arena, req.id.?, call_params.arguments),
         .scroll => try handleScroll(server, arena, req.id.?, call_params.arguments),
-        .waitForSelector => try handleWaitForSelector(server, arena, req.id.?, call_params.arguments),
+        .wait_for_selector => try handleWaitForSelector(server, arena, req.id.?, call_params.arguments),
         .hover => try handleHover(server, arena, req.id.?, call_params.arguments),
         .press => try handlePress(server, arena, req.id.?, call_params.arguments),
-        .selectOption => try handleSelectOption(server, arena, req.id.?, call_params.arguments),
-        .setChecked => try handleSetChecked(server, arena, req.id.?, call_params.arguments),
-        .findElement => try handleFindElement(server, arena, req.id.?, call_params.arguments),
+        .select_option => try handleSelectOption(server, arena, req.id.?, call_params.arguments),
+        .set_checked => try handleSetChecked(server, arena, req.id.?, call_params.arguments),
+        .find_element => try handleFindElement(server, arena, req.id.?, call_params.arguments),
+        .recording_start => try handleRecordingStart(server, req.id.?),
+        .recording_stop => try handleRecordingStop(server, arena, req.id.?),
+        .workflow_export => try handleWorkflowExport(server, arena, req.id.?, call_params.arguments),
+        .workflow_replay => try handleWorkflowReplay(server, arena, req.id.?, call_params.arguments),
     }
 }
 
@@ -425,6 +484,7 @@ fn handleGoto(server: *Server, arena: std.mem.Allocator, id: std.json.Value, arg
 
     const content = [_]protocol.TextContent([]const u8){.{ .text = "Navigated successfully." }};
     try server.sendResult(id, protocol.CallToolResult([]const u8){ .content = &content });
+    _ = try server.action_journal.append(.goto, "goto", arguments, true);
 }
 
 fn handleMarkdown(server: *Server, arena: std.mem.Allocator, id: std.json.Value, arguments: ?std.json.Value) !void {
@@ -449,6 +509,36 @@ fn handleLinks(server: *Server, arena: std.mem.Allocator, id: std.json.Value, ar
     server.sendResult(id, protocol.CallToolResult(ToolStreamingText){ .content = &content }) catch {
         return server.sendError(id, .InternalError, "Failed to serialize links content");
     };
+}
+
+fn handleExtract(server: *Server, arena: std.mem.Allocator, id: std.json.Value, arguments: ?std.json.Value) !void {
+    const ExtractParams = struct {
+        schema: std.json.Value,
+        maxNodes: ?usize = null,
+        maxBytes: ?usize = null,
+        maxDepth: ?usize = null,
+    };
+    const args = try parseArgs(ExtractParams, arena, arguments, server, id, "extract");
+    const frame = try ensurePage(server, id, null, null, null);
+
+    const result = @import("../../core/semantic/Extractor.zig").extract(arena, frame, args.schema, .{
+        .max_nodes = args.maxNodes orelse 10_000,
+        .max_bytes = args.maxBytes orelse 4 * 1024 * 1024,
+        .max_depth = args.maxDepth orelse 16,
+    }) catch |err| {
+        return switch (err) {
+            error.InvalidSchema, error.InvalidSelector => server.sendError(id, .InvalidParams, "Invalid extraction schema or selector"),
+            error.MissingRequiredField => server.sendError(id, .NotFound, "A required extraction field was not found"),
+            error.NodeLimitExceeded, error.OutputLimitExceeded, error.MaxDepthExceeded => server.sendError(id, .InvalidParams, "Extraction limit exceeded"),
+            error.StaleDocument => server.sendError(id, .InternalError, "Document changed during extraction"),
+            else => server.sendError(id, .InternalError, "Structured extraction failed"),
+        };
+    };
+
+    const json = try std.json.Stringify.valueAlloc(arena, result, .{});
+    const content = [_]protocol.TextContent([]const u8){.{ .text = json }};
+    try server.sendResult(id, protocol.CallToolResult([]const u8){ .content = &content });
+    _ = try server.action_journal.append(.extract, "extract", arguments, true);
 }
 
 fn handleSemanticTree(server: *Server, arena: std.mem.Allocator, id: std.json.Value, arguments: ?std.json.Value) !void {
@@ -693,7 +783,102 @@ fn handleWaitForSelector(server: *Server, arena: std.mem.Allocator, id: std.json
     const msg = std.fmt.allocPrint(arena, "Element found. backendNodeId: {d}", .{registered.id}) catch "Element found.";
 
     const content = [_]protocol.TextContent([]const u8){.{ .text = msg }};
-    return server.sendResult(id, protocol.CallToolResult([]const u8){ .content = &content });
+    try server.sendResult(id, protocol.CallToolResult([]const u8){ .content = &content });
+    _ = try server.action_journal.append(.wait_for_selector, "waitForSelector", arguments, true);
+}
+
+fn handleRecordingStart(server: *Server, id: std.json.Value) !void {
+    server.action_journal.start();
+    const content = [_]protocol.TextContent([]const u8){.{ .text = "Recording started." }};
+    try server.sendResult(id, protocol.CallToolResult([]const u8){ .content = &content });
+}
+
+fn handleRecordingStop(server: *Server, arena: std.mem.Allocator, id: std.json.Value) !void {
+    server.action_journal.stop();
+    const json = try server.action_journal.jsonAlloc(arena);
+    const content = [_]protocol.TextContent([]const u8){.{ .text = json }};
+    try server.sendResult(id, protocol.CallToolResult([]const u8){ .content = &content });
+}
+
+fn handleWorkflowExport(server: *Server, arena: std.mem.Allocator, id: std.json.Value, arguments: ?std.json.Value) !void {
+    const Params = struct {
+        format: enum { json, javascript } = .json,
+    };
+    const args = try parseArgsOrDefault(Params, arena, arguments, server, id);
+    const output = switch (args.format) {
+        .json => try server.action_journal.jsonAlloc(arena),
+        .javascript => try server.action_journal.javascriptAlloc(arena),
+    };
+    const content = [_]protocol.TextContent([]const u8){.{ .text = output }};
+    try server.sendResult(id, protocol.CallToolResult([]const u8){ .content = &content });
+}
+
+fn handleWorkflowReplay(server: *Server, arena: std.mem.Allocator, id: std.json.Value, arguments: ?std.json.Value) !void {
+    const Params = struct { workflow: std.json.Value };
+    const args = try parseArgs(Params, arena, arguments, server, id, "workflowReplay");
+    const raw = try std.json.Stringify.valueAlloc(arena, args.workflow, .{});
+
+    const Executor = struct {
+        server: *Server,
+        arena: std.mem.Allocator,
+        id: std.json.Value,
+
+        pub fn execute(self: *@This(), action: ToolRegistry.Action, value: std.json.Value) !void {
+            switch (action) {
+                .goto => {
+                    const step_args = std.json.parseFromValueLeaky(GotoParams, self.arena, value, .{
+                        .ignore_unknown_fields = true,
+                    }) catch return error.InvalidWorkflow;
+                    try performGoto(self.server, step_args.url, self.id, step_args.timeout, step_args.waitUntil);
+                },
+                .extract => {
+                    const ExtractStepParams = struct {
+                        schema: std.json.Value,
+                        maxNodes: ?usize = null,
+                        maxBytes: ?usize = null,
+                        maxDepth: ?usize = null,
+                    };
+                    const step_args = std.json.parseFromValueLeaky(ExtractStepParams, self.arena, value, .{
+                        .ignore_unknown_fields = true,
+                    }) catch return error.InvalidWorkflow;
+                    const frame = self.server.session.currentFrame() orelse return error.FrameNotLoaded;
+                    _ = try @import("../../core/semantic/Extractor.zig").extract(self.arena, frame, step_args.schema, .{
+                        .max_nodes = step_args.maxNodes orelse 10_000,
+                        .max_bytes = step_args.maxBytes orelse 4 * 1024 * 1024,
+                        .max_depth = step_args.maxDepth orelse 16,
+                    });
+                },
+                .wait_for_selector => {
+                    const WaitStepParams = struct {
+                        selector: [:0]const u8,
+                        timeout: ?u32 = null,
+                    };
+                    const step_args = std.json.parseFromValueLeaky(WaitStepParams, self.arena, value, .{
+                        .ignore_unknown_fields = true,
+                    }) catch return error.InvalidWorkflow;
+                    _ = self.server.session.currentFrame() orelse return error.FrameNotLoaded;
+                    _ = try @import("../../core/browser/actions.zig").waitForSelector(
+                        step_args.selector,
+                        step_args.timeout orelse 5000,
+                        self.server.session,
+                    );
+                },
+                else => return error.NonReplayableTool,
+            }
+        }
+    };
+
+    var executor: Executor = .{ .server = server, .arena = arena, .id = id };
+    @import("../automation/WorkflowRunner.zig").replay(arena, raw, &executor) catch |err| {
+        return switch (err) {
+            error.UnsupportedVersion => server.sendError(id, .InvalidParams, "Unsupported workflow version"),
+            error.InvalidWorkflow, error.UnknownTool, error.NonReplayableTool => server.sendError(id, .InvalidParams, "Invalid or non-replayable workflow"),
+            else => server.sendError(id, .InternalError, "Workflow replay failed"),
+        };
+    };
+
+    const content = [_]protocol.TextContent([]const u8){.{ .text = "Workflow replayed successfully." }};
+    try server.sendResult(id, protocol.CallToolResult([]const u8){ .content = &content });
 }
 
 fn handleHover(server: *Server, arena: std.mem.Allocator, id: std.json.Value, arguments: ?std.json.Value) !void {
@@ -977,6 +1162,73 @@ test "MCP - evaluate error reporting" {
         .isError = true,
         .content = &.{.{ .type = "text" }},
     } }, out.written());
+}
+
+test "MCP - native structured extract" {
+    defer testing.reset();
+    var out: std.io.Writer.Allocating = .init(testing.arena_allocator);
+    const server = try testLoadPage(
+        "http://localhost:9582/src/browser/tests/mcp_extract.html",
+        &out.writer,
+    );
+    defer server.deinit();
+
+    const msg =
+        \\{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"extract","arguments":{"schema":{"products":{"selector":".product","all":true,"fields":{"name":{"selector":"h2","text":true},"sku":{"attribute":"data-sku"}}}}}}}
+    ;
+    try router.handleMessage(server, testing.arena_allocator, msg);
+
+    try testing.expect(std.mem.indexOf(u8, out.written(), "\\\"name\\\":\\\"Alpha\\\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "\\\"sku\\\":\\\"b-2\\\"") != null);
+}
+
+test "MCP - action recording exports only successful replayable operations" {
+    defer testing.reset();
+    var out: std.io.Writer.Allocating = .init(testing.arena_allocator);
+    const server = try testLoadPage(
+        "http://localhost:9582/src/browser/tests/mcp_extract.html",
+        &out.writer,
+    );
+    defer server.deinit();
+    out.clearRetainingCapacity();
+
+    try router.handleMessage(server, testing.arena_allocator,
+        \\{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"recordingStart","arguments":{}}}
+    );
+    out.clearRetainingCapacity();
+
+    try router.handleMessage(server, testing.arena_allocator,
+        \\{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"extract","arguments":{"schema":{"title":{"selector":"h1","text":true}}}}}
+    );
+    out.clearRetainingCapacity();
+
+    // This fails deterministically and therefore must not enter the journal.
+    try router.handleMessage(server, testing.arena_allocator,
+        \\{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"extract","arguments":{"schema":{"missing":{"selector":".absent","text":true,"required":true}}}}}
+    );
+    out.clearRetainingCapacity();
+
+    try router.handleMessage(server, testing.arena_allocator,
+        \\{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"recordingStop","arguments":{}}}
+    );
+
+    try testing.expect(std.mem.indexOf(u8, out.written(), "\\\"version\\\":1") != null);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "\\\"tool\\\":\\\"extract\\\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out.written(), ".absent") == null);
+}
+
+test "MCP - deterministic workflow replay runs without a model" {
+    defer testing.reset();
+    var out: std.io.Writer.Allocating = .init(testing.arena_allocator);
+    const server = try Server.init(testing.allocator, testing.test_app, &out.writer);
+    defer server.deinit();
+
+    try router.handleMessage(server, testing.arena_allocator,
+        \\{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflowReplay","arguments":{"workflow":{"version":1,"steps":[{"tool":"goto","arguments":{"url":"http://localhost:9582/src/browser/tests/mcp_extract.html"}},{"tool":"waitForSelector","arguments":{"selector":".product","timeout":1000}},{"tool":"extract","arguments":{"schema":{"title":{"selector":"h1","text":true}}}}]}}}}
+    );
+
+    try testing.expect(std.mem.indexOf(u8, out.written(), "Workflow replayed successfully.") != null);
+    try testing.expect(server.session.currentFrame() != null);
 }
 
 test "MCP - Actions: click, fill, scroll, hover, press, selectOption, setChecked" {

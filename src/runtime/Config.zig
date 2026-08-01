@@ -205,6 +205,9 @@ const Commands = cli.Builder(.{
         .name = "mcp",
         .options = .{
             .{ .name = "cdp_port", .type = ?u16 },
+            .{ .name = "host", .type = []const u8, .default = "127.0.0.1" },
+            .{ .name = "port", .type = ?u16 },
+            .{ .name = "max_sessions", .type = usize, .default = 64 },
         },
         .shared_options = CommonOptions,
     },
@@ -1025,8 +1028,14 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
     ++ common_options ++
         \\
         \\mcp command
-        \\Starts an MCP (Model Context Protocol) server over stdio
+        \\Starts an MCP (Model Context Protocol) server over stdio, or
+        \\Streamable HTTP when --port is provided.
         \\Example: {0s} mcp
+        \\Example: {0s} mcp --host 127.0.0.1 --port 9223
+        \\
+        \\--host          Host for MCP HTTP. Defaults to 127.0.0.1.
+        \\--port          Enable MCP Streamable HTTP on this port.
+        \\--max-sessions  Maximum isolated MCP HTTP sessions. Defaults to 64.
         \\
         \\--cookie        Path to a JSON file to load cookies from (one-shot CLI override).
         \\                Defaults to no cookie loading.

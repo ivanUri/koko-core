@@ -333,9 +333,21 @@ pub const CurlInfo = enum(c.CURLINFO) {
     effective_url = c.CURLINFO_EFFECTIVE_URL,
     private = c.CURLINFO_PRIVATE,
     redirect_count = c.CURLINFO_REDIRECT_COUNT,
+    num_connects = c.CURLINFO_NUM_CONNECTS,
+    conn_id = c.CURLINFO_CONN_ID,
+    used_proxy = c.CURLINFO_USED_PROXY,
+    queue_time_us = c.CURLINFO_QUEUE_TIME_T,
     response_code = c.CURLINFO_RESPONSE_CODE,
     connect_code = c.CURLINFO_HTTP_CONNECTCODE,
     negotiated_http_version = c.CURLINFO_HTTP_VERSION,
+    namelookup_time_us = c.CURLINFO_NAMELOOKUP_TIME_T,
+    connect_time_us = c.CURLINFO_CONNECT_TIME_T,
+    appconnect_time_us = c.CURLINFO_APPCONNECT_TIME_T,
+    pretransfer_time_us = c.CURLINFO_PRETRANSFER_TIME_T,
+    starttransfer_time_us = c.CURLINFO_STARTTRANSFER_TIME_T,
+    total_time_us = c.CURLINFO_TOTAL_TIME_T,
+    size_download_bytes = c.CURLINFO_SIZE_DOWNLOAD_T,
+    primary_ip = c.CURLINFO_PRIMARY_IP,
 };
 
 pub const Error = error{
@@ -911,7 +923,9 @@ pub fn curl_easy_getinfo(easy: *Curl, comptime info: CurlInfo, out: anytype) Err
 
     const inf: c.CURLINFO = @intFromEnum(info);
     const code = switch (info) {
-        .effective_url => blk: {
+        .effective_url,
+        .primary_ip,
+        => blk: {
             const p: *[*c]u8 = out;
             break :blk c.curl_easy_getinfo(easy, inf, p);
         },
@@ -919,8 +933,23 @@ pub fn curl_easy_getinfo(easy: *Curl, comptime info: CurlInfo, out: anytype) Err
         .connect_code,
         .redirect_count,
         .negotiated_http_version,
+        .num_connects,
+        .used_proxy,
         => blk: {
             const p: *c_long = out;
+            break :blk c.curl_easy_getinfo(easy, inf, p);
+        },
+        .namelookup_time_us,
+        .connect_time_us,
+        .appconnect_time_us,
+        .pretransfer_time_us,
+        .starttransfer_time_us,
+        .total_time_us,
+        .size_download_bytes,
+        .conn_id,
+        .queue_time_us,
+        => blk: {
+            const p: *CurlOffT = out;
             break :blk c.curl_easy_getinfo(easy, inf, p);
         },
         .private => blk: {
