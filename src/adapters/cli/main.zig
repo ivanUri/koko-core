@@ -224,6 +224,13 @@ fn run(allocator: Allocator, main_arena: Allocator) !void {
 
             log.opts.format = .logfmt;
 
+            if (opts.port != null and opts.cdp_port != null) {
+                log.fatal(.mcp, "MCP HTTP and CDP cannot share the process listener", .{
+                    .hint = "Run CDP and MCP HTTP as separate Velora processes.",
+                });
+                return error.TooManyListeners;
+            }
+
             var cdp_server: ?*v.Server = null;
             if (opts.cdp_port) |port| {
                 const address = std.net.Address.parseIp("127.0.0.1", port) catch |err| {
@@ -235,10 +242,28 @@ fn run(allocator: Allocator, main_arena: Allocator) !void {
             }
             defer if (cdp_server) |s| s.deinit();
 
-            var worker_thread = try std.Thread.spawn(.{}, mcpThread, .{ allocator, app });
-            defer worker_thread.join();
-
-            app.network.run();
+            if (opts.port) |port| {
+                const address = std.net.Address.parseIp(opts.host, port) catch |err| {
+                    log.fatal(.mcp, "invalid MCP HTTP address", .{
+                        .err = err,
+                        .host = opts.host,
+                        .port = port,
+                    });
+                    return;
+                };
+                const http_server = try v.mcp.HttpServer.init(
+                    allocator,
+                    app,
+                    address,
+                    opts.max_sessions,
+                );
+                defer http_server.deinit();
+                app.network.run();
+            } else {
+                var worker_thread = try std.Thread.spawn(.{}, mcpThread, .{ allocator, app });
+                defer worker_thread.join();
+                app.network.run();
+            }
         },
         else => unreachable,
     }

@@ -5,6 +5,7 @@ const testing = @import("../../testing/testing.zig");
 const protocol = @import("protocol.zig");
 const router = @import("router.zig");
 const CDPNode = @import("../cdp/Node.zig");
+const ActionJournal = @import("../automation/ActionJournal.zig");
 
 const Self = @This();
 
@@ -15,6 +16,7 @@ notification: *@import("../../runtime/Notification.zig"),
 browser: @import("../../core/browser/Browser.zig"),
 session: *@import("../../core/browser/Session.zig"),
 node_registry: CDPNode.Registry,
+action_journal: ActionJournal,
 
 writer: *std.io.Writer,
 mutex: std.Thread.Mutex = .{},
@@ -36,6 +38,7 @@ pub fn init(allocator: std.mem.Allocator, app: *App, writer: *std.io.Writer) !*S
         .notification = notification,
         .session = undefined,
         .node_registry = CDPNode.Registry.init(allocator),
+        .action_journal = ActionJournal.init(allocator),
     };
 
     try self.browser.init(app, .{}, null);
@@ -52,11 +55,23 @@ pub fn deinit(self: *Self) void {
     @import("../../runtime/profile_session.zig").persistCookies(self.session, self.app.config);
 
     self.node_registry.deinit();
+    self.action_journal.deinit();
     self.aw.deinit();
     self.browser.deinit();
     self.notification.deinit();
 
     self.allocator.destroy(self);
+}
+
+/// MCP multi-session workers park each isolate between requests. These methods
+/// are worker-only lifecycle hooks; callers must never leave two MCP isolates
+/// entered at once or invoke them from connection threads.
+pub fn enterIsolate(self: *Self) void {
+    self.browser.env.isolate.enter();
+}
+
+pub fn exitIsolate(self: *Self) void {
+    self.browser.env.isolate.exit();
 }
 
 pub fn sendResponse(self: *Self, response: anytype) !void {

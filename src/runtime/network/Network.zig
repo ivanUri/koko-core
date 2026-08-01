@@ -28,6 +28,7 @@ const http = @import("http.zig");
 const IpFilter = @import("IpFilter.zig");
 const RobotStore = @import("Robots.zig").RobotStore;
 const WebBotAuth = @import("WebBotAuth.zig");
+const InternetJourneySink = @import("InternetJourneySink.zig");
 
 fn transportTag(transport: http.Connection.Transport) @typeInfo(http.Connection.Transport).@"union".tag_type.? {
     return std.meta.activeTag(transport);
@@ -93,6 +94,7 @@ active_handles: usize = 0,
 
 /// Optional IP filter for blocking requests to private/internal networks (--block-private-networks).
 ip_filter: ?*IpFilter = null,
+internet_journey_sink: ?InternetJourneySink = null,
 
 const TickCallback = struct {
     ctx: *anyopaque,
@@ -287,6 +289,7 @@ pub fn init(allocator: Allocator, app: *App, config: *const Config) !Network {
         }
     else
         null;
+    const internet_journey_sink = try InternetJourneySink.initFromEnvironment(allocator);
 
     return .{
         .allocator = allocator,
@@ -309,6 +312,7 @@ pub fn init(allocator: Allocator, app: *App, config: *const Config) !Network {
         .ws_max = config.wsMaxConcurrent(),
 
         .ip_filter = ip_filter,
+        .internet_journey_sink = internet_journey_sink,
     };
 }
 
@@ -349,6 +353,7 @@ pub fn deinit(self: *Network) void {
         f.deinit(self.allocator);
         self.allocator.destroy(f);
     }
+    if (self.internet_journey_sink) |*sink| sink.deinit();
 
     globalDeinit();
 }
@@ -544,6 +549,37 @@ pub fn submitRequest(self: *Network, conn: *http.Connection) void {
     });
 
     self.wakeupPoll();
+}
+
+/// Capture a completed browser HTTP transfer before HttpClient releases and
+/// resets its pooled easy handle.
+pub fn emitInternetJourney(
+    self: *Network,
+    conn: *const http.Connection,
+    metadata: InternetJourneySink.ResponseMetadata,
+    failed: bool,
+) void {
+    const sink = if (self.internet_journey_sink) |*value| value else return;
+    log.debug(.http, "internet journey snapshot", .{ .origin = conn.origin, .failed = failed });
+    if (conn.origin == .telemetry) return;
+    const timing = conn.transferTiming() catch |err| {
+        log.warn(.http, "internet journey timing snapshot", .{ .err = err });
+        return;
+    };
+    sink.emit(conn, timing, metadata, failed) catch |err| {
+        log.warn(.http, "internet journey telemetry write", .{ .err = err });
+    };
+}
+
+pub fn emitBrowserStage(self: *Network, stage: []const u8, duration_us: u64, frame_id: u32, loader_id: u32, measurement_state: []const u8, process: []const u8, thread: []const u8) void {
+    const sink = if (self.internet_journey_sink) |*value| value else return;
+    sink.emitBrowserStage(stage, duration_us, frame_id, loader_id, measurement_state, process, thread) catch |err| {
+        log.warn(.http, "browser journey telemetry", .{ .stage = stage, .err = err });
+    };
+}
+pub fn emitBrowserScript(self: *Network, duration_us: u64, frame_id: u32, loader_id: u32, url: []const u8, script_kind: []const u8) void {
+    const sink = if (self.internet_journey_sink) |*value| value else return;
+    sink.emitBrowserScript(duration_us, frame_id, loader_id, url, script_kind) catch |err| log.warn(.http, "browser script telemetry", .{ .err = err });
 }
 
 fn wakeupPoll(self: *Network) void {

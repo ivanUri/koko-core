@@ -400,6 +400,7 @@ _layout_doc_position_cache: std.AutoHashMapUnmanaged(usize, f64) = .empty,
 _image_preloads: std.StringHashMapUnmanaged(ImagePreloadEntry) = .empty,
 // True while resolveElementDimensions is on the stack — enables stylesheet fast path.
 _layout_resolve_depth: u32 = 0,
+_layout_observation_start_ns: i128 = 0,
 
 // DOM version used to invalidate cached state of "live" collections
 version: usize = 0,
@@ -810,7 +811,10 @@ pub fn runOwnedSchedulerOne(self: *Frame) !bool {
         }
         return false;
     }
-    return try self.js.scheduler.runOne();
+    const started = std.time.nanoTimestamp();
+    const ran = try self.js.scheduler.runOne();
+    if (ran) self.observeBrowserStage("event-loop", elapsedMicros(started), "measured", "Renderer", "Main");
+    return ran;
 }
 
 /// Drain ready owned scheduler tasks while the realm stays active.
@@ -2154,6 +2158,8 @@ pub fn documentIsLoaded(self: *Frame) void {
     self._load_state = .load;
     self.document._ready_state = .interactive;
     self.window._performance.recordDomInteractive();
+    self.observeBrowserStage("html-parser", 0, "boundary", "Renderer", "Main");
+    self.observeBrowserStage("dom", 0, "boundary", "Renderer", "Main");
 
     // Emit Page.domContentEventFired *before* running page DOMContentLoaded
     // handlers. Ad/GTM listeners regularly V8_Fatal (stack overflow) and would
@@ -2271,6 +2277,8 @@ pub fn pollCdpDuringLongWork(self: *Frame) void {
 /// HTTP transfer callback (defer head fetches deadlock until curl unwinds).
 pub fn runPostParseScriptLifecycle(self: *Frame) void {
     if (self._script_manager.base.static_scripts_done) return;
+    const started = std.time.nanoTimestamp();
+    defer self.observeBrowserStage("javascript", elapsedMicros(started), "measured", "Renderer", "Main");
     self._static_scripts_done_scheduled = false;
     // Activate style/link/img that were skipped mid-document-parse.
     self.activateDeferredParserResources();
@@ -2808,6 +2816,7 @@ fn _documentIsComplete(self: *Frame) !void {
         .loader_id = self._loader_id,
         .timestamp = timestamp(.monotonic),
     });
+    self.observeBrowserStage("frame", 0, "boundary", "Renderer", "Main");
 
     if (self._event_manager.hasDirectListeners(window_target, "pageshow", self.window._on_pageshow)) {
         const pageshow_event = (try PageTransitionEvent.initTrusted(comptime .wrap("pageshow"), .{}, self)).asEvent();
@@ -3885,11 +3894,26 @@ pub fn layoutResolveActive(self: *const Frame) bool {
 }
 
 pub fn beginLayoutResolve(self: *Frame) void {
+    if (self._layout_resolve_depth == 0) self._layout_observation_start_ns = std.time.nanoTimestamp();
     self._layout_resolve_depth +%= 1;
 }
 
 pub fn endLayoutResolve(self: *Frame) void {
     if (self._layout_resolve_depth > 0) self._layout_resolve_depth -= 1;
+    if (self._layout_resolve_depth == 0 and self._layout_observation_start_ns != 0) {
+        self.observeBrowserStage("layout", elapsedMicros(self._layout_observation_start_ns), "measured", "Renderer", "Main");
+        self._layout_observation_start_ns = 0;
+    }
+}
+
+fn elapsedMicros(started: i128) u64 {
+    const elapsed = std.time.nanoTimestamp() - started;
+    if (elapsed <= 0) return 0;
+    return @intCast(@divTrunc(elapsed, std.time.ns_per_us));
+}
+
+fn observeBrowserStage(self: *Frame, stage: []const u8, duration_us: u64, state: []const u8, process: []const u8, thread: []const u8) void {
+    self._session.browser.observeBrowserStage(stage, duration_us, self._frame_id, self._loader_id, state, process, thread);
 }
 
 /// Called after a top-level layout getter returns. Recovers from leaked depth

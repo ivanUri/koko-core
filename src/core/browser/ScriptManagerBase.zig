@@ -1688,6 +1688,12 @@ pub const Script = struct {
         const cacheable = self.source == .remote;
 
         const url = self.url;
+        const script_started = std.time.nanoTimestamp();
+        defer {
+            const elapsed = std.time.nanoTimestamp() - script_started;
+            const duration_us: u64 = if (elapsed > 0) @intCast(@divTrunc(elapsed, std.time.ns_per_us)) else 0;
+            frame._page.session.browser.observeBrowserScript(duration_us, frame._frame_id, frame._loader_id, url, @tagName(fe.kind));
+        }
 
         log.info(.browser, "executing script", .{
             .src = url,

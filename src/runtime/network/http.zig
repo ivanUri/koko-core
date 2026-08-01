@@ -822,6 +822,75 @@ pub const Connection = struct {
         return @intCast(count);
     }
 
+    pub const TransferTiming = struct {
+        dns_us: u64,
+        queue_us: u64,
+        tcp_us: u64,
+        tls_us: u64,
+        request_us: u64,
+        server_us: u64,
+        transfer_us: u64,
+        total_us: u64,
+        response_body_bytes: u64,
+        primary_ip: ?[]const u8,
+        connection_id: i64,
+        num_connects: u64,
+        used_proxy: bool,
+
+        fn delta(end: libcurl.CurlOffT, start: libcurl.CurlOffT) u64 {
+            if (end <= start or end < 0 or start < 0) return 0;
+            return @intCast(end - start);
+        }
+    };
+
+    /// Snapshot cumulative libcurl timings into non-overlapping journey stages.
+    /// Must be called after CURLMSG_DONE and before the easy handle is reset.
+    pub fn transferTiming(self: *const Connection) !TransferTiming {
+        var namelookup: libcurl.CurlOffT = 0;
+        var queue_time: libcurl.CurlOffT = 0;
+        var connect: libcurl.CurlOffT = 0;
+        var appconnect: libcurl.CurlOffT = 0;
+        var pretransfer: libcurl.CurlOffT = 0;
+        var starttransfer: libcurl.CurlOffT = 0;
+        var total: libcurl.CurlOffT = 0;
+        var size_download: libcurl.CurlOffT = 0;
+        var connection_id: libcurl.CurlOffT = -1;
+        var num_connects: c_long = 0;
+        var used_proxy: c_long = 0;
+        var primary_ip: [*c]u8 = null;
+        try libcurl.curl_easy_getinfo(self._easy, .namelookup_time_us, &namelookup);
+        libcurl.curl_easy_getinfo(self._easy, .queue_time_us, &queue_time) catch {};
+        try libcurl.curl_easy_getinfo(self._easy, .connect_time_us, &connect);
+        try libcurl.curl_easy_getinfo(self._easy, .appconnect_time_us, &appconnect);
+        try libcurl.curl_easy_getinfo(self._easy, .pretransfer_time_us, &pretransfer);
+        try libcurl.curl_easy_getinfo(self._easy, .starttransfer_time_us, &starttransfer);
+        try libcurl.curl_easy_getinfo(self._easy, .total_time_us, &total);
+        try libcurl.curl_easy_getinfo(self._easy, .size_download_bytes, &size_download);
+        libcurl.curl_easy_getinfo(self._easy, .conn_id, &connection_id) catch {};
+        libcurl.curl_easy_getinfo(self._easy, .num_connects, &num_connects) catch {};
+        libcurl.curl_easy_getinfo(self._easy, .used_proxy, &used_proxy) catch {};
+        libcurl.curl_easy_getinfo(self._easy, .primary_ip, &primary_ip) catch {};
+
+        const tcp_start = namelookup;
+        const tls_start = connect;
+        const request_start = if (appconnect > 0) appconnect else connect;
+        return .{
+            .queue_us = if (queue_time > 0) @intCast(queue_time) else 0,
+            .dns_us = if (namelookup > 0) @intCast(namelookup) else 0,
+            .tcp_us = TransferTiming.delta(connect, tcp_start),
+            .tls_us = TransferTiming.delta(appconnect, tls_start),
+            .request_us = TransferTiming.delta(pretransfer, request_start),
+            .server_us = TransferTiming.delta(starttransfer, pretransfer),
+            .transfer_us = TransferTiming.delta(total, starttransfer),
+            .total_us = if (total > 0) @intCast(total) else 0,
+            .response_body_bytes = if (size_download > 0) @intCast(size_download) else 0,
+            .primary_ip = if (primary_ip != null) std.mem.span(primary_ip) else null,
+            .connection_id = if (connection_id >= 0) @intCast(connection_id) else -1,
+            .num_connects = if (num_connects > 0) @intCast(num_connects) else 0,
+            .used_proxy = used_proxy != 0,
+        };
+    }
+
     /// Maps libcurl CURLINFO_HTTP_VERSION to Chrome DevTools protocol strings.
     pub fn httpProtocolLabel(self: *const Connection) []const u8 {
         var ver: c_long = 0;

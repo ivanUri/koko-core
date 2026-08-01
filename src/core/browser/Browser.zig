@@ -31,6 +31,13 @@ const BatteryManager = @import("../webapi/BatteryManager.zig");
 // A browser contains only one session.
 const Browser = @This();
 
+pub fn observeBrowserStage(self: *Browser, stage: []const u8, duration_us: u64, frame_id: u32, loader_id: u32, measurement_state: []const u8, process: []const u8, thread: []const u8) void {
+    self.app.network.emitBrowserStage(stage, duration_us, frame_id, loader_id, measurement_state, process, thread);
+}
+pub fn observeBrowserScript(self: *Browser, duration_us: u64, frame_id: u32, loader_id: u32, url: []const u8, script_kind: []const u8) void {
+    self.app.network.emitBrowserScript(duration_us, frame_id, loader_id, url, script_kind);
+}
+
 env: js.Env,
 app: *App,
 session: ?Session,

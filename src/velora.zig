@@ -24,9 +24,13 @@ pub const forms = @import("core/browser/forms.zig");
 pub const interactive = @import("core/browser/interactive.zig");
 pub const structured_data = @import("core/browser/structured_data.zig");
 pub const SemanticTree = @import("core/semantic/SemanticTree.zig");
+pub const Extractor = @import("core/semantic/Extractor.zig");
 pub const CDP = @import("protocols/cdp/CDP.zig");
 pub const MCP = @import("protocols/mcp.zig");
 pub const mcp = @import("protocols/mcp.zig");
+pub const ToolRegistry = @import("protocols/automation/ToolRegistry.zig");
+pub const ActionJournal = @import("protocols/automation/ActionJournal.zig");
+pub const WorkflowRunner = @import("protocols/automation/WorkflowRunner.zig");
 pub const URL = @import("core/browser/URL.zig");
 pub const build_config = @import("build_config");
 
