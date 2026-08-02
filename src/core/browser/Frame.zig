@@ -327,6 +327,8 @@ origin: ?[]const u8 = null,
 // It is set by a <base> tag.
 // If null the url must be used.
 base_url: ?[:0]const u8 = null,
+/// Creator base URL captured when an inline document is created.
+fallback_base_url: ?[:0]const u8 = null,
 
 // referer header cache.
 referer_header: ?[:0]const u8 = null,
@@ -1038,6 +1040,11 @@ pub fn navigatorState(self: *const Frame) NavigatorState {
 
 pub fn base(self: *const Frame) [:0]const u8 {
     if (self.base_url) |url| return url;
+    return self.fallbackBase();
+}
+
+fn fallbackBase(self: *const Frame) [:0]const u8 {
+    if (self.fallback_base_url) |url| return url;
 
     // A srcdoc document has `about:srcdoc` as its document URL, but the HTML
     // standard gives it the embedding document's fallback base URL. Relative
@@ -1049,6 +1056,16 @@ pub fn base(self: *const Frame) [:0]const u8 {
     }
 
     return self.url;
+}
+
+/// Recompute the document base URL after the first `<base href>` changes.
+/// The base element's own URL is resolved against the document's fallback
+/// base, never against the previous cached base URL.
+pub fn refreshDocumentBase(self: *Frame) !void {
+    self.base_url = null;
+    const element = try self.document.querySelector(comptime .wrap("base[href]"), self) orelse return;
+    const href = element.getAttributeSafe(comptime .wrap("href")) orelse return;
+    self.base_url = try URL.resolve(self.arena, self.fallbackBase(), href, .{});
 }
 
 pub fn getTitle(self: *Frame) !?[]const u8 {
@@ -1930,7 +1947,9 @@ pub fn scheduleNavigation(self: *Frame, request_url: []const u8, opts: NavigateO
     }
     // about:srcdoc is only valid via the srcdoc="" attribute path — never
     // via location / window.open targeting (network-error → opaque page).
-    if (isAboutSrcdocNavigationUrl(request_url)) {
+    if (isAboutSrcdocNavigationUrl(request_url) and
+        !isSameDocumentAboutSrcdocUrl(self.url, request_url))
+    {
         return self.scheduleOpaqueAboutSrcdocError(request_url);
     }
     const arena = try self._session.getArena(.small, "scheduleNavigation");
@@ -1952,6 +1971,13 @@ fn isAboutSrcdocNavigationUrl(url: []const u8) bool {
     if (!std.mem.startsWith(u8, url, "about:srcdoc")) return false;
     if (url.len == "about:srcdoc".len) return true;
     return url["about:srcdoc".len] == '?' or url["about:srcdoc".len] == '#';
+}
+
+fn isSameDocumentAboutSrcdocUrl(current: []const u8, requested: []const u8) bool {
+    if (!isAboutSrcdocNavigationUrl(current) or !isAboutSrcdocNavigationUrl(requested)) return false;
+    const current_end = std.mem.indexOfScalar(u8, current, '#') orelse current.len;
+    const requested_end = std.mem.indexOfScalar(u8, requested, '#') orelse requested.len;
+    return std.mem.eql(u8, current[0..current_end], requested[0..requested_end]);
 }
 
 /// Navigate to a network-error style opaque document for blocked about:srcdoc.
@@ -2050,10 +2076,15 @@ fn scheduleNavigationWithArena(originator: *Frame, arena: Allocator, request_url
         !std.mem.eql(u8, target.url, resolved_url))
     {
         target.url = try target.arena.dupeZ(u8, resolved_url);
-        target.window._location = try Location.init(target.url, target);
-        if (target.parent == null) {
-            try session.navigation.updateEntries(target.url, opts.kind, target, true);
-        }
+        // Location has stable identity for the lifetime of a Window. Keep JS
+        // references live while updating the URL owned by this context.
+        target.window._location._url = try @import("../webapi/URL.zig").init(
+            target.url,
+            null,
+            &target.js.execution,
+        );
+        target.document._url = target.url;
+        try target.navigationStore().updateEntries(target.url, opts.kind, target, true);
         // don't defer this, the caller is responsible for freeing it on error
         session.releaseArena(arena);
         return;
@@ -3066,6 +3097,9 @@ fn frameHeaderDoneCallback(response: HttpClient.Response) !bool {
             // the abortFrame inside old Frame.deinit (sharing frame_id with
             // pending) would kill us mid-flight. Flip the flag AFTER commit.
             try session.commitPendingPage();
+            // The shield only owns the outgoing-page teardown boundary. Once
+            // committed, a newer navigation must be able to abort this stream.
+            session.browser.http_client.clearProtectForFrame(self._frame_id);
             if (self.queueFrameNavigatedObserversAfterBody()) {
                 return true;
             }
@@ -3658,6 +3692,8 @@ fn loadIframeSrcdoc(self: *Frame, iframe: *IFrame, srcdoc: []const u8) !void {
 
     child.url = "about:srcdoc";
     child.window._location = try Location.init("about:srcdoc", child);
+    child.base_url = null;
+    child.fallback_base_url = try child.arena.dupeZ(u8, self.base());
 
     try child.inheritCreatorOrigin(self);
 
@@ -4133,6 +4169,13 @@ pub fn unregisterIntersectionObserver(self: *Frame, observer: *IntersectionObser
     }
 }
 
+fn isIntersectionObserverRegistered(self: *const Frame, observer: *const IntersectionObserver) bool {
+    for (self._intersection_observers.items) |registered| {
+        if (registered == observer) return true;
+    }
+    return false;
+}
+
 pub fn checkIntersections(self: *Frame) !void {
     if (self._realm_state != .active) return;
     for (self._intersection_observers.items) |observer| {
@@ -4246,9 +4289,19 @@ pub fn deliverIntersections(self: *Frame) void {
     self._intersection_delivery_scheduled = false;
 
     // Snapshot: navigation from an IO callback can disconnect observers mid-loop.
-    const snapshot = self._intersection_observers.items;
+    const session = self._session;
+    const snapshot_arena = session.getArena(.tiny, "intersection-delivery-snapshot") catch return;
+    defer session.releaseArena(snapshot_arena);
+    const snapshot = snapshot_arena.dupe(
+        *IntersectionObserver,
+        self._intersection_observers.items,
+    ) catch return;
     for (snapshot) |observer| {
-        if (self._realm_state != .active) break;
+        if (self._realm_state != .active or self._detach_pending or
+            self.js.execution.isTaskOwnerStale(self._intersection_delivery_task_owner)) break;
+        // A prior callback may disconnect another observer in the snapshot.
+        // Do not dereference an observer after its registration ref is gone.
+        if (!self.isIntersectionObserverRegistered(observer)) continue;
         observer.deliverEntries(self) catch |err| {
             log.err(.frame, "frame.deliverIntersections", .{ .err = err, .type = self._type, .url = self.url });
         };
@@ -4257,6 +4310,12 @@ pub fn deliverIntersections(self: *Frame) void {
 
 pub fn deliverMutations(self: *Frame) void {
     if (!self._mutation_delivery_scheduled) {
+        return;
+    }
+    if (self.js.execution.isTaskOwnerStale(self._mutation_delivery_task_owner) or
+        self._detach_pending or self._realm_state == .dead)
+    {
+        self._mutation_delivery_scheduled = false;
         return;
     }
     self.js.execution.validateJsEntry(.allow_draining, .mutation_delivery) catch {
@@ -4280,11 +4339,17 @@ pub fn deliverMutations(self: *Frame) void {
     }
 
     var it: ?*std.DoublyLinkedList.Node = self._mutation_observers.first;
-    while (it) |node| : (it = node.next) {
+    while (it) |node| {
+        if (self._detach_pending or self._realm_state == .dead or
+            self.js.execution.isTaskOwnerStale(self._mutation_delivery_task_owner)) break;
+        // The callback can disconnect/destroy this observer or detach its
+        // entire frame. Capture the continuation before entering JavaScript.
+        const next = node.next;
         const observer: *MutationObserver = @fieldParentPtr("node", node);
         observer.deliverRecords(self) catch |err| {
             log.err(.frame, "frame.deliverMutations", .{ .err = err, .type = self._type, .url = self.url });
         };
+        it = next;
     }
 }
 
@@ -4311,6 +4376,12 @@ pub fn deliverSlotchangeEvents(self: *Frame) void {
     if (!self._slotchange_delivery_scheduled) {
         return;
     }
+    if (self._detach_pending or self._realm_state == .dead or
+        self.js.execution.isTaskOwnerStale(self._slotchange_delivery_task_owner))
+    {
+        self._slotchange_delivery_scheduled = false;
+        return;
+    }
     self._slotchange_delivery_scheduled = false;
 
     // we need to collect the pending slots, and then clear it and THEN exeute
@@ -4319,7 +4390,14 @@ pub fn deliverSlotchangeEvents(self: *Frame) void {
     const pending = self._slots_pending_slotchange.count();
 
     var i: usize = 0;
-    var slots = self.call_arena.alloc(*Element.Html.Slot, pending) catch |err| {
+    const session = self._session;
+    const snapshot_arena = session.getArena(.tiny, "slotchange-delivery-snapshot") catch |err| {
+        log.err(.frame, "deliverSlotchange.arena", .{ .err = err, .type = self._type, .url = self.url });
+        return;
+    };
+    defer session.releaseArena(snapshot_arena);
+
+    var slots = snapshot_arena.alloc(*Element.Html.Slot, pending) catch |err| {
         log.err(.frame, "deliverSlotchange.append", .{ .err = err, .type = self._type, .url = self.url });
         return;
     };
@@ -4332,6 +4410,8 @@ pub fn deliverSlotchangeEvents(self: *Frame) void {
     self._slots_pending_slotchange.clearRetainingCapacity();
 
     for (slots) |slot| {
+        if (self._detach_pending or self._realm_state == .dead or
+            self.js.execution.isTaskOwnerStale(self._slotchange_delivery_task_owner)) break;
         const event = Event.initTrusted(comptime .wrap("slotchange"), .{ .bubbles = true }, self._page) catch |err| {
             log.err(.frame, "deliverSlotchange.init", .{ .err = err, .type = self._type, .url = self.url });
             continue;
@@ -5849,7 +5929,10 @@ pub fn _insertNodeRelative(self: *Frame, comptime from_parser: bool, parent: *No
     // Update slot assignments for the inserted child if parent is a shadow host
     // This needs to happen even if the element isn't connected to the document
     if (child.is(Element)) |el| {
-        self.updateElementAssignedSlot(el);
+        // Assignment changes signal both the previously assigned slot and the
+        // newly assigned slot. Updating only the derived lookup suppresses the
+        // required slotchange microtask for light-DOM insertion.
+        self.updateSlotAssignments(el);
     }
 
     if (opts.child_already_connected and !opts.adopting_to_new_document) {
@@ -7220,6 +7303,70 @@ test "Frame: iframe Location uses its owning browsing context" {
 
 test "Frame: iframe history and navigation are isolated from parent" {
     try testing.htmlRunner("regression/iframe_history_isolated_from_parent.html", .{});
+}
+
+test "Frame: srcdoc History URL rewriting follows about-srcdoc rules" {
+    try testing.htmlRunner("regression/iframe_srcdoc_history_rewrite_rules.html", .{});
+}
+
+test "Frame: srcdoc fallback base URL is snapshotted from its creator" {
+    try testing.htmlRunner("regression/iframe_srcdoc_base_snapshot.html", .{});
+}
+
+test "Frame: iframe navigation drops callbacks owned by the previous realm" {
+    try testing.htmlRunner("regression/navigation_drops_stale_realm_callbacks.html", .{});
+}
+
+test "Frame: removing iframe cancels child-owned asynchronous callbacks" {
+    try testing.htmlRunner("regression/iframe_detach_cancels_async_callbacks.html", .{});
+}
+
+test "Frame: removing iframe aborts child fetch and XHR callback chains" {
+    try testing.htmlRunner("regression/iframe_detach_aborts_fetch_xhr.html", .{});
+}
+
+test "Frame: fetch and XHR callbacks may schedule navigation without reentrant teardown" {
+    try testing.htmlRunner("regression/network_callback_schedules_iframe_navigation.html", .{});
+}
+
+test "Frame: DOM wrappers do not alias objects from replaced or detached realms" {
+    try testing.htmlRunner("regression/iframe_wrapper_identity_across_navigation.html", .{});
+}
+
+test "Frame: MutationObserver delivery stops when callback detaches its realm" {
+    try testing.htmlRunner("regression/mutation_observer_detaches_iframe.html", .{});
+}
+
+test "Frame: custom-element callbacks may mutate their insertion safely" {
+    try testing.htmlRunner("regression/custom_element_reentrant_insert_remove.html", .{});
+}
+
+test "Frame: worker and MessagePort tasks cannot enter a replaced iframe realm" {
+    try testing.htmlRunner("regression/iframe_worker_port_stale_realm.html", .{});
+}
+
+test "Frame: slotchange delivery stops after callback detaches its realm" {
+    try testing.htmlRunner("regression/slotchange_detaches_iframe.html", .{});
+}
+
+test "Frame: IntersectionObserver delivery stops after callback detaches its realm" {
+    try testing.htmlRunner("regression/intersection_observer_detaches_iframe.html", .{});
+}
+
+test "Frame: parser document.write preserves synchronous insertion ordering" {
+    try testing.htmlRunner("regression/document_write_parser_reentrancy.html", .{});
+}
+
+test "Frame: stale iframe Document markup APIs cannot mutate a replacement realm" {
+    try testing.htmlRunner("regression/stale_iframe_document_markup_noop.html", .{});
+}
+
+test "Frame: AbortSignal listener removal is safe during event dispatch" {
+    try testing.htmlRunner("regression/event_listener_abort_during_dispatch.html", .{});
+}
+
+test "Frame: iframe detach during dispatch drains only the active event stack" {
+    try testing.htmlRunner("regression/event_dispatch_detaches_iframe.html", .{});
 }
 
 test "Frame: iframe Window postMessage transfers a MessagePort" {

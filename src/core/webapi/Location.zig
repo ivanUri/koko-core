@@ -98,24 +98,17 @@ pub fn setSearch(self: *const Location, search: []const u8, frame: *Frame) !void
 
 pub fn setHash(self: *const Location, hash: []const u8, frame: *Frame) !void {
     const owner = self.ownerFrame(frame);
-    const normalized_hash = blk: {
-        if (hash.len == 0) {
-            const old_url = owner.url;
-            // Already no fragment: no-op. Falling through with the same URL
-            // would schedule a full reload (not a fragment nav) and hang tests /
-            // SPA code that clears hash when it is already empty.
-            const hash_idx = std.mem.indexOfScalar(u8, old_url, '#') orelse return;
-            break :blk old_url[0..hash_idx];
-        } else if (hash[0] == '#')
-            break :blk hash
-        else
-            break :blk try std.fmt.allocPrint(owner.call_arena, "#{s}", .{hash});
-    };
+    // Build the complete URL here. Passing only "#fragment" makes the
+    // navigation scheduler resolve it against the document fallback base URL;
+    // for about:srcdoc that is the embedding document, not the child document
+    // whose Location is being mutated.
+    const new_url = try U.setHash(owner.url, hash, owner.call_arena);
+    if (std.mem.eql(u8, owner.url, new_url)) return;
 
     // Fragment-only / clear-hash updates are same-document navigations.
-    return owner.scheduleNavigation(normalized_hash, .{
+    return owner.scheduleNavigation(new_url, .{
         .reason = .script,
-        .kind = .{ .replace = null },
+        .kind = .{ .push = null },
     }, .{ .script = owner });
 }
 

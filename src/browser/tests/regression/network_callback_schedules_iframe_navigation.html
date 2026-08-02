@@ -1,0 +1,61 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+const events = [];
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+addEventListener("message", event => {
+  const data = event.data;
+  if (typeof data === "string") events.push(data);
+  if (data?.kind === "network-navigation-target") events.push(`target:${data.source}`);
+});
+
+const fetchFrame = document.createElement("iframe");
+fetchFrame.srcdoc = `<!doctype html><script>
+  fetch("/xhr").then(response => response.text()).then(() => {
+    parent.postMessage("fetch:entered", "*");
+    location.href = "network_callback_navigation_target.html#fetch";
+    parent.postMessage("fetch:returned", "*");
+    setTimeout(() => parent.postMessage("fetch:stale-timer", "*"), 30);
+  });
+<\/script>`;
+
+const xhrFrame = document.createElement("iframe");
+xhrFrame.srcdoc = `<!doctype html><script>
+  const xhr = new XMLHttpRequest();
+  xhr.open("GET", "/xhr");
+  xhr.onload = () => {
+    parent.postMessage("xhr:entered", "*");
+    location.href = "network_callback_navigation_target.html#xhr";
+    parent.postMessage("xhr:returned", "*");
+    setTimeout(() => parent.postMessage("xhr:stale-timer", "*"), 30);
+  };
+  xhr.send();
+<\/script>`;
+
+document.body.append(fetchFrame, xhrFrame);
+
+setTimeout(() => {
+  const result = {
+    fetchCallbackCompleted: events.includes("fetch:entered") && events.includes("fetch:returned"),
+    xhrCallbackCompleted: events.includes("xhr:entered") && events.includes("xhr:returned"),
+    bothNavigationsCommitted: events.includes("target:fetch") && events.includes("target:xhr"),
+    staleTimersDropped:
+      !events.includes("fetch:stale-timer") && !events.includes("xhr:stale-timer"),
+    callbackOrderPreserved:
+      events.indexOf("fetch:entered") < events.indexOf("fetch:returned") &&
+      events.indexOf("xhr:entered") < events.indexOf("xhr:returned"),
+  };
+  if (Object.values(result).every(Boolean)) {
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+  } else {
+    document.body.id = "fail";
+    document.body.textContent = JSON.stringify({result, events});
+  }
+}, 300);
+</script>

@@ -1082,3 +1082,97 @@ pub const FinalizerCallback = struct {
         page.releaseArena(self.arena);
     }
 };
+
+const testing = @import("../../testing/testing.zig");
+
+test "Session: newer root navigation supersedes and releases pending page" {
+    const active_frame = try testing.pageTest("regression/iframe_child_static.html", .{});
+    const session = active_frame._session;
+    defer testing.reset();
+    defer if (session.currentPage() != null) session.removePage();
+
+    const active_page = session.currentPage().?;
+    const frame_id = active_frame._frame_id;
+
+    try session.initiateRootNavigation(
+        frame_id,
+        "http://127.0.0.1:9582/fetch-stream-hold",
+        .{ .reason = .script },
+    );
+    try std.testing.expect(session.pendingPage() != null);
+    const first_pending = session.pendingPage().?;
+    const first_loader_id = first_pending.frame._loader_id;
+    try std.testing.expect(session.currentPage() == active_page);
+
+    // No network tick occurs between these calls, so the first request is
+    // deterministically pending when the newer navigation supersedes it.
+    try session.initiateRootNavigation(
+        frame_id,
+        "http://127.0.0.1:9582/redirect-target",
+        .{ .reason = .script },
+    );
+    try std.testing.expect(session.pendingPage() != null);
+    const second_pending = session.pendingPage().?;
+    // The arena is allowed to reuse the same address after terminal release;
+    // loader identity, not allocation address, distinguishes navigations.
+    try std.testing.expect(second_pending.frame._loader_id != first_loader_id);
+    try std.testing.expect(session.currentPage() == active_page);
+
+    var browser_runner = try session.runner(.{});
+    try browser_runner.wait(.{ .ms = 2000, .until = .load });
+    session.reapZombiePendingPages();
+
+    try std.testing.expect(session.pendingPage() == null);
+    try std.testing.expectEqualStrings(
+        "http://127.0.0.1:9582/redirect-target",
+        session.currentFrame().?.url,
+    );
+    try std.testing.expectEqual(@as(usize, 0), session._zombie_pending_pages.items.len);
+}
+
+test "Session: navigation after redirected stream has one terminal owner" {
+    const active_frame = try testing.pageTest("regression/iframe_child_static.html", .{});
+    const session = active_frame._session;
+    defer testing.reset();
+    defer if (session.currentPage() != null) session.removePage();
+
+    const frame_id = active_frame._frame_id;
+    try session.initiateRootNavigation(
+        frame_id,
+        "http://127.0.0.1:9582/redirect-stream-hold",
+        .{ .reason = .script },
+    );
+
+    var browser_runner = try session.runner(.{});
+    var reached_streaming_hop = false;
+    var attempts: usize = 0;
+    while (attempts < 100) : (attempts += 1) {
+        _ = try browser_runner.tick(.{ .ms = 10 });
+        if (session.currentFrame()) |current| {
+            if (std.mem.eql(
+                u8,
+                current.url,
+                "http://127.0.0.1:9582/fetch-stream-hold",
+            )) {
+                reached_streaming_hop = true;
+                break;
+            }
+        }
+    }
+    try std.testing.expect(reached_streaming_hop);
+
+    try session.initiateRootNavigation(
+        frame_id,
+        "http://127.0.0.1:9582/redirect-target",
+        .{ .reason = .script },
+    );
+    try browser_runner.wait(.{ .ms = 2000, .until = .load });
+    session.reapZombiePendingPages();
+
+    try std.testing.expect(session.pendingPage() == null);
+    try std.testing.expectEqualStrings(
+        "http://127.0.0.1:9582/redirect-target",
+        session.currentFrame().?.url,
+    );
+    try std.testing.expectEqual(@as(usize, 0), session._zombie_pending_pages.items.len);
+}

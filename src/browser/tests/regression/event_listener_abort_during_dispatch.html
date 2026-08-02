@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+const target = document.createElement("div");
+document.body.appendChild(target);
+const controller = new AbortController();
+const alreadyAborted = new AbortController();
+alreadyAborted.abort();
+const calls = [];
+
+target.addEventListener("probe", () => {
+  calls.push("abort-controller");
+  controller.abort();
+});
+target.addEventListener("probe", () => calls.push("must-be-removed"), {
+  signal: controller.signal,
+});
+target.addEventListener("probe", () => calls.push("ordinary-listener"));
+target.addEventListener("probe", () => calls.push("already-aborted-listener"), {
+  signal: alreadyAborted.signal,
+});
+
+target.dispatchEvent(new Event("probe"));
+target.dispatchEvent(new Event("probe"));
+
+setTimeout(() => {
+  const result = {
+    signaledListenerSkipped: !calls.includes("must-be-removed"),
+    alreadyAbortedNeverRegistered: !calls.includes("already-aborted-listener"),
+    ordinaryListenerSurvived:
+      calls.filter(value => value === "ordinary-listener").length === 2,
+    dispatchRemainedUsable:
+      calls.filter(value => value === "abort-controller").length === 2,
+    signalAborted: controller.signal.aborted,
+  };
+  if (Object.values(result).every(Boolean)) {
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+  } else {
+    document.body.id = "fail";
+    document.body.textContent = JSON.stringify({result, calls});
+  }
+}, 0);
+</script>

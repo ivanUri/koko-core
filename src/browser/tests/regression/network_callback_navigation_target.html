@@ -1,0 +1,6 @@
+<!doctype html>
+<meta charset="utf-8">
+<body id="target">target</body>
+<script>
+parent.postMessage({kind: "network-navigation-target", source: location.hash.slice(1)}, "*");
+</script>

@@ -1,0 +1,52 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+const frame = document.createElement("iframe");
+frame.srcdoc = "<!doctype html><title>child</title>";
+document.body.appendChild(frame);
+
+setTimeout(() => {
+  try {
+    const child = frame.contentWindow;
+    const initialUrl = child.location.href;
+    const initialLength = child.history.length;
+    const rejected = [];
+
+    for (const candidate of ["?query", "#relative-fragment"]) {
+      try {
+        child.history.replaceState(null, "", candidate);
+        rejected.push(false);
+      } catch (error) {
+        rejected.push(error?.name === "SecurityError");
+      }
+    }
+
+    const rejectedAtomically = child.location.href === initialUrl &&
+      child.history.length === initialLength;
+    child.history.replaceState({allowed: true}, "", "about:srcdoc#allowed");
+
+    const result = {
+      invalidRewritesRejected: rejected.every(Boolean),
+      rejectedRewritesAtomic: rejectedAtomically,
+      fragmentRewriteAllowed: child.location.href === "about:srcdoc#allowed",
+      stateStored: child.history.state?.allowed === true,
+      replaceDoesNotGrowHistory: child.history.length === initialLength,
+      parentUnchanged: !location.hash && !location.search,
+    };
+    if (Object.values(result).every(Boolean)) {
+      document.body.id = "pass";
+      document.body.textContent = "pass";
+    } else {
+      document.body.textContent = JSON.stringify(result);
+    }
+  } catch (error) {
+    document.body.textContent = String(error?.stack || error);
+  }
+}, 0);
+</script>

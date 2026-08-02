@@ -1,0 +1,44 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+const calls = [];
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+class ReentrantElement extends HTMLElement {
+  connectedCallback() {
+    calls.push("connected");
+    this.remove();
+    calls.push("connected-returned");
+  }
+  disconnectedCallback() {
+    calls.push("disconnected");
+  }
+}
+customElements.define("reentrant-element", ReentrantElement);
+
+const element = document.createElement("reentrant-element");
+const container = document.createElement("div");
+document.body.appendChild(container);
+container.appendChild(element);
+
+setTimeout(() => {
+  const result = {
+    callbacksOrdered:
+      calls.join(",") === "connected,disconnected,connected-returned",
+    elementDetached: !element.isConnected && element.parentNode === null,
+    containerStable: container.isConnected && container.childNodes.length === 0,
+    wrapperStable: element === element,
+  };
+  if (Object.values(result).every(Boolean)) {
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+  } else {
+    document.body.id = "fail";
+    document.body.textContent = JSON.stringify({result, calls});
+  }
+}, 0);
+</script>

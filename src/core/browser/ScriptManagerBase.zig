@@ -23,6 +23,7 @@ const http = @import("../../runtime/network/http.zig");
 
 const js = @import("../js/js.zig");
 const URL = @import("URL.zig");
+const ImportMap = @import("ImportMap.zig");
 const Session = @import("Session.zig");
 const Frame = @import("Frame.zig");
 const WorkerGlobalScope = @import("../webapi/WorkerGlobalScope.zig");
@@ -297,7 +298,7 @@ imported_modules: std.StringHashMapUnmanaged(ImportedModule),
 // see https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap
 // For workers this stays empty (only Frame authors importmaps via
 // ScriptManager.parseImportmap).
-importmap: std.StringHashMapUnmanaged([:0]const u8),
+importmap: ImportMap,
 
 // Called at the end of evaluate() after all Base-owned work has run. Frame
 // wrapper uses this to drain defer_scripts and fire documentIsLoaded /
@@ -521,11 +522,7 @@ fn completeDataUrlModuleScript(self: *ScriptManagerBase, script: *Script, owned_
 pub fn resolveSpecifier(self: *ScriptManagerBase, arena: Allocator, base: [:0]const u8, specifier: [:0]const u8) ![:0]const u8 {
     // If the specifier is mapped in the importmap, return the pre-resolved
     // value. For workers this map is empty.
-    if (self.importmap.get(specifier)) |s| {
-        return s;
-    }
-
-    return URL.resolve(arena, base, specifier, .{ .always_dupe = true });
+    return (try self.importmap.resolve(arena, base, specifier)) orelse error.SpecifierResolutionFailed;
 }
 
 pub fn preloadImport(self: *ScriptManagerBase, url: [:0]const u8, referrer: []const u8) !void {

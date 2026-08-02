@@ -140,7 +140,16 @@ pub fn init(exec: *const js.Execution) !*MessagePort {
         ._proto = undefined,
         ._active_exec = exec,
     });
+    try exec.context.trackTerminalResource(port, invalidateForRealmTeardown);
     return port;
+}
+
+fn invalidateForRealmTeardown(ptr: *anyopaque) void {
+    const self: *MessagePort = @ptrCast(@alignCast(ptr));
+    self._closed = true;
+    self.releasePendingMessages();
+    if (self._entangled_port) |other| other._entangled_port = null;
+    self._entangled_port = null;
 }
 
 pub fn asEventTarget(self: *MessagePort) *EventTarget {
@@ -157,10 +166,12 @@ pub fn activeExecution(self: *const MessagePort) *const js.Execution {
 }
 
 /// Detach this port from `sender_exec` and attach it to `receiver_exec`.
-pub fn transferTo(self: *MessagePort, sender_exec: *const js.Execution, receiver_exec: *const js.Execution) void {
+pub fn transferTo(self: *MessagePort, sender_exec: *const js.Execution, receiver_exec: *const js.Execution) !void {
+    try receiver_exec.context.trackTerminalResource(self, invalidateForRealmTeardown);
     if (self._active_exec.context == sender_exec.context) {
         _ = sender_exec.context.identity.identity_map.remove(@intFromPtr(self));
     }
+    sender_exec.context.untrackTerminalResource(self);
     self._active_exec = receiver_exec;
 }
 
@@ -206,7 +217,7 @@ pub fn processTransferList(
         const port = TaggedOpaque.fromJS(*MessagePort, @ptrCast(item.handle)) catch return error.DataClone;
         if (port._closed) return error.DataClone;
         if (port._active_exec.context != sender_exec.context) return error.DataClone;
-        port.transferTo(sender_exec, receiver_exec);
+        try port.transferTo(sender_exec, receiver_exec);
         try ports.append(arena, port);
     }
 
@@ -234,12 +245,18 @@ pub fn postMessage(
 
     const receiver_exec = other._active_exec;
 
+    // An entangled wrapper can outlive the realm that owns its peer (for
+    // example when a parent keeps a port transferred into a navigated-away
+    // iframe). Posting to that peer is a no-op. In particular, do not enter
+    // its cleared V8 context and do not detach anything in the transfer list.
+    if (!receiver_exec.canEnterJs(.allow_draining)) return;
+
     const cloned_message, const transferred_ports = blk: {
         var source_ls: js.Local.Scope = undefined;
-        exec.context.localScope(&source_ls);
+        if (!exec.context.tryLocalScope(&source_ls)) return;
         defer source_ls.deinit();
         var target_ls: js.Local.Scope = undefined;
-        receiver_exec.context.localScope(&target_ls);
+        if (!receiver_exec.context.tryLocalScope(&target_ls)) return;
         defer target_ls.deinit();
 
         const transfer_list = try parseTransferArg(&source_ls.local, transfer_arg);
@@ -319,6 +336,7 @@ fn enqueueMessage(
     try receiver_exec._scheduler.add(callback, PostMessageCallback.run, 0, .{
         .name = "MessagePort.postMessage",
         .low_priority = false,
+        .finalizer = PostMessageCallback.cancelled,
     });
 
     // Defer pumpMessageDelivery (runOne) — never runMacrotasks from postMessage
@@ -358,6 +376,7 @@ pub fn start(self: *MessagePort) !void {
 }
 
 pub fn close(self: *MessagePort) void {
+    if (!self._closed) self._active_exec.context.untrackTerminalResource(self);
     self._closed = true;
     self.releasePendingMessages();
 
@@ -415,11 +434,18 @@ const PostMessageCallback = struct {
         self.exec._factory.destroy(self);
     }
 
+    fn cancelled(ctx: *anyopaque) void {
+        const self: *PostMessageCallback = @ptrCast(@alignCast(ctx));
+        self.message.release();
+        self.deinit();
+    }
+
     fn run(ctx: *anyopaque) !?u32 {
         const self: *PostMessageCallback = @ptrCast(@alignCast(ctx));
         defer self.deinit();
 
-        if (self.port._closed) {
+        if (self.port._closed or !self.exec.canEnterJs(.allow_draining)) {
+            self.message.release();
             return null;
         }
 

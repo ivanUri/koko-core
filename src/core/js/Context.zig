@@ -113,6 +113,8 @@ call_depth: usize = 0,
 /// checkpoint or the pending exception is lost before script try/catch runs.
 pending_callback_exception: bool = false,
 
+terminal_resources: std.ArrayList(TerminalResource) = .{},
+
 // When a Caller is active (V8->Zig callback), this points to its Local.
 // When null, Zig->V8 calls must create a js.Local.Scope and initialize via
 // context.localScope
@@ -170,6 +172,34 @@ pending_promise_rejections: std.ArrayListUnmanaged(*PendingPromiseRejection) = .
 execution: Execution,
 
 unknown_properties: (if (IS_DEBUG) std.StringHashMapUnmanaged(UnknownPropertyStat) else void) = if (IS_DEBUG) .{} else {},
+
+const TerminalResource = struct {
+    ptr: *anyopaque,
+    invalidate: *const fn (*anyopaque) void,
+};
+
+pub fn trackTerminalResource(
+    self: *Context,
+    ptr: *anyopaque,
+    invalidate: *const fn (*anyopaque) void,
+) !void {
+    try self.terminal_resources.append(self.arena, .{ .ptr = ptr, .invalidate = invalidate });
+}
+
+pub fn untrackTerminalResource(self: *Context, ptr: *anyopaque) void {
+    for (self.terminal_resources.items, 0..) |resource, i| {
+        if (resource.ptr == ptr) {
+            _ = self.terminal_resources.swapRemove(i);
+            return;
+        }
+    }
+}
+
+fn invalidateTerminalResources(self: *Context) void {
+    while (self.terminal_resources.pop()) |resource| {
+        resource.invalidate(resource.ptr);
+    }
+}
 
 pub const PendingPromiseRejection = struct {
     context: *Context,
@@ -247,6 +277,9 @@ pub fn deinit(self: *Context) void {
     }
 
     const env = self.env;
+    // Break cross-realm native ownership edges before this Context and its
+    // Execution storage can be reclaimed. The callback must not enter JS.
+    self.invalidateTerminalResources();
     defer env.app.arena_pool.release(self.arena);
 
     // Scheduler tasks own frame/worker arenas and must be finalized even when

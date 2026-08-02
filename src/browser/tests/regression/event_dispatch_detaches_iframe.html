@@ -1,0 +1,42 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+const calls = [];
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+const frame = document.createElement("iframe");
+frame.srcdoc = `<!doctype html><body><button id="target">target</button><script>
+  const target = document.getElementById("target");
+  target.addEventListener("probe", () => {
+    parent.postMessage("detach-listener", "*");
+    frameElement.remove();
+  });
+  target.addEventListener("probe", () => {
+    parent.postMessage("same-dispatch-listener", "*");
+  });
+  target.dispatchEvent(new Event("probe"));
+  setTimeout(() => parent.postMessage("stale-event-timer", "*"), 20);
+<\/script>`;
+addEventListener("message", event => calls.push(event.data));
+document.body.appendChild(frame);
+
+setTimeout(() => {
+  const result = {
+    detachingListenerRan: calls.includes("detach-listener"),
+    currentDispatchDrained: calls.includes("same-dispatch-listener"),
+    laterRealmTaskDropped: !calls.includes("stale-event-timer"),
+    iframeDetached: !frame.isConnected && frame.contentWindow === null,
+  };
+  if (Object.values(result).every(Boolean)) {
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+  } else {
+    document.body.id = "fail";
+    document.body.textContent = JSON.stringify({result, calls});
+  }
+}, 100);
+</script>

@@ -447,7 +447,9 @@ test "Page: shutting down one realm unlinks only its finalizer identity nodes" {
         .page = page,
         .identity = &live_identity,
         .finalizer_ptr_id = 1,
-        .resolved_ptr_id = 12,
+        // Deliberately collide with the retired realm's pointer id. Arena
+        // reuse must not retire a live wrapper owned by another Identity.
+        .resolved_ptr_id = 11,
     };
     var retired_last: Session.FinalizerCallback.Identity = .{
         .session = session,

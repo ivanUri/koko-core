@@ -1,0 +1,64 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+const frame = document.createElement("iframe");
+frame.srcdoc = "<!doctype html><body id='old-body'>old</body>";
+document.body.appendChild(frame);
+
+setTimeout(() => {
+  try {
+    const windowProxy = frame.contentWindow;
+    const oldDocument = frame.contentDocument;
+    const oldBody = oldDocument.body;
+    const oldLocation = windowProxy.location;
+
+    frame.onload = () => {
+      try {
+        frame.onload = null;
+        const newWindowProxy = frame.contentWindow;
+        const newDocument = frame.contentDocument;
+        const newBody = newDocument.body;
+        const newLocation = newWindowProxy.location;
+
+        frame.remove();
+        const replacement = document.createElement("iframe");
+        replacement.srcdoc = "<!doctype html><body id='replacement-body'>replacement</body>";
+        document.body.appendChild(replacement);
+
+        setTimeout(() => {
+          const result = {
+            windowProxyStableAcrossNavigation: newWindowProxy === windowProxy,
+            documentReplaced: newDocument !== oldDocument,
+            bodyReplaced: newBody !== oldBody,
+            locationReplacedWithWindowRealm: newLocation !== oldLocation,
+            oldWrappersRemainDistinct:
+              oldDocument !== newDocument && oldBody !== newBody,
+            detachedProxyNotReused: replacement.contentWindow !== windowProxy,
+            detachedDocumentNotReused: replacement.contentDocument !== oldDocument,
+            detachedBodyNotReused: replacement.contentDocument.body !== oldBody,
+          };
+          if (Object.values(result).every(Boolean)) {
+            document.body.id = "pass";
+            document.body.textContent = "pass";
+          } else {
+            document.body.id = "fail";
+            document.body.textContent = JSON.stringify(result);
+          }
+          replacement.remove();
+        }, 0);
+      } catch (error) {
+        document.body.textContent = String(error?.stack || error);
+      }
+    };
+    windowProxy.location.href = "network_callback_navigation_target.html#identity";
+  } catch (error) {
+    document.body.textContent = String(error?.stack || error);
+  }
+}, 0);
+</script>

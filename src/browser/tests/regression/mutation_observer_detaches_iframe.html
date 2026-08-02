@@ -1,0 +1,42 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+const events = [];
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+const frame = document.createElement("iframe");
+frame.srcdoc = `<!doctype html><body><script>
+  const first = new MutationObserver(() => {
+    parent.postMessage("first-observer", "*");
+    frameElement.remove();
+  });
+  const second = new MutationObserver(() => {
+    parent.postMessage("stale-second-observer", "*");
+  });
+  first.observe(document.body, {childList: true});
+  second.observe(document.body, {childList: true});
+  document.body.appendChild(document.createElement("div"));
+<\/script>`;
+
+addEventListener("message", event => events.push(event.data));
+document.body.appendChild(frame);
+
+setTimeout(() => {
+  const result = {
+    firstObserverRan: events.includes("first-observer"),
+    detachedDuringDelivery: !frame.isConnected && frame.contentWindow === null,
+    staleObserverSkipped: !events.includes("stale-second-observer"),
+  };
+  if (Object.values(result).every(Boolean)) {
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+  } else {
+    document.body.id = "fail";
+    document.body.textContent = JSON.stringify({result, events});
+  }
+}, 100);
+</script>

@@ -1,0 +1,61 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+const events = [];
+let started = 0;
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+addEventListener("message", event => {
+  const data = event.data;
+  if (data === "fetch-started" || data === "xhr-started") {
+    started += 1;
+    if (event.source === fetchFrame.contentWindow) fetchFrame.remove();
+    if (event.source === xhrFrame.contentWindow) xhrFrame.remove();
+    return;
+  }
+  events.push(data);
+});
+
+const fetchFrame = document.createElement("iframe");
+fetchFrame.srcdoc = `<!doctype html><script>
+  fetch("/fetch-stream-hold")
+    .then(response => response.text())
+    .then(() => parent.postMessage("fetch-complete", "*"))
+    .catch(() => parent.postMessage("fetch-error", "*"));
+  parent.postMessage("fetch-started", "*");
+<\/script>`;
+
+const xhrFrame = document.createElement("iframe");
+xhrFrame.srcdoc = `<!doctype html><script>
+  const xhr = new XMLHttpRequest();
+  xhr.open("GET", "/fetch-stream-hold");
+  xhr.onload = () => parent.postMessage("xhr-load", "*");
+  xhr.onerror = () => parent.postMessage("xhr-error", "*");
+  xhr.onabort = () => parent.postMessage("xhr-abort", "*");
+  xhr.send();
+  parent.postMessage("xhr-started", "*");
+<\/script>`;
+
+document.body.append(fetchFrame, xhrFrame);
+
+setTimeout(() => {
+  const result = {
+    bothRequestsStarted: started === 2,
+    noCallbacksEnteredDetachedRealms: events.length === 0,
+    childrenDetached: !fetchFrame.isConnected && !xhrFrame.isConnected,
+    browsingContextsReleased:
+      fetchFrame.contentWindow === null && xhrFrame.contentWindow === null,
+  };
+  if (Object.values(result).every(Boolean)) {
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+  } else {
+    document.body.id = "fail";
+    document.body.textContent = JSON.stringify({result, events, started});
+  }
+}, 250);
+</script>

@@ -333,6 +333,8 @@ pub const IDBTransaction = struct {
     _database: *IDBDatabase,
     _mode: []const u8,
     _active: bool,
+    _pending_requests: usize = 0,
+    _completion_scheduled: bool = false,
     _on_complete: ?js.Function.Global = null,
     _on_error: ?js.Function.Global = null,
     _on_abort: ?js.Function.Global = null,
@@ -350,6 +352,32 @@ pub const IDBTransaction = struct {
     }
     pub fn abort(self: *IDBTransaction) void {
         self._active = false;
+    }
+
+    fn requestStarted(self: *IDBTransaction) void {
+        self._pending_requests += 1;
+    }
+
+    fn requestFinished(self: *IDBTransaction) !void {
+        if (self._pending_requests > 0) self._pending_requests -= 1;
+        if (!self._active or self._pending_requests != 0 or self._completion_scheduled) return;
+        self._completion_scheduled = true;
+        try self._frame.js.scheduler.add(self, complete, 0, .{
+            .name = "IndexedDB transaction complete",
+            .low_priority = false,
+        });
+    }
+
+    fn complete(ptr: *anyopaque) anyerror!?u32 {
+        const self: *IDBTransaction = @ptrCast(@alignCast(ptr));
+        self._completion_scheduled = false;
+        if (!self._active or self._pending_requests != 0) return null;
+        self._active = false;
+        const event = try Event.initTrusted(comptime .wrap("complete"), .{}, self._frame._page);
+        try self._frame._event_manager.dispatchDirect(self._proto, event, self._on_complete, .{
+            .context = "IDBTransaction.complete",
+        });
+        return null;
     }
     pub fn getOnComplete(self: *const IDBTransaction) ?js.Function.Global {
         return self._on_complete;
@@ -461,20 +489,27 @@ pub const IDBObjectStore = struct {
     const Success = struct {
         request: *IDBRequest,
         value: js.Value.Global,
+        transaction: ?*IDBTransaction,
         fn run(ptr: *anyopaque) anyerror!?u32 {
             const self: *Success = @ptrCast(@alignCast(ptr));
             var scope: js.Local.Scope = undefined;
             self.request._frame.js.localScope(&scope);
             defer scope.deinit();
             try self.request.succeed(self.value.local(&scope.local));
+            if (self.transaction) |transaction| try transaction.requestFinished();
             return null;
         }
     };
 
     fn scheduleSuccess(self: *IDBObjectStore, request_: *IDBRequest, value: js.Value) !void {
+        if (self._transaction) |transaction| transaction.requestStarted();
+        errdefer if (self._transaction) |transaction| {
+            if (transaction._pending_requests > 0) transaction._pending_requests -= 1;
+        };
         const callback = try self._frame._factory.create(Success{
             .request = request_,
             .value = try (try value.structuredClone()).persist(),
+            .transaction = self._transaction,
         });
         try self._frame.js.scheduler.add(callback, Success.run, 0, .{
             .name = "IndexedDB request",

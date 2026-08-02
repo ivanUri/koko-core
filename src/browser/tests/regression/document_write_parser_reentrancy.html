@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>
+<script>
+const order = [];
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+order.push("outer-start");
+document.write('<span id="written-node">written</span>');
+document.write('<script>order.push("written-script")<\/script>');
+order.push("outer-end");
+</script>
+<div id="parser-tail">tail</div>
+<script>
+setTimeout(() => {
+  const written = document.getElementById("written-node");
+  const tail = document.getElementById("parser-tail");
+  const result = {
+    scriptOrdering:
+      order.join(",") === "outer-start,written-script,outer-end",
+    writtenNodeInserted: written?.textContent === "written",
+    parserContinued: tail?.textContent === "tail",
+    insertionBeforeParserTail:
+      written && tail && !!(written.compareDocumentPosition(tail) & Node.DOCUMENT_POSITION_FOLLOWING),
+  };
+  if (Object.values(result).every(Boolean)) {
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+  } else {
+    document.body.id = "fail";
+    document.body.textContent = JSON.stringify({result, order});
+  }
+}, 0);
+</script>
+</body>

@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+const events = [];
+window.testing = {
+  attempts: 0,
+  assertOk() {
+    if (document.body.id === "pass") return true;
+    this.attempts += 1;
+    if (this.attempts > 80) throw new Error(document.body.textContent);
+    return false;
+  },
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+addEventListener("message", event => events.push(event.data));
+
+const frame = document.createElement("iframe");
+frame.srcdoc = `<!doctype html><body><script>
+  const host = document.createElement("div");
+  const root = host.attachShadow({mode: "open"});
+  root.innerHTML = '<slot name="a"></slot><slot name="b"></slot>';
+  for (const slot of root.querySelectorAll("slot")) {
+    slot.addEventListener("slotchange", () => {
+      parent.postMessage("slotchange:" + slot.name, "*");
+      frameElement.remove();
+    });
+  }
+  document.body.appendChild(host);
+  const a = document.createElement("span"); a.slot = "a"; host.appendChild(a);
+  const b = document.createElement("span"); b.slot = "b"; host.appendChild(b);
+<\/script>`;
+document.body.appendChild(frame);
+
+setTimeout(() => {
+  const slotEvents = events.filter(value => String(value).startsWith("slotchange:"));
+  const result = {
+    oneCallbackRan: slotEvents.length === 1,
+    realmDetached: !frame.isConnected && frame.contentWindow === null,
+    remainingSlotSkipped: slotEvents.length < 2,
+  };
+  if (Object.values(result).every(Boolean)) {
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+  } else {
+    document.body.id = "fail";
+    document.body.textContent = JSON.stringify({result, events});
+  }
+}, 100);
+</script>

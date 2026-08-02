@@ -19,12 +19,19 @@ frame.srcdoc = "<!doctype html><title>child</title>";
 document.body.appendChild(frame);
 setTimeout(() => {
   try {
+    const child = frame.contentWindow;
+    const childLocation = child.location;
+    const childDocument = child.document;
+    const childHistoryLength = child.history.length;
     frame.contentWindow.location.hash = "child-location";
     setTimeout(() => {
       const result = {
         parentUnchanged: location.href === parentUrl,
         childChanged: frame.contentWindow.location.hash === "#child-location",
         childRemainsDistinct: frame.contentWindow.location.href !== location.href,
+        locationIdentityStable: child.location === childLocation,
+        documentIdentityStable: child.document === childDocument,
+        childHistoryPushed: child.history.length === childHistoryLength + 1,
       };
       if (Object.values(result).every(Boolean)) {
         document.body.id = "pass";

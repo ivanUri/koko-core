@@ -4,12 +4,12 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
-const url = "https://demo.fingerprint.com/playground";
+const url = "https://x.com";
 // Chỉ cần sửa cấu hình trong khối này.
 const CONFIG = {
   url,
-  output: "exports/single/demo.fingerprint.com.playground.html",
-  log: "export-logs/demo.fingerprint.com.playground.log",
+  output: "exports/single/x.com.html",
+  log: "export-logs/x.com.log",
 
   // Keep single-page exports isolated from profiles created by other runners.
   // The run starts without cookies or origin storage, while retaining the
@@ -23,8 +23,8 @@ const CONFIG = {
   keepScripts: false,
   includeFrames: true,
   waitUntil: "done",
-  waitMs: 60_000,
-  terminateMs: 60_000,
+  waitMs: 40_000,
+  terminateMs: 40_000,
   // Wait for finite presentation animations to settle before serializing.
   // Infinite decorative animations are intentionally ignored.
   waitScript: null,

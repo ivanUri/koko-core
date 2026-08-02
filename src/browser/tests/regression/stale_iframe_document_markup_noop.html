@@ -1,0 +1,62 @@
+<!doctype html>
+<meta charset="utf-8">
+<body id="parent-body">pending</body>
+<script>
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+const parentDocument = document;
+const frame = document.createElement("iframe");
+frame.srcdoc = "<!doctype html><body id='old-child'>old</body>";
+document.body.appendChild(frame);
+
+setTimeout(() => {
+  const oldDocument = frame.contentDocument;
+  frame.onload = () => {
+    frame.onload = null;
+    const replacementDocument = frame.contentDocument;
+    const replacementBody = replacementDocument.body;
+    const errors = [];
+
+    for (const operation of [
+      () => oldDocument.open(),
+      () => oldDocument.write("<body id='stale-write'>stale</body>"),
+      () => oldDocument.writeln("<p id='stale-writeln'>stale</p>"),
+      () => oldDocument.close(),
+    ]) {
+      try { operation(); } catch (error) { errors.push(error?.name || String(error)); }
+    }
+
+    frame.remove();
+    for (const operation of [
+      () => oldDocument.open(),
+      () => oldDocument.write("<body id='detached-write'>detached</body>"),
+      () => oldDocument.close(),
+    ]) {
+      try { operation(); } catch (error) { errors.push(error?.name || String(error)); }
+    }
+
+    const result = {
+      parentDocumentUntouched:
+        document === parentDocument && document.body.id === "parent-body",
+      replacementDocumentUntouched:
+        replacementDocument.body === replacementBody && replacementBody.id === "target",
+      staleDocumentNotRebound:
+        oldDocument !== replacementDocument && oldDocument !== parentDocument,
+      iframeDetached: !frame.isConnected && frame.contentWindow === null,
+      onlyPlatformErrors: errors.every(name =>
+        ["InvalidStateError", "SecurityError"].includes(name)),
+    };
+    if (Object.values(result).every(Boolean)) {
+      document.body.id = "pass";
+      document.body.textContent = "pass";
+    } else {
+      document.body.id = "fail";
+      document.body.textContent = JSON.stringify({result, errors});
+    }
+  };
+  frame.contentWindow.location.href = "network_callback_navigation_target.html#stale-document";
+}, 0);
+</script>

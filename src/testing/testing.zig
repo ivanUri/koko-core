@@ -644,6 +644,15 @@ fn testHTTPHandler(req: *std.http.Server.Request) !void {
         });
     }
 
+    if (std.mem.eql(u8, path, "/redirect-stream-hold")) {
+        return req.respond("", .{
+            .status = .found,
+            .extra_headers = &.{
+                .{ .name = "Location", .value = "/fetch-stream-hold" },
+            },
+        });
+    }
+
     if (std.mem.eql(u8, path, "/redirect-no-fragment")) {
         return req.respond("", .{
             .status = .found,

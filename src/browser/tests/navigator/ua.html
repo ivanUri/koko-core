@@ -5,9 +5,11 @@ window.testing = { assertOk: () => {
   if (typeof n.userAgent !== 'string' || !n.userAgent) return false;
   if (typeof n.language !== 'string' || !Array.isArray(n.languages)) return false;
   if (typeof n.hardwareConcurrency !== 'number' || n.hardwareConcurrency < 1) return false;
-  if ('userAgentData' in n) {
-    const u = n.userAgentData;
-    if (!u || typeof u.getHighEntropyValues !== 'function') return false;
+  // UA Client Hints is persona/version gated. The Web IDL accessor can exist
+  // while the active non-Chromium/default persona has no UAData object.
+  const u = n.userAgentData;
+  if (u != null) {
+    if (typeof u.getHighEntropyValues !== 'function') return false;
     if (!Array.isArray(u.brands) || typeof u.mobile !== 'boolean') return false;
   }
   return true;

@@ -87,6 +87,16 @@ pub fn emit(
         .{ .id = "received", .duration_us = 0, .measurement = "boundary" },
     };
 
+    // A failed transfer still emits the complete schema, but only the stage
+    // where the network invariant broke is marked as the failure point. Later
+    // stages are explicitly skipped so consumers cannot render a false
+    // successful journey.
+    const failed_stage: ?[]const u8 = if (!failed) null else if (timing.dns_us == 0 and timing.primary_ip == null) "dns" else if (timing.tcp_us == 0 and timing.primary_ip != null) "tcp" else if (timing.tls_us == 0 and timing.num_connects > 0) "tls" else if (timing.server_us == 0 and response_code == 0) "server" else "response";
+    var failed_index: ?usize = null;
+    if (failed_stage) |stage_id| for (stages, 0..) |stage, index| {
+        if (std.mem.eql(u8, stage.id, stage_id)) failed_index = index;
+    };
+
     var output: std.Io.Writer.Allocating = .init(self.allocator);
     defer output.deinit();
     const writer = &output.writer;
@@ -96,7 +106,11 @@ pub fn emit(
         if (index > 0) try writer.writeByte(',');
         const event_id = try std.fmt.allocPrint(self.allocator, "journey-{d}", .{process_sequence});
         defer self.allocator.free(event_id);
-        const stage_status = if (failed and std.mem.eql(u8, stage.id, "received")) "error" else "ok";
+        const stage_status = if (failed_index) |failure_index| blk: {
+            if (index == failure_index and std.mem.eql(u8, stage.id, failed_stage.?)) break :blk "error";
+            if (index > failure_index) break :blk "skipped";
+            break :blk "ok";
+        } else "ok";
         try std.json.Stringify.value(.{
             .id = event_id,
             .sessionId = session_id,
@@ -108,6 +122,7 @@ pub fn emit(
             .status = stage_status,
             .payload = .{
                 .journeyStage = stage.id,
+                .failureStage = failed_stage,
                 .url = url,
                 .responseStatus = response_code,
                 .responseBodyBytes = timing.response_body_bytes,

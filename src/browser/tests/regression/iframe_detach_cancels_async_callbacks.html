@@ -1,0 +1,39 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+let detachedWindow;
+let received = [];
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+addEventListener("message", event => received.push(event.data));
+
+const frame = document.createElement("iframe");
+frame.srcdoc = `<!doctype html><script>
+  setTimeout(() => parent.postMessage("detached-timer", "*"), 25);
+  queueMicrotask(() => setTimeout(
+    () => parent.postMessage("detached-nested-timer", "*"), 25));
+<\/script>`;
+document.body.appendChild(frame);
+detachedWindow = frame.contentWindow;
+frame.remove();
+
+setTimeout(() => {
+  const result = {
+    noDetachedCallbacks: received.length === 0,
+    browsingContextDetached: frame.contentWindow === null,
+    retainedProxyNotReattached: detachedWindow !== window,
+    documentNoLongerConnected: !frame.isConnected,
+  };
+  if (Object.values(result).every(Boolean)) {
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+  } else {
+    document.body.id = "fail";
+    document.body.textContent = JSON.stringify({result, received});
+  }
+}, 80);
+</script>

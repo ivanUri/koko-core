@@ -337,33 +337,7 @@ pub fn addFromElement(self: *ScriptManager, comptime from_parser: bool, script_e
 }
 
 pub fn parseImportmap(self: *ScriptManager, script: *const Script) !void {
-    const content = script.source.content();
-
-    const Imports = struct {
-        imports: std.json.ArrayHashMap([]const u8),
-    };
-
-    const imports = try std.json.parseFromSliceLeaky(
-        Imports,
-        self.frame.arena,
-        content,
-        .{ .allocate = .alloc_always },
-    );
-
-    var iter = imports.imports.map.iterator();
-    while (iter.next()) |entry| {
-        // > Relative URLs are resolved to absolute URL addresses using the
-        // > base URL of the document containing the import map.
-        // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Modules#importing_modules_using_import_maps
-        const resolved_url = try URL.resolve(
-            self.frame.arena,
-            self.frame.base(),
-            entry.value_ptr.*,
-            .{},
-        );
-
-        try self.base.importmap.put(self.frame.arena, entry.key_ptr.*, resolved_url);
-    }
+    try self.base.importmap.merge(self.frame.arena, self.frame.base(), script.source.content());
 }
 
 pub fn staticScriptsDone(self: *ScriptManager) void {

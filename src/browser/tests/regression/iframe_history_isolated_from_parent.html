@@ -23,10 +23,10 @@ addEventListener("message", event => {
     parentUrlUnchanged: location.href === parentUrl,
     parentStateUnchanged: history.state?.owner === "parent",
     parentLengthUnchanged: history.length === parentLength,
-    childUrlChanged: event.data.url.endsWith("?child"),
+    childUrlChanged: event.data.url === "about:srcdoc#child",
     childStateIsolated: event.data.state?.owner === "child",
     childNavigationEntryChanged:
-      event.data.navigationUrl?.endsWith("?child") === true,
+      event.data.navigationUrl === "about:srcdoc#child",
   };
   console.log("iframe-history-result", JSON.stringify({ result, child: event.data }));
   if (Object.values(result).every(Boolean)) {
@@ -43,7 +43,7 @@ document.body.appendChild(frame);
 setTimeout(() => {
   try {
     const child = frame.contentWindow;
-    child.history.replaceState({ owner: "child" }, "", "?child");
+    child.history.replaceState({ owner: "child" }, "", "about:srcdoc#child");
     frame.contentWindow.parent.postMessage({
       kind: "child-history",
       url: child.location.href,

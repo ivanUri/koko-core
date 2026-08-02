@@ -6,7 +6,13 @@
 // fixture intentionally checks observable platform invariants, rather than a
 // particular fingerprint value (which must remain configurable per profile).
 window.testing = {
-  assertOk: () => document.body.id === "fingerprint-surface-pass",
+  attempts: 0,
+  assertOk() {
+    if (document.body.id === "fingerprint-surface-pass") return true;
+    this.attempts += 1;
+    if (this.attempts > 80) throw new Error(document.body.textContent);
+    return false;
+  },
   printTimeoutState: () => console.log(document.body.textContent),
 };
 
@@ -30,7 +36,10 @@ window.testing = {
     const fn = Function.prototype.toString;
     checks.push(typeof fn === "function" && /native code/.test(fn.call(fn)));
     const desc = Object.getOwnPropertyDescriptor(Function.prototype, "toString");
-    checks.push(!!desc && typeof desc.value === "function" && desc.configurable === false);
+    // Match the ECMAScript intrinsic descriptor used by Chromium/V8. Native
+    // appearance must not be achieved by making the intrinsic non-configurable.
+    checks.push(!!desc && typeof desc.value === "function" &&
+      desc.writable === true && desc.enumerable === false && desc.configurable === true);
 
     if (typeof RTCPeerConnection === "function") {
       const pc = new RTCPeerConnection();
@@ -39,17 +48,22 @@ window.testing = {
     }
 
     if (typeof indexedDB !== "undefined") {
+      document.body.textContent = "indexeddb-pending";
       await new Promise((resolve, reject) => {
         const req = indexedDB.open("velora-fingerprint-surface", 2);
         req.onupgradeneeded = () => {
           if (!req.result.objectStoreNames.contains("kv")) req.result.createObjectStore("kv");
         };
-        req.onerror = () => reject(req.error || new Error("indexedDB open failed"));
+        req.onerror = () => {
+          document.body.textContent = "indexeddb-open-error";
+          reject(req.error || new Error("indexedDB open failed"));
+        };
         req.onsuccess = () => {
+          document.body.textContent = "indexeddb-opened";
           const db = req.result;
           const tx = db.transaction("kv", "readwrite");
           tx.objectStore("kv").put("ok", "key");
-          tx.oncomplete = () => { db.close(); resolve(); };
+          tx.oncomplete = () => { document.body.textContent = "indexeddb-complete"; db.close(); resolve(); };
           tx.onerror = () => reject(tx.error || new Error("indexedDB transaction failed"));
         };
       });

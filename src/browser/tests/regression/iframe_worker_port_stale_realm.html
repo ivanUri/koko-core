@@ -1,0 +1,65 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+const events = [];
+let oldPort;
+let workerTrigger;
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+const frame = document.createElement("iframe");
+addEventListener("message", event => {
+  const data = event.data;
+  if (data?.kind === "old-realm-ready") {
+    oldPort = event.ports[0];
+    workerTrigger = event.ports[1];
+    frame.contentWindow.location.href = "network_callback_navigation_target.html#async-owner";
+    return;
+  }
+  if (data?.kind === "network-navigation-target" && data.source === "async-owner") {
+    events.push("target-loaded");
+    oldPort.postMessage("late-port-message");
+    workerTrigger.postMessage("late-worker-message");
+    setTimeout(finish, 100);
+    return;
+  }
+  events.push(data);
+});
+
+frame.srcdoc = `<!doctype html><script>
+  const channel = new MessageChannel();
+  channel.port1.onmessage = () => parent.postMessage("stale-port-callback", "*");
+
+  const source = \`onmessage = event => {
+    const trigger = event.ports[0];
+    trigger.onmessage = () => postMessage("late-worker-reply");
+  }\`;
+  const worker = new Worker(URL.createObjectURL(new Blob([source], {type: "text/javascript"})));
+  worker.onmessage = () => parent.postMessage("stale-worker-callback", "*");
+  const workerChannel = new MessageChannel();
+  worker.postMessage("bind", [workerChannel.port1]);
+  parent.postMessage(
+    {kind: "old-realm-ready"}, "*", [channel.port2, workerChannel.port2]);
+<\/script>`;
+document.body.appendChild(frame);
+
+function finish() {
+  const result = {
+    replacementLoaded: events.includes("target-loaded"),
+    staleWorkerSkipped: !events.includes("stale-worker-callback"),
+    stalePortSkipped: !events.includes("stale-port-callback"),
+  };
+  oldPort?.close();
+  workerTrigger?.close();
+  if (Object.values(result).every(Boolean)) {
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+  } else {
+    document.body.id = "fail";
+    document.body.textContent = JSON.stringify({result, events});
+  }
+}
+</script>

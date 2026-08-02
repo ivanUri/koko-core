@@ -74,13 +74,27 @@ fn applyHistoryUrl(frame: *Frame, url: [:0]const u8) !void {
     frame.document._url = url;
 }
 
+fn canRewriteUrl(frame: *const Frame, url: [:0]const u8) bool {
+    // An srcdoc document may rewrite only the fragment of about:srcdoc.
+    // Relative references resolve against its creator-base snapshot, but that
+    // does not authorize changing the inline document to the resolved URL.
+    if (std.mem.startsWith(u8, frame.url, "about:srcdoc")) {
+        if (!std.mem.startsWith(u8, url, "about:srcdoc")) return false;
+        const suffix = url["about:srcdoc".len..];
+        return suffix.len == 0 or suffix[0] == '#';
+    }
+    return frame.isSameOrigin(url);
+}
+
 pub fn pushState(self: *History, state: js.Value, _: ?[]const u8, _url: ?[]const u8, fallback: *Frame) !void {
     const frame = self.ownerFrame(fallback);
     const arena = frame._session.arena;
     const url = if (_url) |u|
-        try @import("../browser/URL.zig").resolve(arena, frame.url, u, .{ .always_dupe = true })
+        try @import("../browser/URL.zig").resolve(arena, frame.base(), u, .{ .always_dupe = true })
     else
         try arena.dupeZ(u8, frame.url);
+
+    if (!canRewriteUrl(frame, url)) return error.SecurityError;
 
     const json = state.toJson(arena) catch return error.DataClone;
     _ = try frame.navigationStore().pushEntry(url, .{ .source = .history, .value = json }, frame, true);
@@ -92,9 +106,11 @@ pub fn replaceState(self: *History, state: js.Value, _: ?[]const u8, _url: ?[]co
     const frame = self.ownerFrame(fallback);
     const arena = frame._session.arena;
     const url = if (_url) |u|
-        try @import("../browser/URL.zig").resolve(arena, frame.url, u, .{ .always_dupe = true })
+        try @import("../browser/URL.zig").resolve(arena, frame.base(), u, .{ .always_dupe = true })
     else
         try arena.dupeZ(u8, frame.url);
+
+    if (!canRewriteUrl(frame, url)) return error.SecurityError;
 
     const json = state.toJson(arena) catch return error.DataClone;
     _ = try frame.navigationStore().replaceEntry(url, .{ .source = .history, .value = json }, frame, true);
@@ -155,8 +171,8 @@ pub const JsApi = struct {
     pub const length = bridge.accessor(History.getLength, null, .{});
     pub const scrollRestoration = bridge.accessor(History.getScrollRestoration, History.setScrollRestoration, .{});
     pub const state = bridge.accessor(History.getState, null, .{});
-    pub const pushState = bridge.function(History.pushState, .{});
-    pub const replaceState = bridge.function(History.replaceState, .{});
+    pub const pushState = bridge.function(History.pushState, .{ .dom_exception = true });
+    pub const replaceState = bridge.function(History.replaceState, .{ .dom_exception = true });
     pub const back = bridge.function(History.back, .{});
     pub const forward = bridge.function(History.forward, .{});
     pub const go = bridge.function(History.go, .{});

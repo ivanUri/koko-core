@@ -1,0 +1,41 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+const events = [];
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+addEventListener("message", event => events.push(event.data));
+
+const frame = document.createElement("iframe");
+frame.srcdoc = `<!doctype html><body><div id="target">target</div><script>
+  const target = document.getElementById("target");
+  const first = new IntersectionObserver(() => {
+    parent.postMessage("first-intersection", "*");
+    frameElement.remove();
+  });
+  const second = new IntersectionObserver(() => {
+    parent.postMessage("stale-second-intersection", "*");
+  });
+  first.observe(target);
+  second.observe(target);
+<\/script>`;
+document.body.appendChild(frame);
+
+setTimeout(() => {
+  const result = {
+    firstCallbackRan: events.includes("first-intersection"),
+    realmDetached: !frame.isConnected && frame.contentWindow === null,
+    staleObserverSkipped: !events.includes("stale-second-intersection"),
+  };
+  if (Object.values(result).every(Boolean)) {
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+  } else {
+    document.body.id = "fail";
+    document.body.textContent = JSON.stringify({result, events});
+  }
+}, 150);
+</script>

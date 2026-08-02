@@ -493,13 +493,27 @@ const AbortOpts = struct {
 };
 
 fn shouldAbortTransfer(params: *const RequestParams, opts: AbortOpts) bool {
+    return shouldAbortByPolicy(
+        params.keepalive,
+        params.protect_from_abort,
+        params.resource_type,
+        opts,
+    );
+}
+
+fn shouldAbortByPolicy(
+    keepalive: bool,
+    protect_from_abort: bool,
+    resource_type: RequestParams.ResourceType,
+    opts: AbortOpts,
+) bool {
     // Fetch keepalive survives document-level cancellation, but not an
     // explicit full client/session shutdown.
-    if (keepaliveSurvivesAbort(params.keepalive, opts.scope)) return false;
-    if (opts.scope != .full and params.protect_from_abort) return false;
-    if (opts.skip_document and params.resource_type == .document) return false;
-    if (opts.skip_xhr and params.resource_type == .xhr) return false;
-    if (opts.skip_fetch and params.resource_type == .fetch) return false;
+    if (keepaliveSurvivesAbort(keepalive, opts.scope)) return false;
+    if (opts.scope != .full and protect_from_abort) return false;
+    if (opts.skip_document and resource_type == .document) return false;
+    if (opts.skip_xhr and resource_type == .xhr) return false;
+    if (opts.skip_fetch and resource_type == .fetch) return false;
     return true;
 }
 
@@ -1494,6 +1508,10 @@ fn networkFairPollTimeout(requested_ms: c_int, has_active_http: bool) c_int {
     return requested_ms;
 }
 
+fn internetJourneyFailedAfterHeaderStop(response_status: u16) bool {
+    return response_status == 0;
+}
+
 pub fn trackNativeWebSocket(self: *Client, ws: *WebSocket) void {
     self.native_ws.append(&ws._poll_node);
     self.ws_active += 1;
@@ -1653,7 +1671,13 @@ fn processOneMessage(self: *Client, msg: http.Handles.MultiMessage, transfer: *T
         // callback now.
         const proceed = try transfer.headerDoneCallback(msg.conn);
         if (!proceed) {
-            transfer.emitInternetJourney(msg.conn, true);
+            // A consumer can stop the raw transfer after successfully handling
+            // its response. Cache revalidation does this after a valid 304 and
+            // serves the cached body itself. Keep Internet Journey tied to the
+            // transport invariant: a non-zero HTTP status means a response was
+            // received, even when the consumer does not continue this handle.
+            const response_status = msg.conn.getResponseCode() catch 0;
+            transfer.emitInternetJourney(msg.conn, internetJourneyFailedAfterHeaderStop(response_status));
             transfer.requestFailed(error.Abort, true);
             return true;
         }
@@ -3059,6 +3083,33 @@ test "HTTP keepalive survives document abort but not client shutdown" {
     try std.testing.expect(!keepaliveSurvivesAbort(false, .full));
 }
 
+test "HTTP abort policy has explicit normal and terminal shutdown ownership" {
+    const cases = [_]struct {
+        keepalive: bool = false,
+        protected: bool = false,
+        resource: RequestParams.ResourceType,
+        opts: AbortOpts = .{},
+        aborts: bool,
+    }{
+        .{ .resource = .script, .aborts = true },
+        .{ .keepalive = true, .resource = .beacon, .aborts = false },
+        .{ .keepalive = true, .resource = .beacon, .opts = .{ .scope = .full }, .aborts = true },
+        .{ .protected = true, .resource = .document, .aborts = false },
+        .{ .protected = true, .resource = .document, .opts = .{ .scope = .full }, .aborts = true },
+        .{ .resource = .document, .opts = .{ .skip_document = true }, .aborts = false },
+        .{ .resource = .xhr, .opts = .{ .skip_xhr = true }, .aborts = false },
+        .{ .resource = .fetch, .opts = .{ .skip_fetch = true }, .aborts = false },
+        .{ .resource = .image, .opts = .{ .skip_fetch = true, .skip_xhr = true }, .aborts = true },
+    };
+
+    for (cases) |case| {
+        try std.testing.expectEqual(
+            case.aborts,
+            shouldAbortByPolicy(case.keepalive, case.protected, case.resource, case.opts),
+        );
+    }
+}
+
 fn curlMutationBlocked(performing: bool, processing_messages: bool, in_callback: bool) bool {
     return performing or processing_messages or in_callback;
 }
@@ -3075,6 +3126,13 @@ test "active HTTP receives an I/O fairness quantum at a due-now scheduler deadli
     try std.testing.expectEqual(@as(c_int, 1), networkFairPollTimeout(-1, true));
     try std.testing.expectEqual(@as(c_int, 0), networkFairPollTimeout(0, false));
     try std.testing.expectEqual(@as(c_int, 25), networkFairPollTimeout(25, true));
+}
+
+test "consumer stop after valid HTTP response is not a network journey failure" {
+    try std.testing.expect(!internetJourneyFailedAfterHeaderStop(200));
+    try std.testing.expect(!internetJourneyFailedAfterHeaderStop(304));
+    try std.testing.expect(!internetJourneyFailedAfterHeaderStop(404));
+    try std.testing.expect(internetJourneyFailedAfterHeaderStop(0));
 }
 
 test "caller-blocking transfer is admitted before queued background work" {
