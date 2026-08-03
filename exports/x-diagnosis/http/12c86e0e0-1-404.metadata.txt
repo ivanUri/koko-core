@@ -1,0 +1,30 @@
+method: POST
+url: https://api.x.com/1.1/flow/viewer.json
+response-url: https://api.x.com/1.1/flow/viewer.json
+status: 404
+request-body-length: 822
+response-body-length: 68
+response-headers:
+date: Sun, 02 Aug 2026 07:09:43 GMT
+content-type: application/json;charset=utf-8
+content-length: 92
+perf: 7402827104
+server: cloudflare envoy
+cache-control: no-cache, no-store, max-age=0
+x-transaction-id: 3411db4e9a616977
+x-rate-limit-limit: 2000
+x-rate-limit-reset: 1785655483
+timing-allow-origin: https://x.com, https://mobile.x.com
+x-rate-limit-remaining: 1999
+content-encoding: gzip
+x-response-time: 7
+origin-cf-ray: a24b42383acf561c-SIN
+strict-transport-security: max-age=631138519; includeSubdomains
+x-served-by: t4_p
+access-control-allow-origin: https://x.com
+access-control-allow-credentials: true
+access-control-expose-headers: Backoff-Policy,Content-Length,X-TD-Mtime,X-Acted-As-User-Id,X-Rate-Limit-Limit,X-Rate-Limit-Remaining,X-Rate-Limit-Reset,X-Response-Time,X-Transaction-Id,X-Twitter-Client,X-Twitter-Client-Version,X-Twitter-Diffy-Request-Key,X-Twitter-Polling,X-Twitter-Spotify-Access-Token,X-Twitter-UTCOffset
+cf-cache-status: DYNAMIC
+vary: accept-encoding
+set-cookie: __cf_bm=sc7wNmOCGnO7owqdIc8s1c903XFpXi8YKQOtE8kWA6Y-1785654583.0794435-1.0.1.1-Wm601AqxaoT6woRgk8LXVYh_zLRe7xFP2uwCZpehjIIofDt4SBnf05F5UJpBrivMc7zq2k994yCT0YPVXoeLttlJ285UjTrvbHElXTjeGc0nb_G9HYJ1blCaMNgoMkke; HttpOnly; SameSite=None; Secure; Path=/; Domain=x.com; Expires=Sun, 02 Aug 2026 07:39:43 GMT
+cf-ray: a24b42383acf561c-SIN

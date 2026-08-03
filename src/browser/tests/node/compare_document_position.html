@@ -1,0 +1,59 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  attempts: 0,
+  assertOk() {
+    if (document.body.id === "pass") return true;
+    if (++this.attempts > 80) throw new Error(document.body.textContent);
+    return false;
+  },
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+try {
+  const root = document.createElement("div");
+  const left = document.createElement("section");
+  const leaf = document.createElement("span");
+  const right = document.createElement("aside");
+  left.appendChild(leaf);
+  root.append(left, right);
+  document.body.appendChild(root);
+
+  const forward = left.compareDocumentPosition(right);
+  const backward = right.compareDocumentPosition(left);
+  const ancestor = root.compareDocumentPosition(leaf);
+  const descendant = leaf.compareDocumentPosition(root);
+  const detachedA = document.createElement("a");
+  const detachedB = document.createElement("b");
+  const disconnected = detachedA.compareDocumentPosition(detachedB);
+  const reverseDisconnected = detachedB.compareDocumentPosition(detachedA);
+
+  const result = {
+    sameNodeIsZero: root.compareDocumentPosition(root) === 0,
+    siblingDirectionIsSymmetric:
+      forward === Node.DOCUMENT_POSITION_FOLLOWING &&
+      backward === Node.DOCUMENT_POSITION_PRECEDING,
+    containmentFlags:
+      ancestor === (
+        Node.DOCUMENT_POSITION_FOLLOWING |
+        Node.DOCUMENT_POSITION_CONTAINED_BY
+      ) &&
+      descendant === (
+        Node.DOCUMENT_POSITION_PRECEDING |
+        Node.DOCUMENT_POSITION_CONTAINS
+      ),
+    disconnectedHasRequiredFlags:
+      (disconnected & Node.DOCUMENT_POSITION_DISCONNECTED) !== 0 &&
+      (disconnected & Node.DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC) !== 0,
+    disconnectedOrderingIsOpposite:
+      Boolean(disconnected & Node.DOCUMENT_POSITION_FOLLOWING) !==
+      Boolean(reverseDisconnected & Node.DOCUMENT_POSITION_FOLLOWING),
+  };
+  document.body.textContent = JSON.stringify(result);
+  if (Object.values(result).every(Boolean)) document.body.id = "pass";
+} catch (error) {
+  document.body.textContent = String(error?.stack || error);
+}
+</script>

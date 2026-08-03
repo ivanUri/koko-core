@@ -812,28 +812,36 @@ const CloneError = error{
 };
 pub fn cloneNode(self: *Node, deep_: ?bool, frame: *Frame) CloneError!*Node {
     const deep = deep_ orelse false;
-    switch (self._type) {
-        .cdata => |cd| {
+    const cloned = switch (self._type) {
+        .cdata => |cd| blk: {
             const data = cd.getData().str();
-            return switch (cd._type) {
-                .text => frame.createTextNode(data),
-                .cdata_section => frame.createCDATASection(data),
-                .comment => frame.createComment(data),
-                .processing_instruction => |pi| frame.createProcessingInstruction(pi._target, data),
+            break :blk switch (cd._type) {
+                .text => try frame.createTextNode(data),
+                .cdata_section => try frame.createCDATASection(data),
+                .comment => try frame.createComment(data),
+                .processing_instruction => |pi| try frame.createProcessingInstruction(pi._target, data),
             };
         },
-        .element => |el| return el.clone(deep, frame) catch return error.CloneError,
+        .element => |el| el.clone(deep, frame) catch return error.CloneError,
         .document => return error.NotSupported,
-        .document_type => |dt| {
-            const cloned = dt.clone(frame) catch return error.CloneError;
-            return cloned.asNode();
+        .document_type => |dt| blk: {
+            const cloned_doctype = dt.clone(frame) catch return error.CloneError;
+            break :blk cloned_doctype.asNode();
         },
-        .document_fragment => |frag| return frag.cloneFragment(deep, frame) catch return error.CloneError,
-        .attribute => |attr| {
-            const cloned = attr.clone(frame) catch return error.CloneError;
-            return cloned._proto;
+        .document_fragment => |frag| frag.cloneFragment(deep, frame) catch return error.CloneError,
+        .attribute => |attr| blk: {
+            const cloned_attr = attr.clone(frame) catch return error.CloneError;
+            break :blk cloned_attr._proto;
         },
+    };
+
+    // Cloning preserves the source node's node document. Creation helpers
+    // allocate through the active frame, so detached clones from auxiliary
+    // documents need an explicit owner entry.
+    if (self.ownerDocument(frame)) |owner| {
+        try frame.setNodeOwnerDocument(cloned, owner);
     }
+    return cloned;
 }
 
 /// Clone a node for the purpose of appending to a parent.

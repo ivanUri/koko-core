@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Velora HTML exports</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { max-width: 1400px; margin: 0 auto; padding: 24px; }
+    h1 { margin-bottom: 6px; }
+    .summary { margin: 0 0 22px; color: #777; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 10px 12px; border-bottom: 1px solid #8885; text-align: left; vertical-align: top; }
+    th { position: sticky; top: 0; background: Canvas; }
+    td:first-child { width: 48px; text-align: right; color: #777; }
+    a { color: LinkText; overflow-wrap: anywhere; }
+    .page-link { font-weight: 650; }
+    .missing { color: #888; }
+    .status { display: inline-block; white-space: nowrap; padding: 3px 8px; border-radius: 999px; font-size: 12px; }
+    .ready { color: #08783e; background: #28c76f22; }
+    .pending { color: #806400; background: #ffc10722; }
+    .failed { color: #b42318; background: #f0443822; }
+    @media (max-width: 760px) {
+      body { padding: 12px; }
+      th:nth-child(2), td:nth-child(2) { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <h1>Velora HTML exports</h1>
+  <p class="summary" id="export-summary">Đang tải danh sách…</p>
+  <table>
+    <thead><tr><th>#</th><th>URL gốc</th><th>HTML export</th><th>Trạng thái</th></tr></thead>
+    <tbody id="export-rows"></tbody>
+  </table>
+  <script src="./index.js"></script>
+</body>
+</html>

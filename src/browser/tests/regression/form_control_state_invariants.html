@@ -1,0 +1,57 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  attempts: 0,
+  assertOk() {
+    if (document.body.id === "pass") return true;
+    if (++this.attempts > 80) throw new Error(document.body.textContent);
+    return false;
+  },
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+try {
+  const form = document.createElement("form");
+  form.innerHTML = `
+    <input id="text" name="text" value="initial">
+    <input id="check" name="check" type="checkbox" value="yes">
+    <input id="r1" name="choice" type="radio" value="one" checked>
+    <input id="r2" name="choice" type="radio" value="two">
+    <select id="select" name="select">
+      <option value="a">A</option><option value="b" selected>B</option>
+    </select>`;
+  document.body.appendChild(form);
+
+  const text = form.querySelector("#text");
+  text.value = "dirty";
+  text.setAttribute("value", "attribute-update");
+
+  const check = form.querySelector("#check");
+  const events = [];
+  check.addEventListener("input", () => events.push("input"));
+  check.addEventListener("change", () => events.push("change"));
+  check.click();
+
+  const r1 = form.querySelector("#r1");
+  const r2 = form.querySelector("#r2");
+  r2.click();
+  const select = form.querySelector("#select");
+  select.value = "a";
+  const data = new FormData(form);
+
+  const result = {
+    dirtyValuePreserved: text.value === "dirty" && text.defaultValue === "attribute-update",
+    checkboxActivation: check.checked && events.join(",") === "input,change",
+    radioExclusivity: !r1.checked && r2.checked,
+    selectState: select.selectedIndex === 0 && select.value === "a",
+    formDataUsesLiveState: data.get("text") === "dirty" && data.get("check") === "yes" &&
+      data.get("choice") === "two" && data.get("select") === "a",
+  };
+  document.body.textContent = JSON.stringify({result, events});
+  if (Object.values(result).every(Boolean)) document.body.id = "pass";
+} catch (error) {
+  document.body.textContent = String(error?.stack || error);
+}
+</script>

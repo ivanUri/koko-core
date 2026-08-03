@@ -1,0 +1,46 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  attempts: 0,
+  assertOk() {
+    if (document.body.id === "pass") return true;
+    if (++this.attempts > 80) throw new Error(document.body.textContent);
+    return false;
+  },
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+try {
+  const root = document.createElement("div");
+  document.body.appendChild(root);
+  const children = root.children;
+  const childNodes = root.childNodes;
+  const byClass = root.getElementsByClassName("tracked");
+
+  const first = document.createElement("span");
+  first.className = "tracked";
+  root.append("text", first);
+  const snapshot = root.querySelectorAll(".tracked");
+
+  const second = document.createElement("span");
+  root.appendChild(second);
+  second.classList.add("tracked");
+  first.classList.remove("tracked");
+  root.removeChild(first);
+
+  const result = {
+    childrenIsStableWrapper: children === root.children,
+    childNodesIsStableWrapper: childNodes === root.childNodes,
+    childrenTracksElementsOnly: children.length === 1 && children[0] === second,
+    childNodesTracksTextAndElements: childNodes.length === 2 && childNodes[1] === second,
+    classCollectionTracksAttributeChanges: byClass.length === 1 && byClass[0] === second,
+    querySelectorAllStaysStatic: snapshot.length === 1 && snapshot[0] === first,
+  };
+  document.body.textContent = JSON.stringify(result);
+  if (Object.values(result).every(Boolean)) document.body.id = "pass";
+} catch (error) {
+  document.body.textContent = String(error?.stack || error);
+}
+</script>

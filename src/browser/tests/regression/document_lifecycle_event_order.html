@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+const events = ["script:" + document.readyState];
+window.testing = {
+  attempts: 0,
+  assertOk() {
+    if (document.body.id === "pass") return true;
+    if (++this.attempts > 80) throw new Error(document.body.textContent);
+    return false;
+  },
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+document.addEventListener("readystatechange", () => events.push("state:" + document.readyState));
+document.addEventListener("DOMContentLoaded", () => events.push("dom:" + document.readyState));
+window.addEventListener("load", () => {
+  events.push("load:" + document.readyState);
+  setTimeout(() => {
+    const result = {
+      scriptRunsWhileLoading: events[0] === "script:loading",
+      interactiveBeforeDomContentLoaded: events.indexOf("state:interactive") < events.indexOf("dom:interactive"),
+      completeBeforeLoad: events.indexOf("state:complete") < events.indexOf("load:complete"),
+      eventsFireOnce: events.filter(value => value.startsWith("dom:")).length === 1 &&
+        events.filter(value => value.startsWith("load:")).length === 1,
+    };
+    document.body.textContent = JSON.stringify({result, events});
+    if (Object.values(result).every(Boolean)) document.body.id = "pass";
+  }, 0);
+});
+</script>

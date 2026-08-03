@@ -3244,7 +3244,9 @@ pub const JsApi = struct {
     pub const getElementsByTagName = bridge.function(Element.getElementsByTagName, .{});
     pub const getElementsByTagNameNS = bridge.function(Element.getElementsByTagNameNS, .{});
     pub const getElementsByClassName = bridge.function(Element.getElementsByClassName, .{});
-    pub const children = bridge.accessor(Element.getChildren, null, .{});
+    // ParentNode.children is [SameObject]: the collection stays live while
+    // repeated reads return the same JS wrapper for this element.
+    pub const children = bridge.accessor(Element.getChildren, null, .{ .cache = .{ .private = "children" } });
     pub const focus = bridge.function(Element.focus, .{});
     pub const blur = bridge.function(Element.blur, .{});
     pub const scrollIntoView = bridge.function(Element.scrollIntoView, .{});

@@ -1,0 +1,57 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  attempts: 0,
+  assertOk() {
+    if (document.body.id === "pass") return true;
+    if (++this.attempts > 80) throw new Error(document.body.textContent);
+    return false;
+  },
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+try {
+  const outer = document.createElement("div");
+  const inner = document.createElement("button");
+  outer.appendChild(inner);
+  document.body.appendChild(outer);
+  const order = [];
+
+  document.body.addEventListener("basic", () => order.push("body-capture"), true);
+  outer.addEventListener("basic", () => order.push("outer-capture"), true);
+  inner.addEventListener("basic", event => order.push("target-capture:" + event.eventPhase), true);
+  inner.addEventListener("basic", event => order.push("target-bubble:" + event.eventPhase));
+  outer.addEventListener("basic", () => order.push("outer-bubble"));
+  document.body.addEventListener("basic", () => order.push("body-bubble"));
+  inner.dispatchEvent(new Event("basic", {bubbles: true}));
+
+  let onceCount = 0;
+  inner.addEventListener("once-event", () => onceCount++, {once: true});
+  inner.dispatchEvent(new Event("once-event"));
+  inner.dispatchEvent(new Event("once-event"));
+
+  const additions = [];
+  const late = () => additions.push("late");
+  inner.addEventListener("listener-add", () => {
+    additions.push("first");
+    inner.addEventListener("listener-add", late);
+  });
+  inner.dispatchEvent(new Event("listener-add"));
+  inner.dispatchEvent(new Event("listener-add"));
+
+  inner.addEventListener("cancel", event => event.preventDefault());
+  const dispatchResult = inner.dispatchEvent(new Event("cancel", {cancelable: true}));
+  const result = {
+    propagationOrder: order.join(",") === "body-capture,outer-capture,target-capture:2,target-bubble:2,outer-bubble,body-bubble",
+    onceListener: onceCount === 1,
+    listenerAddedDuringDispatchDeferred: additions.join(",") === "first,first,late",
+    cancellationResult: dispatchResult === false,
+  };
+  document.body.textContent = JSON.stringify({result, order, additions});
+  if (Object.values(result).every(Boolean)) document.body.id = "pass";
+} catch (error) {
+  document.body.textContent = String(error?.stack || error);
+}
+</script>

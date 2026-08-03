@@ -1,0 +1,48 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  attempts: 0,
+  assertOk() {
+    if (document.body.id === "pass") return true;
+    if (++this.attempts > 80) throw new Error(document.body.textContent);
+    return false;
+  },
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+try {
+  const parent = document.createElement("div");
+  const a = document.createElement("a");
+  const b = document.createElement("b");
+  const c = document.createElement("i");
+  parent.append(a, b, c);
+
+  const returned = parent.insertBefore(c, a);
+  const sameNode = parent.insertBefore(a, a);
+  const removed = parent.removeChild(b);
+
+  let removeMissing = "";
+  let insertMissingReference = "";
+  let appendAncestor = "";
+  try { parent.removeChild(b); } catch (error) { removeMissing = error.name; }
+  try { parent.insertBefore(b, document.createElement("u")); } catch (error) {
+    insertMissingReference = error.name;
+  }
+  try { a.appendChild(parent); } catch (error) { appendAncestor = error.name; }
+
+  const result = {
+    reparentPreservesIdentity: returned === c && parent.firstChild === c,
+    insertSelfIsNoop: sameNode === a && parent.childNodes[1] === a,
+    removeReturnsDetachedNode: removed === b && b.parentNode === null,
+    removeMissingThrowsNotFound: removeMissing === "NotFoundError",
+    missingReferenceThrowsNotFound: insertMissingReference === "NotFoundError",
+    ancestorCycleThrowsHierarchy: appendAncestor === "HierarchyRequestError",
+  };
+  document.body.textContent = JSON.stringify(result);
+  if (Object.values(result).every(Boolean)) document.body.id = "pass";
+} catch (error) {
+  document.body.textContent = String(error?.stack || error);
+}
+</script>

@@ -1,0 +1,44 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  attempts: 0,
+  assertOk() {
+    if (document.body.id === "pass") return true;
+    if (++this.attempts > 80) throw new Error(document.body.textContent);
+    return false;
+  },
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+const order = ["sync"];
+const target = document.createElement("div");
+document.body.appendChild(target);
+let deliveredRecords = [];
+const observer = new MutationObserver(records => {
+  order.push("observer");
+  deliveredRecords = records;
+});
+observer.observe(target, {attributes: true, attributeOldValue: true});
+
+Promise.resolve().then(() => order.push("promise"));
+target.setAttribute("data-state", "one");
+target.setAttribute("data-state", "two");
+
+setTimeout(() => {
+  try {
+    order.push("timer");
+    const result = {
+      checkpointOrder: order.join(",") === "sync,promise,observer,timer",
+      recordsBatched: deliveredRecords.length === 2,
+      oldValuesPreserved: deliveredRecords[0]?.oldValue === null && deliveredRecords[1]?.oldValue === "one",
+      finalAttributeVisible: target.getAttribute("data-state") === "two",
+    };
+    document.body.textContent = JSON.stringify({result, order, records: deliveredRecords.length});
+    if (Object.values(result).every(Boolean)) document.body.id = "pass";
+  } catch (error) {
+    document.body.textContent = String(error?.stack || error);
+  }
+}, 0);
+</script>

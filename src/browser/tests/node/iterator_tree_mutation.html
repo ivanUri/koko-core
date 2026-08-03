@@ -1,0 +1,85 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  attempts: 0,
+  assertOk() {
+    if (document.body.id === "pass") return true;
+    if (++this.attempts > 80) throw new Error(document.body.textContent);
+    return false;
+  },
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+try {
+  const root = document.createElement("div");
+  const a = document.createElement("a");
+  const inner = document.createElement("i");
+  const b = document.createElement("b");
+  a.appendChild(inner);
+  root.append(a, b);
+
+  const iterator = document.createNodeIterator(root, NodeFilter.SHOW_ELEMENT);
+  const visitedBeforeRemoval = [
+    iterator.nextNode(),
+    iterator.nextNode(),
+    iterator.nextNode(),
+  ];
+  root.removeChild(a);
+  const afterReferenceSubtreeRemoved = iterator.nextNode();
+
+  const beforeRoot = document.createElement("div");
+  const beforeA = document.createElement("a");
+  const beforeB = document.createElement("b");
+  beforeRoot.append(beforeA, beforeB);
+  const beforeIterator = document.createNodeIterator(
+    beforeRoot,
+    NodeFilter.SHOW_ELEMENT
+  );
+  beforeIterator.nextNode();
+  beforeIterator.nextNode();
+  beforeIterator.previousNode();
+  beforeRoot.removeChild(beforeA);
+  const afterPointerBeforeRemoved = beforeIterator.nextNode();
+
+  const tailRoot = document.createElement("div");
+  const tail = document.createElement("span");
+  tailRoot.appendChild(tail);
+  const tailIterator = document.createNodeIterator(
+    tailRoot,
+    NodeFilter.SHOW_ELEMENT
+  );
+  tailIterator.nextNode();
+  tailIterator.nextNode();
+  tailIterator.previousNode();
+  tailRoot.removeChild(tail);
+  const afterPointerBeforeTailRemoved = tailIterator.nextNode();
+
+  const walker = document.createTreeWalker(
+    root,
+    NodeFilter.SHOW_ELEMENT,
+    node => node === b ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP
+  );
+  const walked = walker.nextNode();
+
+  const result = {
+    iteratorStartsAtRootInTreeOrder:
+      visitedBeforeRemoval[0] === root &&
+      visitedBeforeRemoval[1] === a &&
+      visitedBeforeRemoval[2] === inner,
+    iteratorSurvivesReferenceSubtreeRemoval:
+      afterReferenceSubtreeRemoved === b,
+    pointerBeforeRetargetsToFollowingNode:
+      afterPointerBeforeRemoved === beforeB,
+    pointerBeforeWithoutFollowingFallsBack:
+      afterPointerBeforeTailRemoved === null,
+    treeWalkerHonorsFilter:
+      walked === b && walker.currentNode === b,
+  };
+  document.body.textContent = JSON.stringify(result);
+  if (Object.values(result).every(Boolean)) document.body.id = "pass";
+} catch (error) {
+  document.body.textContent = String(error?.stack || error);
+}
+</script>

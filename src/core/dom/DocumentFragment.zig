@@ -211,7 +211,7 @@ pub const JsApi = struct {
 
     pub const querySelector = bridge.function(DocumentFragment.querySelector, .{ .dom_exception = true });
     pub const querySelectorAll = bridge.function(DocumentFragment.querySelectorAll, .{ .dom_exception = true });
-    pub const children = bridge.accessor(DocumentFragment.getChildren, null, .{});
+    pub const children = bridge.accessor(DocumentFragment.getChildren, null, .{ .cache = .{ .private = "children" } });
     pub const childElementCount = bridge.accessor(DocumentFragment.getChildElementCount, null, .{});
     pub const firstElementChild = bridge.accessor(DocumentFragment.firstElementChild, null, .{});
     pub const lastElementChild = bridge.accessor(DocumentFragment.lastElementChild, null, .{});

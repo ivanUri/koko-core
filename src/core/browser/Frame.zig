@@ -31,6 +31,7 @@ const ContentSecurityPolicy = @import("ContentSecurityPolicy.zig");
 const ReferrerPolicy = @import("ReferrerPolicy.zig");
 const Blob = @import("../webapi/Blob.zig");
 const Node = @import("../dom/Node.zig");
+const DOMNodeIterator = @import("../dom/DOMNodeIterator.zig");
 const Event = @import("../webapi/Event.zig");
 const EventTarget = @import("../webapi/EventTarget.zig");
 const CData = @import("../webapi/CData.zig");
@@ -239,6 +240,9 @@ _script_manager: ScriptManager,
 
 // List of active live ranges (for mutation updates per DOM spec)
 _live_ranges: std.DoublyLinkedList = .{},
+/// NodeIterator instances owned by this browsing context. DOM pre-removing
+/// steps retarget their reference before a subtree is detached.
+_node_iterators: std.DoublyLinkedList = .{},
 
 // List of active MutationObservers
 _mutation_observers: std.DoublyLinkedList = .{},
@@ -1066,6 +1070,22 @@ pub fn refreshDocumentBase(self: *Frame) !void {
     const element = try self.document.querySelector(comptime .wrap("base[href]"), self) orelse return;
     const href = element.getAttributeSafe(comptime .wrap("href")) orelse return;
     self.base_url = try URL.resolve(self.arena, self.fallbackBase(), href, .{});
+}
+
+fn subtreeContainsHtmlBase(root: *Node) bool {
+    if (root.is(Element.Html.Base) != null) return true;
+
+    var walker = @import("../dom/TreeWalker.zig").Full.Elements.init(root, .{});
+    while (walker.next()) |element| {
+        if (element.is(Element.Html.Base) != null) return true;
+    }
+    return false;
+}
+
+fn refreshDocumentBaseAfterMutation(self: *Frame) void {
+    self.refreshDocumentBase() catch |err| {
+        log.err(.frame, "refreshDocumentBase", .{ .err = err, .type = self._type, .url = self.url });
+    };
 }
 
 pub fn getTitle(self: *Frame) !?[]const u8 {
@@ -5638,6 +5658,13 @@ pub fn removeNode(self: *Frame, parent: *Node, child: *Node, opts: RemoveNodeOpt
         null;
 
     const children = parent._children.?;
+
+    var iterator_link = self._node_iterators.first;
+    while (iterator_link) |link| : (iterator_link = link.next) {
+        const iterator: *DOMNodeIterator = @fieldParentPtr("_frame_link", link);
+        iterator.preRemovingSteps(child);
+    }
+
     switch (children.*) {
         .one => |n| {
             assert(n == child, "Frame.removeNode.one", .{});
@@ -5664,6 +5691,13 @@ pub fn removeNode(self: *Frame, parent: *Node, child: *Node, opts: RemoveNodeOpt
 
     child._parent = null;
     child._child_link = .{};
+
+    // The document base URL is derived from the first connected <base href>.
+    // Recompute after detaching a connected subtree that contains a base,
+    // including moves whose disconnect lifecycle is otherwise elided.
+    if (was_connected and subtreeContainsHtmlBase(child)) {
+        self.refreshDocumentBaseAfterMutation();
+    }
 
     // Update live ranges for removal (DOM spec remove steps 4-7)
     if (child_index_for_ranges) |idx| {
@@ -5852,6 +5886,15 @@ pub fn _insertNodeRelative(self: *Frame, comptime from_parser: bool, parent: *No
     }
     child._parent = parent;
 
+    // Dynamic insertion can change which <base href> is first in tree order.
+    // Parser-created base elements are handled while constructing the initial
+    // document; this path covers DOM and fragment insertions into a live tree.
+    if (comptime !from_parser) {
+        if (parent.isConnected() and subtreeContainsHtmlBase(child)) {
+            self.refreshDocumentBaseAfterMutation();
+        }
+    }
+
     // Update live ranges for insertion (DOM spec insert step 6).
     // For .before/.after the child was inserted at a specific position;
     // ranges on parent with offsets past that position must be incremented.
@@ -5999,6 +6042,10 @@ pub fn attributeChange(self: *Frame, element: *Element, name: String, value: Str
     };
 
     Element.Html.Custom.invokeAttributeChangedCallbackOnElement(element, name, old_value, value, null, self);
+
+    if (name.eql(comptime .wrap("href")) and element.is(Element.Html.Base) != null and element.asNode().isConnected()) {
+        self.refreshDocumentBaseAfterMutation();
+    }
 
     var it: ?*std.DoublyLinkedList.Node = self._mutation_observers.first;
     while (it) |node| : (it = node.next) {
@@ -6161,6 +6208,10 @@ pub fn attributeRemove(self: *Frame, element: *Element, name: String, old_value:
     };
 
     Element.Html.Custom.invokeAttributeChangedCallbackOnElement(element, name, old_value, null, null, self);
+
+    if (name.eql(comptime .wrap("href")) and element.is(Element.Html.Base) != null and element.asNode().isConnected()) {
+        self.refreshDocumentBaseAfterMutation();
+    }
 
     var it: ?*std.DoublyLinkedList.Node = self._mutation_observers.first;
     while (it) |node| : (it = node.next) {
@@ -7435,6 +7486,34 @@ test "Frame: DOM wrappers preserve object identity across traversal" {
 
 test "Frame: OfflineAudioContext currentTime schedules AudioParam" {
     try testing.htmlRunner("regression/offline_audio_current_time.html", .{});
+}
+
+test "Frame: basic DOM tree mutations preserve browser invariants" {
+    try testing.htmlRunner("regression/dom_tree_mutation_invariants.html", .{});
+}
+
+test "Frame: DOM event propagation and listener mutation follow browser ordering" {
+    try testing.htmlRunner("regression/event_propagation_invariants.html", .{});
+}
+
+test "Frame: common form controls expose live successful state" {
+    try testing.htmlRunner("regression/form_control_state_invariants.html", .{});
+}
+
+test "Frame: Promise and MutationObserver callbacks share a deterministic checkpoint" {
+    try testing.htmlRunner("regression/microtask_mutation_observer_order.html", .{});
+}
+
+test "Frame: live DOM collections track structural and attribute mutations" {
+    try testing.htmlRunner("regression/live_collections_track_dom_mutations.html", .{});
+}
+
+test "Frame: document lifecycle events follow loading interactive complete order" {
+    try testing.htmlRunner("regression/document_lifecycle_event_order.html", .{});
+}
+
+test "Frame: dynamic base URL changes invalidate relative URL resolution" {
+    try testing.htmlRunner("regression/dynamic_base_url_invalidation.html", .{});
 }
 
 test "Page: isSameOrigin" {

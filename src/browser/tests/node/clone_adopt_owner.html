@@ -1,0 +1,48 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  attempts: 0,
+  assertOk() {
+    if (document.body.id === "pass") return true;
+    if (++this.attempts > 80) throw new Error(document.body.textContent);
+    return false;
+  },
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+try {
+  const sourceDocument = document.implementation.createHTMLDocument("source");
+  const source = sourceDocument.createElement("section");
+  source.setAttribute("data-state", "original");
+  source.append(sourceDocument.createTextNode("hello"), sourceDocument.createElement("span"));
+  sourceDocument.body.appendChild(source);
+
+  const shallow = source.cloneNode(false);
+  const deep = source.cloneNode(true);
+  const adopted = document.adoptNode(source);
+
+  const result = {
+    shallowCopiesAttributesOnly:
+      shallow.ownerDocument === sourceDocument &&
+      shallow.getAttribute("data-state") === "original" &&
+      shallow.childNodes.length === 0,
+    deepCopiesIndependentSubtree:
+      deep.ownerDocument === sourceDocument &&
+      deep.textContent === "hello" &&
+      deep.lastChild !== source.lastChild,
+    adoptionDetachesAndReownsTree:
+      adopted === source &&
+      adopted.parentNode === null &&
+      adopted.ownerDocument === document &&
+      adopted.lastChild.ownerDocument === document,
+    sourceDocumentNoLongerContainsAdopted:
+      !sourceDocument.body.contains(adopted),
+  };
+  document.body.textContent = JSON.stringify(result);
+  if (Object.values(result).every(Boolean)) document.body.id = "pass";
+} catch (error) {
+  document.body.textContent = String(error?.stack || error);
+}
+</script>

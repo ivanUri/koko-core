@@ -714,13 +714,22 @@ pub fn getFonts(self: *Document, frame: *Frame) !*FontFaceSet {
     return fonts;
 }
 
-pub fn adoptNode(_: *const Document, node: *Node, frame: *Frame) !*Node {
+pub fn adoptNode(self: *const Document, node: *Node, frame: *Frame) !*Node {
     if (node._type == .document) {
         return error.NotSupported;
     }
 
+    const old_owner = node.ownerDocument(frame);
     if (node._parent) |parent| {
         frame.removeNode(parent, node, .{ .will_be_reconnected = false });
+    }
+
+    if (old_owner) |old| {
+        if (old != self) {
+            try frame.adoptNodeTree(node, old, @constCast(self));
+        }
+    } else {
+        try frame.setNodeOwnerDocument(node, @constCast(self));
     }
 
     return node;
@@ -1360,7 +1369,7 @@ pub const JsApi = struct {
     pub const documentURI = bridge.accessor(Document.getURL, null, .{});
     pub const documentElement = bridge.accessor(Document.getDocumentElement, null, .{});
     pub const scrollingElement = bridge.accessor(Document.getDocumentElement, null, .{});
-    pub const children = bridge.accessor(Document.getChildren, null, .{});
+    pub const children = bridge.accessor(Document.getChildren, null, .{ .cache = .{ .private = "children" } });
     pub const readyState = bridge.accessor(Document.getReadyState, null, .{});
     pub const implementation = bridge.accessor(Document.getImplementation, null, .{});
     pub const activeElement = bridge.accessor(Document.getActiveElement, null, .{});

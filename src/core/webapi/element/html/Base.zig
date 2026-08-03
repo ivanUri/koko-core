@@ -24,7 +24,6 @@ pub fn getHref(self: *Base, frame: *Frame) ![]const u8 {
 pub fn setHref(self: *Base, value: []const u8, frame: *Frame) !void {
     const owner = self.asNode().ownerFrame(frame);
     try self.asElement().setAttributeSafe(comptime .wrap("href"), .wrap(value), owner);
-    if (self.asNode().isConnected()) try owner.refreshDocumentBase();
 }
 
 pub const JsApi = struct {

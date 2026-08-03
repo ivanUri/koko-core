@@ -1,0 +1,52 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  attempts: 0,
+  assertOk() {
+    if (document.body.id === "pass") return true;
+    if (++this.attempts > 80) throw new Error(document.body.textContent);
+    return false;
+  },
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+try {
+  const root = document.createElement("div");
+  const a = document.createElement("span");
+  const b = document.createElement("span");
+  const c = document.createElement("span");
+  a.id = "a"; b.id = "b"; c.id = "c";
+
+  const fragment = document.createDocumentFragment();
+  fragment.append(a, c);
+  root.appendChild(fragment);
+  root.insertBefore(b, c);
+  document.body.appendChild(root);
+
+  const replacement = document.createElement("strong");
+  replacement.id = "replacement";
+  const removed = root.replaceChild(replacement, b);
+  const clone = root.cloneNode(true);
+  const beforeText = clone.querySelector("#a") !== null &&
+    clone.querySelector("#replacement") !== null &&
+    clone.querySelector("#c") !== null;
+
+  replacement.textContent = "hello";
+  replacement.textContent = "world";
+  const result = {
+    fragmentWasEmptied: fragment.childNodes.length === 0,
+    siblingOrder: root.children[0] === a && root.children[1] === replacement && root.children[2] === c,
+    replaceReturnedOldChild: removed === b && removed.parentNode === null,
+    connectivity: root.isConnected && a.isConnected && !removed.isConnected,
+    containment: root.contains(c) && !root.contains(removed),
+    deepClonePreservedTree: beforeText && !clone.isConnected,
+    textContentReplacedChildren: replacement.textContent === "world" && replacement.childNodes.length === 1,
+  };
+  document.body.textContent = JSON.stringify(result);
+  if (Object.values(result).every(Boolean)) document.body.id = "pass";
+} catch (error) {
+  document.body.textContent = String(error?.stack || error);
+}
+</script>

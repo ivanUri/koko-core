@@ -27,16 +27,55 @@ _filter: NodeFilter,
 _reference_node: *Node,
 _pointer_before_reference_node: bool,
 _active: bool = false,
+_frame_link: std.DoublyLinkedList.Node = .{},
 
 pub fn init(root: *Node, what_to_show: u32, filter: ?FilterOpts, frame: *Frame) !*DOMNodeIterator {
     const node_filter = try NodeFilter.init(filter);
-    return frame._factory.create(DOMNodeIterator{
+    const iterator = try frame._factory.create(DOMNodeIterator{
         ._root = root,
         ._filter = node_filter,
         ._reference_node = root,
         ._what_to_show = what_to_show,
         ._pointer_before_reference_node = true,
     });
+    frame._node_iterators.append(&iterator._frame_link);
+    return iterator;
+}
+
+/// DOM "NodeIterator pre-removing steps". The reference must be moved out of
+/// a subtree before Frame clears its parent/sibling links, otherwise traversal
+/// can become stranded in a detached tree.
+pub fn preRemovingSteps(self: *DOMNodeIterator, removed: *Node) void {
+    if (removed == self._root or !self._root.contains(removed)) return;
+    if (!removed.contains(self._reference_node)) return;
+
+    if (self._pointer_before_reference_node) {
+        if (nextAfterSubtree(removed, self._root)) |next| {
+            self._reference_node = next;
+            return;
+        }
+        self._pointer_before_reference_node = false;
+    }
+
+    self._reference_node = previousBeforeSubtree(removed);
+}
+
+fn nextAfterSubtree(removed: *Node, root: *Node) ?*Node {
+    var current = removed;
+    while (current != root) {
+        if (current.nextSibling()) |sibling| return sibling;
+        current = current._parent orelse return null;
+    }
+    return null;
+}
+
+fn previousBeforeSubtree(removed: *Node) *Node {
+    if (removed.previousSibling()) |sibling| {
+        var previous = sibling;
+        while (previous.lastChild()) |last| previous = last;
+        return previous;
+    }
+    return removed._parent.?;
 }
 
 pub fn getRoot(self: *const DOMNodeIterator) *Node {
