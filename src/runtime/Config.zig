@@ -703,6 +703,7 @@ pub const WaitUntil = enum {
     load,
     domcontentloaded,
     networkidle,
+    domstable,
     done,
 };
 
@@ -958,7 +959,7 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\
         \\--wait-until    Wait until the specified event. Checked before the other
         \\                --wait- options. Supported events: load, domcontentloaded,
-        \\                networkidle, done.
+        \\                networkidle, domstable, done.
         \\                Defaults to 'done'. If --wait-selector, --wait-script or
         \\                --wait-script-file are specified, defaults to none.
         \\

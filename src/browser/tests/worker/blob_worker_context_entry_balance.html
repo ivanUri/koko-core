@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+  const seen = [];
+  const workers = [];
+
+  window.testing = {
+    assertOk: () => document.body.id === "pass",
+    printTimeoutState: () => console.log(JSON.stringify(seen)),
+  };
+
+  const sharedUrl = URL.createObjectURL(new Blob([`
+    onconnect = ({ ports }) => {
+      ports[0].postMessage("shared-ready");
+    };
+  `], { type: "text/javascript" }));
+  const shared = new SharedWorker(sharedUrl, "context-entry-balance");
+  shared.port.onmessage = ({ data }) => finish(data);
+  shared.port.start();
+
+  for (let i = 0; i < 3; i++) {
+    const url = URL.createObjectURL(new Blob([`
+      Promise.resolve().then(() => postMessage("worker-${i}"));
+    `], { type: "text/javascript" }));
+    const worker = new Worker(url);
+    worker.onmessage = ({ data }) => finish(data);
+    workers.push(worker);
+  }
+
+  function finish(value) {
+    seen.push(value);
+    if (seen.length !== 4) return;
+    workers.forEach((worker) => worker.terminate());
+    document.body.id = "pass";
+    document.body.textContent = seen.sort().join(",");
+  }
+</script>

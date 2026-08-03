@@ -480,6 +480,10 @@ pub fn init(self: *Frame, frame_id: u32, page: *Page, parent: ?*Frame) !void {
         });
     }
 
+    const cookie_store = try factory.eventTarget(@import("../webapi/cookie_store.zig").CookieStore{
+        ._proto = undefined,
+    });
+
     self.window = try factory.eventTarget(Window{
         ._frame = self,
         ._proto = undefined,
@@ -488,6 +492,7 @@ pub fn init(self: *Frame, frame_id: u32, page: *Page, parent: ?*Frame) !void {
         ._performance = Performance.init(),
         ._screen = screen,
         ._visual_viewport = visual_viewport,
+        ._cookie_store = cookie_store,
         ._cross_origin_wrapper = undefined,
     });
     self.window._cross_origin_wrapper = .{ .window = self.window };

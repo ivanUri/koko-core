@@ -31,6 +31,7 @@ const Runner = @This();
 frame: *Frame,
 session: *Session,
 http_client: *HttpClient,
+dom_stability: HostIdle.DomStability = .{},
 
 pub const Opts = struct {};
 
@@ -63,6 +64,7 @@ pub fn waitCDP(self: *Runner, opts: WaitOpts) !CDPWaitResult {
 fn _wait(self: *Runner, comptime is_cdp: bool, opts: WaitOpts) !CDPWaitResult {
     var timer = try std.time.Timer.start();
     var done_confirmations: u8 = 0;
+    if (opts.until == .domstable) self.dom_stability.reset();
 
     const tick_opts = TickOpts{
         .ms = 200,
@@ -399,11 +401,16 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
                 .domcontentloaded => live_frame._load_state == .load or live_frame._load_state == .complete,
                 .load => live_frame._load_state == .complete,
                 .networkidle => live_frame._notified_network_idle == .done,
+                .domstable => self.dom_stability.observe(
+                    live_frame,
+                    @import("../../support/datetime.zig").milliTimestamp(.monotonic),
+                ),
             };
 
             // `met` resolves the wait goal. Otherwise, if the page is fully
             // idle (`is_done`) there is nothing left to wait on — resolve rather
-            if ((met and !immediate_host_work) or is_done) {
+            const allow_fully_idle_shortcut = opts.until != .domstable;
+            if ((met and !immediate_host_work) or (is_done and allow_fully_idle_shortcut)) {
                 if (comptime is_cdp) {
                     // CDP event loop keeps ticking for commands; only leave when
                     // the explicit wait condition is met (not is_done alone for
@@ -600,4 +607,22 @@ test "Runner: host termination ends a browser wait" {
 
     var runner = try frame._session.runner(.{});
     try runner.wait(.{ .ms = 60_000, .until = .done });
+}
+
+test "Runner: domstable resets for delayed DOM mutation and ignores recurring background work" {
+    defer testing.reset();
+    const frame = try testing.pageTest("runner/dom_stable.html", .{ .wait_until_done = false });
+    defer frame._session.removePage();
+
+    var runner = try frame._session.runner(.{});
+    var timer = try std.time.Timer.start();
+    try runner.wait(.{ .ms = 2000, .until = .domstable });
+    const elapsed_ms = timer.read() / std.time.ns_per_ms;
+
+    // The 120ms mutation must restart the 500ms stability interval.
+    try testing.expect(elapsed_ms >= 600);
+    // The recurring timer is still alive, proving domstable is not full-idle.
+    try testing.expect(elapsed_ms < 1500);
+    const content = try frame.document.querySelector(comptime .wrap("#content"), frame) orelse return error.MissingStableContent;
+    try testing.expectEqualStrings("settled", try content.asNode().getTextContentAlloc(testing.arena_allocator));
 }

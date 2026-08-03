@@ -7,6 +7,7 @@ const std = @import("std");
 const js = @import("../js/js.zig");
 const Frame = @import("../browser/Frame.zig");
 const Cookie = @import("storage/Cookie.zig");
+const EventTarget = @import("EventTarget.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -46,7 +47,11 @@ const CookieQueryOpts = struct {
 };
 
 pub const CookieStore = struct {
-    _pad: bool = false,
+    _proto: *EventTarget,
+
+    pub fn asEventTarget(self: *CookieStore) *EventTarget {
+        return self._proto;
+    }
 
     /// cookieStore.get(name) or cookieStore.get({ name })
     pub fn get(self: *const CookieStore, name_or_opts: js.Value, frame: *Frame) !js.Promise {
@@ -188,8 +193,8 @@ pub const CookieStore = struct {
             pub const name = "CookieStore";
             pub const prototype_chain = bridge.prototypeChain();
             pub var class_id: bridge.ClassId = undefined;
-            pub const empty_with_no_proto = true;
         };
+        pub const Prototype = EventTarget;
         pub const get = bridge.function(CookieStore.get, .{});
         pub const set = bridge.function(CookieStore.set, .{});
         pub const delete = bridge.function(CookieStore.delete, .{});
@@ -309,4 +314,9 @@ fn removeMatching(
         }
         jar.cookies.swapRemove(i).deinit();
     }
+}
+
+const testing = @import("../../testing/testing.zig");
+test "WebApi: CookieStore EventTarget" {
+    try testing.htmlRunner("cookie_store_event_target.html", .{});
 }

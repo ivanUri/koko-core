@@ -60,6 +60,7 @@ pub const Type = union(enum) {
     idb_request: *@import("idb.zig").IDBRequest,
     idb_open_db_request: *@import("idb.zig").IDBOpenDBRequest,
     idb_transaction: *@import("idb.zig").IDBTransaction,
+    cookie_store: *@import("cookie_store.zig").CookieStore,
 };
 
 pub fn init(page: *Page) !*EventTarget {
@@ -263,6 +264,7 @@ pub fn toString(self: *EventTarget) []const u8 {
         .idb_request => return "[object IDBRequest]",
         .idb_open_db_request => return "[object IDBOpenDBRequest]",
         .idb_transaction => return "[object IDBTransaction]",
+        .cookie_store => return "[object CookieStore]",
     };
 }
 

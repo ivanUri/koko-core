@@ -15,7 +15,7 @@ const goto_schema = protocol.minify(
     \\  "properties": {
     \\    "url": { "type": "string", "description": "The URL to navigate to, must be a valid URL." },
     \\    "timeout": { "type": "integer", "description": "Optional timeout in milliseconds. Defaults to 10000." },
-    \\    "waitUntil": { "type": "string", "enum": ["load", "domcontentloaded", "networkidle", "done"], "description": "Optional wait strategy. Defaults to 'done'." }
+    \\    "waitUntil": { "type": "string", "enum": ["load", "domcontentloaded", "networkidle", "domstable", "done"], "description": "Optional wait strategy. Defaults to 'done'." }
     \\  },
     \\  "required": ["url"]
     \\}
@@ -27,7 +27,7 @@ const url_params_schema = protocol.minify(
     \\  "properties": {
     \\    "url": { "type": "string", "description": "Optional URL to navigate to before processing." },
     \\    "timeout": { "type": "integer", "description": "Optional timeout in milliseconds. Defaults to 10000." },
-    \\    "waitUntil": { "type": "string", "enum": ["load", "domcontentloaded", "networkidle", "done"], "description": "Optional wait strategy. Defaults to 'done'." }
+    \\    "waitUntil": { "type": "string", "enum": ["load", "domcontentloaded", "networkidle", "domstable", "done"], "description": "Optional wait strategy. Defaults to 'done'." }
     \\  }
     \\}
 );
@@ -39,7 +39,7 @@ const evaluate_schema = protocol.minify(
     \\    "script": { "type": "string" },
     \\    "url": { "type": "string", "description": "Optional URL to navigate to before evaluating." },
     \\    "timeout": { "type": "integer", "description": "Optional timeout in milliseconds. Defaults to 10000." },
-    \\    "waitUntil": { "type": "string", "enum": ["load", "domcontentloaded", "networkidle", "done"], "description": "Optional wait strategy. Defaults to 'done'." }
+    \\    "waitUntil": { "type": "string", "enum": ["load", "domcontentloaded", "networkidle", "domstable", "done"], "description": "Optional wait strategy. Defaults to 'done'." }
     \\  },
     \\  "required": ["script"]
     \\}
@@ -109,7 +109,7 @@ pub const tool_list = [_]protocol.Tool{
             \\  "properties": {
             \\    "url": { "type": "string", "description": "Optional URL to navigate to before fetching the semantic tree." },
             \\    "timeout": { "type": "integer", "description": "Optional timeout in milliseconds. Defaults to 10000." },
-            \\    "waitUntil": { "type": "string", "enum": ["load", "domcontentloaded", "networkidle", "done"], "description": "Optional wait strategy. Defaults to 'done'." },
+            \\    "waitUntil": { "type": "string", "enum": ["load", "domcontentloaded", "networkidle", "domstable", "done"], "description": "Optional wait strategy. Defaults to 'done'." },
             \\    "backendNodeId": { "type": "integer", "description": "Optional backend node ID to get the tree for a specific element instead of the document root." },
             \\    "maxDepth": { "type": "integer", "description": "Optional maximum depth of the tree to return. Useful for exploring high-level structure first." }
             \\  }

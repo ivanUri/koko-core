@@ -11,7 +11,7 @@ const CONFIG = {
   outputDirectory: "exports/urls-retry",
   logDirectory: "export-logs",
   keepScripts: false,
-  waitUntil: "done",
+  waitUntil: "domcontentloaded",
   waitMs: 2_000,
   terminateMs: 30_000,
 };

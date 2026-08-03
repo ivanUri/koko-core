@@ -1,0 +1,43 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+const calls = [];
+const listener = () => calls.push("listener");
+const objectListener = {handleEvent: () => calls.push("object-listener")};
+
+cookieStore.addEventListener("change", listener);
+cookieStore.addEventListener("change", listener); // Duplicate registrations are ignored.
+cookieStore.addEventListener("change", objectListener);
+cookieStore.dispatchEvent(new Event("change"));
+cookieStore.removeEventListener("change", listener);
+cookieStore.removeEventListener("change", objectListener);
+cookieStore.dispatchEvent(new Event("change"));
+
+const result = {
+  inheritsEventTarget: cookieStore instanceof EventTarget,
+  prototypeChain:
+    EventTarget.prototype.isPrototypeOf(cookieStore) &&
+    Object.getPrototypeOf(CookieStore.prototype) === EventTarget.prototype,
+  methodsPresent:
+    typeof cookieStore.addEventListener === "function" &&
+    typeof cookieStore.removeEventListener === "function" &&
+    typeof cookieStore.dispatchEvent === "function",
+  listenersFollowEventTargetSemantics:
+    calls.join(",") === "listener,object-listener",
+  tag: Object.prototype.toString.call(cookieStore) === "[object CookieStore]",
+};
+
+if (Object.values(result).every(Boolean)) {
+  document.body.id = "pass";
+  document.body.textContent = "pass";
+} else {
+  document.body.id = "fail";
+  document.body.textContent = JSON.stringify({result, calls});
+}
+</script>

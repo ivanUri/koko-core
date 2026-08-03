@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<body>
+  <main id="content">initial</main>
+  <script>
+    setTimeout(() => {
+      document.querySelector("#content").textContent = "settled";
+    }, 120);
+
+    // Long-lived background work must not prevent a visual snapshot once the
+    // DOM generation itself has remained unchanged.
+    setInterval(() => {
+      window.backgroundTicks = (window.backgroundTicks || 0) + 1;
+    }, 40);
+  </script>
+</body>
+</html>

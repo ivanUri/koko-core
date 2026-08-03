@@ -96,7 +96,7 @@ _indexed_db: IDBFactory = .{},
 _caches: CacheStorage = .{},
 _speech_synthesis: SpeechSynthesis = .{},
 _trusted_types: TrustedTypePolicyFactory = .{},
-_cookie_store: CookieStore = .{},
+_cookie_store: *CookieStore,
 _task_scheduler: TaskScheduler = .{},
 // Nested browsing contexts own independent session history/navigation state.
 // The root Window continues to use Session's stores so history survives
@@ -301,7 +301,7 @@ pub fn getTrustedTypes(self: *Window) *TrustedTypePolicyFactory {
 }
 
 pub fn getCookieStore(self: *Window) *CookieStore {
-    return &self._cookie_store;
+    return self._cookie_store;
 }
 
 pub fn getTaskScheduler(self: *Window) *TaskScheduler {

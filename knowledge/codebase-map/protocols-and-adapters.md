@@ -69,7 +69,7 @@ Khởi tạo bằng `Server.init(app, address)`, lắng nghe WebSocket tại `--
 | `--with-base` | false | Thêm `<base>` tag vào dump |
 | `--with-frames` | false | Gồm cả nội dung iframe trong dump |
 | `--wait-ms` | 5000 | Thời gian chờ (ms), ghi đè mọi `--wait-*` khác nếu set |
-| `--wait-until <load\|domcontentloaded\|networkidle\|done>` | `done` | Điều kiện dừng chờ — **đây chính là biến quyết định `met` trong `Runner._tick()`** |
+| `--wait-until <load\|domcontentloaded\|networkidle\|domstable\|done>` | `done` | Điều kiện dừng chờ — **đây chính là biến quyết định `met` trong `Runner._tick()`** |
 | `--wait-selector` | — | Chờ selector CSS xuất hiện |
 | `--wait-script` / `--wait-script-file` | — | Chờ biểu thức JS trả truthy |
 | `--click-selector` / `--click-offset-x` (mặc định 28) / `--click-offset-y` (mặc định giữa dọc) | — | Click sau khi điều kiện wait thoả |

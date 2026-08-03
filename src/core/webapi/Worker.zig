@@ -542,9 +542,16 @@ fn loadInitialScript(self: *Worker, script: []const u8) !void {
     }
 
     {
-        var ls: js.Local.Scope = undefined;
-        self._worker_scope.js.localScope(&ls);
-        defer ls.deinit();
+        // Deferred worker-script callbacks run on the worker scheduler. Env (or
+        // WorkerGlobalScope's timer pump) already entered this V8 context before
+        // invoking the callback. Entering it again here is not ownership-neutral:
+        // script evaluation can run isolate microtasks from sibling workers and
+        // change V8's entered-context stack, leaving the outer Env guard to exit
+        // a context that is no longer entered. Install only a HandleScope/local.
+        const ctx = self._worker_scope.js;
+        var installed = js.Context.InstalledLocal.install(ctx);
+        defer installed.deinit(ctx);
+        const ls = &installed.scope;
 
         var try_catch: js.TryCatch = undefined;
         try_catch.init(&ls.local);
@@ -673,9 +680,11 @@ fn loadInitialScript(self: *Worker, script: []const u8) !void {
 
 fn loadInitialModule(self: *Worker, script: []const u8) !void {
     {
-        var ls: js.Local.Scope = undefined;
-        self._worker_scope.js.localScope(&ls);
-        defer ls.deinit();
+        // Same scheduler-entry invariant as classic worker evaluation above.
+        const ctx = self._worker_scope.js;
+        var installed = js.Context.InstalledLocal.install(ctx);
+        defer installed.deinit(ctx);
+        const ls = &installed.scope;
 
         self._bootstrap_complete = true;
         self._initial_eval_active = true;
@@ -694,7 +703,6 @@ fn loadInitialModule(self: *Worker, script: []const u8) !void {
         try_catch.init(&ls.local);
         defer try_catch.deinit();
 
-        const ctx = self._worker_scope.js;
         ctx.module(false, &ls.local, script, self._url, true) catch |err| {
             const message = if (try_catch.hasCaught())
                 try_catch.caughtOrError(self._arena, err).exception orelse @errorName(err)
@@ -1596,6 +1604,10 @@ test "WebApi: Worker" {
 
 test "Worker: Blob URL revocation after construction preserves captured script" {
     try testing.htmlRunner("regression/blob_worker_revoke_after_construct.html", .{});
+}
+
+test "Worker: sibling blob worker evaluation keeps V8 context entry balanced" {
+    try testing.htmlRunner("worker/blob_worker_context_entry_balance.html", .{});
 }
 
 test "Worker: every parent scheduler callback is owned by its worker" {

@@ -8,6 +8,66 @@ const HttpClient = @import("HttpClient.zig");
 
 const HostIdle = @This();
 
+/// A visually useful document snapshot is stable when the loaded document's
+/// DOM/layout generation has not changed for this interval. Network activity
+/// is intentionally not part of this predicate: analytics, polling, WebSocket,
+/// and RTC traffic must not keep a rendered document open forever.
+pub const dom_stable_ms: u64 = 500;
+
+pub const DomStability = struct {
+    frame_identity: usize = 0,
+    version: usize = 0,
+    changed_at_ms: u64 = 0,
+
+    pub fn reset(self: *DomStability) void {
+        self.* = .{};
+    }
+
+    /// Observe the current rendered generation. Stability starts only after
+    /// `load`: before that point parser/resource progress may legitimately
+    /// pause without representing a useful completed visual snapshot.
+    pub fn observe(self: *DomStability, frame: *const Frame, now_ms: u64) bool {
+        return self.observeGeneration(
+            frame._load_state == .complete,
+            @intFromPtr(frame),
+            frame.version,
+            now_ms,
+        );
+    }
+
+    fn observeGeneration(self: *DomStability, loaded: bool, frame_identity: usize, version: usize, now_ms: u64) bool {
+        if (!loaded) {
+            self.reset();
+            return false;
+        }
+
+        if (self.frame_identity != frame_identity or self.version != version) {
+            self.frame_identity = frame_identity;
+            self.version = version;
+            self.changed_at_ms = now_ms;
+            return false;
+        }
+
+        return now_ms -| self.changed_at_ms >= dom_stable_ms;
+    }
+};
+
+test "DOM stability starts after load and resets on generation or frame change" {
+    const testing = @import("std").testing;
+    var stability: DomStability = .{};
+
+    try testing.expect(!stability.observeGeneration(false, 1, 10, 0));
+    try testing.expect(!stability.observeGeneration(true, 1, 10, 100));
+    try testing.expect(!stability.observeGeneration(true, 1, 10, 599));
+    try testing.expect(stability.observeGeneration(true, 1, 10, 600));
+
+    try testing.expect(!stability.observeGeneration(true, 1, 11, 700));
+    try testing.expect(!stability.observeGeneration(true, 1, 11, 1199));
+    try testing.expect(stability.observeGeneration(true, 1, 11, 1200));
+
+    try testing.expect(!stability.observeGeneration(true, 2, 11, 1300));
+}
+
 /// HTTP activity units for networkIdle / networkAlmostIdle thresholds.
 pub fn totalHttpActivity(http: *const HttpClient) usize {
     return http.totalHttpActivity();
