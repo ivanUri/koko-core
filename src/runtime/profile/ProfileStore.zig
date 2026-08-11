@@ -37,11 +37,11 @@ const SvgIntelligent = @import("SvgIntelligent.zig");
 extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, override: c_int) c_int;
 
 pub const Mode = enum {
-    velora,
+    koko,
     antidetect,
 
     pub fn parse(raw: []const u8) ?Mode {
-        if (std.mem.eql(u8, raw, "velora")) return .velora;
+        if (std.mem.eql(u8, raw, "koko")) return .koko;
         if (std.mem.eql(u8, raw, "antidetect")) return .antidetect;
         return null;
     }
@@ -142,7 +142,7 @@ pub const LoadedProfile = struct {
 
     pub fn canvas_probe_data_url_for(self: *const LoadedProfile, probe: CanvasIntelligent.ProbeId) ?[]const u8 {
         return switch (probe) {
-            .canvas_240_velora => self.canvas_probe_data_url,
+            .canvas_240_koko => self.canvas_probe_data_url,
             .canvas_50_text => self.canvas_probe_50_text,
             .canvas_50_emoji => self.canvas_probe_50_emoji,
             .canvas_75_data => self.canvas_probe_75_data,
@@ -467,8 +467,8 @@ fn fromEmbedded(name: ?[]const u8) !LoadedProfile {
     const src = Profile.defaultIdentity();
     var profile: LoadedProfile = .{
         .arena = std.heap.ArenaAllocator.init(std.heap.page_allocator),
-        .mode = .velora,
-        .id = "velora",
+        .mode = .koko,
+        .id = "koko",
         .persona = undefined,
         .languages = src.languages,
         .fonts = src.fonts,
@@ -479,10 +479,10 @@ fn fromEmbedded(name: ?[]const u8) !LoadedProfile {
     errdefer profile.deinit();
 
     const allocator = profile.arena.allocator();
-    profile.id = try allocator.dupe(u8, "velora");
+    profile.id = try allocator.dupe(u8, "koko");
     const user_agent = try allocator.dupeZ(u8, src.user_agent_fallback);
     const brands = try allocator.alloc(Brand, 1);
-    brands[0] = .{ .brand = "Velora", .version = "1" };
+    brands[0] = .{ .brand = "Koko", .version = "1" };
     const transport_target = TransportProfile.Target.chrome146;
     profile.persona = .{
         .family = BrowserFamily.inferFromUserAgent(user_agent),
@@ -1118,7 +1118,7 @@ fn loadCanvasProbe(allocator: std.mem.Allocator, root: []const u8, probe: JsonCa
 }
 
 const JsonCanvasProbesFile = struct {
-    canvas_240_velora: []const u8 = "",
+    canvas_240_koko: []const u8 = "",
     canvas_50_text: []const u8 = "",
     canvas_50_emoji: []const u8 = "",
     canvas_75_data: []const u8 = "",
@@ -1135,8 +1135,8 @@ fn loadCanvasProbes(allocator: std.mem.Allocator, root: []const u8, probe: JsonC
     defer parsed.deinit();
     const doc = parsed.value;
 
-    if (profile.canvas_probe_data_url == null and doc.canvas_240_velora.len > 0) {
-        profile.canvas_probe_data_url = try allocator.dupe(u8, doc.canvas_240_velora);
+    if (profile.canvas_probe_data_url == null and doc.canvas_240_koko.len > 0) {
+        profile.canvas_probe_data_url = try allocator.dupe(u8, doc.canvas_240_koko);
     }
     if (doc.canvas_50_text.len > 0) {
         profile.canvas_probe_50_text = try allocator.dupe(u8, doc.canvas_50_text);
@@ -1289,7 +1289,7 @@ test "ProfileStore: assets cannot escape fingerprint folder" {
 }
 
 fn testPaths(allocator: std.mem.Allocator, profile_name: []const u8) !ProfilePaths.ProfilePaths {
-    const base = try std.fmt.allocPrint(allocator, "/tmp/velora-profilestore-test-{s}", .{profile_name});
+    const base = try std.fmt.allocPrint(allocator, "/tmp/koko-profilestore-test-{s}", .{profile_name});
     defer allocator.free(base);
     std.fs.cwd().deleteTree(base) catch {};
     var paths = try ProfilePaths.ProfilePaths.init(allocator, base, profile_name, null);
@@ -1297,12 +1297,12 @@ fn testPaths(allocator: std.mem.Allocator, profile_name: []const u8) !ProfilePat
     return paths;
 }
 
-test "ProfileStore: load velora profile" {
-    var paths = try testPaths(std.testing.allocator, "velora");
+test "ProfileStore: load koko profile" {
+    var paths = try testPaths(std.testing.allocator, "koko");
     defer paths.deinit();
     var profile = try resolve(&paths);
     defer profile.deinit();
-    try testing.expectEqual(Mode.velora, profile.mode);
+    try testing.expectEqual(Mode.koko, profile.mode);
     try testing.expect(profile.persona.network.brands.len >= 1);
 }
 
@@ -1365,8 +1365,8 @@ test "ProfileStore: startup UA cannot select another Chrome persona" {
     );
 }
 
-test "ProfileStore: velora profile has no site policies" {
-    var paths = try testPaths(std.testing.allocator, "velora");
+test "ProfileStore: koko profile has no site policies" {
+    var paths = try testPaths(std.testing.allocator, "koko");
     defer paths.deinit();
     var profile = try resolve(&paths);
     defer profile.deinit();

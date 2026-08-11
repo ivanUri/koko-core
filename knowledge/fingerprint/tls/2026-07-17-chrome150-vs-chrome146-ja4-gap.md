@@ -1,6 +1,6 @@
 # Chrome 150 vs curl-impersonate chrome146 — JA4 / sig-alg gap
 
-> **Audience:** Velora engineers working on TLS impersonate / Google cold SERP.  
+> **Audience:** Koko engineers working on TLS impersonate / Google cold SERP.  
 > **Artifacts:** `code-check/tmp/tls-chrome150-spike/` (peet.ws captures + `DIFF-SUMMARY.json`).
 
 ## Summary
@@ -11,7 +11,7 @@ Live capture on macOS arm64 (**Google Chrome 150.0.7871.129** vs vendored **`cur
 - **HTTP/2 Akamai fingerprint** matches exactly: `52d84b11737d980aef856699f885ca86`.
 - **Signature algorithms do not.** Chrome 150 prepends **ML-DSA** codes `0x0904`, `0x0905`, `0x0906` (IANA 2308–2310). That alone flips the **JA4 third component**.
 
-So Velora can already match Chrome 150 on H2 SETTINGS/PRIORITY and most of ClientHello, but **cannot mint a Chrome-150 JA4** while still bound to curl-impersonate’s chrome146 profile. Header-only UA/`sec-ch-ua` alignment cannot close this.
+So Koko can already match Chrome 150 on H2 SETTINGS/PRIORITY and most of ClientHello, but **cannot mint a Chrome-150 JA4** while still bound to curl-impersonate’s chrome146 profile. Header-only UA/`sec-ch-ua` alignment cannot close this.
 
 Upstream agrees: [lexiforest/curl-impersonate#277](https://github.com/lexiforest/curl-impersonate/pull/277) adds `chrome149` as a clone of chrome146 and **deliberately omits Chrome 150** until `parse_sig_algs` / `kSignatureAlgorithmNames` support ML-DSA. PR #275 only bumped **BoringSSL to the Chrome 150 tree** — it did not ship a `chrome150` impersonate target.
 
@@ -24,7 +24,7 @@ Cold Google SERP analysis already suspected “TLS below HTTP headers” after U
 Observable need:
 
 - Quantify JA3/JA4 / peetprint / sig-algs / H2 Akamai for **real Chrome 150 on this machine** vs **`vendor/curl-impersonate/curl_chrome146`**.
-- Decide if a Velora-side profile alias (`chrome150 → chrome146`) is fine, or if fork work is required.
+- Decide if a Koko-side profile alias (`chrome150 → chrome146`) is fine, or if fork work is required.
 
 ---
 
@@ -135,9 +135,9 @@ Upstream already ships:
 - `SSL_SIGN_ML_DSA_{44,65,87}` = `0x0904/05/06` in BoringSSL
 - `kSignatureAlgorithmNames[]` entries `mldsa44/65/87` in curl.patch
 
-**Velora vendor today (older dylib)** still errors: `Unknown signature hash algorithm: 'mldsa44'`. Must **upgrade vendor to ≥ v2.0.0rc3** (or rebuild current fork main) before `CURLOPT_SSL_SIG_HASH_ALGS` can accept ML-DSA.
+**Koko vendor today (older dylib)** still errors: `Unknown signature hash algorithm: 'mldsa44'`. Must **upgrade vendor to ≥ v2.0.0rc3** (or rebuild current fork main) before `CURLOPT_SSL_SIG_HASH_ALGS` can accept ML-DSA.
 
-### Velora wiring (applied 2026-07-17)
+### Koko wiring (applied 2026-07-17)
 
 1. **Vendor** `vendor/curl-impersonate` → **v2.0.0rc3** (`curl 8.21.0-IMPERSONATE`) + `curl_chrome150` wrapper.
 2. **`libcurl.zig`:** `CHROME150_SSL_SIG_HASH_ALGS = "mldsa44:mldsa65:mldsa87:" ++ CHROME146_…`

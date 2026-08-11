@@ -12,9 +12,9 @@ const Allocator = std.mem.Allocator;
 
 const BUFFER_SIZE = 1024;
 const MAX_BODY_SIZE = 500 * 1024; // 500KB server limit
-const URL = "https://telemetry.velora.io";
+const URL = "https://telemetry.kokoio.com";
 
-const Velora = @This();
+const Koko = @This();
 
 allocator: Allocator,
 network: *Network,
@@ -31,7 +31,7 @@ tail: std.atomic.Value(usize) = .init(0),
 dropped: std.atomic.Value(u32) = .init(0),
 buffer: [BUFFER_SIZE]telemetry.Event = undefined,
 
-pub fn init(self: *Velora, app: *App, iid: ?[36]u8, run_mode: Config.RunMode) !void {
+pub fn init(self: *Koko, app: *App, iid: ?[36]u8, run_mode: Config.RunMode) !void {
     self.* = .{
         .iid = iid,
         .run_mode = run_mode,
@@ -43,11 +43,11 @@ pub fn init(self: *Velora, app: *App, iid: ?[36]u8, run_mode: Config.RunMode) !v
     self.network.onTick(@ptrCast(self), flushCallback);
 }
 
-pub fn deinit(self: *Velora) void {
+pub fn deinit(self: *Koko) void {
     self.writer.deinit();
 }
 
-pub fn send(self: *Velora, raw_event: telemetry.Event) !void {
+pub fn send(self: *Koko, raw_event: telemetry.Event) !void {
     self.mutex.lock();
     defer self.mutex.unlock();
 
@@ -63,13 +63,13 @@ pub fn send(self: *Velora, raw_event: telemetry.Event) !void {
 }
 
 fn flushCallback(ctx: *anyopaque) void {
-    const self: *Velora = @ptrCast(@alignCast(ctx));
+    const self: *Koko = @ptrCast(@alignCast(ctx));
     self.postEvent() catch |err| {
         log.warn(.telemetry, "flush error", .{ .err = err });
     };
 }
 
-fn postEvent(self: *Velora) !void {
+fn postEvent(self: *Koko) !void {
     const h = self.head.load(.monotonic);
     const t = self.tail.load(.acquire);
     const dropped = self.dropped.swap(0, .monotonic);
@@ -107,9 +107,9 @@ fn postEvent(self: *Velora) !void {
     self.network.submitRequest(conn);
 }
 
-fn writeEvent(self: *Velora, event: telemetry.Event) !bool {
+fn writeEvent(self: *Koko, event: telemetry.Event) !bool {
     const iid: ?[]const u8 = if (self.iid) |*id| id else null;
-    const wrapped = VeloraEvent{ .iid = iid, .mode = self.run_mode, .event = event };
+    const wrapped = KokoEvent{ .iid = iid, .mode = self.run_mode, .event = event };
 
     const checkpoint = self.writer.written().len;
 
@@ -123,12 +123,12 @@ fn writeEvent(self: *Velora, event: telemetry.Event) !bool {
     return true;
 }
 
-const VeloraEvent = struct {
+const KokoEvent = struct {
     iid: ?[]const u8,
     mode: Config.RunMode,
     event: telemetry.Event,
 
-    pub fn jsonStringify(self: *const VeloraEvent, writer: anytype) !void {
+    pub fn jsonStringify(self: *const KokoEvent, writer: anytype) !void {
         try writer.beginObject();
 
         try writer.objectField("iid");

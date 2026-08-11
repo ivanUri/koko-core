@@ -233,7 +233,7 @@ fn writeCssRuleSnapshot(rule: *@import("../webapi/css/CSSRule.zig"), writer: *st
 
 fn dumpDocumentStylesheetSnapshot(writer: *std.Io.Writer, frame: *Frame) error{WriteFailed}!void {
     const sheets = frame.document._style_sheets orelse return;
-    writer.writeAll("<style data-velora-cssom-snapshot=\"\">") catch return error.WriteFailed;
+    writer.writeAll("<style data-koko-cssom-snapshot=\"\">") catch return error.WriteFailed;
     for (sheets._sheets.items) |sheet| {
         if (sheet._disabled) continue;
         const rules = sheet._css_rules orelse continue;

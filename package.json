@@ -1,11 +1,13 @@
 {
-  "name": "velora",
+  "name": "koko",
   "private": true,
   "dependencies": {
     "playwright": "^1.60.0",
     "ws": "^8.21.0"
   },
   "scripts": {
-    "export-site": "node scripts/export-site.js"
+    "export-site": "node scripts/export-site.js",
+    "test:misa": "node scripts/test-misa-id.js",
+    "test:misa:login": "node scripts/test-misa-login.mjs"
   }
 }

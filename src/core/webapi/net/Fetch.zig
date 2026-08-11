@@ -1111,7 +1111,7 @@ fn settleFetchDone(self: *Fetch) !void {
     // cannot explain application-level state transitions whose decision is in
     // a small JSON response. Keep this disabled by default and bounded so it
     // cannot turn arbitrary downloads into unbounded logs.
-    if (std.posix.getenv("VELORA_FETCH_BODY_LOG") != null) {
+    if (std.posix.getenv("KOKO_FETCH_BODY_LOG") != null) {
         const body = self._buf.items[0..@min(self._buf.items.len, 4096)];
         log.info(.http, "fetch response body", .{
             .url = self._url,

@@ -38,7 +38,7 @@ pub fn enabledForUrl(origins: *const OriginSet, allocator: std.mem.Allocator, ur
 /// ancestor does not receive them unless that ancestor explicitly delegates
 /// the individual hint features.
 ///
-/// Velora does not yet model per-feature Permissions-Policy delegation. This
+/// Koko does not yet model per-feature Permissions-Policy delegation. This
 /// helper therefore implements the standards-preserving default allowlist;
 /// explicit delegation can be layered on without weakening the default.
 pub fn defaultPolicyAllowsHighEntropy(frame_origin: ?[]const u8, ancestor_origin: ?[]const u8) bool {

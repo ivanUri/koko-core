@@ -584,14 +584,14 @@ fn loadInitialScript(self: *Worker, script: []const u8) !void {
         // in an IIFE can leave those handlers off the Zig accessor slots.
         // Step markers survive empty-TryCatch aborts (agent blob diagnostics).
         const eval_source = std.fmt.allocPrint(self._arena,
-            \\globalThis.__veloraWorkerStep=0;
+            \\globalThis.__kokoWorkerStep=0;
             \\try{{
-            \\globalThis.__veloraWorkerStep=1;
+            \\globalThis.__kokoWorkerStep=1;
             \\{s}
-            \\globalThis.__veloraWorkerStep=99;
+            \\globalThis.__kokoWorkerStep=99;
             \\}}catch(e){{
-            \\globalThis.__veloraWorkerStep=-(globalThis.__veloraWorkerStep||1);
-            \\globalThis.__veloraWorkerErr=String(e&&e.stack||e);
+            \\globalThis.__kokoWorkerStep=-(globalThis.__kokoWorkerStep||1);
+            \\globalThis.__kokoWorkerErr=String(e&&e.stack||e);
             \\throw e;
             \\}}
         , .{script}) catch script;
@@ -607,10 +607,10 @@ fn loadInitialScript(self: *Worker, script: []const u8) !void {
             const caught = try_catch.caughtOrError(self._arena, err);
             var step: i32 = -999;
             var err_txt: []const u8 = "";
-            if (ls.local.exec("globalThis.__veloraWorkerStep|0", null)) |sv| {
+            if (ls.local.exec("globalThis.__kokoWorkerStep|0", null)) |sv| {
                 step = sv.toZig(i32) catch -998;
             } else |_| {}
-            if (ls.local.exec("globalThis.__veloraWorkerErr||''", null)) |ev| {
+            if (ls.local.exec("globalThis.__kokoWorkerErr||''", null)) |ev| {
                 if (ev.isString()) |js_str| {
                     err_txt = js_str.toSliceWithAlloc(self._arena) catch "";
                 }
@@ -692,7 +692,7 @@ fn loadInitialModule(self: *Worker, script: []const u8) !void {
 
         {
             const flag_src =
-                \\globalThis.__veloraWorkerIsModule=true;
+                \\globalThis.__kokoWorkerIsModule=true;
             ;
             ls.local.eval(flag_src, "worker-module-flag") catch |err| {
                 log.warn(.browser, "worker module flag", .{ .err = err });

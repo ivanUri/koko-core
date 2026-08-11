@@ -4,7 +4,7 @@
 
 ## Summary
 
-CreepJS `cssMedia` reported an empty `mediaCSS` object and `screenQuery` of `{0,0}` because Velora's CSS tokenizer split `--custom-property` into two `-` delimiter tokens plus a separate identifier instead of a single `<dashed-ident>` token. Declaration parsing never recognized custom property names, so `@media` rules could not inject `--prefers-*` variables onto `body`, and `getComputedStyle(body).getPropertyValue('--…')` always returned empty. `matchMedia()` results were mostly correct — a misleading split that sent investigation toward viewport math and iframe routing before the upstream tokenizer bug was found. Fix: extend the `-` branch in `Tokenizer.zig` to consume full `--ident` sequences per CSS Syntax Level 3.
+CreepJS `cssMedia` reported an empty `mediaCSS` object and `screenQuery` of `{0,0}` because Koko's CSS tokenizer split `--custom-property` into two `-` delimiter tokens plus a separate identifier instead of a single `<dashed-ident>` token. Declaration parsing never recognized custom property names, so `@media` rules could not inject `--prefers-*` variables onto `body`, and `getComputedStyle(body).getPropertyValue('--…')` always returned empty. `matchMedia()` results were mostly correct — a misleading split that sent investigation toward viewport math and iframe routing before the upstream tokenizer bug was found. Fix: extend the `-` branch in `Tokenizer.zig` to consume full `--ident` sequences per CSS Syntax Level 3.
 
 ---
 
@@ -12,7 +12,7 @@ CreepJS `cssMedia` reported an empty `mediaCSS` object and `screenQuery` of `{0,
 
 After wiring `StyleManager` to collect custom properties from matching `@media` blocks, CreepJS `cssMedia` still showed:
 
-| Field | Chrome | Velora (before) |
+| Field | Chrome | Koko (before) |
 |-------|--------|-----------------|
 | `mediaCSS.*` | 14 populated custom properties | all `undefined` |
 | `screenQuery` | `{ width: 1920, height: 1080 }` (machine-dependent) | `{0, 0}` |
@@ -27,7 +27,7 @@ Modern CSS fingerprinting (CreepJS `getCSSMedia()`) uses a hybrid of two subsyst
 1. **`matchMedia()` / `MediaQueryList`** — evaluates predicate expressions against the viewport and device environment.
 2. **Author stylesheet custom properties** — injects `--prefers-color-scheme`, `--device-screen`, etc. onto `body` inside `@media` blocks, then reads them via `getComputedStyle(body).getPropertyValue('--…')`.
 
-Velora had invested in (1) via `MediaQueryEval.zig` and `MediaQueryList.zig`. Section hash still failed because (2) never stored declarations — the tokenizer → parser → `StyleManager.addCustomProps` pipeline dropped `--*` names at the first stage.
+Koko had invested in (1) via `MediaQueryEval.zig` and `MediaQueryList.zig`. Section hash still failed because (2) never stored declarations — the tokenizer → parser → `StyleManager.addCustomProps` pipeline dropped `--*` names at the first stage.
 
 This is analogous to a JavaScript engine parsing `function` correctly but failing on `async function` — the evaluator works, but source text never becomes storable semantics.
 
@@ -42,7 +42,7 @@ Per [CSS Syntax Level 3 `<dashed-ident>`](https://drafts.csswg.org/css-syntax/#t
 
 Per [CSS Variables Level 1](https://drafts.csswg.org/css-variables/#typedef-custom-property-name), property names matching `<dashed-ident>` are custom properties stored verbatim (case-sensitive) and resolved at computed-value time.
 
-### Velora tokenizer (before fix)
+### Koko tokenizer (before fix)
 
 A lone `-` in the input stream was handled as:
 
@@ -75,7 +75,7 @@ Initial suspicion: phantom iframe `ownerFrame` mismatch (see [owner-frame note](
 ### Step 1 — Field compare
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 node scripts/cdp-section-field-compare.mjs cssMedia
 ```
 
@@ -168,9 +168,9 @@ node scripts/cdp-creepjs-section-compare.mjs \
 - [CSS Syntax Module Level 3 — `<dashed-ident>`](https://drafts.csswg.org/css-syntax/#typedef-dashed-ident)
 - [CSS Syntax — tokenization of `-`](https://drafts.csswg.org/css-syntax/#tokenizer-diagram)
 - CreepJS `getCSSMedia()` — `code-check/sites/creep/creep.js`
-- Velora: `src/core/browser/css/Tokenizer.zig`
-- Velora: `src/core/browser/StyleManager.zig`
-- Velora: `src/core/webapi/css/CSSStyleDeclaration.zig`
+- Koko: `src/core/browser/css/Tokenizer.zig`
+- Koko: `src/core/browser/StyleManager.zig`
+- Koko: `src/core/webapi/css/CSSStyleDeclaration.zig`
 - WPT analog: `css/css-syntax/tokenization/` (dashed-ident consumer tests in supporting browsers)
 
 ---

@@ -82,7 +82,7 @@ pub const Namespace = enum(u8) {
             .svg => "http://www.w3.org/2000/svg",
             .mathml => "http://www.w3.org/1998/Math/MathML",
             .xml => "http://www.w3.org/XML/1998/namespace",
-            .unknown => "http://velora.io/unsupported/namespace",
+            .unknown => "http://kokoio.com/unsupported/namespace",
             .null => null,
         };
     }

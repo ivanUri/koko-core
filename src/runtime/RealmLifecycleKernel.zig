@@ -1,5 +1,5 @@
 //! Realm lifecycle + navigation epoch — foundation for deterministic teardown
-//! and stale async cancellation (Velora).
+//! and stale async cancellation (Koko).
 //!
 //! Phase 1: state enum, optional structured trace, navigation epoch bumps.
 //! Phase 1.5: `TaskOwner`, centralized stale detection, extended trace hooks.

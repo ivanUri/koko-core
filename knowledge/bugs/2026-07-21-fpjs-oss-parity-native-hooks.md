@@ -4,7 +4,7 @@
 
 ## Summary
 
-Using public FingerprintJS (`fingerprintjs-master`) as a **device-attribute spec**, Velora now passes a CDP parity probe aligned with OSS `fonts`, `fontPreferences`, `webGlBasics`/`webGlExtensions`, OfflineAudio **44100**, and architecture **127**. Critical automation tell **iframe clean `Function.prototype.toString`** on `eval` / `Object.getOwnPropertyNames` / `Object.keys` now returns `[native code]` via V8 FunctionTemplate natives (`NativeBuiltinHooks.zig`).
+Using public FingerprintJS (`fingerprintjs-master`) as a **device-attribute spec**, Koko now passes a CDP parity probe aligned with OSS `fonts`, `fontPreferences`, `webGlBasics`/`webGlExtensions`, OfflineAudio **44100**, and architecture **127**. Critical automation tell **iframe clean `Function.prototype.toString`** on `eval` / `Object.getOwnPropertyNames` / `Object.keys` now returns `[native code]` via V8 FunctionTemplate natives (`NativeBuiltinHooks.zig`).
 
 Fingerprint Pro playground still reports **bot BAS + Tampering Yes** (same sticky `visitor_id`); one run also showed **VM Yes / suspect 29** (regression vs earlier VM No / 15 — treat as ML + visitor reputation noise until retested with a fresh visitor).
 
@@ -26,7 +26,7 @@ Fingerprint Pro playground still reports **bot BAS + Tampering Yes** (same stick
 ## Verification
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build -Doptimize=ReleaseSafe
 node scripts/cdp-fpjs-parity-probe.mjs --profile chrome-local-huys-macbook-pro --max-sec 20
 node scripts/cdp-fingerprint-playground-probe.mjs --profile chrome-local-huys-macbook-pro --max-sec 45
@@ -90,6 +90,6 @@ Confirms suspect **15→29** was **VM re-trigger**, not bot/tamper weight change
 
 ## Follow-ups
 
-1. Diff Chrome live `extensionParameters` / audio / canvas vs Velora under same profile.  
+1. Diff Chrome live `extensionParameters` / audio / canvas vs Koko under same profile.  
 2. Investigate VM Yes regression (WebGL extension constants / ML features).  
 3. Pro agent-only signals (workers, behavioral) beyond OSS FingerprintJS.

@@ -630,9 +630,9 @@ fn httpDoneCallback(ctx: *anyopaque) !void {
 /// request body and accumulated response state until `httpDoneCallback`
 /// returns, so this is the last lifecycle point where both sides can be
 /// serialized without retaining transfer or realm memory. Wire-level request
-/// headers are captured separately by `VELORA_WIRE_HEADERS`.
+/// headers are captured separately by `KOKO_WIRE_HEADERS`.
 fn traceErrorExchange(self: *const XMLHttpRequest) !void {
-    const trace_dir = std.posix.getenv("VELORA_HTTP_ERROR_TRACE_DIR") orelse return;
+    const trace_dir = std.posix.getenv("KOKO_HTTP_ERROR_TRACE_DIR") orelse return;
     try std.fs.cwd().makePath(trace_dir);
 
     const stem = try std.fmt.allocPrint(

@@ -459,7 +459,7 @@ pub fn getAccessKeyLabel(self: *HtmlElement) ?[]const u8 {
 }
 
 // HTML §7.7.5.2 specifies the IDL attribute as true iff the element's effective
-// content editable state is "true" or "plaintext-only". Velora has no
+// content editable state is "true" or "plaintext-only". Koko has no
 // caret/keyboard editing pipeline, so a true answer cannot be honored
 // end-to-end — downstream CDP tools (notably Puppeteer's dispatchKeyEvent
 // path) would route into an input pipeline that silently no-ops. Always

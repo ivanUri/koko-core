@@ -2,7 +2,7 @@
 
 ## Summary
 
-Popular SPAs (Stack Overflow, Reddit, GitHub) crashed Velora during or after navigation when pages spawned dedicated `Worker`s or loaded many images. The failures were core lifecycle bugs: worker bootstrap scripts were queued on the **frame** scheduler (running inside DOM microtask checkpoints → SIGSEGV), and `HTMLImageElement` HTTP completions could **double-release** the same scratch arena on re-navigation (ArenaPool panic).
+Popular SPAs (Stack Overflow, Reddit, GitHub) crashed Koko during or after navigation when pages spawned dedicated `Worker`s or loaded many images. The failures were core lifecycle bugs: worker bootstrap scripts were queued on the **frame** scheduler (running inside DOM microtask checkpoints → SIGSEGV), and `HTMLImageElement` HTTP completions could **double-release** the same scratch arena on re-navigation (ArenaPool panic).
 
 Fixes move worker deferred eval to the **worker** scheduler, pump worker tasks after classic script eval, cancel stale worker deferred tasks on `Worker.destroy()`, and make image/preload load callbacks idempotent with `isGoingAway()` guards.
 
@@ -27,7 +27,7 @@ Fixes move worker deferred eval to the **worker** scheduler, pump worker tasks a
 ## Verification
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build
 node code-check/site-stability/run.mjs --repeats 2
 ```

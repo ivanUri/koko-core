@@ -4,7 +4,7 @@
 
 ## Summary
 
-Velora’s cookie jar went from mass `0/N` failures to passing most parsing and attribute suites after fixing a **testdriver blocker** (`window.webdriver`), hardening **RFC6265bis parsing**, and implementing **secure-origin**, **schemeful same-site**, and **origin-bound** semantics. Eight parallel workstreams covered testdriver, name/value/encoding, path/size, attributes, ordering/detached documents, secure/prefix rules, SameSite CDP crashes, and CHIPS/third-party basics.
+Koko’s cookie jar went from mass `0/N` failures to passing most parsing and attribute suites after fixing a **testdriver blocker** (`window.webdriver`), hardening **RFC6265bis parsing**, and implementing **secure-origin**, **schemeful same-site**, and **origin-bound** semantics. Eight parallel workstreams covered testdriver, name/value/encoding, path/size, attributes, ordering/detached documents, secure/prefix rules, SameSite CDP crashes, and CHIPS/third-party basics.
 
 The bottom line: **cookie core is production-ready** for real sites; remaining WPT gaps are mostly SameSite navigation, popup harnesses, CHIPS edge cases, and batch-runner instability—not fundamental jar bugs.
 
@@ -48,7 +48,7 @@ Schemeful same-site (`http` vs `https` cross-site), origin port binding, third-p
 
 ### 6. Detached document cookies
 
-After iframe navigation, saved `contentDocument` references must not read/write the live jar — Velora fell back to incumbent frame context via `Context.fromIsolate`.
+After iframe navigation, saved `contentDocument` references must not read/write the live jar — Koko fell back to incumbent frame context via `Context.fromIsolate`.
 
 ---
 
@@ -59,11 +59,11 @@ Parallel WPT batches on `:9222` with logs in `code-check/tmp/wpt-cookies-*.txt` 
 | Experiment | Verdict |
 |------------|---------|
 | `/infrastructure/testdriver/delete_all_cookies.html` | Pass 2/2 after snapshot rebuild |
-| Individual `name.html` with stable velora | 45/45 |
+| Individual `name.html` with stable koko | 45/45 |
 | `img.https.html` before/after CDP dedupe | 0/0 crash → 2/12 pass |
 | `wpt-batch-cookies.sh` with restarts | Unreliable 0/0 / SIGSEGV — infrastructure noise |
 
-**Probe discipline:** one velora process, `scripts/wpt-run.sh` per file, rebuild snapshot after API surface changes (`make build-v8-snapshot && make build`).
+**Probe discipline:** one koko process, `scripts/wpt-run.sh` per file, rebuild snapshot after API surface changes (`make build-v8-snapshot && make build`).
 
 ---
 
@@ -95,7 +95,7 @@ Parallel WPT batches on `:9222` with logs in `code-check/tmp/wpt-cookies-*.txt` 
 ## Lessons Learned
 
 1. **Unblock harness first** — `0/N` often means setup threw, not logic wrong.
-2. **Never trust batch scripts** that `kill` velora between files; port races produce false `0/0`.
+2. **Never trust batch scripts** that `kill` koko between files; port races produce false `0/0`.
 3. **Snapshot changes need explicit rebuild** — new window APIs are invisible until `snapshot.bin` regenerates.
 4. **CDP JSON is strict** — duplicate header keys crash wptrunner before subtests register.
 5. **Document.cookie uses document context**, not incumbent JS frame — critical for navigated-away semantics.

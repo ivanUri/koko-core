@@ -4,7 +4,7 @@
 
 ## Summary
 
-After Knitsail successfully encoded and navigated to `/search?q=…&sg_ss=*…`, Velora crashed with **`attempt to use null value`** during the CLI document transport path. Root cause: `CacheLayer.headerCallback` always did `transfer._conn.?`, but `CurlCliTransport` (used for multi-kB `sg_ss=` document hops) never attaches a libcurl `Connection`. Fix: when `_conn` is null, skip connection-backed cache metadata and forward the response.
+After Knitsail successfully encoded and navigated to `/search?q=…&sg_ss=*…`, Koko crashed with **`attempt to use null value`** during the CLI document transport path. Root cause: `CacheLayer.headerCallback` always did `transfer._conn.?`, but `CurlCliTransport` (used for multi-kB `sg_ss=` document hops) never attaches a libcurl `Connection`. Fix: when `_conn` is null, skip connection-backed cache metadata and forward the response.
 
 Post-fix: engine no longer dies; the hop completes and Google may return `/sorry` (HTTP 429 unusual traffic) depending on IP/`sg_ss` content — a separate antibot issue from the null crash.
 
@@ -49,8 +49,8 @@ CLI hops still deliver status/body via injected headers; caching for those respo
 ## Verification
 
 ```bash
-cd /Users/huydev/Desktop/velora && zig build -Doptimize=Debug -Dstrip=false
-cd /Users/huydev/Desktop/velora-run
+cd /Users/huydev/Desktop/koko && zig build -Doptimize=Debug -Dstrip=false
+cd /Users/huydev/Desktop/koko-run
 node google-knitsail-debug.mjs
 ```
 

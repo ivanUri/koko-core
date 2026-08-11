@@ -4,22 +4,22 @@
 
 ## Summary
 
-On flagged Google Search IPs, Velora loaded `enterprise.js` and `recaptcha__en.js` successfully but never rendered the reCAPTCHA widget: `cfgClients=0`, empty `#recaptcha` div, no anchor iframe. Root cause was `element.style` returning `undefined` because `creepjs_compat_shim.js` deleted `style` (and `dataset`, `offsetWidth`, …) from `Element.prototype` without copying them to `HTMLElement.prototype`. reCAPTCHA's `render()` path assigns inline styles on wrapper elements (`element.style.width`, `element.style.height`); without a `CSSStyleDeclaration`, render throws before iframe creation. The scripts ran; layout crashed late with minified stack traces. Fix: correct shim guard to use `hasOwnProperty` instead of `in`, plus spec-correct `HTMLElement` IDL members delegating to `Element` helpers.
+On flagged Google Search IPs, Koko loaded `enterprise.js` and `recaptcha__en.js` successfully but never rendered the reCAPTCHA widget: `cfgClients=0`, empty `#recaptcha` div, no anchor iframe. Root cause was `element.style` returning `undefined` because `creepjs_compat_shim.js` deleted `style` (and `dataset`, `offsetWidth`, …) from `Element.prototype` without copying them to `HTMLElement.prototype`. reCAPTCHA's `render()` path assigns inline styles on wrapper elements (`element.style.width`, `element.style.height`); without a `CSSStyleDeclaration`, render throws before iframe creation. The scripts ran; layout crashed late with minified stack traces. Fix: correct shim guard to use `hasOwnProperty` instead of `in`, plus spec-correct `HTMLElement` IDL members delegating to `Element` helpers.
 
 ---
 
 ## Problem
 
-Sorry-page parity compare (`npm run google:sorry-parity`) showed Velora and Chrome diverged on DOM outcome despite similar script network activity:
+Sorry-page parity compare (`npm run google:sorry-parity`) showed Koko and Chrome diverged on DOM outcome despite similar script network activity:
 
-| Signal | Chrome | Velora (before) |
+| Signal | Chrome | Koko (before) |
 |--------|--------|-----------------|
 | `cfgClients` | 1 | 0 |
 | `hasRecaptchaIframe` | true | false |
 | recaptcha network hits | 9 | 2 |
 | `div.style` on fresh element | `CSSStyleDeclaration` | **undefined** |
 
-Manual CDP probe on live Velora sorry session:
+Manual CDP probe on live Koko sorry session:
 
 ```javascript
 grecaptcha.enterprise.render('recaptcha')
@@ -28,7 +28,7 @@ grecaptcha.enterprise.render('recaptcha')
 document.createElement('div').style  // undefined
 ```
 
-From a browser architecture standpoint, reCAPTCHA Enterprise follows a standard **DOM construction → inline style assignment → iframe insertion** pipeline. The widget does not use shadow DOM for its anchor frame in the enterprise flow we tested; it depends on ordinary `HTMLElement` geometry and style APIs. Velora's Web API layer exposed `Element.prototype.style` correctly at snapshot time, but a **prototype relocation shim** for CreepJS parity destroyed the property before third-party code could use it.
+From a browser architecture standpoint, reCAPTCHA Enterprise follows a standard **DOM construction → inline style assignment → iframe insertion** pipeline. The widget does not use shadow DOM for its anchor frame in the enterprise flow we tested; it depends on ordinary `HTMLElement` geometry and style APIs. Koko's Web API layer exposed `Element.prototype.style` correctly at snapshot time, but a **prototype relocation shim** for CreepJS parity destroyed the property before third-party code could use it.
 
 This was not a timing/`window.load` race, `crossOrigin` policy block, or `recaptcha__en.js` eval failure. Network analysis alone was misleading — scripts loaded, but render aborted silently until we probed `createElement('div').style`.
 
@@ -38,7 +38,7 @@ This was not a timing/`window.load` race, `crossOrigin` policy block, or `recapt
 
 ### Prototype chain layout in browsers
 
-In Chromium, several IDL members live on `HTMLElement.prototype` even though conceptually they are "element" APIs: `style`, `dataset`, `offsetWidth`, `offsetHeight`, `offsetTop`, `offsetLeft`. CreepJS `getPrototypeLies` compares prototype descriptor shapes between engines. Velora's antidetect stack mirrors Chrome layout by **moving** certain accessors from `Element.prototype` to `HTMLElement.prototype` at context initialization.
+In Chromium, several IDL members live on `HTMLElement.prototype` even though conceptually they are "element" APIs: `style`, `dataset`, `offsetWidth`, `offsetHeight`, `offsetTop`, `offsetLeft`. CreepJS `getPrototypeLies` compares prototype descriptor shapes between engines. Koko's antidetect stack mirrors Chrome layout by **moving** certain accessors from `Element.prototype` to `HTMLElement.prototype` at context initialization.
 
 ### The shim bug
 
@@ -73,7 +73,7 @@ With `style === undefined`, the minified bundle throws `Cannot read properties o
 ### Step 1 — Sorry parity baseline
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 npm run google:sorry-parity -- --query "test-$(date +%s)"
 ```
 
@@ -81,7 +81,7 @@ Confirmed `cfgClients=0` vs Chrome `1`, `hasRecaptchaIframe=false`.
 
 ### Step 2 — Live CDP stack trace
 
-`Runtime.evaluate` on Velora sorry session:
+`Runtime.evaluate` on Koko sorry session:
 
 ```javascript
 grecaptcha.enterprise.render('recaptcha')
@@ -91,7 +91,7 @@ Stack pointed at `recaptcha__en.js` reading `.width` on undefined — not at scr
 
 ### Step 3 — Prototype descriptor audit
 
-On fresh Velora context:
+On fresh Koko context:
 
 ```javascript
 Object.getOwnPropertyDescriptor(Element.prototype, 'style')      // null
@@ -117,7 +117,7 @@ Traced `creepjs_compat_shim.js` move loop — `in` operator vs `Object.prototype
 ### Verification commands
 
 ```bash
-# Start velora with warmed profile, navigate to /sorry page via CDP
+# Start koko with warmed profile, navigate to /sorry page via CDP
 node scripts/cdp-profile-probe.mjs --profile chrome-local-huys-macbook-pro --max-sec 20
 ```
 
@@ -163,8 +163,8 @@ Sorry parity: recaptcha chain 2 → 6+ hits; anchor + webworker load. Remaining 
 - [HTMLElement.style — MDN](https://developer.mozilla.org/en-US/docs/Web/API/HTMLElement/style)
 - [HTML Living Standard — HTMLElement IDL](https://html.spec.whatwg.org/multipage/dom.html#htmlelement)
 - Google sorry page loads `/recaptcha/enterprise.js` → dynamic `recaptcha__en.js` → `grecaptcha.enterprise.render` on `window` `load` / `complete`
-- Velora: `src/core/js/creepjs_compat_shim.js`
-- Velora: `src/core/webapi/element/Html.zig`, `Element.zig`
+- Koko: `src/core/js/creepjs_compat_shim.js`
+- Koko: `src/core/webapi/element/Html.zig`, `Element.zig`
 - Tooling: `scripts/cdp-profile-probe.mjs` (20s budget)
 
 ---

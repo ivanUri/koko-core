@@ -106,7 +106,7 @@ ICE candidates land on the network thread; JS only sees them when `Frame.drainRt
 Probe (durable):
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build -Doptimize=ReleaseSafe
 node scripts/cdp-browserleaks-webrtc-probe.mjs --profile chrome-local-huys-macbook-pro --max-sec 20
 ```
@@ -129,7 +129,7 @@ Artifacts: `code-check/tmp/browserleaks-webrtc/{REPORT,ice,page}.json`.
 
 ### Explicitly not “fixed”
 
-- BrowserLeaks classifies **global IPv6 host** addresses as Public (private-range table only). That matches real Chrome on dual-stack hosts; not a Velora bug.
+- BrowserLeaks classifies **global IPv6 host** addresses as Public (private-range table only). That matches real Chrome on dual-stack hosts; not a Koko bug.
 - Headless `getUserMedia` still rejects (SecurityError); labels stay empty until permission — Chrome-like.
 
 ---

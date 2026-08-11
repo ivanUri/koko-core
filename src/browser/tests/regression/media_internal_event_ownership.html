@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8">
+
+<body>pending</body>
+<audio id="media"></audio>
+<script>
+  window.testing = {
+    assertOk: () => document.body.id === "media-events-pass",
+    printTimeoutState: () => console.log(document.body.textContent),
+  };
+
+  const media = document.getElementById("media");
+  const received = [];
+  for (const type of ["play", "playing", "pause", "emptied"]) {
+    media.addEventListener(type, (event) => {
+      if (!event.isTrusted) throw new Error(`${type} was not user-agent generated`);
+      received.push(type);
+    });
+  }
+
+  media.play();
+  media.pause();
+  media.load();
+
+  const expected = "play,playing,pause,emptied";
+  if (received.join(",") !== expected) {
+    throw new Error(`unexpected media event order: ${received.join(",")}`);
+  }
+  document.body.textContent = "media-events-pass";
+  document.body.id = "media-events-pass";
+</script>

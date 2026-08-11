@@ -2,7 +2,7 @@
 
 ## Summary
 
-CreepJS **`windowFeatures`** hashes the **ordered key list** from `Object.keys(Object.getOwnPropertyNames(window))` (after internal filtering), not merely the presence of globals. Velora's antidetect runtime exposed **extra properties**, **different key order**, and a distinct enumeration in the **phantom iframe** context. `WindowKeysIntelligent` installs a profile-driven **`Object.getOwnPropertyNames` hook** that reorders keys to match captured Chrome order and prunes noise, restoring section **MATCH** with **`lies=0`**.
+CreepJS **`windowFeatures`** hashes the **ordered key list** from `Object.keys(Object.getOwnPropertyNames(window))` (after internal filtering), not merely the presence of globals. Koko's antidetect runtime exposed **extra properties**, **different key order**, and a distinct enumeration in the **phantom iframe** context. `WindowKeysIntelligent` installs a profile-driven **`Object.getOwnPropertyNames` hook** that reorders keys to match captured Chrome order and prunes noise, restoring section **MATCH** with **`lies=0`**.
 
 Property **order** is fingerprint surface area—a lesson that applies across `navigator.properties`, `css` computed keys, and `features.jsFeaturesKeys`. Antidetect patches that add APIs without fixing enumeration order still fail CreepJS and similar collectors.
 
@@ -25,7 +25,7 @@ In `code-check/sites/creep/creep.js`, `windowFeatures` collection walks:
 1. `Object.getOwnPropertyNames(window)` (with CreepJS filtering)
 2. Ordered processing for hash input
 
-Velora diverged because:
+Koko diverged because:
 
 | Factor | Effect |
 |--------|--------|
@@ -36,7 +36,7 @@ Velora diverged because:
 
 ### Distinction from navigator hook
 
-| Section | Enumeration API | Velora hook |
+| Section | Enumeration API | Koko hook |
 |---------|-----------------|-------------|
 | `windowFeatures` | `Object.getOwnPropertyNames(window)` | `WindowKeysIntelligent` |
 | `navigator.properties` | `Object.keys(Object.getPrototypeOf(navigator))` | `NavigatorKeysIntelligent` |
@@ -50,7 +50,7 @@ Reusing one hook for both fails field compare.
 ### Section compare
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build install
 node scripts/cdp-creepjs-section-compare.mjs \
   --profile chrome-local-huys-macbook-pro \
@@ -159,7 +159,7 @@ Document any baseline refresh in the PR: Chrome 150+ may add new globals that mu
 
 - CreepJS: `code-check/sites/creep/creep.js` — `windowFeatures`, `getPrototypeLies`
 - ECMAScript: `Object.getOwnPropertyNames`
-- Velora: `src/runtime/profile/WindowKeysIntelligent.zig`, `src/core/browser/Frame.zig`
+- Koko: `src/runtime/profile/WindowKeysIntelligent.zig`, `src/core/browser/Frame.zig`
 - Chrome baseline: `browser/profiles/assets/chrome-local-huys-macbook-pro-window-keys.json`
 - Probe: `scripts/cdp-section-field-compare.mjs features`
 - Section compare: `scripts/cdp-creepjs-section-compare.mjs`

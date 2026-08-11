@@ -257,7 +257,7 @@ test "signRequest: adds headers with correct names" {
 
     var headers = try Http.Headers.init(
         "User-Agent: Test-Agent",
-        "Sec-Ch-Ua: \"Velora\";v=\"1\"",
+        "Sec-Ch-Ua: \"Koko\";v=\"1\"",
         "Accept-Language: en-US,en;q=0.9",
     );
     defer headers.deinit();

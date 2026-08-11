@@ -1,5 +1,5 @@
 const std = @import("std");
-const v = @import("velora");
+const v = @import("koko");
 
 const Allocator = std.mem.Allocator;
 

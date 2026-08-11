@@ -2,7 +2,7 @@
 
 ## Summary
 
-Velora's first deterministic workflow layer records successful automation
+Koko's first deterministic workflow layer records successful automation
 operations as versioned structured data. It does not persist MCP transcripts,
 model reasoning, native pointers, or backend node IDs. The canonical artifact
 can be replayed by the native runtime without invoking a model and can also be
@@ -31,7 +31,7 @@ The number `42` has meaning only inside the document that produced it. A
 workflow loaded later cannot safely resolve it. Treating it as durable identity
 would create workflows that appear valid but click arbitrary or missing nodes.
 
-Velora consequently begins with a deliberately narrow replayable set:
+Koko consequently begins with a deliberately narrow replayable set:
 
 | Operation | Replayable | Reason |
 |---|---:|---|
@@ -115,5 +115,5 @@ separate gates and should not be hidden inside the journal.
 
 ## Related Knowledge
 
-- [Velora adoption roadmap](2026-07-31-velora-adoption-roadmap.md)
+- [Koko adoption roadmap](2026-07-31-koko-adoption-roadmap.md)
 - [SDK smoke tests and workflows](../sdk/2026-06-30-sdk-smoke-and-workflows.md)

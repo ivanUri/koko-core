@@ -7,11 +7,11 @@ window.testing = {
   printTimeoutState: () => console.log(document.body.textContent),
 };
 
-localStorage.removeItem("velora-stale-child-callback");
+localStorage.removeItem("koko-stale-child-callback");
 const frame = document.createElement("iframe");
 frame.srcdoc = `<!doctype html><script>
   setTimeout(() => localStorage.setItem(
-    "velora-stale-child-callback", "fired"), 30);
+    "koko-stale-child-callback", "fired"), 30);
 <\/script>`;
 document.body.appendChild(frame);
 
@@ -21,8 +21,8 @@ frame.contentWindow.location.href =
   "navigation_drops_stale_realm_callbacks_target.html";
 
 setTimeout(() => {
-  const staleFired = localStorage.getItem("velora-stale-child-callback") === "fired";
-  localStorage.removeItem("velora-stale-child-callback");
+  const staleFired = localStorage.getItem("koko-stale-child-callback") === "fired";
+  localStorage.removeItem("koko-stale-child-callback");
   const childLoaded = frame.contentDocument?.body?.id === "target";
   document.body.id = !staleFired && childLoaded ? "pass" : "fail";
   document.body.textContent = JSON.stringify({staleFired, childLoaded});

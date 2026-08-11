@@ -1,5 +1,5 @@
 // Host environment probes for antidetect profile coherence.
-// When the canonical profile JSON disagrees with the machine Velora runs on,
+// When the canonical profile JSON disagrees with the machine Koko runs on,
 // Google Knitsail-style checks can flag the mismatch (screen vs window, TZ, CPU).
 
 const std = @import("std");

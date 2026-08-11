@@ -4,7 +4,7 @@
 
 ## Summary
 
-Ran 30 WPT suites covering `queueMicrotask`, timers, promise job queue, `unhandledrejection`, and `window.onerror` against Velora `:9223`. Initial batch: **14 Pass / 41 Fail / 3 Crash**. Root causes: missing V8 uncaught-exception reporting, microtask checkpoints aborted while root realm stayed `.initializing` after parse, and timer callbacks swallowing JS exceptions.
+Ran 30 WPT suites covering `queueMicrotask`, timers, promise job queue, `unhandledrejection`, and `window.onerror` against Koko `:9223`. Initial batch: **14 Pass / 41 Fail / 3 Crash**. Root causes: missing V8 uncaught-exception reporting, microtask checkpoints aborted while root realm stayed `.initializing` after parse, and timer callbacks swallowing JS exceptions.
 
 ## Problem
 
@@ -15,7 +15,7 @@ Ran 30 WPT suites covering `queueMicrotask`, timers, promise job queue, `unhandl
 | `Crash 0/0` | `promise-job-entry*` (intermittent) |
 | Partial pass | `queue-microtask.any` 4/5, `promise-rejection-events` 29/43 |
 
-Velora never registered a V8 `MessageListener`, so exceptions from `queueMicrotask(() => { throw err })` and timer string bodies never reached `window.onerror` / `addEventListener('error')`.
+Koko never registered a V8 `MessageListener`, so exceptions from `queueMicrotask(() => { throw err })` and timer string bodies never reached `window.onerror` / `addEventListener('error')`.
 
 `Execution.canEnterJs(.allow_draining)` allowed microtasks for **child** iframes during `.initializing` (Turnstile) but not the **root** frame after document parse — starving promise reactions during load.
 
@@ -64,7 +64,7 @@ Velora never registered a V8 `MessageListener`, so exceptions from `queueMicrota
 ## Run command
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 WPT_ADDR=http://localhost:8000 CDP_WS=ws://127.0.0.1:9223 CONCURRENCY=1 \
   ./code-check/tmp/wpt-async-error-run.sh
 ```

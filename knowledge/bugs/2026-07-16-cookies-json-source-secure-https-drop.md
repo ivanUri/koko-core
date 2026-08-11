@@ -2,7 +2,7 @@
 
 ## Summary
 
-Loading a mature Chrome cookie jar into Velora (`Cookies.json`) appeared to succeed (`Cookie.loadFromFile count=N`) but **hop-1 document navigations to `https://` sent zero cookies**. Only cookies set live via `Set-Cookie` during the session (e.g. short `AEC`) appeared on later hops. Google Search stayed on the low-trust bootstrap/`sei`/`sg_ss`/`/sorry` path despite a Profile 45 jar that historically unlocked SERP.
+Loading a mature Chrome cookie jar into Koko (`Cookies.json`) appeared to succeed (`Cookie.loadFromFile count=N`) but **hop-1 document navigations to `https://` sent zero cookies**. Only cookies set live via `Set-Cookie` during the session (e.g. short `AEC`) appeared on later hops. Google Search stayed on the low-trust bootstrap/`sei`/`sg_ss`/`/sorry` path despite a Profile 45 jar that historically unlocked SERP.
 
 ## Root cause
 
@@ -38,4 +38,4 @@ After fix: hop-1 `cookieBytes≈2376`, single-hop SERP `htmlLen≈397072`.
 ## Related
 
 - Layer 0 session trust (google-search-investigation-journey.md)
-- Not IP: same host Chrome guest SERP OK; cold Velora jar-with-bug still sorry
+- Not IP: same host Chrome guest SERP OK; cold Koko jar-with-bug still sorry

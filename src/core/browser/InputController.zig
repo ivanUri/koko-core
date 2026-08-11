@@ -46,7 +46,7 @@ pub fn dispatchActivationOnElement(element: *Element, frame: *Frame) !void {
     try dispatchActivationOnTarget(hit);
 }
 
-/// Fast activation for Velora.clickNode / automation.
+/// Fast activation for Koko.clickNode / automation.
 ///
 /// Uses a **trusted** `click` (not `HTMLElement.click()`, which is untrusted).
 /// Fluent/React on signup.live.com ignore untrusted clicks on primary Next.
@@ -59,7 +59,7 @@ pub fn dispatchActivationOnElement(element: *Element, frame: *Frame) !void {
 /// Fluent SPA trees make hit-test origin walks pathologically expensive
 /// (`computeLayoutOriginForHitTestDepth` + sibling visibility), blocking the
 /// CDP thread for tens of seconds so `Runtime.evaluate` times out after
-/// `Velora.clickNode` returns. Click default actions only need the target element;
+/// `Koko.clickNode` returns. Click default actions only need the target element;
 /// clientX/Y are immaterial for form submit / React handlers.
 pub fn dispatchActivationOnElementFast(element: *Element, frame: *Frame) !void {
     const hit = Frame.InputHit{

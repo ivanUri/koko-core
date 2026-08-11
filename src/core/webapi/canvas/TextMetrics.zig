@@ -20,7 +20,7 @@ const Frame = @import("../../browser/Frame.zig");
 /// TextMetrics is the result of `CanvasRenderingContext2D.measureText`.
 /// https://html.spec.whatwg.org/multipage/canvas.html#textmetrics
 ///
-/// Velora is headless and has no font system, so measurements are estimated
+/// Koko is headless and has no font system, so measurements are estimated
 /// using simple character-based heuristics. This provides deterministic values
 /// for fingerprinting and basic layout code without requiring a full font engine.
 const TextMetrics = @This();

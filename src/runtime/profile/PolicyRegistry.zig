@@ -350,23 +350,23 @@ const google_search_policy = [_][]const u8{"google-search"};
 test "PolicyRegistry: antidetect match on google search URL" {
     var registry = try PolicyRegistry.init(testing.allocator);
     defer registry.deinit();
-    const url = "https://www.google.com/search?q=velora";
+    const url = "https://www.google.com/search?q=koko";
     const policy = registry.matchNavigation(.antidetect, &google_search_policy, url);
     try testing.expect(policy != null);
     try testing.expectString("google-search", policy.?.id);
 }
 
-test "PolicyRegistry: velora mode skips antidetect-only policy" {
+test "PolicyRegistry: koko mode skips antidetect-only policy" {
     var registry = try PolicyRegistry.init(testing.allocator);
     defer registry.deinit();
-    const url = "https://www.google.com/search?q=velora";
-    try testing.expect(registry.matchNavigation(.velora, &google_search_policy, url) == null);
+    const url = "https://www.google.com/search?q=koko";
+    try testing.expect(registry.matchNavigation(.koko, &google_search_policy, url) == null);
 }
 
 test "PolicyRegistry: antidetect without profile opt-in skips policy" {
     var registry = try PolicyRegistry.init(testing.allocator);
     defer registry.deinit();
-    const url = "https://www.google.com/search?q=velora";
+    const url = "https://www.google.com/search?q=koko";
     try testing.expect(registry.matchNavigation(.antidetect, &.{}, url) == null);
 }
 

@@ -17,9 +17,9 @@
 
 ## 2. `App.zig` — app instance gốc
 
-`App` là struct gốc giữ: `network: Network`, `config: *const Config`, `storage: Storage`, `platform: Platform` (V8 platform), `snapshot: Snapshot` (V8 heap snapshot đã build sẵn — xem `zig build snapshot_creator`), `telemetry`, `arena_pool: ArenaPool`, `app_dir_path` (thư mục dữ liệu ứng dụng, macOS: `~/Library/Application Support/velora/`).
+`App` là struct gốc giữ: `network: Network`, `config: *const Config`, `storage: Storage`, `platform: Platform` (V8 platform), `snapshot: Snapshot` (V8 heap snapshot đã build sẵn — xem `zig build snapshot_creator`), `telemetry`, `arena_pool: ArenaPool`, `app_dir_path` (thư mục dữ liệu ứng dụng, macOS: `~/Library/Application Support/koko/`).
 
-`App.init()` khởi tạo theo thứ tự: Platform → Snapshot.load() → Storage → Network → app dir → Telemetry → ArenaPool. `deinit()` giải phóng theo thứ tự ngược lại. Đây là điểm khởi đầu thực sự khi chạy `velora fetch`/`serve`.
+`App.init()` khởi tạo theo thứ tự: Platform → Snapshot.load() → Storage → Network → app dir → Telemetry → ArenaPool. `deinit()` giải phóng theo thứ tự ngược lại. Đây là điểm khởi đầu thực sự khi chạy `koko fetch`/`serve`.
 
 ## 3. `ArenaPool.zig` — nguồn gốc của bug "ArenaPool: leaked arenas detected"
 
@@ -84,7 +84,7 @@ Model threading: có main thread (chạy `Network.tick`/`poll`) và các submiss
 
 Đây là phần triển khai chi tiết cho mục tiêu "trông giống trình duyệt thật" mà `knowledge/fingerprint/` và `knowledge/captcha/` mô tả ở tầng kiến trúc/nghiên cứu. Các file đáng chú ý (tên đã tự giải thích khá rõ, xác nhận qua cấu trúc thư mục):
 
-- `Profile.zig`, `ProfileManager.zig`, `ProfileStore.zig`, `ProfileRuntime.zig`, `ProfileRotation.zig`, `ProfilePaths.zig` — quản lý "hồ sơ trình duyệt" (giống Chrome profile: cookie, localStorage, fingerprint seed cố định theo `--browser-profile <name>` — CLI flag ta dùng suốt session debug, ví dụ `huynew`). `ProfilePaths.zig` chắc chắn định nghĩa đường dẫn `~/Library/Application Support/velora/<profile>/Cookies.json`, `Local Storage/storage.json` mà ta đã thấy trong log.
+- `Profile.zig`, `ProfileManager.zig`, `ProfileStore.zig`, `ProfileRuntime.zig`, `ProfileRotation.zig`, `ProfilePaths.zig` — quản lý "hồ sơ trình duyệt" (giống Chrome profile: cookie, localStorage, fingerprint seed cố định theo `--browser-profile <name>` — CLI flag ta dùng suốt session debug, ví dụ `huynew`). `ProfilePaths.zig` chắc chắn định nghĩa đường dẫn `~/Library/Application Support/koko/<profile>/Cookies.json`, `Local Storage/storage.json` mà ta đã thấy trong log.
 - `FingerprintSeed.zig`, `FingerprintStore.zig` — seed ngẫu nhiên/cố định để fingerprint (canvas, audio, WebGL...) nhất quán giữa các lần chạy cùng 1 profile nhưng khác biệt giữa các profile.
 - `AudioIntelligent.zig`, `CanvasIntelligent.zig`, `ClientRectsIntelligent.zig`, `HtmlElementVersionIntelligent.zig`, `MeasureTextIntelligent.zig`, `NavigatorKeysIntelligent.zig`, `SvgIntelligent.zig`, `WebGLIntelligent.zig`, `WindowKeysIntelligent.zig` — mỗi file là một "bộ giả lập thông minh" cho 1 vector fingerprint cụ thể (âm thanh, canvas, getClientRects, DOM version quirks, đo văn bản, navigator keys, SVG, WebGL, window keys) — tương ứng trực tiếp với các thư mục nghiên cứu `knowledge/fingerprint/{audio,canvas,webgl,...}/`.
 - `NativeCanvas.zig`, `NativeBuiltinHooks.zig` — hook các hàm builtin JS/canvas ở tầng native để giả mạo nhất quán (khớp với `knowledge/bugs/2026-06-29-creepjs-*` và `2026-07-13-creepjs-maths-timing-injection.md`).
@@ -106,7 +106,7 @@ Model threading: có main thread (chạy `Network.tick`/`poll`) và các submiss
 - `sqlite/Sqlite.zig`, `sqlite/Pool.zig`, `sqlite/migrations.zig` — SQLite được dùng làm backend lưu trữ bền (có connection pool + migration hệ thống). Đây khớp với hạng mục "IndexedDB, lifecycle" trong commit gần nhất của repo (`c5dbba57`, `fecc9015`) — rất có thể IndexedDB (`src/core/webapi/idb.zig`) dùng sqlite làm backend lưu trữ qua lớp này.
 
 ## 8. `telemetry/`
-`telemetry.zig`, `velora.zig` — thu thập số liệu vận hành (đã thấy gọi `session.browser.app.telemetry.record(.{ .navigate = .{...} })` trong `Frame.navigate()` với field `tls`, `proxy`...).
+`telemetry.zig`, `koko.zig` — thu thập số liệu vận hành (đã thấy gọi `session.browser.app.telemetry.record(.{ .navigate = .{...} })` trong `Frame.navigate()` với field `tls`, `proxy`...).
 
 ## 9. `Config.zig` (1061 dòng) — cấu hình toàn cục
 
@@ -116,7 +116,7 @@ File cấu hình lớn nhất repo — đây LÀ nơi ánh xạ mọi cờ CLI (
 
 - `Notification.zig` — hệ thống dispatch sự kiện nội bộ dùng xuyên suốt (`session.notification.dispatch(.frame_navigate, &.{...})`, `.frame_child_frame_created`...) — cơ chế observer pattern trung tâm để các module khác (CDP domains, telemetry...) lắng nghe sự kiện browser mà không cần phụ thuộc trực tiếp.
 - `cookies.zig` — parse/serialize cookie (định dạng JSON đã thấy trong `Cookies.json`).
-- `profile_cmd.zig` — logic cho subcommand CLI `velora profile`.
+- `profile_cmd.zig` — logic cho subcommand CLI `koko profile`.
 - `profile_session.zig`, `session_persist.zig` — cầu nối giữa `profile/` (fingerprint/identity) và việc lưu/khôi phục trạng thái phiên (`profile_session.bootstrap`, `profile_session.persist`, `session_persist.loadStorage`, `session_persist.saveStorage` — tên hàm khớp 100% với các dòng log INFO đã thấy nhiều lần trong session debug).
 
 ## 11. Bảng tra cứu nhanh
@@ -130,7 +130,7 @@ File cấu hình lớn nhất repo — đây LÀ nơi ánh xạ mọi cờ CLI (
 | Chính sách huỷ khi navigate (chống UAF) | `RealmLifecycleKernel.zig` (đọc docstring đầu file trước) |
 | Cờ CLI ánh xạ vào đâu | `Config.zig` |
 | Fingerprint 1 vector cụ thể (canvas/audio/webgl...) | `profile/*Intelligent.zig` tương ứng + `knowledge/fingerprint/<vector>/` |
-| Cookie/localStorage lưu ở đâu, format gì | `storage/Storage.zig`, `cookies.zig`, `~/Library/Application Support/velora/<profile>/` |
+| Cookie/localStorage lưu ở đâu, format gì | `storage/Storage.zig`, `cookies.zig`, `~/Library/Application Support/koko/<profile>/` |
 | IndexedDB backend | `storage/sqlite/*.zig` (khớp commit gần nhất "IndexedDB, lifecycle") |
 | Sự kiện nội bộ browser (navigate, frame created...) | `Notification.zig` — tìm `notification.dispatch(.X, ...)` |
 | robots.txt / Web Bot Auth | `network/Robots.zig`, `network/WebBotAuth.zig`, `network/layer/RobotsLayer.zig` |

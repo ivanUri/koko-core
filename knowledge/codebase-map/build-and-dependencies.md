@@ -1,8 +1,8 @@
 # Build & Dependencies Map
 
-Tài liệu này mô tả toàn bộ hệ thống build của Velora (`build.zig`, ~52KB /
+Tài liệu này mô tả toàn bộ hệ thống build của Koko (`build.zig`, ~52KB /
 1262 dòng, `build.zig.zon`, `Makefile`, `Dockerfile`) để một phiên AI coding
-trong tương lai không cần đọc lại toàn bộ `build.zig` mỗi lần. Velora là một
+trong tương lai không cần đọc lại toàn bộ `build.zig` mỗi lần. Koko là một
 headless browser engine viết bằng Zig (~178K LOC), hướng tới automation/AI
 (xem `README.md`, `AGENTS.md`).
 
@@ -19,7 +19,7 @@ Nguồn: `build.zig`, `build.zig.zon`, `Makefile`, `Dockerfile`,
 
 - **`zig build` trần** (không qua Makefile) build ở optimize mode mặc định
   là **Debug**, và **không** tự tạo V8 snapshot trước — nếu không truyền
-  `-Dsnapshot_path`, `opts.snapshot_path` sẽ là `null` (velora runtime tự xử
+  `-Dsnapshot_path`, `opts.snapshot_path` sẽ là `null` (koko runtime tự xử
   lý trường hợp thiếu snapshot, xem `src/main_snapshot_creator.zig` /
   runtime dùng snapshot làm gì thì ngoài phạm vi file build.zig).
 - **Makefile `build`** luôn build ở **ReleaseFast** và luôn build V8 snapshot
@@ -39,10 +39,10 @@ Nguồn: `build.zig`, `build.zig.zon`, `Makefile`, `Dockerfile`,
 | `build-v8-snapshot` | `zig build -Doptimize=ReleaseFast snapshot_creator -- src/snapshot.bin` | Sinh file `src/snapshot.bin` (V8 heap snapshot) ở chế độ ReleaseFast. Là dependency của `build`. |
 | `build` | phụ thuộc `build-v8-snapshot`, sau đó `zig build -Doptimize=ReleaseFast -Dsnapshot_path=../../snapshot.bin` | Build production/release đầy đủ, có snapshot. Dùng khi cần benchmark hoặc phát hành. |
 | `build-dev` | `zig build` (Debug, mặc định) | Build nhanh cho vòng lặp phát triển; **không** build snapshot riêng. |
-| `run` | phụ thuộc `build`, sau đó chạy `./zig-out/bin/velora` | Chạy bản ReleaseFast đã build. |
-| `run-debug` | phụ thuộc `build-dev`, sau đó chạy `./zig-out/bin/velora` | Chạy bản Debug đã build. |
+| `run` | phụ thuộc `build`, sau đó chạy `./zig-out/bin/koko` | Chạy bản ReleaseFast đã build. |
+| `run-debug` | phụ thuộc `build-dev`, sau đó chạy `./zig-out/bin/koko` | Chạy bản Debug đã build. |
 | `test` | `TEST_FILTER="$F" zig build test -freference-trace`, chạy qua `script` để giữ TTY và `grep -v` lọc bỏ dòng lệnh compile khổng lồ | Chạy unit test. Hỗ trợ filter qua `make test F="server"`. |
-| `bench` | phụ thuộc `build`, rồi `npm run bench:compare:publish` | So sánh hiệu năng Velora vs Chromium (cần preflight ReleaseFast). |
+| `bench` | phụ thuộc `build`, rồi `npm run bench:compare:publish` | So sánh hiệu năng Koko vs Chromium (cần preflight ReleaseFast). |
 | `end2end` | yêu cầu thư mục `../demo` tồn tại, chạy `go run runner/main.go` trong đó | Test end-to-end qua repo `demo` runner viết bằng Go (external, sibling repo). |
 | `install` | phụ thuộc `build` | Alias build cho "install" workflow. |
 | `data` | `cd src/data && go run public_suffix_list_gen.go > public_suffix_list.zig` | Sinh lại file Zig danh sách public suffix (dùng Go, không phải Zig, chạy thủ công khi cần cập nhật). |
@@ -67,10 +67,10 @@ chứ không phải cờ độc lập của repo chính, xem mục 4a).
 | `-Dprebuilt_v8_path` | `?[]const u8` | `null` | Đường dẫn tới file `libc_v8.a` đã build sẵn. Khi set, `linkV8` bỏ qua toàn bộ bootstrap depot_tools/V8 nguồn và chỉ link thẳng archive này (dùng trong CI / Dockerfile để tránh build V8 from source). |
 | `-Dsnapshot_path` | `?[]const u8` | `null` | Đường dẫn tới file V8 snapshot (`.bin`) để nhúng vào runtime; forward vào `build_config` module qua `opts.addOption`. |
 | `-Dversion` | `[]const u8` | (đọc từ `build.zig.zon`) | Override version string, xử lý trong `resolveVersion()` (mục 6). |
-| `-Dstrip` | `bool` | `true` | Có strip debug symbol khỏi binary `velora` hay không. **Mặc định true kể cả ở Debug** — đây là workaround cho bug compiler Zig 0.15.2 (mục 8). |
-| `-Dtsan` | `bool` | `false` | Bật Thread Sanitizer (`sanitize_thread`) cho velora module, curl, zlib, nghttp2, libidn2, usrsctp, v.v. Cũng forward `is_tsan=true` vào dependency V8 (ảnh hưởng `v8_enable_sandbox` — xem `linkV8`: `.v8_enable_sandbox = is_tsan`). |
-| `-Dasan` | `bool` | `false` | Bật Address Sanitizer, chỉ forward vào dependency V8 (`is_asan`) — không thấy áp `sanitize_c`/riêng cho velora module trong `build.zig` chính. |
-| `-Dcsan` | `?std.zig.SanitizeC` | `null` | Bật C Sanitizer (enum kiểu Zig), áp dụng cho velora module, sqlite lib, legacy_test exe, main exe. |
+| `-Dstrip` | `bool` | `true` | Có strip debug symbol khỏi binary `koko` hay không. **Mặc định true kể cả ở Debug** — đây là workaround cho bug compiler Zig 0.15.2 (mục 8). |
+| `-Dtsan` | `bool` | `false` | Bật Thread Sanitizer (`sanitize_thread`) cho koko module, curl, zlib, nghttp2, libidn2, usrsctp, v.v. Cũng forward `is_tsan=true` vào dependency V8 (ảnh hưởng `v8_enable_sandbox` — xem `linkV8`: `.v8_enable_sandbox = is_tsan`). |
+| `-Dasan` | `bool` | `false` | Bật Address Sanitizer, chỉ forward vào dependency V8 (`is_asan`) — không thấy áp `sanitize_c`/riêng cho koko module trong `build.zig` chính. |
+| `-Dcsan` | `?std.zig.SanitizeC` | `null` | Bật C Sanitizer (enum kiểu Zig), áp dụng cho koko module, sqlite lib, legacy_test exe, main exe. |
 | (option chuẩn Zig) `-Dtarget` | target | host | Chuẩn `b.standardTargetOptions`. |
 | (option chuẩn Zig) `-Doptimize` | enum | `Debug` | Chuẩn `b.standardOptimizeOption`. Debug / ReleaseSafe / ReleaseFast / ReleaseSmall. |
 
@@ -84,7 +84,7 @@ không phải cờ của repo chính nhưng đáng biết vì thường bị nh�
 | `-Dis_tsan` | Bật TSan khi build V8 core. |
 | `-Dv8_enable_sandbox` | Bật V8 sandbox (mặc định set = `is_tsan` từ build.zig gốc). |
 | `-Dsymbol_level` | Mức symbol GN (`0` release / `1` debug mặc định). |
-| `-Dcache_root` | Thư mục cache cho depot_tools + V8 nguồn (build.zig gốc luôn truyền `.velora-cache`). |
+| `-Dcache_root` | Thư mục cache cho depot_tools + V8 nguồn (build.zig gốc luôn truyền `.koko-cache`). |
 | `-Dprebuilt_v8_path` | (trùng tên, được build.zig gốc forward) bỏ qua bootstrap hoàn toàn. |
 | `-Dinspector_subtype` | Có export `valueSubtype`/`descriptionForValueSubtype` cho V8 inspector hay không (build.zig gốc luôn set `false`). |
 
@@ -92,12 +92,12 @@ không phải cờ của repo chính nhưng đáng biết vì thường bị nh�
 
 ## 3. Build targets (executable/library) mà `build.zig` định nghĩa
 
-`build.zig` định nghĩa một module chung `velora_module` (từ
-`src/velora.zig`) rồi build nhiều artifact khác nhau dùng chung module đó:
+`build.zig` định nghĩa một module chung `koko_module` (từ
+`src/koko.zig`) rồi build nhiều artifact khác nhau dùng chung module đó:
 
-1. **Module `velora`** (`b.addModule("velora", ...)`) — root source
-   `src/velora.zig`, `link_libc = true`, `link_libcpp = true` (do có C++ như
-   V8 binding). Tự import chính nó dưới tên `"velora"` để cho phép circular
+1. **Module `koko`** (`b.addModule("koko", ...)`) — root source
+   `src/koko.zig`, `link_libc = true`, `link_libcpp = true` (do có C++ như
+   V8 binding). Tự import chính nó dưới tên `"koko"` để cho phép circular
    import, và import module `build_config` (chứa `version`,
    `version_encoded`, `snapshot_path`, `curl_impersonate` — cờ bool cho biết
    máy hiện tại có sẵn artifact curl-impersonate hay không).
@@ -106,32 +106,32 @@ không phải cờ của repo chính nhưng đáng biết vì thường bị nh�
    `b.default_step` — nghĩa là **`zig build` trần luôn chạy fmt check trước
    mọi thứ khác**, build sẽ fail nếu code chưa format.
 3. **`check` step** (`zig build check`) — build thử các `addLibrary` (không
-   sinh binary cài đặt) cho: `velora_check` (chính module velora),
-   `velora_exe_check` (root module của exe `velora`),
+   sinh binary cài đặt) cho: `koko_check` (chính module koko),
+   `koko_exe_check` (root module của exe `koko`),
    `snapshot_creator_check`, `legacy_test_check`. Dùng để có typecheck nhanh
    (LSP-style) mà không phải link full binary — hữu ích cho CI hoặc kiểm tra
    nhanh lỗi biên dịch.
-4. **Executable `velora`** (`src/adapters/cli/main.zig`) — binary chính, cài
-   vào `zig-out/bin/velora` qua `b.installArtifact(exe)`. Luôn dùng
+4. **Executable `koko`** (`src/adapters/cli/main.zig`) — binary chính, cài
+   vào `zig-out/bin/koko` qua `b.installArtifact(exe)`. Luôn dùng
    `use_llvm = true` và `strip = strip_binaries` (mặc định true — mục 8).
    Có step `run` (`zig build run -- <args>`) và step `version`
-   (`zig build version`, chạy `velora version`).
+   (`zig build version`, chạy `koko version`).
 5. **Extras step** (`zig build extras`) — **tắt khỏi default install** để
    tránh phải compile 3 executable mỗi lần sửa code (comment trong file:
    "Extras (snapshot_creator, legacy_test) are off the default install to
    avoid paying for three exe compiles on every edit"). Gồm:
-   - **`velora-snapshot-creator`** (`src/main_snapshot_creator.zig`) — sinh
+   - **`koko-snapshot-creator`** (`src/main_snapshot_creator.zig`) — sinh
      V8 heap snapshot. Có step riêng `snapshot_creator`
      (`zig build snapshot_creator -- <output.bin>`) — đây là step mà
      Makefile `build-v8-snapshot` gọi.
    - **`legacy_test`** (`src/main_legacy_test.zig`) — executable test kiểu
      cũ, có step chạy riêng `legacy_test`.
-6. **`test` step** (`zig build test`) — `b.addTest` trên `velora_module`,
+6. **`test` step** (`zig build test`) — `b.addTest` trên `koko_module`,
    dùng test runner tùy chỉnh `src/testing/test_runner.zig` (mode
    `.simple`), chạy qua `run_tests`.
 
-Tóm tắt sơ đồ phụ thuộc: `velora_module` → dùng chung bởi `velora` exe,
-`velora-snapshot-creator` exe, `legacy_test` exe, và `test` binary. Mỗi
+Tóm tắt sơ đồ phụ thuộc: `koko_module` → dùng chung bởi `koko` exe,
+`koko-snapshot-creator` exe, `legacy_test` exe, và `test` binary. Mỗi
 target cũng có một `*_check` library tương ứng gắn vào step `check` tổng.
 
 ---
@@ -148,12 +148,12 @@ bộ logic bootstrap/build V8.
 Cơ chế cache hai tầng trong `vendor/v8-wrapper/build.zig`:
 
 - `cache_root` mặc định `.lp-cache`, nhưng `build.zig` gốc luôn override
-  bằng `b.pathFromRoot(".velora-cache")` → mọi artifact V8 nằm dưới
-  `.velora-cache/v8-14.0.365.4/` và `.velora-cache/depot_tools-14.0.365.4/`
+  bằng `b.pathFromRoot(".koko-cache")` → mọi artifact V8 nằm dưới
+  `.koko-cache/v8-14.0.365.4/` và `.koko-cache/depot_tools-14.0.365.4/`
   (version hiện tại `V8_VERSION = "14.0.365.4"` — hardcode trong
   `vendor/v8-wrapper/build.zig`).
 - **`bootstrapDepotTools`**: kiểm tra marker file
-  `.velora-cache/depot_tools-<ver>/.bootstrap-complete`. Nếu tồn tại → in
+  `.koko-cache/depot_tools-<ver>/.bootstrap-complete`. Nếu tồn tại → in
   `"Using cached depot_tools bootstrap from ..."` và bỏ qua toàn bộ bước
   copy + `ensure_bootstrap`. Nếu không → copy toàn bộ depot_tools dependency
   vào cache dir và chạy `ensure_bootstrap`, việc này chậm (tải nhiều công
@@ -179,7 +179,7 @@ Cơ chế cache hai tầng trong `vendor/v8-wrapper/build.zig`:
   đường Dockerfile dùng — tải static lib `libc_v8.a` build sẵn từ GitHub
   release `zig-v8-fork`, không cần depot_tools/V8 source tại tất cả).
 
-**Kích thước thực tế quan sát**: `.velora-cache/` ~**8.9GB** (gồm
+**Kích thước thực tế quan sát**: `.koko-cache/` ~**8.9GB** (gồm
 `depot_tools-14.0.365.4/` và `v8-14.0.365.4/` — chứa toàn bộ Chromium
 depot_tools + V8 source tree + object files build). Đây không phải cache có
 thể xóa tùy tiện (xem mục 7).
@@ -189,7 +189,7 @@ thể xóa tùy tiện (xem mục 7).
 Là HTTP client giả lập TLS/JA3/JA4 fingerprint của Chrome thật (fork của
 [lexiforest/curl-impersonate], hiện tại `v2.0.0rc3` / `curl 8.21.0-IMPERSONATE`
 với BoringSSL + chữ ký ML-DSA cho Chrome 150 — xem `docs/tls-impersonate.md`,
-`docs/curl-impersonate-fork.md`). Velora cần nó vì automation/AI browsing bị
+`docs/curl-impersonate-fork.md`). Koko cần nó vì automation/AI browsing bị
 Google và nhiều site khác chặn dựa trên TLS handshake fingerprint (JA3/JA4)
 ngay cả khi HTTP headers/JS fingerprint đã khớp Chrome thật — `libcurl`
 mặc định (không impersonate) sẽ có handshake khác biệt và bị chặn (`/sorry`
@@ -232,7 +232,7 @@ Trên macOS, cả 2 nhánh đều cần link framework `CoreFoundation` +
 
 `html5ever` là HTML5 parser chuẩn viết bằng Rust (dùng qua crate nội bộ
 `litefetch-html5ever` tại `src/core/html5ever/`, có `Cargo.toml`, `lib.rs`,
-`sink.rs`, `types.rs`, `Cargo.lock`). Velora dùng nó làm parser HTML tuân thủ
+`sink.rs`, `types.rs`, `Cargo.lock`). Koko dùng nó làm parser HTML tuân thủ
 spec WHATWG thay vì tự viết parser HTML5 đầy đủ bằng Zig.
 
 Cơ chế: `linkHtml5Ever` gọi **`cargo build`** thật sự như một
@@ -268,10 +268,10 @@ dùng cho curl phía không-impersonate) cho DTLS transport của WebRTC.
 
 Lưu ý: hàm tên `linkWebRtc` nhưng thực chất chỉ build phần transport SCTP +
 DTLS (usrsctp + BoringSSL); phần "WebRTC" cấp cao hơn (ICE/SDP/PeerConnection
-logic) nằm trong mã Zig của Velora (`src/`), không phải một thư viện WebRTC
+logic) nằm trong mã Zig của Koko (`src/`), không phải một thư viện WebRTC
 đầy đủ (kiểu libwebrtc của Google) được vendor riêng.
 
-### 4e. nghttp2 (HTTP/2) — `buildNghttp2()` / `linkNghttp2ForVelora()`
+### 4e. nghttp2 (HTTP/2) — `buildNghttp2()` / `linkNghttp2ForKoko()`
 
 Thư viện HTTP/2 framing chuẩn. Build từ source (dependency `.nghttp2`, pin
 `nghttp2-1.68.0` release tarball), tự sinh header version
@@ -281,8 +281,8 @@ gốc 1.68.0, có thể là giả version để một số check runtime pass). 
 file `nghttp2_*.c` + `sfparse.c` với macro `-DNGHTTP2_STATICLIB`. Có **hai
 noi dùng**: (1) `buildNghttp2` được gọi lại bên trong `linkCurl` cho nhánh
 build-curl-from-source (không impersonate) để libcurl có HTTP/2; (2)
-`linkNghttp2ForVelora` build **một bản riêng** và link thẳng vào
-`velora_module` — nghĩa là Velora dùng nghttp2 trực tiếp ở tầng Zig (không
+`linkNghttp2ForKoko` build **một bản riêng** và link thẳng vào
+`koko_module` — nghĩa là Koko dùng nghttp2 trực tiếp ở tầng Zig (không
 chỉ qua curl), khả năng cho HTTP/2 server-side hoặc CDP/network layer riêng.
 
 ### 4f. zlib, sqlite, stb_image_write
@@ -290,7 +290,7 @@ chỉ qua curl), khả năng cho HTTP/2 server-side hoặc CDP/network layer ri�
 - **zlib** (`linkZlibModule` / `buildZlib`) — build từ source (dependency
   `.zlib`, pin `zlib-1.3.2`), compile các file chuẩn
   (`deflate.c`, `inflate.c`, `gz*.c`, …) với macro `HAVE_SYS_TYPES_H` v.v.
-  Link vào `velora_module` trực tiếp (nén/giải nén HTTP content-encoding,
+  Link vào `koko_module` trực tiếp (nén/giải nén HTTP content-encoding,
   và cũng dùng lại bên trong `buildCurl`).
 - **sqlite3** (`linkSqlite`) — dùng dependency package sẵn có
   `sqlite3` (từ `allyourcodebase/sqlite3` fork, pin theo commit, version
@@ -350,17 +350,17 @@ shaping engine đa nền tảng).
 
 ---
 
-## 6. `resolveVersion(b)` — cách tính version, dòng "Velora 1.0.2"
+## 6. `resolveVersion(b)` — cách tính version, dòng "Koko 1.0.2"
 
 `build.zig` dòng đầu `build()` gọi `resolveVersion(b)` và in ra
-`"Velora {version}\n"` — đây chính là dòng `"Velora 1.0.2"` xuất hiện ở đầu
+`"Koko {version}\n"` — đây chính là dòng `"Koko 1.0.2"` xuất hiện ở đầu
 mọi lần chạy `zig build`.
 
 Logic:
 
 1. Base version đọc trực tiếp từ `build.zig.zon` field `.version = "1.0.2"`
    (parse bằng `std.SemanticVersion.parse` ở top-level file, hằng
-   `velora_version`).
+   `koko_version`).
 2. Có thể override qua `-Dversion=<value>`:
    - Nếu `<value>` là semver hợp lệ đầy đủ (vd `2.0.0`) → thay thế hoàn toàn
      version gốc.
@@ -376,14 +376,14 @@ Logic:
    nguyên, không đụng vào git.
 
 `version_string` này được đưa vào module `build_config` (`opts.addOption`),
-runtime Velora dùng để hiển thị qua lệnh `velora version` (step `zig build
+runtime Koko dùng để hiển thị qua lệnh `koko version` (step `zig build
 version` chạy `exe -- version`). `version_encoded` chỉ là bản
 `version_string` đã escape `+` thành `%2B` (để dùng an toàn trong URL, ví dụ
 User-Agent hoặc endpoint version query).
 
 ---
 
-## 7. CẢNH BÁO dung lượng đĩa: `.zig-cache/` vs `.velora-cache/`
+## 7. CẢNH BÁO dung lượng đĩa: `.zig-cache/` vs `.koko-cache/`
 
 Đây là mục **quan trọng** cần nhớ cho các phiên sau — có sự cố thực tế đã
 xảy ra trong phiên làm việc này.
@@ -400,13 +400,13 @@ xảy ra trong phiên làm việc này.
 - **Cách khắc phục đã áp dụng và xác nhận hiệu quả**: `rm -rf .zig-cache`
   rồi build lại. Cái giá phải trả là **compile lại từ đầu toàn bộ** (mất
   khoảng vài phút, không phải hàng giờ, vì phần build tốn thời gian nhất —
-  V8, cargo, curl — nằm ở `.velora-cache/` và các dependency cache riêng của
+  V8, cargo, curl — nằm ở `.koko-cache/` và các dependency cache riêng của
   Zig package manager, không phải trong `.zig-cache/`).
 - Khuyến nghị: nếu gặp lỗi hết dung lượng đĩa hoặc build bỗng chậm bất
   thường / lỗi lạ khó hiểu, **xóa `.zig-cache/` trước tiên** — an toàn, rẻ,
   và thường giải quyết được vấn đề.
 
-### `.velora-cache/` — bootstrap V8 + depot_tools, KHÔNG xóa tùy tiện
+### `.koko-cache/` — bootstrap V8 + depot_tools, KHÔNG xóa tùy tiện
 
 - Chứa `depot_tools-<v8_version>/` và `v8-<v8_version>/` — toàn bộ cây công
   cụ Google (gn, ninja/siso, clang, gclient) **và** source tree V8 đã
@@ -417,23 +417,23 @@ xảy ra trong phiên làm việc này.
   source** qua GN/ninja — quá trình này **chậm hơn nhiều bậc** so với
   compile lại Zig code (có thể mất hàng chục phút tới hơn một giờ tùy máy
   và băng thông mạng, vì đây gần như là build một phần Chromium).
-- Chỉ nên xóa `.velora-cache/` khi thực sự cần (đổi V8 version, nghi ngờ
+- Chỉ nên xóa `.koko-cache/` khi thực sự cần (đổi V8 version, nghi ngờ
   cache hỏng, hoặc cố tình dọn dẹp có chủ đích) — **không** dùng nó như biện
   pháp "dọn đĩa nhanh" giống `.zig-cache/`.
-- Đường tắt để tránh tốn `.velora-cache/` hoàn toàn: dùng
+- Đường tắt để tránh tốn `.koko-cache/` hoàn toàn: dùng
   `-Dprebuilt_v8_path=<path/to/libc_v8.a>` (con đường Dockerfile dùng — tải
   static lib build sẵn từ GitHub release, bỏ qua depot_tools/V8-from-source
   hoàn toàn).
 
 **Tóm tắt quyết định nhanh**: hết đĩa hoặc build lỗi lạ → thử xóa
-`.zig-cache/` trước (rẻ). Không bao giờ xóa `.velora-cache/` như bước xử lý
+`.zig-cache/` trước (rẻ). Không bao giờ xóa `.koko-cache/` như bước xử lý
 sự cố đầu tiên (đắt).
 
 ---
 
 ## 8. Bug compiler Zig 0.15.2 đã biết — vì sao luôn strip debug info
 
-Comment trực tiếp trong `build.zig` (ngay tại định nghĩa executable `velora`,
+Comment trực tiếp trong `build.zig` (ngay tại định nghĩa executable `koko`,
 gần option `strip`):
 
 > `// Zig 0.15.2: LLVM+Debug SIGSEGV in lowerDebugType; native+Debug SIGSEGV`
@@ -443,7 +443,7 @@ gần option `strip`):
 Ý nghĩa: bản thân Zig compiler 0.15.2 có bug crash (SIGSEGV) khi cố sinh
 debug type info cho các kiểu dữ liệu đệ quy/phức tạp trong build Debug — cả
 hai backend (LLVM backend qua `lowerDebugType`, và backend "native"/self-hosted
-qua `updateLazySymbol`) đều bị ảnh hưởng. Đây không phải bug của code Velora
+qua `updateLazySymbol`) đều bị ảnh hưởng. Đây không phải bug của code Koko
 mà là bug ở chính Zig toolchain 0.15.2.
 
 **Workaround áp dụng**: cờ `-Dstrip` (mục 2) mặc định là `true` **ngay cả ở
@@ -471,7 +471,7 @@ rủi ro gặp lại SIGSEGV compiler bug nói trên đối với một số ki�
 ## 9. Dockerfile — mục đích và các bước
 
 `Dockerfile` là build **multi-stage** (3 `FROM debian:stable-slim` liên
-tiếp), dùng để tạo **container runtime image** để chạy Velora ở chế độ
+tiếp), dùng để tạo **container runtime image** để chạy Koko ở chế độ
 server (`serve`), không phải để dev/test.
 
 ### Stage 0 — build stage (không đặt tên, `FROM debian:stable-slim`)
@@ -481,7 +481,7 @@ server (`serve`), không phải để dev/test.
 2. Cài **Rust toolchain** qua `rustup.rs` (profile minimal) — cần cho bước
    `cargo build` của html5ever (mục 4c).
 3. Cài `minisign` (công cụ verify chữ ký) để xác thực tarball Zig tải về.
-4. `git clone https://github.com/velora-io/browser.git` — **lưu ý: Dockerfile
+4. `git clone https://github.com/koko-io/browser.git` — **lưu ý: Dockerfile
    clone từ remote GitHub, không COPY code từ context build local** — nghĩa
    là build Docker image sẽ luôn lấy code mới nhất trên `main` của remote,
    không phải working tree hiện tại. (Điểm cần lưu ý nếu ai đó mong Docker
@@ -492,11 +492,11 @@ server (`serve`), không phải để dev/test.
    (`ZIG_MINISIG` build arg), giải nén vào `/usr/local/lib`, symlink vào
    `/usr/local/bin/zig`. Chọn arch (`x86_64`/`aarch64`) theo
    `$TARGETPLATFORM` (hỗ trợ multi-arch Docker build).
-6. Tải **V8 prebuilt** (`libc_v8.a`) từ GitHub release riêng của Velora
-   (`velora-io/zig-v8-fork`, tag `ZIG_V8=v0.4.4`, ứng với `V8=14.0.365.4`) —
+6. Tải **V8 prebuilt** (`libc_v8.a`) từ GitHub release riêng của Koko
+   (`koko-io/zig-v8-fork`, tag `ZIG_V8=v0.4.4`, ứng với `V8=14.0.365.4`) —
    đây chính là con đường `-Dprebuilt_v8_path` (mục 4a), **hoàn toàn bỏ qua
    depot_tools/V8-from-source** để build Docker image nhanh và không cần
-   `.velora-cache` 8.9GB.
+   `.koko-cache` 8.9GB.
 7. Build V8 snapshot: `zig build -Doptimize=ReleaseFast
    -Dprebuilt_v8_path=v8/libc_v8.a snapshot_creator -- src/snapshot.bin`.
 8. Build release: `zig build -Doptimize=ReleaseFast
@@ -507,20 +507,20 @@ server (`serve`), không phải để dev/test.
 ### Stage 2 (final runtime image)
 
 - Copy CA certificates từ stage 0.
-- Copy binary `velora` đã build từ stage 0 (`/browser/zig-out/bin/velora`
-  → `/bin/velora`).
+- Copy binary `koko` đã build từ stage 0 (`/browser/zig-out/bin/koko`
+  → `/bin/koko`).
 - Copy `tini` từ stage 1.
 - `EXPOSE 9222/tcp` (cổng CDP mặc định, khớp README quick start).
-- `ENTRYPOINT ["/usr/bin/tini", "--"]` — comment giải thích: Velora chỉ cài
+- `ENTRYPOINT ["/usr/bin/tini", "--"]` — comment giải thích: Koko chỉ cài
   một số signal handler, và tiến trình PID 1 trong container không có
   default SIGTERM handler, nên dùng `tini` làm PID 1 để đảm bảo `docker
   stop` không bị treo.
-- `CMD ["/bin/velora", "serve", "--host", "0.0.0.0", "--port", "9222",
+- `CMD ["/bin/koko", "serve", "--host", "0.0.0.0", "--port", "9222",
   "--log-level", "info"]` — mặc định khởi động server CDP lắng nghe mọi
   interface.
 
 Kết luận mục đích: Dockerfile phục vụ **build container runtime image** để
-triển khai Velora như một service/server (không phải cho CI test hay dev
+triển khai Koko như một service/server (không phải cho CI test hay dev
 loop) — dùng prebuilt V8 để build nhanh, image cuối cùng tối giản (chỉ có
 binary + tini + CA certs trên nền `debian:stable-slim`).
 
@@ -531,36 +531,36 @@ binary + tini + CA certs trên nền `debian:stable-slim`).
 ```
 packaging/
 └── homebrew/
-    └── velora.rb
+    └── koko.rb
 ```
 
-Chỉ chứa **Homebrew formula** (`velora.rb`) cho việc phân phối Velora qua
+Chỉ chứa **Homebrew formula** (`koko.rb`) cho việc phân phối Koko qua
 Homebrew tap cá nhân (`ivanUri/homebrew-tap`, chưa lên `homebrew-core`) —
 quy trình đầy đủ mô tả trong `docs/homebrew.md`.
 
-Nội dung formula (`packaging/homebrew/velora.rb`):
+Nội dung formula (`packaging/homebrew/koko.rb`):
 
 - `license "AGPL-3.0-only"`, `version "1.0.2"`.
 - `on_macos do on_arm do ... end end` — hiện tại **chỉ hỗ trợ macOS
   arm64**, tải tarball release
-  `velora-1.0.2-darwin-arm64.tar.gz` từ GitHub Releases kèm `sha256`.
-- `install`: copy `bin/velora` vào `bin`, mọi `lib/*.dylib` (chứa
+  `koko-1.0.2-darwin-arm64.tar.gz` từ GitHub Releases kèm `sha256`.
+- `install`: copy `bin/koko` vào `bin`, mọi `lib/*.dylib` (chứa
   `libcurl-impersonate*.dylib` — TLS impersonation bundled sẵn, xem bảng
   "What the tarball contains" trong `docs/homebrew.md`) vào `lib`, và
-  `share/velora/browser` (chứa profile JSON antidetect, templates, catalog)
-  vào `share/velora`.
+  `share/koko/browser` (chứa profile JSON antidetect, templates, catalog)
+  vào `share/koko`.
 - `caveats`: hướng dẫn user nơi tìm `templates`/`catalog`, và lệnh khởi động
   server CDP.
-- `test do`: chạy `velora --help` kiểm tra binary hoạt động.
+- `test do`: chạy `koko --help` kiểm tra binary hoạt động.
 
 Quy trình publish release (từ `docs/homebrew.md`, dành cho maintainer):
 
 1. `zig build -Doptimize=ReleaseFast` rồi `./scripts/release-macos.sh
    1.0.0` trên từng kiến trúc macOS cần hỗ trợ → sinh
-   `dist/velora-<ver>-darwin-<arch>.tar.gz` (script rewrite `@rpath` để
+   `dist/koko-<ver>-darwin-<arch>.tar.gz` (script rewrite `@rpath` để
    binary tìm dylib dưới `../lib` trong Homebrew prefix).
 2. `gh release create` để tạo GitHub Release kèm tarball.
-3. Copy `packaging/homebrew/velora.rb` sang repo tap riêng
+3. Copy `packaging/homebrew/koko.rb` sang repo tap riêng
    (`ivanUri/homebrew-tap`), cập nhật `version`/`url`/`sha256`, commit +
    push.
 
@@ -577,11 +577,11 @@ Theo mục "Requirements" của `README.md`, khớp với những gì `build.zig
 
 | Requirement | Vì sao cần | Ghi chú thêm từ build.zig |
 |---|---|---|
-| **Zig 0.15.2** | Toolchain build chính; `build.zig.zon` khai báo `.minimum_zig_version = "0.15.2"`, và `build.zig` tự `@compileError` nếu version Zig hiện tại thấp hơn (so sánh `builtin.zig_version` với `min_zig_version` ngay ở top-level, trước khi `build()` chạy). | Có bug compiler đã biết ở version này (mục 8) — không phải lỗi Velora. |
+| **Zig 0.15.2** | Toolchain build chính; `build.zig.zon` khai báo `.minimum_zig_version = "0.15.2"`, và `build.zig` tự `@compileError` nếu version Zig hiện tại thấp hơn (so sánh `builtin.zig_version` với `min_zig_version` ngay ở top-level, trước khi `build()` chạy). | Có bug compiler đã biết ở version này (mục 8) — không phải lỗi Koko. |
 | **V8** | JS engine chạy trang web (thực thi script, DOM binding qua `vendor/v8-wrapper`) | Build from source (chậm, cache lớn) hoặc `-Dprebuilt_v8_path` (nhanh, dùng static lib build sẵn — cách Dockerfile dùng). |
 | **libcurl** | HTTP(S)/HTTP2/WebSocket client tầng network | Mặc định ưu tiên `curl-impersonate` (fingerprint-aware) nếu có artifact vendor; nếu không, tự build libcurl chuẩn từ source kèm zlib/brotli/nghttp2/BoringSSL/libidn2. |
 | **Rust toolchain** | Bắt buộc để `cargo build` crate `litefetch-html5ever` (HTML5 parser) trong quá trình `zig build` | Không có Rust toolchain → bước `linkHtml5Ever`/`cargo build` sẽ fail ngay từ đầu build. |
-| **Node.js** | Cho TypeScript SDK (`velora-sdk`, repo riêng) và CLI helper npm script (`npm run bench:compare:publish` trong Makefile `bench` target) | Không phải dependency trực tiếp của `zig build`/`build.zig` — chỉ cần khi dùng SDK hoặc chạy benchmark qua npm. |
+| **Node.js** | Cho TypeScript SDK (`koko-sdk`, repo riêng) và CLI helper npm script (`npm run bench:compare:publish` trong Makefile `bench` target) | Không phải dependency trực tiếp của `zig build`/`build.zig` — chỉ cần khi dùng SDK hoặc chạy benchmark qua npm. |
 
 Requirement ẩn khác phát hiện được khi đọc `build.zig`/vendor mà README
 không liệt kê tường minh nhưng cần cho một build từ-source đầy đủ (không
@@ -602,7 +602,7 @@ trong Makefile).
   V8 (depot_tools, GN, ninja/siso).
 - `Makefile` — wrapper tiện lợi quanh `zig build` cho dev workflow.
 - `Dockerfile` — build container runtime image dùng prebuilt V8.
-- `docs/homebrew.md`, `packaging/homebrew/velora.rb` — phân phối qua
+- `docs/homebrew.md`, `packaging/homebrew/koko.rb` — phân phối qua
   Homebrew.
 - `docs/tls-impersonate.md`, `docs/curl-impersonate-fork.md` — bối cảnh vì
   sao cần curl-impersonate và cách vendor nó.

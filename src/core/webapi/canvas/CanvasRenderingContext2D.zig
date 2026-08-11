@@ -78,7 +78,7 @@ pub fn getFont(self: *const CanvasRenderingContext2D) []const u8 {
 }
 
 pub fn setFont(self: *CanvasRenderingContext2D, value: []const u8, frame: *Frame) !void {
-    // Velora has no real text shaping pipeline, so we do no validation here
+    // Koko has no real text shaping pipeline, so we do no validation here
     // beyond round-tripping the string. This matches the spec's "if the new
     // value is unparseable, leave the attribute unchanged" only insofar as
     // pathological values won't crash; a future text engine will need to

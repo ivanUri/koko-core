@@ -339,6 +339,7 @@ fn dispatchCommand(command: *Command, method: []const u8) !void {
         },
         4 => switch (@as(u32, @bitCast(domain[0..4].*))) {
             asUint(u32, "Page") => return @import("domains/page.zig").processMessage(command),
+            asUint(u32, "Koko") => return @import("domains/koko.zig").processMessage(command),
             else => {},
         },
         5 => switch (@as(u40, @bitCast(domain[0..5].*))) {
@@ -349,7 +350,6 @@ fn dispatchCommand(command: *Command, method: []const u8) !void {
         6 => switch (@as(u48, @bitCast(domain[0..6].*))) {
             asUint(u48, "Target") => return @import("domains/target.zig").processMessage(command),
             asUint(u48, "Audits") => return @import("domains/audits.zig").processMessage(command),
-            asUint(u48, "Velora") => return @import("domains/velora.zig").processMessage(command),
             else => {},
         },
         7 => switch (@as(u56, @bitCast(domain[0..7].*))) {

@@ -478,18 +478,18 @@ fn waitForSelector(cmd: anytype) !void {
     }, .{});
 }
 
-// Velora-namespaced pre-arm for window.alert/confirm/prompt return values.
+// Koko-namespaced pre-arm for window.alert/confirm/prompt return values.
 //
 // Standard CDP drivers send Page.handleJavaScriptDialog *reactively* in
 // response to a Page.javascriptDialogOpening event — the dialog suspends
-// JS, the client picks accept/dismiss, the runtime resumes. Velora's
+// JS, the client picks accept/dismiss, the runtime resumes. Koko's
 // dialogs auto-dismiss in headless mode (window.alert/confirm/prompt
 // return immediately rather than blocking V8), so by the time the event
 // reaches the client, JS has already returned. A reactive call has
 // nothing left to influence — full Chrome-faithful behavior would
 // require V8 suspension, which #2082 / PR #2085 deferred.
 //
-// Velora.handleJavaScriptDialog gives Velora-aware clients a *proactive*
+// Koko.handleJavaScriptDialog gives Koko-aware clients a *proactive*
 // opt-in: the client sets {accept, promptText} *before* triggering the JS
 // that opens the dialog. The handler stashes the response on the
 // BrowserContext; when the next dialog dispatches the
@@ -526,7 +526,7 @@ fn handleJavaScriptDialog(cmd: anytype) !void {
 }
 
 const testing = @import("../testing.zig");
-test "cdp.velora: getMarkdown" {
+test "cdp.koko: getMarkdown" {
     var ctx = try testing.context();
     defer ctx.deinit();
 
@@ -535,14 +535,14 @@ test "cdp.velora: getMarkdown" {
 
     try ctx.processMessage(.{
         .id = 1,
-        .method = "Velora.getMarkdown",
+        .method = "Koko.getMarkdown",
     });
 
     const result = (try ctx.getSentMessage(0)).?.object.get("result").?.object;
     try testing.expect(result.get("markdown") != null);
 }
 
-test "cdp.velora: getInteractiveElements" {
+test "cdp.koko: getInteractiveElements" {
     var ctx = try testing.context();
     defer ctx.deinit();
 
@@ -551,14 +551,14 @@ test "cdp.velora: getInteractiveElements" {
 
     try ctx.processMessage(.{
         .id = 1,
-        .method = "Velora.getInteractiveElements",
+        .method = "Koko.getInteractiveElements",
     });
 
     const result = (try ctx.getSentMessage(0)).?.object.get("result").?.object;
     try testing.expect(result.get("elements") != null);
 }
 
-test "cdp.velora: getStructuredData" {
+test "cdp.koko: getStructuredData" {
     var ctx = try testing.context();
     defer ctx.deinit();
 
@@ -567,14 +567,14 @@ test "cdp.velora: getStructuredData" {
 
     try ctx.processMessage(.{
         .id = 1,
-        .method = "Velora.getStructuredData",
+        .method = "Koko.getStructuredData",
     });
 
     const result = (try ctx.getSentMessage(0)).?.object.get("result").?.object;
     try testing.expect(result.get("structuredData") != null);
 }
 
-test "cdp.velora: action tools" {
+test "cdp.koko: action tools" {
     var ctx = try testing.context();
     defer ctx.deinit();
 
@@ -590,7 +590,7 @@ test "cdp.velora: action tools" {
     const btn_id = (try bc.node_registry.register(btn)).id;
     try ctx.processMessage(.{
         .id = 1,
-        .method = "Velora.clickNode",
+        .method = "Koko.clickNode",
         .params = .{ .backendNodeId = btn_id },
     });
 
@@ -599,7 +599,7 @@ test "cdp.velora: action tools" {
     const inp_id = (try bc.node_registry.register(inp)).id;
     try ctx.processMessage(.{
         .id = 2,
-        .method = "Velora.fillNode",
+        .method = "Koko.fillNode",
         .params = .{ .backendNodeId = inp_id, .text = "hello" },
     });
 
@@ -608,7 +608,7 @@ test "cdp.velora: action tools" {
     const sel_id = (try bc.node_registry.register(sel)).id;
     try ctx.processMessage(.{
         .id = 3,
-        .method = "Velora.fillNode",
+        .method = "Koko.fillNode",
         .params = .{ .backendNodeId = sel_id, .text = "opt2" },
     });
 
@@ -617,7 +617,7 @@ test "cdp.velora: action tools" {
     const scrollbox_id = (try bc.node_registry.register(scrollbox)).id;
     try ctx.processMessage(.{
         .id = 4,
-        .method = "Velora.scrollNode",
+        .method = "Koko.scrollNode",
         .params = .{ .backendNodeId = scrollbox_id, .y = 50 },
     });
 
@@ -649,7 +649,7 @@ test "cdp.velora: action tools" {
     }
 }
 
-test "cdp.velora: waitForSelector" {
+test "cdp.koko: waitForSelector" {
     var ctx = try testing.context();
     defer ctx.deinit();
 
@@ -663,7 +663,7 @@ test "cdp.velora: waitForSelector" {
     // 1. Existing element
     try ctx.processMessage(.{
         .id = 1,
-        .method = "Velora.waitForSelector",
+        .method = "Koko.waitForSelector",
         .params = .{ .selector = "#existing", .timeout = 2000 },
     });
     var result = (try ctx.getSentMessage(0)).?.object.get("result").?.object;
@@ -672,7 +672,7 @@ test "cdp.velora: waitForSelector" {
     // 2. Delayed element
     try ctx.processMessage(.{
         .id = 2,
-        .method = "Velora.waitForSelector",
+        .method = "Koko.waitForSelector",
         .params = .{ .selector = "#delayed", .timeout = 5000 },
     });
     result = (try ctx.getSentMessage(1)).?.object.get("result").?.object;
@@ -681,20 +681,20 @@ test "cdp.velora: waitForSelector" {
     // 3. Timeout error
     try ctx.processMessage(.{
         .id = 3,
-        .method = "Velora.waitForSelector",
+        .method = "Koko.waitForSelector",
         .params = .{ .selector = "#nonexistent", .timeout = 100 },
     });
     const err_obj = (try ctx.getSentMessage(2)).?.object.get("error").?.object;
     try testing.expect(err_obj.get("code") != null);
 }
 
-test "cdp.velora: handleJavaScriptDialog accepts/dismisses without an open dialog" {
+test "cdp.koko: handleJavaScriptDialog accepts/dismisses without an open dialog" {
     var ctx = try testing.context();
     defer ctx.deinit();
 
     {
-        // Without a BrowserContext: error (matches other Velora handlers' shape).
-        try ctx.processMessage(.{ .id = 1, .method = "Velora.handleJavaScriptDialog", .params = .{ .accept = true } });
+        // Without a BrowserContext: error (matches other Koko handlers' shape).
+        try ctx.processMessage(.{ .id = 1, .method = "Koko.handleJavaScriptDialog", .params = .{ .accept = true } });
         try ctx.expectSentError(-31998, "NoBrowserContext", .{ .id = 1 });
     }
 
@@ -702,28 +702,28 @@ test "cdp.velora: handleJavaScriptDialog accepts/dismisses without an open dialo
 
     {
         // Pre-arming with accept=true succeeds. Headless browsers auto-dismiss,
-        // so the CDP client sends Velora.handleJavaScriptDialog *before* the JS
+        // so the CDP client sends Koko.handleJavaScriptDialog *before* the JS
         // that opens the dialog — handler stashes the response on the
         // BrowserContext.
-        try ctx.processMessage(.{ .id = 2, .method = "Velora.handleJavaScriptDialog", .params = .{ .accept = true } });
+        try ctx.processMessage(.{ .id = 2, .method = "Koko.handleJavaScriptDialog", .params = .{ .accept = true } });
         try ctx.expectSentResult(null, .{ .id = 2 });
     }
 
     {
         // Pre-arming with accept=false also succeeds.
-        try ctx.processMessage(.{ .id = 3, .method = "Velora.handleJavaScriptDialog", .params = .{ .accept = false } });
+        try ctx.processMessage(.{ .id = 3, .method = "Koko.handleJavaScriptDialog", .params = .{ .accept = false } });
         try ctx.expectSentResult(null, .{ .id = 3 });
     }
 
     {
         // Pre-arming with a promptText also succeeds. The string is dup'd into
         // the BrowserContext arena so it survives until the dialog dispatches.
-        try ctx.processMessage(.{ .id = 4, .method = "Velora.handleJavaScriptDialog", .params = .{ .accept = true, .promptText = "hello" } });
+        try ctx.processMessage(.{ .id = 4, .method = "Koko.handleJavaScriptDialog", .params = .{ .accept = true, .promptText = "hello" } });
         try ctx.expectSentResult(null, .{ .id = 4 });
     }
 }
 
-test "cdp.velora: handleJavaScriptDialog controls confirm/prompt/alert return values" {
+test "cdp.koko: handleJavaScriptDialog controls confirm/prompt/alert return values" {
     var ctx = try testing.context();
     defer ctx.deinit();
 
@@ -735,7 +735,7 @@ test "cdp.velora: handleJavaScriptDialog controls confirm/prompt/alert return va
     defer ls.deinit();
 
     // ---- confirm: accept=true makes confirm() return true ----
-    try ctx.processMessage(.{ .id = 1, .method = "Velora.handleJavaScriptDialog", .params = .{ .accept = true } });
+    try ctx.processMessage(.{ .id = 1, .method = "Koko.handleJavaScriptDialog", .params = .{ .accept = true } });
     try ctx.expectSentResult(null, .{ .id = 1 });
 
     const c_accept = try ls.local.exec("confirm('proceed?')", null);
@@ -748,7 +748,7 @@ test "cdp.velora: handleJavaScriptDialog controls confirm/prompt/alert return va
     }, .{ .session_id = "SID-X" });
 
     // ---- confirm: accept=false makes confirm() return false ----
-    try ctx.processMessage(.{ .id = 2, .method = "Velora.handleJavaScriptDialog", .params = .{ .accept = false } });
+    try ctx.processMessage(.{ .id = 2, .method = "Koko.handleJavaScriptDialog", .params = .{ .accept = false } });
     try ctx.expectSentResult(null, .{ .id = 2 });
 
     const c_dismiss = try ls.local.exec("confirm('again?')", null);
@@ -759,7 +759,7 @@ test "cdp.velora: handleJavaScriptDialog controls confirm/prompt/alert return va
     try testing.expectEqual(false, c_default.toBool());
 
     // ---- prompt: accept=true with promptText returns the text ----
-    try ctx.processMessage(.{ .id = 3, .method = "Velora.handleJavaScriptDialog", .params = .{ .accept = true, .promptText = "hello" } });
+    try ctx.processMessage(.{ .id = 3, .method = "Koko.handleJavaScriptDialog", .params = .{ .accept = true, .promptText = "hello" } });
     try ctx.expectSentResult(null, .{ .id = 3 });
 
     const p_text = try ls.local.exec("prompt('name?')", null);
@@ -767,7 +767,7 @@ test "cdp.velora: handleJavaScriptDialog controls confirm/prompt/alert return va
     try testing.expectEqualSlices(u8, "hello", p_text_str);
 
     // ---- prompt: accept=true without promptText AND no dialog defaultText returns "" ----
-    try ctx.processMessage(.{ .id = 4, .method = "Velora.handleJavaScriptDialog", .params = .{ .accept = true } });
+    try ctx.processMessage(.{ .id = 4, .method = "Koko.handleJavaScriptDialog", .params = .{ .accept = true } });
     try ctx.expectSentResult(null, .{ .id = 4 });
 
     const p_empty = try ls.local.exec("prompt('name?')", null);
@@ -777,7 +777,7 @@ test "cdp.velora: handleJavaScriptDialog controls confirm/prompt/alert return va
     // ---- prompt: accept=true without promptText falls back to dialog defaultText ----
     // Mirrors Chrome's accept-without-typing behavior: with no client-supplied
     // promptText, the prompt's return value is the second arg to window.prompt.
-    try ctx.processMessage(.{ .id = 5, .method = "Velora.handleJavaScriptDialog", .params = .{ .accept = true } });
+    try ctx.processMessage(.{ .id = 5, .method = "Koko.handleJavaScriptDialog", .params = .{ .accept = true } });
     try ctx.expectSentResult(null, .{ .id = 5 });
 
     const p_default_text = try ls.local.exec("prompt('name?', 'John Smith')", null);
@@ -785,7 +785,7 @@ test "cdp.velora: handleJavaScriptDialog controls confirm/prompt/alert return va
     try testing.expectEqualSlices(u8, "John Smith", p_default_text_str);
 
     // ---- prompt: pre-armed promptText overrides the dialog defaultText ----
-    try ctx.processMessage(.{ .id = 6, .method = "Velora.handleJavaScriptDialog", .params = .{ .accept = true, .promptText = "typed" } });
+    try ctx.processMessage(.{ .id = 6, .method = "Koko.handleJavaScriptDialog", .params = .{ .accept = true, .promptText = "typed" } });
     try ctx.expectSentResult(null, .{ .id = 6 });
 
     const p_override = try ls.local.exec("prompt('name?', 'John Smith')", null);
@@ -793,14 +793,14 @@ test "cdp.velora: handleJavaScriptDialog controls confirm/prompt/alert return va
     try testing.expectEqualSlices(u8, "typed", p_override_str);
 
     // ---- prompt: accept=false returns null regardless of dialog defaultText ----
-    try ctx.processMessage(.{ .id = 7, .method = "Velora.handleJavaScriptDialog", .params = .{ .accept = false } });
+    try ctx.processMessage(.{ .id = 7, .method = "Koko.handleJavaScriptDialog", .params = .{ .accept = false } });
     try ctx.expectSentResult(null, .{ .id = 7 });
 
     const p_dismiss_with_default = try ls.local.exec("prompt('cancel?', 'John Smith')", null);
     try testing.expect(p_dismiss_with_default.isNull());
 
     // ---- prompt: accept=false makes prompt() return null ----
-    try ctx.processMessage(.{ .id = 8, .method = "Velora.handleJavaScriptDialog", .params = .{ .accept = false } });
+    try ctx.processMessage(.{ .id = 8, .method = "Koko.handleJavaScriptDialog", .params = .{ .accept = false } });
     try ctx.expectSentResult(null, .{ .id = 8 });
 
     const p_dismiss = try ls.local.exec("prompt('cancel?')", null);
@@ -811,7 +811,7 @@ test "cdp.velora: handleJavaScriptDialog controls confirm/prompt/alert return va
     try testing.expect(p_default.isNull());
 
     // ---- alert: dispatches the event but has no return value to override ----
-    try ctx.processMessage(.{ .id = 9, .method = "Velora.handleJavaScriptDialog", .params = .{ .accept = true } });
+    try ctx.processMessage(.{ .id = 9, .method = "Koko.handleJavaScriptDialog", .params = .{ .accept = true } });
     try ctx.expectSentResult(null, .{ .id = 9 });
     _ = try ls.local.exec("alert('important')", null);
     try ctx.expectSentEvent("Page.javascriptDialogOpening", .{

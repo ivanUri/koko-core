@@ -1882,14 +1882,14 @@
 #endif
 #endif
 
-/* velora: macOS's <string.h> does not declare strverscmp (a glibc
+/* koko: macOS's <string.h> does not declare strverscmp (a glibc
    extension). gnulib normally declares it via its replacement <string.h>
    shim, which we don't pull in. lib/strverscmp.c provides the definition. */
 #ifndef _LIBIDN2_LP_DECLS
 #define _LIBIDN2_LP_DECLS
 extern int strverscmp(const char *, const char *);
 
-/* velora: lib/lookup.c calls strchrnul() without including <string.h>,
+/* koko: lib/lookup.c calls strchrnul() without including <string.h>,
    so the prototype must reach it through this header. macOS libc also
    lacked the symbol entirely before 15.4 — build.zig::buildLibidn2 adds
    vendor/libidn2/darwin/strchrnul.c on Darwin to provide the definition. */

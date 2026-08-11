@@ -1,14 +1,14 @@
 # Google Search Investigation Journey — What We Thought, Tested, and Finally Understood
 
-> **Canonical conclusion (2026-06-29):** Velora Google Search works when the session is **warmed with a mature Chrome cookie jar** (`NID` + signed-in session cookies). Cold start without that jar → long bootstrap path → `knitsail` / `sg_ss` / `/sorry`. Most earlier notes over-weighted fingerprint, knitsail JS, and wire-header diffs relative to this single gate.
+> **Canonical conclusion (2026-06-29):** Koko Google Search works when the session is **warmed with a mature Chrome cookie jar** (`NID` + signed-in session cookies). Cold start without that jar → long bootstrap path → `knitsail` / `sg_ss` / `/sorry`. Most earlier notes over-weighted fingerprint, knitsail JS, and wire-header diffs relative to this single gate.
 
-This document is the **canonical narrative** for Google Search antibot work at Velora. Read it first — hop-by-hop flow, signal priorities, and cookie warmup are consolidated here (older split notes were merged and removed).
+This document is the **canonical narrative** for Google Search antibot work at Koko. Read it first — hop-by-hop flow, signal priorities, and cookie warmup are consolidated here (older split notes were merged and removed).
 
 ---
 
 ## Summary
 
-For months, Velora Google Search behaved like a fingerprint problem: CreepJS sections were green, wire headers were tuned, `knitsail` encode was patched — yet the same query on the same IP still returned a **~91 KB bootstrap shell** instead of Chrome’s **~270–600 KB SERP** on hop 1. The breakthrough was not another JS shim. It was **session cookie state**: a **mature `NID`** (and associated signed-in cookies) exported from the user’s real Chrome profile flips Google’s server-side trust tier before any client fingerprint runs.
+For months, Koko Google Search behaved like a fingerprint problem: CreepJS sections were green, wire headers were tuned, `knitsail` encode was patched — yet the same query on the same IP still returned a **~91 KB bootstrap shell** instead of Chrome’s **~270–600 KB SERP** on hop 1. The breakthrough was not another JS shim. It was **session cookie state**: a **mature `NID`** (and associated signed-in cookies) exported from the user’s real Chrome profile flips Google’s server-side trust tier before any client fingerprint runs.
 
 **Executive summary for operators:**
 
@@ -25,11 +25,11 @@ For months, Velora Google Search behaved like a fingerprint problem: CreepJS sec
 
 ## Problem
 
-Velora is an antidetect browser built on curl-impersonate, CDP, and injected compatibility shims. Google Search is the hardest real-world gate: not a single `GET /search`, but a **multi-hop trust state machine** where the server chooses HTML shape on hop 1.
+Koko is an antidetect browser built on curl-impersonate, CDP, and injected compatibility shims. Google Search is the hardest real-world gate: not a single `GET /search`, but a **multi-hop trust state machine** where the server chooses HTML shape on hop 1.
 
 **What we observed consistently:**
 
-- **Velora (cold start):** hop-1 HTML ~91 KB, inline `sclm=false`, empty `ussv`/`sp`, `knitsail` loader (~62 KB), client `location.replace` to `sei` with **`sg_ss`** blob (~2.8 KB), sometimes second bootstrap at `sei`, often `/sorry` on hot IPs.
+- **Koko (cold start):** hop-1 HTML ~91 KB, inline `sclm=false`, empty `ussv`/`sp`, `knitsail` loader (~62 KB), client `location.replace` to `sei` with **`sg_ss`** blob (~2.8 KB), sometimes second bootstrap at `sei`, often `/sorry` on hot IPs.
 - **Chrome (same machine, warm profile):** fast replace to `sei` (~184 ms), hop-`sei` or hop-1 SERP ~270–600 KB, **`knitsail.a()` count = 0** in probes, query in document title.
 - **Contradiction:** CreepJS / canvas / audio / WebGL / window-keys could score green while Google still sorry’d or stayed on the long path.
 
@@ -82,7 +82,7 @@ Live export via `browser-cookie3` + macOS Keychain: **154 cookies**, `NID` lengt
 
 ## Investigation
 
-The investigation spanned six hypothesis phases. Each phase produced real fixes; only Phase 6 explained why Chrome and Velora diverged on **the same IP with the same query**.
+The investigation spanned six hypothesis phases. Each phase produced real fixes; only Phase 6 explained why Chrome and Koko diverged on **the same IP with the same query**.
 
 ### Decision tree (where to spend the next hour)
 
@@ -132,7 +132,7 @@ That sent us deep into client-side signals before measuring **server trust tier*
 
 **Hypothesis:** curl-impersonate JA3/JA4, ALPN, `Sec-Fetch-*`, Downlink/RTT, referer on `sei` hops downgrade us.
 
-**Tests:** `capture-wire-search-hops.mjs`, `diff-hop1-request.mjs`, `diff-sei-request.mjs`; Chrome net-log vs Velora wire.
+**Tests:** `capture-wire-search-hops.mjs`, `diff-hop1-request.mjs`, `diff-sei-request.mjs`; Chrome net-log vs Koko wire.
 
 **Fixes applied:** in-session Downlink/RTT (1.7/100), omit `Sec-Fetch-*` on in-session hops, `search_q_only` referer, `x-browser` headers, h2 policy for `sg_ss`.
 
@@ -164,7 +164,7 @@ That sent us deep into client-side signals before measuring **server trust tier*
 
 **Tests:** `npm run google:sorry-parity`; `grecaptcha` / `HTMLElement.style` shim.
 
-**Passed:** cfgClients parity (1 vs 1); documented Chrome sorry often **search → sorry** (no `sei` 200) vs Velora **search → sei → sorry** with fat `sg_ss` in `continue`.
+**Passed:** cfgClients parity (1 vs 1); documented Chrome sorry often **search → sorry** (no `sei` 200) vs Koko **search → sei → sorry** with fat `sg_ss` in `continue`.
 
 **Realized:** Valuable forensic; optimizing `sg_ss` before earning short path is backwards.
 
@@ -172,13 +172,13 @@ That sent us deep into client-side signals before measuring **server trust tier*
 
 ---
 
-### Phase 5 — “Velora has no cookies” (first cookie hypothesis)
+### Phase 5 — “Koko has no cookies” (first cookie hypothesis)
 
-**Hypothesis:** Cold Velora sends zero hop-1 cookies; inject guest cookies → tier flip.
+**Hypothesis:** Cold Koko sends zero hop-1 cookies; inject guest cookies → tier flip.
 
-**Tests:** `export-chrome-cookies.mjs` (fresh Chrome, 4 cookies); `test-velora-chrome-cookies.mjs` A/B; `--cookie` on `spawnVelora`.
+**Tests:** `export-chrome-cookies.mjs` (fresh Chrome, 4 cookies); `test-koko-chrome-cookies.mjs` A/B; `--cookie` on `spawnKoko`.
 
-**Passed:** Velora sends cookies when jar loaded (438 B on wire).
+**Passed:** Koko sends cookies when jar loaded (438 B on wire).
 
 **Failed tier flip:** `sclm` still `false`, ~91 KB bootstrap, 2 hops.
 
@@ -195,24 +195,24 @@ That sent us deep into client-side signals before measuring **server trust tier*
 **Tests:**
 
 1. User curl with full session cookies (`NID` ~280 chars + `DV` + `__Secure-*`) → **271 KB SERP**.
-2. Same cookies in Velora → **~266 KB SERP**, 1 hop, `knitsail=0`.
+2. Same cookies in Koko → **~266 KB SERP**, 1 hop, `knitsail=0`.
 3. Cookie ablation — `NID` alone sufficient; guest `NID` never sufficient.
 4. Live export — 154 cookies, `NID` 1119 chars, `SID`/`SAPISID` signed-in state.
-5. Production: `velora` search → **606 KB SERP**; `coingloo.com` → top 5 organic parsed.
+5. Production: `koko` search → **606 KB SERP**; `coingloo.com` → top 5 organic parsed.
 
 | State | Hop-1 body | Hops | `knitsail` | SERP |
 |-------|-----------|------|------------|------|
-| Cold Velora (no jar) | ~91 KB | 2+ | yes | sometimes after `sei` |
-| Warm Velora (mature jar) | ~266–606 KB | 1 | 0 | yes |
+| Cold Koko (no jar) | ~91 KB | 2+ | yes | sometimes after `sei` |
+| Warm Koko (mature jar) | ~266–606 KB | 1 | 0 | yes |
 
 ```mermaid
 flowchart LR
-    subgraph cold [Cold Velora]
+    subgraph cold [Cold Koko]
         A1[GET /search] --> A2["~91KB bootstrap\nsclm=false"]
         A2 --> A3[knitsail pipeline]
         A3 --> A4["sei / sg_ss / sorry"]
     end
-    subgraph warm [Warm Velora - Chrome jar]
+    subgraph warm [Warm Koko - Chrome jar]
         B1[GET /search] --> B2["~266-606KB SERP"]
         B2 --> B3[parse results]
     end
@@ -255,10 +255,10 @@ Profile-baked session (agent-native, no CLI flags required per search):
 ```
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 
-# Start Velora with profile — cookies auto-load from seed + runtime jar
-zig-out/bin/velora serve --browser-profile chrome-local-huys-macbook-pro
+# Start Koko with profile — cookies auto-load from seed + runtime jar
+zig-out/bin/koko serve --browser-profile chrome-local-huys-macbook-pro
 
 # Probe SERP tier (hop-1 body size, title, knitsail presence)
 node scripts/cdp-profile-probe.mjs --profile chrome-local-huys-macbook-pro --max-sec 20
@@ -275,7 +275,7 @@ node scripts/cdp-profile-probe.mjs --profile chrome-local-huys-macbook-pro --max
 1. **Wire hygiene** — `Sec-Fetch`, Downlink/RTT on in-session hops, referer shape (Layer 2).
 2. **Long-path robustness** — knitsail, `pageT`, `google.tick`, window-keys allowlist when jar expires.
 3. **Sorry parity** — forensic compare when both engines should sorry.
-4. **IP rate limit** — sequential probes 20–30 s gaps; parallel Chrome+Velora heats IP.
+4. **IP rate limit** — sequential probes 20–30 s gaps; parallel Chrome+Koko heats IP.
 5. **Fingerprint / CreepJS** — antidetect product quality, not Search tier gate.
 
 ### What older knowledge got wrong (or overstated)
@@ -285,7 +285,7 @@ node scripts/cdp-profile-probe.mjs --profile chrome-local-huys-macbook-pro --max
 | Primary blocker is knitsail / bootstrap JS | Primary blocker is **cold session** (no mature jar) |
 | `sclm` / `ussv` / `sp` client bugs | Server-set on low-trust HTML; **earn tier with jar** |
 | CreepJS sweep required for Search | Helpful product work; **not** Search unlock |
-| Chrome guest vs Velora = fingerprint delta | Often **cookie delta** + IP rate limit |
+| Chrome guest vs Koko = fingerprint delta | Often **cookie delta** + IP rate limit |
 | Copy Chrome profile dir for cookies | macOS Keychain encrypts; use **live export** |
 | `DV` cookie required | Optional when mature `NID` present |
 | `--cookie-jar` persists session | Was save-only until 2026-06-29 — need load + export round-trip |

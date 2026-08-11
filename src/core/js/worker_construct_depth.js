@@ -1,14 +1,14 @@
 // Shared by worker + shared-worker constructor shims (HTML recursive-creation guard).
 (function () {
   function enter() {
-    if (globalThis.__veloraWorkerConstructing) {
+    if (globalThis.__kokoWorkerConstructing) {
       throw new RangeError();
     }
-    globalThis.__veloraWorkerConstructing = true;
+    globalThis.__kokoWorkerConstructing = true;
   }
   function exit() {
-    globalThis.__veloraWorkerConstructing = false;
+    globalThis.__kokoWorkerConstructing = false;
   }
-  globalThis.__veloraWorkerConstructEnter = enter;
-  globalThis.__veloraWorkerConstructExit = exit;
+  globalThis.__kokoWorkerConstructEnter = enter;
+  globalThis.__kokoWorkerConstructExit = exit;
 })();

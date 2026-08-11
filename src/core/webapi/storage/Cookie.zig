@@ -532,10 +532,22 @@ pub fn appliesTo(self: *const Cookie, url: *const PreparedUri, same_site: bool, 
 }
 
 pub const Jar = struct {
+    pub const Mutation = union(enum) {
+        upsert: *const Cookie,
+        delete: *const Cookie,
+        clear: void,
+    };
+
+    pub const MutationSink = struct {
+        ctx: *anyopaque,
+        notify: *const fn (*anyopaque, Mutation) void,
+    };
+
     allocator: Allocator,
     cookies: std.ArrayList(Cookie),
     /// Incremented at the start of each document navigation (see `beginDocumentNavigation`).
     document_nav_generation: u64 = 0,
+    mutation_sink: ?MutationSink = null,
 
     pub fn init(allocator: Allocator) Jar {
         return .{
@@ -552,10 +564,20 @@ pub const Jar = struct {
     }
 
     pub fn clearRetainingCapacity(self: *Jar) void {
+        self.notifyMutation(.clear);
         for (self.cookies.items) |c| {
             c.deinit();
         }
         self.cookies.clearRetainingCapacity();
+    }
+
+    pub fn setMutationSink(self: *Jar, sink: ?MutationSink) void {
+        self.mutation_sink = sink;
+    }
+
+    fn notifyMutation(self: *Jar, mutation: Mutation) void {
+        const sink = self.mutation_sink orelse return;
+        sink.notify(sink.ctx, mutation);
     }
 
     /// Call when a document navigation begins, before the HTTP request is issued.
@@ -598,9 +620,6 @@ pub const Jar = struct {
             c.deinit();
         };
 
-        if (self.cookies.items.len >= max_jar_size) {
-            return error.CookieJarQuotaExceeded;
-        }
         if (!isCookieNameValuePairValid(c.name, c.value)) {
             return error.CookieSizeExceeded;
         }
@@ -618,17 +637,24 @@ pub const Jar = struct {
                 return;
             }
 
-            existing.deinit();
             if (is_expired) {
+                self.notifyMutation(.{ .delete = existing });
+                existing.deinit();
                 _ = self.cookies.swapRemove(i);
             } else {
+                existing.deinit();
                 self.cookies.items[i] = c;
+                self.notifyMutation(.{ .upsert = &self.cookies.items[i] });
             }
             return;
         }
 
         if (!is_expired) {
+            if (self.cookies.items.len >= max_jar_size) {
+                return error.CookieJarQuotaExceeded;
+            }
             try self.cookies.append(self.allocator, c);
+            self.notifyMutation(.{ .upsert = &self.cookies.items[self.cookies.items.len - 1] });
         }
     }
 
@@ -640,6 +666,7 @@ pub const Jar = struct {
             i -= 1;
             const cookie = &self.cookies.items[i];
             if (isCookieExpired(cookie, time)) {
+                self.notifyMutation(.{ .delete = cookie });
                 self.cookies.swapRemove(i).deinit();
             }
         }
@@ -963,14 +990,14 @@ fn toLower(str: []u8) []u8 {
 }
 
 const testing = @import("../../../testing/testing.zig");
-const test_url = "http://velora.io/";
+const test_url = "http://kokoio.com/";
 test "cookie: findSecondLevelDomain" {
     const cases = [_]struct { []const u8, []const u8 }{
         .{ "", "" },
         .{ "com", "com" },
-        .{ "velora.io", "velora.io" },
-        .{ "velora.io", "test.velora.io" },
-        .{ "velora.io", "first.test.velora.io" },
+        .{ "kokoio.com", "kokoio.com" },
+        .{ "kokoio.com", "test.kokoio.com" },
+        .{ "kokoio.com", "first.test.kokoio.com" },
         .{ "www.gov.uk", "www.gov.uk" },
         .{ "stats.gov.uk", "www.stats.gov.uk" },
         .{ "api.gov.uk", "api.gov.uk" },
@@ -1022,7 +1049,7 @@ test "Jar: add" {
     try jar.add(try Cookie.parse(testing.allocator, test_url, "over=9001;Path=/other"), now, true);
     try expectCookies(&.{ .{ "over", "9000!!" }, .{ "spice", "flows" }, .{ "over", "9001" } }, jar);
 
-    try jar.add(try Cookie.parse(testing.allocator, test_url, "over=9002;Path=/;Domain=velora.io"), now, true);
+    try jar.add(try Cookie.parse(testing.allocator, test_url, "over=9002;Path=/;Domain=kokoio.com"), now, true);
     try expectCookies(&.{ .{ "over", "9000!!" }, .{ "spice", "flows" }, .{ "over", "9001" }, .{ "over", "9002" } }, jar);
 
     try jar.add(try Cookie.parse(testing.allocator, test_url, "over=x;Path=/other;Max-Age=-200"), now, true);
@@ -1058,7 +1085,7 @@ test "Jar: add limit" {
     try testing.expectError(error.CookieSizeExceeded, jar.add(.{
         .arena = std.heap.ArenaAllocator.init(testing.allocator),
         .name = "v",
-        .domain = "velora.io",
+        .domain = "kokoio.com",
         .path = "/",
         .expires = null,
         .value = "v" ** 4096 ++ "v",
@@ -1080,7 +1107,7 @@ test "Jar: add limit" {
         const c = Cookie{
             .arena = std.heap.ArenaAllocator.init(testing.allocator),
             .name = names[i],
-            .domain = "velora.io",
+            .domain = "kokoio.com",
             .path = "/",
             .expires = null,
             .value = "v",
@@ -1092,11 +1119,29 @@ test "Jar: add limit" {
     try testing.expectError(error.CookieJarQuotaExceeded, jar.add(.{
         .arena = std.heap.ArenaAllocator.init(testing.allocator),
         .name = "last",
-        .domain = "velora.io",
+        .domain = "kokoio.com",
         .path = "/",
         .expires = null,
         .value = "v",
     }, now, true));
+}
+
+test "Jar: replacement succeeds at jar capacity" {
+    var jar = Jar.init(testing.allocator);
+    defer jar.deinit();
+
+    const now = std.time.timestamp();
+    var names: [max_jar_size][8]u8 = undefined;
+    var lines: [max_jar_size][16]u8 = undefined;
+    for (0..max_jar_size) |i| {
+        const name = try std.fmt.bufPrint(&names[i], "c{d}", .{i});
+        const line = try std.fmt.bufPrint(&lines[i], "{s}=old", .{name});
+        try jar.add(try Cookie.parse(testing.allocator, test_url, line), now, true);
+    }
+
+    try jar.add(try Cookie.parse(testing.allocator, test_url, "c0=new"), now, true);
+    try testing.expectEqual(@as(usize, max_jar_size), jar.cookies.items.len);
+    try testing.expectEqual("new", jar.cookies.items[0].value);
 }
 
 test "Jar: HTTP and script cookies commit immediately for all names" {
@@ -1133,7 +1178,7 @@ test "Jar: forRequest" {
     var jar = Jar.init(testing.allocator);
     defer jar.deinit();
 
-    const url2 = "http://test.velora.io/";
+    const url2 = "http://test.kokoio.com/";
 
     {
         // test with no cookies
@@ -1141,115 +1186,115 @@ test "Jar: forRequest" {
     }
 
     try jar.add(try Cookie.parse(testing.allocator, test_url, "global1=1"), now, true);
-    try jar.add(try Cookie.parse(testing.allocator, test_url, "global2=2;Max-Age=30;domain=velora.io"), now, true);
+    try jar.add(try Cookie.parse(testing.allocator, test_url, "global2=2;Max-Age=30;domain=kokoio.com"), now, true);
     try jar.add(try Cookie.parse(testing.allocator, test_url, "path1=3;Path=/about"), now, true);
     try jar.add(try Cookie.parse(testing.allocator, test_url, "path2=4;Path=/docs/"), now, true);
-    try jar.add(try Cookie.parse(testing.allocator, "https://velora.io/", "secure=5;Secure"), now, true);
-    try jar.add(try Cookie.parse(testing.allocator, "https://velora.io/", "sitenone=6;SameSite=None;Path=/x/;Secure"), now, true);
+    try jar.add(try Cookie.parse(testing.allocator, "https://kokoio.com/", "secure=5;Secure"), now, true);
+    try jar.add(try Cookie.parse(testing.allocator, "https://kokoio.com/", "sitenone=6;SameSite=None;Path=/x/;Secure"), now, true);
     try jar.add(try Cookie.parse(testing.allocator, test_url, "sitelax=7;SameSite=Lax;Path=/x/"), now, true);
     try jar.add(try Cookie.parse(testing.allocator, test_url, "sitestrict=8;SameSite=Strict;Path=/x/"), now, true);
-    try jar.add(try Cookie.parse(testing.allocator, url2, "domain1=9;domain=test.velora.io"), now, true);
+    try jar.add(try Cookie.parse(testing.allocator, url2, "domain1=9;domain=test.kokoio.com"), now, true);
 
     // nothing fancy here
     try expectCookies("global1=1; global2=2", &jar, test_url, .{ .is_http = true });
     try expectCookies("global1=1; global2=2", &jar, test_url, .{ .origin_url = test_url, .is_navigation = false, .is_http = true });
 
-    // We have a cookie where Domain=velora.io
-    // This should _not_ match xyxvelora.io
-    try expectCookies("", &jar, "http://anothersitevelora.io/", .{
+    // We have a cookie where Domain=kokoio.com
+    // This should _not_ match xyxkokoio.com
+    try expectCookies("", &jar, "http://anothersitekokoio.com/", .{
         .origin_url = test_url,
         .is_http = true,
     });
 
     // matching path without trailing /
-    try expectCookies("path1=3; global1=1; global2=2", &jar, "http://velora.io/about", .{
+    try expectCookies("path1=3; global1=1; global2=2", &jar, "http://kokoio.com/about", .{
         .origin_url = test_url,
         .is_http = true,
     });
 
     // incomplete prefix path
-    try expectCookies("global1=1; global2=2", &jar, "http://velora.io/abou", .{
+    try expectCookies("global1=1; global2=2", &jar, "http://kokoio.com/abou", .{
         .origin_url = test_url,
         .is_http = true,
     });
 
     // path doesn't match
-    try expectCookies("global1=1; global2=2", &jar, "http://velora.io/aboutus", .{
+    try expectCookies("global1=1; global2=2", &jar, "http://kokoio.com/aboutus", .{
         .origin_url = test_url,
         .is_http = true,
     });
 
     // path doesn't match cookie directory
-    try expectCookies("global1=1; global2=2", &jar, "http://velora.io/docs", .{
+    try expectCookies("global1=1; global2=2", &jar, "http://kokoio.com/docs", .{
         .origin_url = test_url,
         .is_http = true,
     });
 
     // exact directory match
-    try expectCookies("path2=4; global1=1; global2=2", &jar, "http://velora.io/docs/", .{
+    try expectCookies("path2=4; global1=1; global2=2", &jar, "http://kokoio.com/docs/", .{
         .origin_url = test_url,
         .is_http = true,
     });
 
     // sub directory match
-    try expectCookies("path2=4; global1=1; global2=2", &jar, "http://velora.io/docs/more", .{
+    try expectCookies("path2=4; global1=1; global2=2", &jar, "http://kokoio.com/docs/more", .{
         .origin_url = test_url,
         .is_http = true,
     });
 
     // secure
-    try expectCookies("secure=5", &jar, "https://velora.io/", .{
+    try expectCookies("secure=5", &jar, "https://kokoio.com/", .{
         .origin_url = test_url,
         .is_http = true,
     });
 
     // navigational cross domain, secure
-    try expectCookies("sitenone=6; secure=5", &jar, "https://velora.io/x/", .{
+    try expectCookies("sitenone=6; secure=5", &jar, "https://kokoio.com/x/", .{
         .origin_url = "https://example.com/",
         .is_http = true,
     });
 
     // navigational cross domain, insecure
-    try expectCookies("sitelax=7; global1=1; global2=2", &jar, "http://velora.io/x/", .{
+    try expectCookies("sitelax=7; global1=1; global2=2", &jar, "http://kokoio.com/x/", .{
         .origin_url = "https://example.com/",
         .is_http = true,
     });
 
     // non-navigational cross domain, insecure
-    try expectCookies("", &jar, "http://velora.io/x/", .{
+    try expectCookies("", &jar, "http://kokoio.com/x/", .{
         .origin_url = "https://example.com/",
         .is_http = true,
         .is_navigation = false,
     });
 
     // non-navigational cross domain, secure
-    try expectCookies("sitenone=6", &jar, "https://velora.io/x/", .{
+    try expectCookies("sitenone=6", &jar, "https://kokoio.com/x/", .{
         .origin_url = "https://example.com/",
         .is_http = true,
         .is_navigation = false,
     });
 
     // non-navigational cross-scheme (schemeful: http vs https are cross-site)
-    try expectCookies("", &jar, "http://velora.io/x/", .{
-        .origin_url = "https://velora.io/",
+    try expectCookies("", &jar, "http://kokoio.com/x/", .{
+        .origin_url = "https://kokoio.com/",
         .is_http = true,
         .is_navigation = false,
     });
 
     // exact domain match + suffix
-    try expectCookies("global2=2; domain1=9", &jar, "http://test.velora.io/", .{
+    try expectCookies("global2=2; domain1=9", &jar, "http://test.kokoio.com/", .{
         .origin_url = test_url,
         .is_http = true,
     });
 
     // domain suffix match + suffix
-    try expectCookies("global2=2; domain1=9", &jar, "http://1.test.velora.io/", .{
+    try expectCookies("global2=2; domain1=9", &jar, "http://1.test.kokoio.com/", .{
         .origin_url = test_url,
         .is_http = true,
     });
 
     // non-matching domain
-    try expectCookies("global2=2", &jar, "http://other.velora.io/", .{
+    try expectCookies("global2=2", &jar, "http://other.kokoio.com/", .{
         .origin_url = test_url,
         .is_http = true,
     });
@@ -1359,37 +1404,37 @@ test "Cookie: parse key=value" {
     //   - must be set from an https origin
     //   - must not have a Domain attribute
     //   - must have Path=/
-    try expectAttribute(.{ .name = "__Host-abc", .value = "1" }, "https://velora.io/", "__Host-abc=1; Secure; Path=/");
-    try expectAttribute(.{ .name = "__HoSt-abc", .value = "1" }, "https://velora.io/", "__HoSt-abc=1; Secure; Path=/");
-    try expectError(error.InvalidPrefixedCookie, "https://velora.io/", "__Host-abc=1; Path=/");
+    try expectAttribute(.{ .name = "__Host-abc", .value = "1" }, "https://kokoio.com/", "__Host-abc=1; Secure; Path=/");
+    try expectAttribute(.{ .name = "__HoSt-abc", .value = "1" }, "https://kokoio.com/", "__HoSt-abc=1; Secure; Path=/");
+    try expectError(error.InvalidPrefixedCookie, "https://kokoio.com/", "__Host-abc=1; Path=/");
     try expectError(error.InvalidPrefixedCookie, null, "__Host-abc=1; Secure; Path=/");
-    try expectError(error.InvalidPrefixedCookie, "https://velora.io/", "__Host-abc=1; Secure");
-    try expectError(error.InvalidPrefixedCookie, "https://velora.io/", "__Host-abc=1; Secure; Path=/foo");
-    try expectError(error.InvalidPrefixedCookie, "https://velora.io/", "__Host-abc=1; Secure; Path=/; Domain=velora.io");
+    try expectError(error.InvalidPrefixedCookie, "https://kokoio.com/", "__Host-abc=1; Secure");
+    try expectError(error.InvalidPrefixedCookie, "https://kokoio.com/", "__Host-abc=1; Secure; Path=/foo");
+    try expectError(error.InvalidPrefixedCookie, "https://kokoio.com/", "__Host-abc=1; Secure; Path=/; Domain=kokoio.com");
 
     // __Secure- cookie-name-prefix rules: must be Secure and from https.
-    try expectAttribute(.{ .name = "__Secure-abc", .value = "1" }, "https://velora.io/", "__Secure-abc=1; Secure");
-    try expectAttribute(.{ .name = "__SeCuRe-abc", .value = "1" }, "https://velora.io/", "__SeCuRe-abc=1; Secure; Domain=velora.io");
-    try expectError(error.InvalidPrefixedCookie, "https://velora.io/", "__Secure-abc=1");
+    try expectAttribute(.{ .name = "__Secure-abc", .value = "1" }, "https://kokoio.com/", "__Secure-abc=1; Secure");
+    try expectAttribute(.{ .name = "__SeCuRe-abc", .value = "1" }, "https://kokoio.com/", "__SeCuRe-abc=1; Secure; Domain=kokoio.com");
+    try expectError(error.InvalidPrefixedCookie, "https://kokoio.com/", "__Secure-abc=1");
     try expectError(error.InvalidPrefixedCookie, null, "__Secure-abc=1; Secure");
 
     // Empty Domain= is treated as no Domain and accepted on __Host-.
-    try expectAttribute(.{ .name = "__Host-abc", .value = "1" }, "https://velora.io/", "__Host-abc=1; Secure; Path=/; Domain=");
+    try expectAttribute(.{ .name = "__Host-abc", .value = "1" }, "https://kokoio.com/", "__Host-abc=1; Secure; Path=/; Domain=");
 
     // __Host- with additional unrelated attributes remains valid.
-    try expectAttribute(.{ .name = "__Host-abc", .value = "1" }, "https://velora.io/", "__Host-abc=1; Secure; Path=/; Max-Age=60; HttpOnly");
+    try expectAttribute(.{ .name = "__Host-abc", .value = "1" }, "https://kokoio.com/", "__Host-abc=1; Secure; Path=/; Max-Age=60; HttpOnly");
 
     // __Host-Http-: Secure, Path=/, host-only, HttpOnly.
-    try expectAttribute(.{ .name = "__Host-Http-abc", .value = "1", .http_only = true }, "https://velora.io/", "__Host-Http-abc=1; Secure; Path=/; HttpOnly");
-    try expectError(error.InvalidPrefixedCookie, "https://velora.io/", "__Host-Http-abc=1; Secure; Path=/");
-    try expectError(error.InvalidPrefixedCookie, "https://velora.io/", "__Host-Http-abc=1; Secure; Path=/cookies/; HttpOnly");
-    try expectError(error.InvalidPrefixedCookie, "https://velora.io/", "__Host-Http-abc=1; Secure; Path=/; HttpOnly; Domain=velora.io");
+    try expectAttribute(.{ .name = "__Host-Http-abc", .value = "1", .http_only = true }, "https://kokoio.com/", "__Host-Http-abc=1; Secure; Path=/; HttpOnly");
+    try expectError(error.InvalidPrefixedCookie, "https://kokoio.com/", "__Host-Http-abc=1; Secure; Path=/");
+    try expectError(error.InvalidPrefixedCookie, "https://kokoio.com/", "__Host-Http-abc=1; Secure; Path=/cookies/; HttpOnly");
+    try expectError(error.InvalidPrefixedCookie, "https://kokoio.com/", "__Host-Http-abc=1; Secure; Path=/; HttpOnly; Domain=kokoio.com");
 
     // __Http-: Secure + HttpOnly (Path unrestricted).
-    try expectAttribute(.{ .name = "__Http-abc", .value = "1", .http_only = true }, "https://velora.io/", "__Http-abc=1; Secure; Path=/; HttpOnly");
-    try expectAttribute(.{ .name = "__Http-abc", .value = "1", .http_only = true, .path = "/cookies/" }, "https://velora.io/", "__Http-abc=1; Secure; Path=/cookies/; HttpOnly");
-    try expectError(error.InvalidPrefixedCookie, "https://velora.io/", "__Http-abc=1; Secure; Path=/");
-    try expectError(error.InvalidPrefixedCookie, "https://velora.io/", "__Http-abc=1; Path=/; HttpOnly");
+    try expectAttribute(.{ .name = "__Http-abc", .value = "1", .http_only = true }, "https://kokoio.com/", "__Http-abc=1; Secure; Path=/; HttpOnly");
+    try expectAttribute(.{ .name = "__Http-abc", .value = "1", .http_only = true, .path = "/cookies/" }, "https://kokoio.com/", "__Http-abc=1; Secure; Path=/cookies/; HttpOnly");
+    try expectError(error.InvalidPrefixedCookie, "https://kokoio.com/", "__Http-abc=1; Secure; Path=/");
+    try expectError(error.InvalidPrefixedCookie, "https://kokoio.com/", "__Http-abc=1; Path=/; HttpOnly");
 
     // Near-misses are not subject to the prefix rules.
     try expectAttribute(.{ .name = "__Host", .value = "1" }, null, "__Host=1");
@@ -1454,12 +1499,12 @@ test "Cookie: parse secure" {
     try expectAttribute(.{ .secure = false }, null, "b;security");
     try expectAttribute(.{ .secure = false }, null, "b;SecureX");
     try expectError(error.InsecureSecureCookie, null, "b; Secure");
-    try expectAttribute(.{ .secure = true }, "https://velora.io/", "b; Secure");
-    try expectAttribute(.{ .secure = true }, "https://velora.io/", "b; Secure  ");
-    try expectAttribute(.{ .secure = true }, "https://velora.io/", "b; Secure=on  ");
-    try expectAttribute(.{ .secure = true }, "https://velora.io/", "b; Secure=Off  ");
-    try expectAttribute(.{ .secure = true }, "https://velora.io/", "b; secure=Off  ");
-    try expectAttribute(.{ .secure = true }, "https://velora.io/", "b; seCUre=Off  ");
+    try expectAttribute(.{ .secure = true }, "https://kokoio.com/", "b; Secure");
+    try expectAttribute(.{ .secure = true }, "https://kokoio.com/", "b; Secure  ");
+    try expectAttribute(.{ .secure = true }, "https://kokoio.com/", "b; Secure=on  ");
+    try expectAttribute(.{ .secure = true }, "https://kokoio.com/", "b; Secure=Off  ");
+    try expectAttribute(.{ .secure = true }, "https://kokoio.com/", "b; secure=Off  ");
+    try expectAttribute(.{ .secure = true }, "https://kokoio.com/", "b; seCUre=Off  ");
 }
 
 test "Cookie: parse HttpOnly" {
@@ -1485,10 +1530,10 @@ test "Cookie: parse SameSite" {
     // rejected otherwise
     try expectError(error.InsecureSameSite, null, "b;samesite=none");
     try expectError(error.InsecureSameSite, null, "b;SameSite=None");
-    try expectAttribute(.{ .same_site = .none }, "https://velora.io/", "b;  samesite=none; secure  ");
-    try expectAttribute(.{ .same_site = .none }, "https://velora.io/", "b;  SameSite=None  ; SECURE");
-    try expectAttribute(.{ .same_site = .none }, "https://velora.io/", "b;Secure;  SameSite=None");
-    try expectAttribute(.{ .same_site = .none }, "https://velora.io/", "b; SameSite=None; Secure");
+    try expectAttribute(.{ .same_site = .none }, "https://kokoio.com/", "b;  samesite=none; secure  ");
+    try expectAttribute(.{ .same_site = .none }, "https://kokoio.com/", "b;  SameSite=None  ; SECURE");
+    try expectAttribute(.{ .same_site = .none }, "https://kokoio.com/", "b;Secure;  SameSite=None");
+    try expectAttribute(.{ .same_site = .none }, "https://kokoio.com/", "b; SameSite=None; Secure");
 
     try expectAttribute(.{ .same_site = .strict }, null, "b;  samesite=Strict  ");
     try expectAttribute(.{ .same_site = .strict }, null, "b;  SameSite=  STRICT  ");
@@ -1499,7 +1544,7 @@ test "Cookie: parse SameSite" {
 }
 
 test "Cookie: attribute section CTL rejects cookie" {
-    const host = "velora.io";
+    const host = "kokoio.com";
     const path = "/cookies/attributes";
     // Non-tab CTL in attribute section rejects the line (WPT attributes-ctl).
     try expectError(error.InvalidByteSequence, null, "test=t; Domain=bad\x01.co; Domain=" ++ host);
@@ -1543,8 +1588,8 @@ test "Cookie: parse all" {
         .name = "user-id",
         .value = "9000",
         .path = "/cms",
-        .domain = "velora.io",
-    }, "https://velora.io/cms/users", "user-id=9000");
+        .domain = "kokoio.com",
+    }, "https://kokoio.com/cms/users", "user-id=9000");
 
     try expectCookie(.{
         .name = "user-id",
@@ -1552,9 +1597,9 @@ test "Cookie: parse all" {
         .path = "/",
         .http_only = true,
         .secure = true,
-        .domain = ".velora.io",
+        .domain = ".kokoio.com",
         .expires = @floatFromInt(std.time.timestamp() + 30),
-    }, "https://velora.io/cms/users", "user-id=9000; HttpOnly; Max-Age=30; Secure; path=/; Domain=velora.io");
+    }, "https://kokoio.com/cms/users", "user-id=9000; HttpOnly; Max-Age=30; Secure; path=/; Domain=kokoio.com");
 
     try expectCookie(.{
         .name = "app_session",
@@ -1569,25 +1614,25 @@ test "Cookie: parse all" {
 }
 
 test "Cookie: parse domain" {
-    try expectAttribute(.{ .domain = "velora.io" }, "http://velora.io/", "b");
-    try expectAttribute(.{ .domain = "dev.velora.io" }, "http://dev.velora.io/", "b");
-    try expectAttribute(.{ .domain = ".velora.io" }, "http://velora.io/", "b;domain=velora.io");
-    try expectAttribute(.{ .domain = ".velora.io" }, "http://velora.io/", "b;domain=.velora.io");
-    try expectAttribute(.{ .domain = ".dev.velora.io" }, "http://dev.velora.io/", "b;domain=dev.velora.io");
-    try expectAttribute(.{ .domain = ".velora.io" }, "http://dev.velora.io/", "b;domain=velora.io");
-    try expectAttribute(.{ .domain = ".velora.io" }, "http://dev.velora.io/", "b;domain=.velora.io");
+    try expectAttribute(.{ .domain = "kokoio.com" }, "http://kokoio.com/", "b");
+    try expectAttribute(.{ .domain = "dev.kokoio.com" }, "http://dev.kokoio.com/", "b");
+    try expectAttribute(.{ .domain = ".kokoio.com" }, "http://kokoio.com/", "b;domain=kokoio.com");
+    try expectAttribute(.{ .domain = ".kokoio.com" }, "http://kokoio.com/", "b;domain=.kokoio.com");
+    try expectAttribute(.{ .domain = ".dev.kokoio.com" }, "http://dev.kokoio.com/", "b;domain=dev.kokoio.com");
+    try expectAttribute(.{ .domain = ".kokoio.com" }, "http://dev.kokoio.com/", "b;domain=kokoio.com");
+    try expectAttribute(.{ .domain = ".kokoio.com" }, "http://dev.kokoio.com/", "b;domain=.kokoio.com");
     try expectAttribute(.{ .domain = ".localhost" }, "http://localhost/", "b;domain=localhost");
     try expectAttribute(.{ .domain = ".localhost" }, "http://localhost/", "b;domain=.localhost");
 
-    try expectError(error.InvalidDomain, "http://velora.io/", "b;domain=io");
-    try expectError(error.InvalidDomain, "http://velora.io/", "b;domain=.io");
-    try expectError(error.InvalidDomain, "http://velora.io/", "b;domain=other.velora.io");
-    try expectError(error.InvalidDomain, "http://velora.io/", "b;domain=other.velora.com");
-    try expectError(error.InvalidDomain, "http://velora.io/", "b;domain=other.example.com");
+    try expectError(error.InvalidDomain, "http://kokoio.com/", "b;domain=io");
+    try expectError(error.InvalidDomain, "http://kokoio.com/", "b;domain=.io");
+    try expectError(error.InvalidDomain, "http://kokoio.com/", "b;domain=other.kokoio.com");
+    try expectError(error.InvalidDomain, "http://kokoio.com/", "b;domain=other.koko.com");
+    try expectError(error.InvalidDomain, "http://kokoio.com/", "b;domain=other.example.com");
 
     try expectError(error.InvalidDomain, "http://attackerexample.com/", "b;domain=example.com");
     try expectError(error.InvalidDomain, "http://attackerexample.com/", "b;domain=.example.com");
-    try expectError(error.InvalidDomain, "http://xyzvelora.io/", "b;domain=velora.io");
+    try expectError(error.InvalidDomain, "http://xyzkokoio.com/", "b;domain=kokoio.com");
     try expectError(error.InvalidDomain, "http://notlocalhost/", "b;domain=localhost");
 
     // Public suffixes should be rejected (test PSL entries: "gov.uk", "api.gov.uk")
@@ -1601,29 +1646,29 @@ test "Cookie: parse domain" {
 }
 
 test "Cookie: parse limit" {
-    try expectError(error.CookieSizeExceeded, "http://velora.io/", "v" ** 4097 ++ ";domain=velora.io");
-    try expectError(error.CookieSizeExceeded, "http://velora.io/", "n" ** 4097 ++ "=1;domain=velora.io");
-    try expectError(error.CookieSizeExceeded, "http://velora.io/", "n=1" ++ "v" ** 4096 ++ ";domain=velora.io");
-    try expectError(error.CookieSizeExceeded, "http://velora.io/", "v" ** 4097 ++ ";domain=velora.io");
+    try expectError(error.CookieSizeExceeded, "http://kokoio.com/", "v" ** 4097 ++ ";domain=kokoio.com");
+    try expectError(error.CookieSizeExceeded, "http://kokoio.com/", "n" ** 4097 ++ "=1;domain=kokoio.com");
+    try expectError(error.CookieSizeExceeded, "http://kokoio.com/", "n=1" ++ "v" ** 4096 ++ ";domain=kokoio.com");
+    try expectError(error.CookieSizeExceeded, "http://kokoio.com/", "v" ** 4097 ++ ";domain=kokoio.com");
     // WPT /cookies/size/name-and-value.html
-    try expectCookie(.{ .name = "t" ** 2048, .value = "1" ** 2048, .path = "/", .domain = "velora.io" }, "http://velora.io/", "t" ** 2048 ++ "=" ++ "1" ** 2048);
-    try expectError(error.CookieSizeExceeded, "http://velora.io/", "t" ** 4097 ++ "=1");
-    try expectCookie(.{ .name = "t" ** 4096, .value = "", .path = "/", .domain = "velora.io" }, "http://velora.io/", "t" ** 4096 ++ "=");
-    try expectError(error.CookieSizeExceeded, "http://velora.io/", "t" ** 4097 ++ "=");
-    try expectCookie(.{ .name = "t", .value = "1" ** 4095, .path = "/", .domain = "velora.io" }, "http://velora.io/", "t=" ++ "1" ** 4095);
-    try expectError(error.CookieSizeExceeded, "http://velora.io/", "t=" ++ "1" ** 4096);
-    try expectError(error.CookieSizeExceeded, "http://velora.io/", "t" ** 4096 ++ "=1");
-    try expectCookie(.{ .name = "", .value = "1" ** 4096, .path = "/", .domain = "velora.io" }, "http://velora.io/", "=" ++ "1" ** 4096);
-    try expectError(error.CookieSizeExceeded, "http://velora.io/", "=" ++ "1" ** 4097);
+    try expectCookie(.{ .name = "t" ** 2048, .value = "1" ** 2048, .path = "/", .domain = "kokoio.com" }, "http://kokoio.com/", "t" ** 2048 ++ "=" ++ "1" ** 2048);
+    try expectError(error.CookieSizeExceeded, "http://kokoio.com/", "t" ** 4097 ++ "=1");
+    try expectCookie(.{ .name = "t" ** 4096, .value = "", .path = "/", .domain = "kokoio.com" }, "http://kokoio.com/", "t" ** 4096 ++ "=");
+    try expectError(error.CookieSizeExceeded, "http://kokoio.com/", "t" ** 4097 ++ "=");
+    try expectCookie(.{ .name = "t", .value = "1" ** 4095, .path = "/", .domain = "kokoio.com" }, "http://kokoio.com/", "t=" ++ "1" ** 4095);
+    try expectError(error.CookieSizeExceeded, "http://kokoio.com/", "t=" ++ "1" ** 4096);
+    try expectError(error.CookieSizeExceeded, "http://kokoio.com/", "t" ** 4096 ++ "=1");
+    try expectCookie(.{ .name = "", .value = "1" ** 4096, .path = "/", .domain = "kokoio.com" }, "http://kokoio.com/", "=" ++ "1" ** 4096);
+    try expectError(error.CookieSizeExceeded, "http://kokoio.com/", "=" ++ "1" ** 4097);
 
     const large_name_value = "t" ** 2048 ++ "=" ++ "1" ** 2048;
-    const large_attrs = large_name_value ++ "; domain=" ++ "a" ** 1020 ++ ".com; domain=" ++ "a" ** 1020 ++ ".com; domain=" ++ "a" ** 1020 ++ ".com; domain=" ++ "a" ** 1020 ++ ".com; domain=velora.io";
+    const large_attrs = large_name_value ++ "; domain=" ++ "a" ** 1020 ++ ".com; domain=" ++ "a" ** 1020 ++ ".com; domain=" ++ "a" ** 1020 ++ ".com; domain=" ++ "a" ** 1020 ++ ".com; domain=kokoio.com";
     try expectCookie(.{
         .name = "t" ** 2048,
         .value = "1" ** 2048,
         .path = "/",
-        .domain = ".velora.io",
-    }, "http://velora.io/", large_attrs);
+        .domain = ".kokoio.com",
+    }, "http://kokoio.com/", large_attrs);
 
     // WPT /cookies/value/value.html combined name+value budget.
     try expectAttribute(.{ .name = "test", .value = "11" ++ "a" ** 4090 }, null, "test=11" ++ "a" ** 4090);
@@ -1747,9 +1792,9 @@ test "Cookie: parse rejects URL with empty host" {
 }
 
 test "Cookie: schemeful same-site treats http/https as cross-site" {
-    try testing.expect(!isSchemefulSameSite("http://velora.io/", "https://velora.io/"));
-    try testing.expect(isSchemefulSameSite("http://velora.io/", "http://test.velora.io/"));
-    try testing.expect(isThirdPartyContext("https://velora.io/", "http://velora.io/"));
+    try testing.expect(!isSchemefulSameSite("http://kokoio.com/", "https://kokoio.com/"));
+    try testing.expect(isSchemefulSameSite("http://kokoio.com/", "http://test.kokoio.com/"));
+    try testing.expect(isThirdPartyContext("https://kokoio.com/", "http://kokoio.com/"));
 }
 
 test "Cookie: origin port binding" {
@@ -1757,20 +1802,20 @@ test "Cookie: origin port binding" {
     var jar = Jar.init(testing.allocator);
     defer jar.deinit();
 
-    try jar.add(try Cookie.parse(testing.allocator, "http://velora.io:8000/", "port=1;Path=/"), now, true);
-    try jar.add(try Cookie.parse(testing.allocator, "http://velora.io:9000/", "port=2;Path=/"), now, true);
+    try jar.add(try Cookie.parse(testing.allocator, "http://kokoio.com:8000/", "port=1;Path=/"), now, true);
+    try jar.add(try Cookie.parse(testing.allocator, "http://kokoio.com:9000/", "port=2;Path=/"), now, true);
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(testing.allocator);
-    try jar.forRequest("http://velora.io:8000/", buf.writer(testing.allocator), .{
-        .origin_url = "http://velora.io:8000/",
+    try jar.forRequest("http://kokoio.com:8000/", buf.writer(testing.allocator), .{
+        .origin_url = "http://kokoio.com:8000/",
         .is_http = true,
     });
     try testing.expectEqualStrings("port=1", buf.items);
 
     buf.clearRetainingCapacity();
-    try jar.forRequest("http://velora.io:9000/", buf.writer(testing.allocator), .{
-        .origin_url = "http://velora.io:9000/",
+    try jar.forRequest("http://kokoio.com:9000/", buf.writer(testing.allocator), .{
+        .origin_url = "http://kokoio.com:9000/",
         .is_http = true,
     });
     try testing.expectEqualStrings("port=2", buf.items);
@@ -1781,15 +1826,15 @@ test "Cookie: third-party context blocks non-partitioned cookies" {
     var jar = Jar.init(testing.allocator);
     defer jar.deinit();
 
-    try jar.addWithTopLevel(try Cookie.parse(testing.allocator, "https://velora.io/", "blocked=1;Path=/;Secure;SameSite=None"), now, true, "https://velora.io/");
-    try jar.addWithTopLevel(try Cookie.parse(testing.allocator, "https://velora.io/", "allowed=1;Path=/;Secure;SameSite=None;Partitioned"), now, true, "https://other.com/");
+    try jar.addWithTopLevel(try Cookie.parse(testing.allocator, "https://kokoio.com/", "blocked=1;Path=/;Secure;SameSite=None"), now, true, "https://kokoio.com/");
+    try jar.addWithTopLevel(try Cookie.parse(testing.allocator, "https://kokoio.com/", "allowed=1;Path=/;Secure;SameSite=None;Partitioned"), now, true, "https://other.com/");
     try testing.expectEqual(@as(usize, 2), jar.cookies.items.len);
     try testing.expect(jar.cookies.items[1].partitioned);
     try testing.expectEqualStrings("https:other.com", jar.cookies.items[1].partition_site.?);
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(testing.allocator);
-    try jar.forRequest("https://velora.io/", buf.writer(testing.allocator), .{
+    try jar.forRequest("https://kokoio.com/", buf.writer(testing.allocator), .{
         .origin_url = "https://other.com/",
         .top_level_url = "https://other.com/",
         .is_http = false,

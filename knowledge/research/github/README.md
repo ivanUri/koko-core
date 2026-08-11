@@ -1,6 +1,6 @@
 # GitHub Research
 
-Notes summarizing ideas from external repositories that helped solve Velora problems.
+Notes summarizing ideas from external repositories that helped solve Koko problems.
 
 Do **not** copy code — summarize concepts, architecture, and applicable lessons.
 

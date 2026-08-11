@@ -876,10 +876,10 @@ fn expectTokensEqual(input: []const u8, tokens: []const Token) !void {
 
 test "smoke" {
     try expectTokensEqual(
-        \\.velora  {color:red;}
+        \\.koko  {color:red;}
     , &.{
         .{ .delim = '.' },
-        .{ .ident = "velora" },
+        .{ .ident = "koko" },
         .{ .white_space = "  " },
         .curly_bracket_block,
         .{ .ident = "color" },

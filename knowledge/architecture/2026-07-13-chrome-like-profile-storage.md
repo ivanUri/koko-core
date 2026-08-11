@@ -2,16 +2,18 @@
 
 ## Summary
 
-Velora session state (cookies, localStorage, HTTP cache) lives under a Chrome-style **user-data-dir** with sibling profile folders. Fingerprints are self-contained folders under `browser/fingerprints/`.
+Koko profile state (cookies and localStorage) lives in `Storage.sqlite` under a Chrome-style **user-data-dir** with sibling profile folders. SQLite WAL is the durable source of truth; Web APIs continue to use session RAM as hot state. `sessionStorage` remains ephemeral. Fingerprints are self-contained folders under `browser/fingerprints/`.
 
 ## Layout
 
 ```
-~/Library/Application Support/velora/   # --user-data-dir (macOS default)
+~/Library/Application Support/koko/   # --user-data-dir (macOS default)
   Default/
-    Preferences.json    # { "version": 3, "fingerprint": "velora" }
-    Cookies.json
-    Local Storage/storage.json
+    Preferences.json    # { "version": 3, "fingerprint": "koko" }
+    Storage.sqlite      # cookies + localStorage; WAL mode, schema v4
+    Storage.sqlite.writer.lock
+    Cookies.json        # retained legacy import/export source
+    Local Storage/storage.json  # retained legacy import source
     Cache/
   chrome-local-huys-macbook-pro/
     Preferences.json    # { "version": 3, "fingerprint": "chrome-local-huys-macbook-pro" }
@@ -24,7 +26,7 @@ Repo (read-only):
 browser/fingerprints/<id>/
   fingerprint.json
   assets/
-browser/velora.json           # default template
+browser/koko.json           # default template
 ```
 
 ## Code
@@ -35,7 +37,10 @@ browser/velora.json           # default template
 | `src/runtime/Config.zig` | `--user-data-dir`, derive cookie/cache paths |
 | `src/runtime/profile/ProfileStore.zig` | load a resolved fingerprint folder |
 | `src/runtime/profile/FingerprintStore.zig` | resolve explicit, embedded, or installed fingerprint folder |
-| `src/runtime/profile_session.zig` | load/save `Cookies.json` + `Local Storage/` |
+| `src/runtime/storage/Storage.zig` | Select storage engine and expose profile-state operations |
+| `src/runtime/storage/sqlite/Store.zig` | Bounded queue, single writer, batching, coalescing, flush barriers |
+| `src/runtime/storage/sqlite/migrations.zig` | Transactional browser-state schema migrations |
+| `src/runtime/profile_session.zig` | SQLite bootstrap plus one-time JSON import/fallback |
 | `scripts/migrate-profile-layout.mjs` | migrate legacy `browser/*/sessions/` jars |
 
 ## CLI
@@ -43,6 +48,19 @@ browser/velora.json           # default template
 - `--user-data-dir` — override profile root (like Chrome)
 - `--browser-profile NAME` — profile **folder** name (default: `Default`)
 - `--cookie-jar` — deprecated override for `Cookies.json` path
+- `--storage-engine sqlite|none` — SQLite is the default; `none` retains JSON compatibility mode
+- `--storage-sqlite-path PATH` — optional explicit database path; default is `<profile>/Storage.sqlite`
+
+## Persistence lifecycle
+
+1. `Session` creates RAM `Cookie.Jar` and origin `storage.Shed`.
+2. Profile bootstrap flushes older accepted commands, then restores cookies and localStorage from SQLite.
+3. First open imports validated JSON without deleting it and commits a profile marker.
+4. Runtime mutations update RAM synchronously and enqueue owned commands.
+5. The bounded writer coalesces commands and commits batches in SQLite WAL with `synchronous=FULL`.
+6. Session/browser shutdown waits on a flush barrier before releasing session arenas.
+
+Only one process may own a database writer lock. `sessionStorage` is not enqueued unless a future resumable-session feature explicitly adopts the v4 session tables.
 
 ## Migration
 
@@ -72,25 +90,25 @@ Chrome-style registry at user-data-dir root:
 ### Profile CLI
 
 ```bash
-velora profile list
-velora profile create --name <id> [--template <template-id>]
-velora profile delete --name <id>
-velora profile import-cookies [--name <id>] --from <cookies.json>
+koko profile list
+koko profile create --name <id> [--template <template-id>]
+koko profile delete --name <id>
+koko profile import-cookies [--name <id>] --from <cookies.json>
 ```
 
 ### Install root resolution (`BrowserRoot.zig`)
 
 Template JSON is resolved without CWD:
 
-1. `VELORA_ROOT` env
-2. Exe-relative `../../` (dev) or `../share/velora` (Homebrew)
+1. `KOKO_ROOT` env
+2. Exe-relative `../../` (dev) or `../share/koko` (Homebrew)
 3. Current directory fallback
 
 ### Active profile resolution
 
 Priority: `--browser-profile` → `--browser-profile-pool` pick → `Default` (no implicit sticky profile).
 
-`ensureFirstRun` creates `Default/` with template `velora` when user-data-dir is empty.
+`ensureFirstRun` creates `Default/` with template `koko` when user-data-dir is empty.
 
 ## Removed
 

@@ -57,5 +57,5 @@ pub fn applyOnce(frame: *Frame) void {
     if (frame._automation_scrubbed) return;
     frame._automation_scrubbed = true;
     const local = frame.js.local orelse return;
-    local.eval(scrub_script, "velora-automation-scrub") catch {};
+    local.eval(scrub_script, "koko-automation-scrub") catch {};
 }

@@ -59,16 +59,7 @@ fn _loadStorage(session: *Session, path: []const u8) !void {
     for (entries) |entry| {
         const bucket = try session.storage_shed.getOrPut(allocator, entry.origin);
         for (entry.local) |kv| {
-            const key_owned = try allocator.dupe(u8, kv.key);
-            const val_owned = try allocator.dupe(u8, kv.value);
-            const gop = try bucket.local._data.getOrPut(allocator, key_owned);
-            if (!gop.found_existing) {
-                gop.key_ptr.* = key_owned;
-            } else {
-                allocator.free(key_owned);
-            }
-            gop.value_ptr.* = val_owned;
-            bucket.local._size += val_owned.len;
+            try bucket.local.put(allocator, kv.key, kv.value);
         }
     }
     log.info(.app, "session_persist.loadStorage", .{ .path = path, .origins = entries.len });
@@ -101,18 +92,17 @@ fn _saveStorage(session: *Session, path: []const u8) !void {
         try origins.append(allocator, .{ .origin = kv.key_ptr.*, .local = try pairs.toOwnedSlice(allocator) });
     }
 
-    if (origins.items.len == 0) return;
-
     if (std.fs.path.dirname(path)) |parent| {
         try std.fs.cwd().makePath(parent);
     }
 
-    var file = try std.fs.cwd().createFile(path, .{});
-    defer file.close();
     var buf: [8192]u8 = undefined;
-    var writer = file.writer(&buf);
-    try std.json.Stringify.value(origins.items, .{}, &writer.interface);
-    try writer.interface.writeByte('\n');
-    try writer.end();
+    var atomic_file = try std.fs.cwd().atomicFile(path, .{ .make_path = true, .write_buffer = &buf });
+    defer atomic_file.deinit();
+    try std.json.Stringify.value(origins.items, .{}, &atomic_file.file_writer.interface);
+    try atomic_file.file_writer.interface.writeByte('\n');
+    try atomic_file.flush();
+    try atomic_file.file_writer.file.sync();
+    try atomic_file.renameIntoPlace();
     log.info(.app, "session_persist.saveStorage", .{ .path = path, .origins = origins.items.len });
 }

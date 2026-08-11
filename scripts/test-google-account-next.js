@@ -6,15 +6,15 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 
 const projectRoot = path.resolve(__dirname, "..");
-const velora = path.join(projectRoot, "zig-out", "bin", "velora");
+const koko = path.join(projectRoot, "zig-out", "bin", "koko");
 const email = process.argv[2];
 
 if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
   console.error("Usage: node scripts/test-google-account-next.js <email>");
   process.exit(2);
 }
-if (!fs.existsSync(velora)) {
-  console.error(`Velora binary not found: ${velora}`);
+if (!fs.existsSync(koko)) {
+  console.error(`Koko binary not found: ${koko}`);
   process.exit(2);
 }
 
@@ -28,7 +28,7 @@ const logPath = path.join(
   "export-logs/accounts.google.com-email-next.log",
 );
 const cookieJar = path.join(projectRoot, "exports/firefox-cookies.json");
-const userDataDir = "/tmp/velora-firefox-run";
+const userDataDir = "/tmp/koko-firefox-run";
 
 fs.mkdirSync(path.dirname(output), { recursive: true });
 fs.mkdirSync(path.dirname(logPath), { recursive: true });
@@ -48,20 +48,20 @@ const waitScript = `(() => {
   );
   if (password) return true;
   const input = document.querySelector('input[name="identifier"]');
-  if (!input || globalThis.__veloraGoogleIdentifierSubmitted) return false;
+  if (!input || globalThis.__kokoGoogleIdentifierSubmitted) return false;
   input.focus();
   input.value = ${quotedEmail};
   input.dispatchEvent(new Event('input', { bubbles: true }));
   input.dispatchEvent(new Event('change', { bubbles: true }));
   const next = document.querySelector('#identifierNext, button[type="submit"]');
   if (!next) return false;
-  globalThis.__veloraGoogleIdentifierSubmitted = true;
+  globalThis.__kokoGoogleIdentifierSubmitted = true;
   next.click();
   return false;
 })()`;
 const waitScriptFile = path.join(
   "/tmp",
-  `velora-google-account-next-${process.pid}.js`,
+  `koko-google-account-next-${process.pid}.js`,
 );
 fs.writeFileSync(waitScriptFile, waitScript);
 
@@ -90,10 +90,10 @@ const args = [
 
 const outputFd = fs.openSync(partial, "w");
 const logFd = fs.openSync(logPath, "w");
-const useLldb = process.env.VELORA_LLDB === "1";
-const command = useLldb ? "lldb" : velora;
+const useLldb = process.env.KOKO_LLDB === "1";
+const command = useLldb ? "lldb" : koko;
 const commandArgs = useLldb
-  ? ["--batch", "-o", "run", "-o", "bt", "--", velora, ...args]
+  ? ["--batch", "-o", "run", "-o", "bt", "--", koko, ...args]
   : args;
 const child = spawn(command, commandArgs, {
   cwd: projectRoot,

@@ -1,6 +1,6 @@
 # Fingerprint playground: worker bootstrap, scheduler UAF, collection timeout
 
-> **Audience:** Velora engineers fixing Fingerprint Pro agent collection under concurrent Worker + about:blank iframe + OfflineAudio.  
+> **Audience:** Koko engineers fixing Fingerprint Pro agent collection under concurrent Worker + about:blank iframe + OfflineAudio.  
 > **Sites:** `demo.fingerprint.com/playground` (repro).
 
 ## Summary
@@ -66,7 +66,7 @@ Scheduler.runOneFromQueue (peek)
 ## Verification
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build -Dstrip=false   # stack traces for remaining crashes
 node scripts/cdp-fingerprint-playground-probe.mjs --max-sec 35
 ```
@@ -156,7 +156,7 @@ Fingerprint agent `Fw`/`hl` use `setInterval(1)` as a job queue. After `Response
 
 Primary remaining races: config fetch settle reliability; post-`arrayBuffer` agent queue settlement under load.
 
-## HAR comparison (Chrome success vs Velora)
+## HAR comparison (Chrome success vs Koko)
 
 Source: `/Users/huydev/Desktop/demo.fingerprint.com.har` (WebInspector).
 
@@ -167,7 +167,7 @@ Chrome pipeline (relative to agent script):
 4. `+1911ms POST /api/event/v4/{event_id}` → full smart-signals JSON (~5KB) — **feeds playground UI**
 5. `+4349ms POST /ampl-api/2/httpapi`
 
-Velora today (typical cold start without CDP hooks):
+Koko today (typical cold start without CDP hooks):
 - Agent + identify POST often 200 with `visitor_id` on wire
 - Config GET frequently `loadingFailed: Shutdown` / JS `fetch` never settles
 - **No `/api/event`** → React stays on "Running Device Intelligence", no "Your Visitor ID"
@@ -177,11 +177,11 @@ Root themes: (1) fetch must not abort/hang on temporary `fetchJsUnavailable`; (2
 
 ## Config GET Shutdown (2026-07-18 late)
 
-### Chrome vs Velora
+### Chrome vs Koko
 
 Chrome (Playwright): agent → config 200 (96B) → identify 200 → `/api/event` 200 → **Visitor ID ~4s**.
 
-Velora before this fix: config GET often CDP `loadingFailed: Shutdown` at start; identify sometimes still completed; UI stuck bodyLen~248.
+Koko before this fix: config GET often CDP `loadingFailed: Shutdown` at start; identify sometimes still completed; UI stuck bodyLen~248.
 
 ### Root causes fixed
 

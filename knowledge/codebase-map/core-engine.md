@@ -36,7 +36,7 @@ HTML bytes --(parser/html5ever)--> DOM tree (dom/)
 - **`ContentSecurityPolicy.zig`** — parse/áp dụng CSP header (đã thấy CSP phức tạp trong response Cloudflare interstitial lúc debug).
 - **`ReferrerPolicy.zig`, `Mime.zig`, `URL.zig`, `color.zig`** — tiện ích domain-specific.
 - **`StyleManager.zig`, `css/`** — quản lý CSSOM / style áp dụng (thư mục con `css/` bên trong `browser/`, khác với `webapi/css/`).
-- **`dump.zig`, `markdown.zig`, `reflect.zig`, `structured_data.zig`, `forms.zig`, `links.zig`, `interactive.zig`, `actions.zig`** — hỗ trợ các chế độ `--dump` của CLI (`html`, `markdown`, `semantic_tree`, `semantic_tree_text`) và các helper trích xuất (forms, links, structured data — kiểu JSON-LD/microdata) — đây là tầng phục vụ trực tiếp output của `velora fetch`.
+- **`dump.zig`, `markdown.zig`, `reflect.zig`, `structured_data.zig`, `forms.zig`, `links.zig`, `interactive.zig`, `actions.zig`** — hỗ trợ các chế độ `--dump` của CLI (`html`, `markdown`, `semantic_tree`, `semantic_tree_text`) và các helper trích xuất (forms, links, structured data — kiểu JSON-LD/microdata) — đây là tầng phục vụ trực tiếp output của `koko fetch`.
 
 ## 3. `src/core/dom/` (20 file) — DOM tree
 
@@ -129,7 +129,7 @@ HTML bytes --(parser/html5ever)--> DOM tree (dom/)
 ## 10. Ghi chú quan trọng: `src/public/` KHÔNG phải API thật đang dùng
 
 Khi đọc kiến trúc README (`Core Engine -> Runtime -> Protocols -> Adapters -> Public API`), dễ hiểu lầm `src/public/` là nơi lập trình viên Zig/embedder gọi vào. Thực tế đã kiểm chứng: **`src/public/Frame.zig` hiện chỉ là stub** — `goto()`, `content()`, `evalString()` đều là thân hàm rỗng (`_ = url; _ = self;`, trả `""`). API thật mà người dùng cuối dùng là:
-1. **CDP** (`src/protocols/cdp/`) qua `velora serve` — dùng bởi SDK ngoài (`@velora/sdk`, repo riêng `velora-sdk`).
-2. **CLI** (`velora fetch ...`) qua `src/adapters/cli/`.
+1. **CDP** (`src/protocols/cdp/`) qua `koko serve` — dùng bởi SDK ngoài (`@koko/sdk`, repo riêng `koko-sdk`).
+2. **CLI** (`koko fetch ...`) qua `src/adapters/cli/`.
 
 Xem `knowledge/codebase-map/protocols-and-adapters.md` để biết chi tiết 2 đường API thật này.

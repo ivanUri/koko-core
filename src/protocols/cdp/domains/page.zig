@@ -432,7 +432,7 @@ pub fn frameRemove(bc: *CDP.BrowserContext) void {
     // be-killed Transfer) become dangling immediately after this hook
     // returns. Without this clear, a CDP client that replies later with
     // continueRequest / fulfillRequest / failRequest / continueWithAuth
-    // would dereference freed memory and crash velora. See the regression
+    // would dereference freed memory and crash koko. See the regression
     // test in code-check/repro-fetch-frame-race.js.
     bc.intercept_state.clear();
 
@@ -683,7 +683,7 @@ pub fn frameNavigated(arena: Allocator, bc: *CDP.BrowserContext, event: *const N
     }
 
     // frameNavigated also fires for same-document history/fragment changes,
-    // and Velora may assign a fresh loader id to those transitions. The V8
+    // and Koko may assign a fresh loader id to those transitions. The V8
     // context id is the actual realm identity: it changes with a replacement
     // Document and remains stable for an SPA/history transition.
     const context_id = frame.js.id;
@@ -810,9 +810,9 @@ fn handleJavaScriptDialog(cmd: *CDP.Command) !void {
     // sends this command, the dialog has already returned and there is
     // no pending dialog to accept or dismiss.
     //
-    // Velora-aware clients that want to control confirm/prompt return
-    // values can pre-arm a response via Velora.handleJavaScriptDialog instead
-    // (see src/cdp/domains/velora.zig).
+    // Koko-aware clients that want to control confirm/prompt return
+    // values can pre-arm a response via Koko.handleJavaScriptDialog instead
+    // (see src/cdp/domains/koko.zig).
     _ = try cmd.params(struct {
         accept: bool,
         promptText: ?[]const u8 = null,
@@ -822,7 +822,7 @@ fn handleJavaScriptDialog(cmd: *CDP.Command) !void {
 
 // https://chromedevtools.github.io/devtools-protocol/tot/Page/#event-javascriptDialogOpening
 pub fn javascriptDialogOpening(bc: anytype, event: *const Notification.JavascriptDialogOpening) !void {
-    // Pop any response pre-armed via Velora.handleJavaScriptDialog onto the
+    // Pop any response pre-armed via Koko.handleJavaScriptDialog onto the
     // dispatch's output param so the calling alert/confirm/prompt returns
     // the CDP client's choice. Cleared unconditionally — a stash applies
     // to exactly one dialog.

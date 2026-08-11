@@ -121,7 +121,7 @@ terminal_resources: std.ArrayList(TerminalResource) = .{},
 local: ?*const js.Local = null,
 
 // Internal exception helpers are persistent handles, not globalThis
-// properties. Exposing engine plumbing as __velora* own properties is both a
+// properties. Exposing engine plumbing as __koko* own properties is both a
 // web-compat violation and a high-signal automation fingerprint.
 construct_throw_helper: ?js.Function.Global = null,
 rethrow_helper: ?js.Function.Global = null,

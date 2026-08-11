@@ -117,12 +117,10 @@ pub fn saveToFile(jar: *Cookie.Jar, path: []const u8) void {
 fn _saveToFile(jar: *Cookie.Jar, path: []const u8) !void {
     jar.removeExpired(null);
 
-    var file = try std.fs.cwd().createFile(path, .{});
-    defer file.close();
-
     var buf: [8192]u8 = undefined;
-    var writer = file.writer(&buf);
-    const w = &writer.interface;
+    var atomic_file = try std.fs.cwd().atomicFile(path, .{ .make_path = true, .write_buffer = &buf });
+    defer atomic_file.deinit();
+    const w = &atomic_file.file_writer.interface;
 
     try w.writeByte('[');
     for (jar.cookies.items, 0..) |c, i| {
@@ -151,7 +149,9 @@ fn _saveToFile(jar: *Cookie.Jar, path: []const u8) !void {
         try w.writeByte('\n');
     }
     try w.writeAll("]\n");
-    try writer.end();
+    try atomic_file.flush();
+    try atomic_file.file_writer.file.sync();
+    try atomic_file.renameIntoPlace();
 
     log.info(.app, "Cookie.saveToFile", .{ .path = path, .count = jar.cookies.items.len });
 }

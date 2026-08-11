@@ -67,7 +67,7 @@ Shared `applyHistoryUrl`:
 ## Verification
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build
 # scripts/_hotmail-loc-diag.mjs — pushState then read location.pathname
 ```

@@ -2834,67 +2834,67 @@ test "URL: resolve with encoding" {
 test "URL: eqlDocument" {
     defer testing.reset();
     {
-        const url = "https://velora.io/about";
+        const url = "https://kokoio.com/about";
         try testing.expectEqual(true, eqlDocument(url, url));
     }
     {
-        const url1 = "https://velora.io/about";
-        const url2 = "http://velora.io/about";
+        const url1 = "https://kokoio.com/about";
+        const url2 = "http://kokoio.com/about";
         try testing.expectEqual(false, eqlDocument(url1, url2));
     }
     {
-        const url1 = "https://velora.io/about";
+        const url1 = "https://kokoio.com/about";
         const url2 = "https://example.com/about";
         try testing.expectEqual(false, eqlDocument(url1, url2));
     }
     {
-        const url1 = "https://velora.io:8080/about";
-        const url2 = "https://velora.io:9090/about";
+        const url1 = "https://kokoio.com:8080/about";
+        const url2 = "https://kokoio.com:9090/about";
         try testing.expectEqual(false, eqlDocument(url1, url2));
     }
     {
-        const url1 = "https://velora.io/about";
-        const url2 = "https://velora.io/contact";
+        const url1 = "https://kokoio.com/about";
+        const url2 = "https://kokoio.com/contact";
         try testing.expectEqual(false, eqlDocument(url1, url2));
     }
     {
-        const url1 = "https://velora.io/about?foo=bar";
-        const url2 = "https://velora.io/about?baz=qux";
+        const url1 = "https://kokoio.com/about?foo=bar";
+        const url2 = "https://kokoio.com/about?baz=qux";
         try testing.expectEqual(false, eqlDocument(url1, url2));
     }
     {
-        const url1 = "https://velora.io/about#section1";
-        const url2 = "https://velora.io/about#section2";
+        const url1 = "https://kokoio.com/about#section1";
+        const url2 = "https://kokoio.com/about#section2";
         try testing.expectEqual(true, eqlDocument(url1, url2));
     }
     {
-        const url1 = "https://velora.io/about";
-        const url2 = "https://velora.io/about/";
+        const url1 = "https://kokoio.com/about";
+        const url2 = "https://kokoio.com/about/";
         try testing.expectEqual(false, eqlDocument(url1, url2));
     }
     {
-        const url1 = "https://velora.io/about?foo=bar";
-        const url2 = "https://velora.io/about";
+        const url1 = "https://kokoio.com/about?foo=bar";
+        const url2 = "https://kokoio.com/about";
         try testing.expectEqual(false, eqlDocument(url1, url2));
     }
     {
-        const url1 = "https://velora.io/about";
-        const url2 = "https://velora.io/about?foo=bar";
+        const url1 = "https://kokoio.com/about";
+        const url2 = "https://kokoio.com/about?foo=bar";
         try testing.expectEqual(false, eqlDocument(url1, url2));
     }
     {
-        const url1 = "https://velora.io/about?foo=bar";
-        const url2 = "https://velora.io/about?foo=bar";
+        const url1 = "https://kokoio.com/about?foo=bar";
+        const url2 = "https://kokoio.com/about?foo=bar";
         try testing.expectEqual(true, eqlDocument(url1, url2));
     }
     {
-        const url1 = "https://velora.io/about?";
-        const url2 = "https://velora.io/about";
+        const url1 = "https://kokoio.com/about?";
+        const url2 = "https://kokoio.com/about";
         try testing.expectEqual(false, eqlDocument(url1, url2));
     }
     {
         const url1 = "https://duckduckgo.com/";
-        const url2 = "https://duckduckgo.com/?q=velora";
+        const url2 = "https://duckduckgo.com/?q=koko";
         try testing.expectEqual(false, eqlDocument(url1, url2));
     }
 }
@@ -2904,28 +2904,28 @@ test "URL: concatQueryString" {
     const arena = testing.arena_allocator;
 
     {
-        const url = try concatQueryString(arena, "https://www.velora.io/", "");
-        try testing.expectEqual("https://www.velora.io/", url);
+        const url = try concatQueryString(arena, "https://www.kokoio.com/", "");
+        try testing.expectEqual("https://www.kokoio.com/", url);
     }
 
     {
-        const url = try concatQueryString(arena, "https://www.velora.io/index?", "");
-        try testing.expectEqual("https://www.velora.io/index?", url);
+        const url = try concatQueryString(arena, "https://www.kokoio.com/index?", "");
+        try testing.expectEqual("https://www.kokoio.com/index?", url);
     }
 
     {
-        const url = try concatQueryString(arena, "https://www.velora.io/index?", "a=b");
-        try testing.expectEqual("https://www.velora.io/index?a=b", url);
+        const url = try concatQueryString(arena, "https://www.kokoio.com/index?", "a=b");
+        try testing.expectEqual("https://www.kokoio.com/index?a=b", url);
     }
 
     {
-        const url = try concatQueryString(arena, "https://www.velora.io/index?1=2", "a=b");
-        try testing.expectEqual("https://www.velora.io/index?1=2&a=b", url);
+        const url = try concatQueryString(arena, "https://www.kokoio.com/index?1=2", "a=b");
+        try testing.expectEqual("https://www.kokoio.com/index?1=2&a=b", url);
     }
 
     {
-        const url = try concatQueryString(arena, "https://www.velora.io/index?1=2&", "a=b");
-        try testing.expectEqual("https://www.velora.io/index?1=2&a=b", url);
+        const url = try concatQueryString(arena, "https://www.kokoio.com/index?1=2&", "a=b");
+        try testing.expectEqual("https://www.kokoio.com/index?1=2&a=b", url);
     }
 }
 
@@ -2934,18 +2934,18 @@ test "URL: getRobotsUrl" {
     const arena = testing.arena_allocator;
 
     {
-        const url = try getRobotsUrl(arena, "https://www.velora.io");
-        try testing.expectEqual("https://www.velora.io/robots.txt", url);
+        const url = try getRobotsUrl(arena, "https://www.kokoio.com");
+        try testing.expectEqual("https://www.kokoio.com/robots.txt", url);
     }
 
     {
-        const url = try getRobotsUrl(arena, "https://www.velora.io/some/path");
-        try testing.expectString("https://www.velora.io/robots.txt", url);
+        const url = try getRobotsUrl(arena, "https://www.kokoio.com/some/path");
+        try testing.expectString("https://www.kokoio.com/robots.txt", url);
     }
 
     {
-        const url = try getRobotsUrl(arena, "https://www.velora.io:8080/page");
-        try testing.expectString("https://www.velora.io:8080/robots.txt", url);
+        const url = try getRobotsUrl(arena, "https://www.kokoio.com:8080/page");
+        try testing.expectString("https://www.kokoio.com:8080/robots.txt", url);
     }
     {
         const url = try getRobotsUrl(arena, "http://example.com/deep/nested/path?query=value#fragment");

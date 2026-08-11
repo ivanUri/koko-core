@@ -49,7 +49,7 @@ npm run google:serp-matrix -- --only empty,profile55 --no-stop
 
 ## Vendor notes
 
-- Source: `.velora-cache/curl-impersonate` v2.0.0rc3 with manual H3/nghttp3 + openssl QUIC guards.
+- Source: `.koko-cache/curl-impersonate` v2.0.0rc3 with manual H3/nghttp3 + openssl QUIC guards.
 - Sync: `./scripts/vendor-sync-curl.sh` then `cp` `src/curl-impersonate` into vendor.
 - `clean-first` rebuilds drop manual patches — re-apply H3/openssl guards after clean.
 - Patch path: `cf-ngtcp2.c` (not `curl_ngtcp2.c`); GREASE after `Curl_cf_ngtcp2_h3_init_ctrls`.

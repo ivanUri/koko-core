@@ -17,7 +17,7 @@
 //! The structure does not clear the memory allocated in the arena,
 //! clear the entire arena when exiting the program.
 const std = @import("std");
-const v = @import("velora");
+const v = @import("koko");
 
 const log = v.log;
 const assert = std.debug.assert;

@@ -28,12 +28,12 @@ All flags live in `src/core/browser/GoogleSigninDebug.zig`. Probe mirror: `scrip
 
 | Env | Purpose | Default |
 |-----|---------|---------|
-| `VELORA_SIGNIN_CLOSURE_BUS_LOG=1` | Closure bus / `_.Wm` / UGa instrumentation | off |
-| `VELORA_SIGNIN_RIB_LOG=1` | `rib.sya` / `rib.jya` wrap via `_.Nt` hook | off |
-| `VELORA_SIGNIN_BIO_SHIM=1` | Experimental bio debounce shim (patches `setTimeout`/XHR) | **off** |
-| `VELORA_SIGNIN_HTTPPRM_TRACE=1` | httprm delivery log + MI613e body prefix trace | off |
-| `VELORA_BATCHEXECUTE_SYNC_DELIVERY=1` | Skip `deferred_delivery` ablation | off |
-| `VELORA_SIGNIN_HTTPPRM_RTT=<ms>` | Parametric browserinfo httprm RTT sweep | unset |
+| `KOKO_SIGNIN_CLOSURE_BUS_LOG=1` | Closure bus / `_.Wm` / UGa instrumentation | off |
+| `KOKO_SIGNIN_RIB_LOG=1` | `rib.sya` / `rib.jya` wrap via `_.Nt` hook | off |
+| `KOKO_SIGNIN_BIO_SHIM=1` | Experimental bio debounce shim (patches `setTimeout`/XHR) | **off** |
+| `KOKO_SIGNIN_HTTPPRM_TRACE=1` | httprm delivery log + MI613e body prefix trace | off |
+| `KOKO_BATCHEXECUTE_SYNC_DELIVERY=1` | Skip `deferred_delivery` ablation | off |
+| `KOKO_SIGNIN_HTTPPRM_RTT=<ms>` | Parametric browserinfo httprm RTT sweep | unset |
 
 **Architecture rule:** production navigation must not eval debug JS unless the matching flag is set.
 
@@ -41,7 +41,7 @@ All flags live in `src/core/browser/GoogleSigninDebug.zig`. Probe mirror: `scrip
 
 ## Fixed today — hash / wrong architecture
 
-1. **Bio shim always on** — `injectGoogleAccountsBioShim` ran on every `accounts.google` navigation. Now gated by `GoogleSigninDebug.bioShimEnabled()` (`VELORA_SIGNIN_BIO_SHIM=1`).
+1. **Bio shim always on** — `injectGoogleAccountsBioShim` ran on every `accounts.google` navigation. Now gated by `GoogleSigninDebug.bioShimEnabled()` (`KOKO_SIGNIN_BIO_SHIM=1`).
 
 2. **MI613e trace always on** — `XMLHttpRequest.send` logged body prefix unconditionally. Now gated by `GoogleSigninDebug.mi613eTraceEnabled()` (same env as httprm trace).
 
@@ -56,8 +56,8 @@ All flags live in `src/core/browser/GoogleSigninDebug.zig`. Probe mirror: `scrip
 | Item | Notes |
 |------|-------|
 | **Login outcome (`2,2,2` → `/rejected`)** | Post-`_.Wm` fix: `rib.sya` runs but RTT bucket stays `2` (~38–48 ms; need >250 ms for bucket `1`). RTT sweep / UEkKwb boost intentionally not pursued. |
-| **HttpClient httprm RTT boost** | Research helpers remain env-gated (`VELORA_SIGNIN_HTTPPRM_RTT`); UEkKwb/browserinfo intentionally not boosted. |
-| **`deferred_delivery`** | `VELORA_BATCHEXECUTE_SYNC_DELIVERY=1` ablation only; default path unchanged. |
+| **HttpClient httprm RTT boost** | Research helpers remain env-gated (`KOKO_SIGNIN_HTTPPRM_RTT`); UEkKwb/browserinfo intentionally not boosted. |
+| **`deferred_delivery`** | `KOKO_BATCHEXECUTE_SYNC_DELIVERY=1` ablation only; default path unchanged. |
 
 ---
 
@@ -91,7 +91,7 @@ GoogleSigninDebug.zig
 
 Frame.zig
   ├── injectGoogleSigninClosureBusLog()  ← navigate + post-parse, env-gated
-  └── injectGoogleAccountsBioShim()      ← env-gated (VELORA_SIGNIN_BIO_SHIM)
+  └── injectGoogleAccountsBioShim()      ← env-gated (KOKO_SIGNIN_BIO_SHIM)
 
 ScriptManagerBase.zig
   └── boq classic eval → prependBoqEvalShim + boq_zc_shim post-eval
@@ -105,11 +105,11 @@ HttpClient.zig / XMLHttpRequest.zig
 ## Resuming probes (when user reopens sign-in work)
 
 ```bash
-cd /Users/huydev/Desktop/velora
-VELORA_BATCHEXECUTE_SYNC_DELIVERY=1 \
-VELORA_SIGNIN_CLOSURE_BUS_LOG=1 \
-VELORA_SIGNIN_RIB_LOG=1 \
+cd /Users/huydev/Desktop/koko
+KOKO_BATCHEXECUTE_SYNC_DELIVERY=1 \
+KOKO_SIGNIN_CLOSURE_BUS_LOG=1 \
+KOKO_SIGNIN_RIB_LOG=1 \
 GOOGLE_SIGNIN_PROBE_EMAIL='…' \
   node scripts/cdp-google-signin-xhr-dispatch-gap.mjs \
-  --profile chrome-local-huys-macbook-pro --velora-only --max-sec 55
+  --profile chrome-local-huys-macbook-pro --koko-only --max-sec 55
 ```

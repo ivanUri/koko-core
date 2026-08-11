@@ -2,7 +2,7 @@
 
 ## Summary
 
-Velora's new per-run file logging (`--log-dir`) appeared to work on stderr but wrote only a single line (`log dir ready`) into `combined.log`. CDP worker threads, navigation logs, and CDP wire traces never reached disk. The root cause was not cross-thread synchronization—it was a Zig `defer` scoped inside an `if` block that called `log.deinitSink()` immediately after the first log, closing all file handles before the server started.
+Koko's new per-run file logging (`--log-dir`) appeared to work on stderr but wrote only a single line (`log dir ready`) into `combined.log`. CDP worker threads, navigation logs, and CDP wire traces never reached disk. The root cause was not cross-thread synchronization—it was a Zig `defer` scoped inside an `if` block that called `log.deinitSink()` immediately after the first log, closing all file handles before the server started.
 
 ---
 
@@ -59,7 +59,7 @@ flowchart TD
 Probe command:
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 node scripts/test-log-dir.mjs
 ```
 

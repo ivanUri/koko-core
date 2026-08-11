@@ -7,7 +7,7 @@
     printTimeoutState: () => console.log(document.body.textContent),
   };
   (async () => {
-    const face = new FontFace("missing", "local(velora-font-face-stable-promise-missing)");
+    const face = new FontFace("missing", "local(koko-font-face-stable-promise-missing)");
     const loaded = face.loaded;
 
     if (face.status !== "unloaded") throw new Error(`initial status: ${face.status}`);

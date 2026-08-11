@@ -2,15 +2,15 @@
 
 ## Summary
 
-Velora's HTTP transport uses **curl-impersonate** (`chrome149` profile → nearest `chrome146` binary) so outbound TLS, HTTP/2, and HTTP/3 handshakes resemble real Chrome on macOS. Automated probes against [browserleaks.com](https://browserleaks.com/) show **JA4**, **JA3n** (normalized JA3), **Akamai HTTP/2 SETTINGS**, and **QUIC h3_hash / h3_text** match live Chrome. Raw **JA3** and **JA4_o** hashes differ connection-to-connection on **both** Velora and Chrome because Chrome 149 **permutes TLS extension order** per handshake—the same behavior curl-impersonate enables via `ssl_permute_extensions`.
+Koko's HTTP transport uses **curl-impersonate** (`chrome149` profile → nearest `chrome146` binary) so outbound TLS, HTTP/2, and HTTP/3 handshakes resemble real Chrome on macOS. Automated probes against [browserleaks.com](https://browserleaks.com/) show **JA4**, **JA3n** (normalized JA3), **Akamai HTTP/2 SETTINGS**, and **QUIC h3_hash / h3_text** match live Chrome. Raw **JA3** and **JA4_o** hashes differ connection-to-connection on **both** Koko and Chrome because Chrome 149 **permutes TLS extension order** per handshake—the same behavior curl-impersonate enables via `ssl_permute_extensions`.
 
-For antidetect browsers, TLS fingerprinting sits below JavaScript: CreepJS and similar tools never see the handshake, but Google Search, Cloudflare, and payment gateways often score **JA4 before `navigator.webdriver`**. Velora treats TLS parity as a first-class profile concern alongside CreepJS section hashes.
+For antidetect browsers, TLS fingerprinting sits below JavaScript: CreepJS and similar tools never see the handshake, but Google Search, Cloudflare, and payment gateways often score **JA4 before `navigator.webdriver`**. Koko treats TLS parity as a first-class profile concern alongside CreepJS section hashes.
 
 ---
 
 ## Problem
 
-Early Velora builds used stock libcurl. Document navigation and CreepJS probes could look Chrome-like in JS, yet automated Google Search and `tls.browserleaks.com` comparisons showed:
+Early Koko builds used stock libcurl. Document navigation and CreepJS probes could look Chrome-like in JS, yet automated Google Search and `tls.browserleaks.com` comparisons showed:
 
 - JA3 / JA4 strings that did not match Chrome 149 on the same machine
 - Missing or wrong HTTP/2 **Akamai** fingerprint (SETTINGS frame layout)
@@ -26,7 +26,7 @@ Three layers interact:
 
 ### 1. Transport stack choice
 
-Velora's network layer (`src/runtime/network/http.zig`) delegates TLS to vendored **curl-impersonate** (`vendor/curl-impersonate/`, profile max `chrome146`). Profile field `transport.impersonate: chrome149` maps to `curl_easy_impersonate("chrome149")`, which resolves to the nearest supported impersonation profile. Stock curl cannot reproduce Chrome's cipher suites, extension set, GREASE, ALPS, or permuted extension ordering.
+Koko's network layer (`src/runtime/network/http.zig`) delegates TLS to vendored **curl-impersonate** (`vendor/curl-impersonate/`, profile max `chrome146`). Profile field `transport.impersonate: chrome149` maps to `curl_easy_impersonate("chrome149")`, which resolves to the nearest supported impersonation profile. Stock curl cannot reproduce Chrome's cipher suites, extension set, GREASE, ALPS, or permuted extension ordering.
 
 ### 2. Extension permutation (JA3 confusion)
 
@@ -41,20 +41,20 @@ Implications:
 | **JA3** (raw) | No on Chrome 149+ | ❌ No |
 | **JA4_o** / **JA4_ro** | No (order-sensitive variants) | ❌ No |
 
-Velora briefly tried a **fixed** `CURLOPT_TLS_EXTENSION_ORDER`. That matched one Chrome snapshot but failed the next Chrome connection—Chrome re-randomizes. Three back-to-back Chrome probes to `tls.browserleaks.com` produced **three different JA3 hashes**.
+Koko briefly tried a **fixed** `CURLOPT_TLS_EXTENSION_ORDER`. That matched one Chrome snapshot but failed the next Chrome connection—Chrome re-randomizes. Three back-to-back Chrome probes to `tls.browserleaks.com` produced **three different JA3 hashes**.
 
 ### 3. Reference tooling gap
 
-The bundled `vendor/curl-impersonate/curl_chrome146` CLI shares Velora's transport layer. It also misses raw JA3 vs live Chrome on extension order but matches **JA4** and **h3_hash**. Comparing Velora only to a static JA3 string from an old blog post is misleading.
+The bundled `vendor/curl-impersonate/curl_chrome146` CLI shares Koko's transport layer. It also misses raw JA3 vs live Chrome on extension order but matches **JA4** and **h3_hash**. Comparing Koko only to a static JA3 string from an old blog post is misleading.
 
 ---
 
 ## Investigation
 
-### Primary probe (Velora vs Chrome CDP)
+### Primary probe (Koko vs Chrome CDP)
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build install
 node scripts/cdp-browserleaks-compare.mjs --profile chrome-local-huys-macbook-pro
 ```
@@ -66,11 +66,11 @@ Endpoints:
 
 Report: `code-check/tmp/browserleaks-compare/report.json`
 
-The script launches Velora and real Chrome with the same profile policy, fetches both endpoints, and diffs normalized fields.
+The script launches Koko and real Chrome with the same profile policy, fetches both endpoints, and diffs normalized fields.
 
 ### Results (2026-06-29, MacBook profile)
 
-| Signal | Velora vs Chrome |
+| Signal | Koko vs Chrome |
 |--------|------------------|
 | **JA4** (TLS) | ✅ match |
 | **JA4_r** | ✅ match |
@@ -112,14 +112,14 @@ CreepJS does not hash TLS. CreepJS section parity (navigator, css, fonts, etc.) 
 - **Modern bot detection prefers JA4 over JA3.** JA4 was designed to be stable despite extension reordering; JA3 was not.
 - **Connection-level raw JA3 compare is flaky even when fingerprints are “the same browser.”** Treat mismatches as expected unless JA3n also diverges.
 - **TLS and JS fingerprints must match the same Chrome major version.** A Chrome 149 navigator with a Chrome 120 TLS stack is a common antidetect failure mode.
-- **Antidetect validation needs two probe classes:** CreepJS (in-page) and browserleaks / ja3er (transport). Velora's `cdp-browserleaks-compare.mjs` automates the second.
+- **Antidetect validation needs two probe classes:** CreepJS (in-page) and browserleaks / ja3er (transport). Koko's `cdp-browserleaks-compare.mjs` automates the second.
 - **Disabling permute “to stabilize tests” ships a detectable artifact**—detectors can compare JA3 variance distribution against known Chrome builds.
 
 ---
 
 ## References
 
-- `scripts/cdp-browserleaks-compare.mjs` — automated Velora vs Chrome TLS compare
+- `scripts/cdp-browserleaks-compare.mjs` — automated Koko vs Chrome TLS compare
 - `docs/tls-impersonate.md` — Google `/sorry` investigation and spike procedure
 - `src/runtime/network/http.zig` — `applyChromeTlsKnobs`, impersonate init
 - `src/support/sys/libcurl.zig` — curl-impersonate CURLOPT bindings

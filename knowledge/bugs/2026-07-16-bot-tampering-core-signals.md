@@ -4,7 +4,7 @@
 
 ## Summary
 
-Fingerprint Pro bot/tampering flags and Fingerprint **BotD** (OSS) both key off automation and consistency surfaces that FingerprintJS OSS does **not** implement as smart signals. Velora already spoofed `navigator.webdriver === false` and basic `cdc_` scrub, but still leaked **`'webdriver' in window`**, desktop **`ontouchstart` on Window**, missing **`productSub`**, and a thin automation scrub list.
+Fingerprint Pro bot/tampering flags and Fingerprint **BotD** (OSS) both key off automation and consistency surfaces that FingerprintJS OSS does **not** implement as smart signals. Koko already spoofed `navigator.webdriver === false` and basic `cdc_` scrub, but still leaked **`'webdriver' in window`**, desktop **`ontouchstart` on Window**, missing **`productSub`**, and a thin automation scrub list.
 
 This pass hardens **core-common** bot/tampering surfaces (no host-specific hashing): production snapshots omit `Window.webdriver` (`wpt_only`), Window `ontouch*` handlers are no longer always exposed, BotD-aligned scrub expanded, `productSub`/`vendorSub` match Chrome, and antidetect profile load validates platform × UA-CH arch × touch × PDF plugins.
 
@@ -16,7 +16,7 @@ Verified with `node scripts/cdp-bot-signals-probe.mjs --profile chrome-local-huy
 
 After SPA/microtask work, Fingerprint Pro playground still reported automation / tampering / low confidence. Mapping to **BotD** `distinctive_properties` and `product_sub` / `touch_support` (FPJS) showed concrete client leaks:
 
-| Signal | Real Chrome (desktop) | Velora (before) |
+| Signal | Real Chrome (desktop) | Koko (before) |
 |--------|----------------------|-----------------|
 | `navigator.webdriver` | `false` | `false` |
 | `'webdriver' in window` | **false** | **true** (testdriver accessor) |
@@ -32,7 +32,7 @@ BotD treats the **window** property name `webdriver` as WebDriver automation —
 
 1. **WPT testdriver vs production.** Cookie WPT needs `window.webdriver.deleteAllCookies()`. The accessor was registered **without** `wpt_only`, so every production snapshot exposed BotD’s distinctive WebDriver prop.
 
-2. **Touch IDL always on.** Desktop Chrome omits Window `ontouch*` event handler properties. Velora registered them unconditionally → FPJS `touchSupport.touchStart` true with `maxTouchPoints: 0` (inconsistency / tamper-like).
+2. **Touch IDL always on.** Desktop Chrome omits Window `ontouch*` event handler properties. Koko registered them unconditionally → FPJS `touchSupport.touchStart` true with `maxTouchPoints: 0` (inconsistency / tamper-like).
 
 3. **Incomplete scrub.** `AutomationScrub` only deleted `cdc_` / `$cdc_`. BotD also looks for Selenium/WebDriver/Phantom/Playwright document attributes and named globals.
 
@@ -61,7 +61,7 @@ Touch profiles that list `ontouchstart` in `window_keys` still get data properti
 ## Verification
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 make build
 node scripts/cdp-bot-signals-probe.mjs --profile chrome-local-huys-macbook-pro --max-sec 20
 ```

@@ -36,26 +36,30 @@ pub const Shed = struct {
     }
 
     pub fn getOrPut(self: *Shed, allocator: Allocator, origin: []const u8) !*Bucket {
-        const gop = try self._origins.getOrPut(allocator, origin);
-        if (gop.found_existing) {
-            return gop.value_ptr.*;
-        }
+        if (self._origins.get(origin)) |bucket| return bucket;
 
         const bucket = try allocator.create(Bucket);
         errdefer allocator.destroy(bucket);
         bucket.* = .{};
 
-        gop.key_ptr.* = try allocator.dupe(u8, origin);
-        gop.value_ptr.* = bucket;
+        const owned_origin = try allocator.dupe(u8, origin);
+        errdefer allocator.free(owned_origin);
+        try self._origins.putNoClobber(allocator, owned_origin, bucket);
         return bucket;
     }
 };
 
-pub const Bucket = struct { local: Lookup = .{}, session: Lookup = .{} };
+pub const Bucket = struct {
+    local: Lookup = .{ .scope = .local },
+    session: Lookup = .{ .scope = .session },
+};
 
 pub const Lookup = struct {
+    pub const Scope = enum { local, session };
+
     _data: std.StringHashMapUnmanaged([]const u8) = .empty,
     _size: usize = 0,
+    scope: Scope = .local,
 
     const max_size = 5 * 1024 * 1024;
 
@@ -66,37 +70,47 @@ pub const Lookup = struct {
 
     pub fn setItem(self: *Lookup, key_: ?[]const u8, value: []const u8, frame: *Frame) !void {
         const k = key_ orelse return;
-        const allocator = frame._session.arena;
+        try self.put(frame._session.arena, k, value);
+        if (self.scope == .local) frame._session.persistLocalSet(frame.origin orelse "null", k, value);
+    }
 
-        if (self._data.get(k)) |old_value| {
-            self._size -= old_value.len;
-        }
-        if (self._size + value.len > max_size) {
-            return error.QuotaExceeded;
-        }
+    /// Insert or replace one value while preserving quota accounting if any
+    /// allocation or validation step fails. Persistence loaders use the same
+    /// path so restored state cannot bypass runtime quota invariants.
+    pub fn put(self: *Lookup, allocator: Allocator, k: []const u8, value: []const u8) !void {
+        const old_len = if (self._data.get(k)) |old_value| old_value.len else 0;
+        const new_size = self._size - old_len + value.len;
+        if (new_size > max_size) return error.QuotaExceeded;
 
         const value_owned = try allocator.dupe(u8, value);
         errdefer allocator.free(value_owned);
 
-        const gop = try self._data.getOrPut(allocator, k);
+        const key_owned = try allocator.dupe(u8, k);
+        errdefer allocator.free(key_owned);
+
+        const gop = try self._data.getOrPut(allocator, key_owned);
         if (!gop.found_existing) {
-            gop.key_ptr.* = try allocator.dupe(u8, k);
+            gop.key_ptr.* = key_owned;
+        } else {
+            allocator.free(key_owned);
         }
         gop.value_ptr.* = value_owned;
-        self._size += value.len;
+        self._size = new_size;
     }
 
-    pub fn removeItem(self: *Lookup, key_: ?[]const u8) void {
+    pub fn removeItem(self: *Lookup, key_: ?[]const u8, frame: *Frame) void {
         const k = key_ orelse return;
         if (self._data.get(k)) |value| {
             self._size -= value.len;
             _ = self._data.remove(k);
+            if (self.scope == .local) frame._session.persistLocalRemove(frame.origin orelse "null", k);
         }
     }
 
-    pub fn clear(self: *Lookup) void {
+    pub fn clear(self: *Lookup, frame: *Frame) void {
         self._data.clearRetainingCapacity();
         self._size = 0;
+        if (self.scope == .local) frame._session.persistLocalClear(frame.origin orelse "null");
     }
 
     pub fn key(self: *const Lookup, index: u32) ?[]const u8 {
@@ -137,4 +151,23 @@ pub const Lookup = struct {
 const testing = @import("../../../testing/testing.zig");
 test "WebApi: Storage" {
     try testing.htmlRunner("storage.html", .{});
+}
+
+test "WebApi: Storage failed replacement preserves quota accounting" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var lookup: Lookup = .{};
+    try lookup.put(arena.allocator(), "key", "x");
+
+    const too_large = try arena.allocator().alloc(u8, Lookup.max_size + 1);
+    @memset(too_large, 'x');
+    try testing.expectError(error.QuotaExceeded, lookup.put(arena.allocator(), "key", too_large));
+    try testing.expectEqual(@as(usize, 1), lookup._size);
+    try testing.expectEqual("x", lookup.getItem("key").?);
+
+    const fills_quota = try arena.allocator().alloc(u8, Lookup.max_size - 1);
+    @memset(fills_quota, 'y');
+    try lookup.put(arena.allocator(), "other", fills_quota);
+    try testing.expectEqual(Lookup.max_size, lookup._size);
 }

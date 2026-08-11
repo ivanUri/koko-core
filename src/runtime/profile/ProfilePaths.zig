@@ -145,11 +145,11 @@ pub const ProfilePaths = struct {
 
 fn defaultUserDataDir(allocator: Allocator) ![]const u8 {
     if (builtin.is_test) {
-        return try allocator.dupe(u8, "/tmp/velora-test-user-data");
+        return try allocator.dupe(u8, "/tmp/koko-test-user-data");
     }
-    return std.fs.getAppDataDir(allocator, "velora") catch |err| {
+    return std.fs.getAppDataDir(allocator, "koko") catch |err| {
         log.warn(.app, "profile_paths.app_data_dir", .{ .err = err });
-        return try allocator.dupe(u8, ".velora-user-data");
+        return try allocator.dupe(u8, ".koko-user-data");
     };
 }
 
@@ -177,7 +177,7 @@ const testing = @import("../../testing/testing.zig");
 
 test "ProfilePaths: default layout" {
     const allocator = std.testing.allocator;
-    var paths = try ProfilePaths.init(allocator, "/tmp/velora-profile-paths-test", "TestProfile", null);
+    var paths = try ProfilePaths.init(allocator, "/tmp/koko-profile-paths-test", "TestProfile", null);
     defer paths.deinit();
 
     var buf: [512]u8 = undefined;

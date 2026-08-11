@@ -12,7 +12,7 @@ This pass fixes those surfaces and hardens related automation tells (`window._p`
 
 ## Problem
 
-| Signal | Chrome | Velora (before) |
+| Signal | Chrome | Koko (before) |
 |--------|--------|-----------------|
 | `getExtension("OES_texture_float")` | truthy object | `undefined` |
 | `unsupported_extensions` | empty / short | ~34 names (nearly all) |
@@ -60,7 +60,7 @@ bot_info: { provider: "bablosoft/BAS", name: "BrowserAutomationStudio", confiden
 | `Element.zig` | Inline text sizing via `estimateInlineTextSize` when width/height default |
 | `Frame.zig` | `invalidateElementLayoutCache()` clears size HashMap |
 | `CSSStyleDeclaration.zig` | Invalidate layout cache **after** `syncStyleAttribute` |
-| `Env.zig` | Remove `_p`; shared `Function.prototype.toString` mask; non-enumerable `__velora*` helpers |
+| `Env.zig` | Remove `_p`; shared `Function.prototype.toString` mask; non-enumerable `__koko*` helpers |
 | `WindowKeysIntelligent` / `NavigatorKeysIntelligent` | `defineProperty` OPN/keys with native name/length |
 | `AutomationScrub.zig` | Scrub `_p` / BAS-ish globals |
 
@@ -69,7 +69,7 @@ bot_info: { provider: "bablosoft/BAS", name: "BrowserAutomationStudio", confiden
 ## Verification
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build -Doptimize=ReleaseSafe
 # WebGL + fonts (reuse one span)
 node -e '/* CDP: getExtension truthy; base mono/sans/serif widths differ; Arial detected */'

@@ -4,7 +4,7 @@
 
 ## Summary
 
-Velora WebSockets could not pass WPT because upgrades went through **curl-impersonate**, which does not implement RFC 6455 client handshakes. We built a **native `WebSocketClient`**, fixed **URL normalization** (UTF-8 encoding, fragment rejection, `null` coercion), added **synchronous HTTP/1.1 101** for extensionless handshakes, and aligned **close/send** defaults with browser behavior.
+Koko WebSockets could not pass WPT because upgrades went through **curl-impersonate**, which does not implement RFC 6455 client handshakes. We built a **native `WebSocketClient`**, fixed **URL normalization** (UTF-8 encoding, fragment rejection, `null` coercion), added **synchronous HTTP/1.1 101** for extensionless handshakes, and aligned **close/send** defaults with browser behavior.
 
 ## Problem
 
@@ -39,7 +39,7 @@ Close/send default-pass note (2026-07-08): remaining failures are edge cases (bu
 
 - **Never route WebSocket through curl-impersonate** — use a dedicated native client on the event loop.
 - **Constructor must not connect synchronously** — WPT asserts `.url` before `error` events.
-- **Run websocket batches in groups** (create / close / send / handshake) — full suite restarts velora and masks regressions.
+- **Run websocket batches in groups** (create / close / send / handshake) — full suite restarts koko and masks regressions.
 
 ## References
 

@@ -19,7 +19,7 @@ try {
   if (pixel[0] !== 12 || pixel[1] !== 34 || pixel[2] !== 56 || pixel[3] !== 255)
     throw new Error("canvas pixel mismatch");
   if (!canvas.toDataURL().startsWith("data:image/png")) throw new Error("canvas encoding");
-  if (!(ctx.measureText("Velora").width > 0)) throw new Error("measureText");
+  if (!(ctx.measureText("Koko").width > 0)) throw new Error("measureText");
 
   // WebGL may legitimately be unavailable on headless/software configurations.
   const gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");

@@ -52,7 +52,7 @@ zig build
 # navigate about:blank → signup.live.com
 # ERROR_suppress_count 0
 # PAGE email:true title:"Create your Microsoft account"
-node scripts/hotmail-register-velora.mjs --profile chrome-local-huys-macbook-pro --probe-email-step
+node scripts/hotmail-register-koko.mjs --profile chrome-local-huys-macbook-pro --probe-email-step
 ```
 
 ## Files

@@ -1,4 +1,4 @@
-// Host reentrancy policy for Velora (see knowledge/architecture/2026-07-19-host-event-loop.md).
+// Host reentrancy policy for Koko (see knowledge/architecture/2026-07-19-host-event-loop.md).
 //
 // APIs must not invent their own copies of is_evaluating / call_depth / V8 stack /
 // transfer-callback checks. Ask this module.

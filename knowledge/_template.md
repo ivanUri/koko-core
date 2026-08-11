@@ -1,6 +1,6 @@
 # Title
 
-> **Audience:** Velora engineers and future readers publishing from `knowledge/blog/`.  
+> **Audience:** Koko engineers and future readers publishing from `knowledge/blog/`.  
 > **Target length:** 900–2,500 words — each note should stand alone as a **blog post page**, not a stub.
 
 ## Summary
@@ -51,7 +51,7 @@ Include:
 - Commands run (with repo paths)
 - A/B experiments and ablation matrices
 - Logs, HAR/wire captures, probe JSON paths
-- Browser comparison (Chrome vs Velora vs Playwright)
+- Browser comparison (Chrome vs Koko vs Playwright)
 - Dead ends explicitly ruled out
 
 | Experiment | Expected | Observed | Verdict |
@@ -93,7 +93,7 @@ Links and paths:
 - Browser specifications (HTML, CSS, Web IDL)
 - WPT tests (if relevant)
 - External articles
-- Velora source files (`src/...`, `scripts/...`)
+- Koko source files (`src/...`, `scripts/...`)
 
 ---
 

@@ -11,16 +11,16 @@ Reference reviewed:
 
 ## Purpose
 
-This document records the architectural ideas Velora should learn from the
-current Lightpanda implementation without replacing the parts of Velora that
+This document records the architectural ideas Koko should learn from the
+current Lightpanda implementation without replacing the parts of Koko that
 are already stronger.
 
-The goal is not to synchronize Velora with Lightpanda or copy its package
+The goal is not to synchronize Koko with Lightpanda or copy its package
 layout. The goal is to adopt selected abstractions that improve automation,
 MCP, deterministic workflows, agent safety, and observability while preserving
-Velora's existing browser invariants.
+Koko's existing browser invariants.
 
-## Non-negotiable Velora strengths
+## Non-negotiable Koko strengths
 
 The following areas must be preserved and extended rather than replaced.
 
@@ -66,7 +66,7 @@ compensate for incorrect core ownership.
 
 ### Profile, persona, and fingerprint architecture
 
-Keep `src/runtime/profile` as a Velora-owned capability. It already covers
+Keep `src/runtime/profile` as a Koko-owned capability. It already covers
 profile storage and rotation, persona planning, client hints, host
 environment, transport/header policy, automation surface controls, and
 fingerprint consistency.
@@ -85,7 +85,7 @@ Retain and build on the existing semantic implementation:
 - structured data
 - interactive elements
 - node details
-- Velora CDP semantic domain
+- Koko CDP semantic domain
 
 New extraction and agent features should reuse these primitives instead of
 creating a parallel DOM representation.
@@ -229,7 +229,7 @@ an explicit follow-up)
 
 ### Objective
 
-Provide selector-schema extraction inside Velora rather than relying on raw
+Provide selector-schema extraction inside Koko rather than relying on raw
 page JavaScript followed by SDK-side JSON validation.
 
 ### Scope
@@ -300,7 +300,7 @@ Status: Not started
 
 ### Objective
 
-Support multiple isolated MCP clients in one Velora process using Streamable
+Support multiple isolated MCP clients in one Koko process using Streamable
 HTTP and explicit session lifecycle management.
 
 ### Scope
@@ -448,7 +448,7 @@ browser executor, and credentials.
 
 ### Scope
 
-- `$VELORA_*` secret references.
+- `$KOKO_*` secret references.
 - Resolve values only inside the trusted executor.
 - API to list allowed secret names without returning values.
 - Redaction in logs, traces, URLs, headers, errors, recordings, and workflow
@@ -507,7 +507,7 @@ from known unsupported features.
 ### Test strategy
 
 - Keep deterministic local regression tests as the primary gate.
-- Select WPT groups matching declared Velora capabilities.
+- Select WPT groups matching declared Koko capabilities.
 - Use real websites only as integration checks after deterministic tests.
 - Never modify production behavior to satisfy one site-specific test.
 - Compare performance only when correctness and wait conditions are equal.
@@ -532,13 +532,13 @@ dependencies into browser core.
 ### Package boundaries
 
 ```text
-velora-core
-velora-runtime
-velora-protocols
-velora-agent-runtime       optional
-velora-provider-openai     optional
-velora-provider-anthropic  optional
-velora-sdk
+koko-core
+koko-runtime
+koko-protocols
+koko-agent-runtime       optional
+koko-provider-openai     optional
+koko-provider-anthropic  optional
+koko-sdk
 ```
 
 The agent runtime consumes the unified tool registry and automation executor.
@@ -578,7 +578,7 @@ The unified public contract should support both:
 Browser API
     ↓
 Driver Interface
-    ├── Velora Native Driver
+    ├── Koko Native Driver
     ├── Chrome Driver
     └── Remote Driver
 ```
@@ -590,7 +590,7 @@ Portable operations should include navigation, locators, common actions,
 waiting, semantic reads where emulation is possible, and structured
 extraction.
 
-Velora-specific extensions should include profile/persona control, native
+Koko-specific extensions should include profile/persona control, native
 semantic optimizations, runtime metrics, and browser-internal lifecycle
 diagnostics.
 
@@ -632,7 +632,7 @@ operation name, retryability classification, and safe diagnostic context.
 - [x] Versioned JSON workflow compiler implemented.
 - [x] Optional JavaScript workflow export implemented.
 - [ ] Ephemeral node references separated from replay locators.
-- [ ] `$VELORA_*` secret-reference mechanism implemented.
+- [ ] `$KOKO_*` secret-reference mechanism implemented.
 - [ ] Logs, errors, recordings, and exports redact secrets.
 - [ ] Agent prompt-injection and navigation policies enforced.
 - [ ] Allocation and lifecycle metrics emitted in CI.
@@ -644,7 +644,7 @@ operation name, retryability classification, and safe diagnostic context.
 ## Explicit non-goals
 
 - Do not copy Lightpanda's flat package layout.
-- Do not replace Velora's realm/navigation lifecycle implementation.
+- Do not replace Koko's realm/navigation lifecycle implementation.
 - Do not move profile or fingerprint behavior into SDK, MCP, or agent code.
 - Do not treat backend node IDs as durable replay identities.
 - Do not implement agent safety only as prompt text.

@@ -3,7 +3,7 @@
  * capture-fingerprint.js
  *
  * Kết nối Chrome đang mở (qua CDP) và export toàn bộ fingerprint surface
- * ra một thư mục fingerprint tự chứa của Velora.
+ * ra một thư mục fingerprint tự chứa của Koko.
  *
  * Cách dùng:
  *   1. Mở Chrome với remote debugging:
@@ -34,8 +34,8 @@ const http = require("node:http");
 const PROFILE_ID = process.argv[2] || "chrome-probe";
 const CDP_HTTP   = (process.argv[3] || "http://127.0.0.1:9222").replace(/\/+$/, "");
 const CAPTURE_URL = process.argv[4] || "https://tls.peet.ws/";
-const VELORA_ROOT = path.resolve(__dirname, "..");
-const FINAL_DIR  = path.join(VELORA_ROOT, "browser", "fingerprints", PROFILE_ID);
+const KOKO_ROOT = path.resolve(__dirname, "..");
+const FINAL_DIR  = path.join(KOKO_ROOT, "browser", "fingerprints", PROFILE_ID);
 const OUT_DIR    = `${FINAL_DIR}.staging-${process.pid}`;
 const ASSETS_DIR = path.join(OUT_DIR, "assets");
 
@@ -320,7 +320,7 @@ canvas: `(() => {
     ctx.fillStyle = g; ctx.fillRect(0, 0, 220, 30);
     ctx.shadowBlur = 4; ctx.shadowColor = "rgba(0,0,0,0.5)";
     ctx.fillStyle = "#fff"; ctx.font = "bold 14px Georgia";
-    ctx.fillText("velora probe", 10, 20);
+    ctx.fillText("koko probe", 10, 20);
   });
   return results;
 })()`,
@@ -423,7 +423,7 @@ measureText: `(() => {
     "sans-serif","serif","monospace",
   ];
   const texts = [
-    "","velora","😀","mmmmmmmmmmlli",
+    "","koko","😀","mmmmmmmmmmlli",
     "Cwm fjordbank glyphs vext quiz","👾",
     "The quick brown fox","0123456789",
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
@@ -609,7 +609,7 @@ bluetooth: `(async () => {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log("\n🔍 Velora Fingerprint Capture");
+  console.log("\n🔍 Koko Fingerprint Capture");
   console.log(`   Profile : ${PROFILE_ID}`);
   console.log(`   CDP     : ${CDP_HTTP}`);
   console.log(`   Output  : ${OUT_DIR}\n`);
@@ -881,7 +881,7 @@ async function main() {
       dataFile: assetRef["svg-baseline.json"],
     } : undefined,
 
-    // Extra fields (not yet implemented in Velora engine — reserved for future)
+    // Extra fields (not yet implemented in Koko engine — reserved for future)
     _future: {
       canvasProbe: results.canvas ? {
         dataFile: assetRef["canvas-probe.json"],

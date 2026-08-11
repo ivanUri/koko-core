@@ -118,7 +118,7 @@ pub fn init(alloc: Allocator, event_queue: *RtcEventQueue, role: Role) !DtlsTran
         if (ssl_c.X509_set_pubkey(x, pkey) != 1) return error.CertGenFailed;
 
         const name = ssl_c.X509_get_subject_name(x) orelse return error.CertGenFailed;
-        _ = ssl_c.X509_NAME_add_entry_by_txt(name, "CN", ssl_c.MBSTRING_ASC, "velora-webrtc", -1, -1, 0);
+        _ = ssl_c.X509_NAME_add_entry_by_txt(name, "CN", ssl_c.MBSTRING_ASC, "koko-webrtc", -1, -1, 0);
         if (ssl_c.X509_set_issuer_name(x, name) != 1) return error.CertGenFailed;
         if (ssl_c.X509_sign(x, pkey, ssl_c.EVP_sha256()) == 0) return error.CertGenFailed;
 

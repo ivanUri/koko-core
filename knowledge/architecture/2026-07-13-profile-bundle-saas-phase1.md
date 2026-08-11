@@ -41,7 +41,7 @@ fingerprints fail startup instead of silently selecting another source.
 ## Profile bundle
 
 ```text
-my-profile.velora-profile/
+my-profile.koko-profile/
   Preferences.json
   fingerprint/
     fingerprint.json
@@ -51,7 +51,7 @@ my-profile.velora-profile/
     Local Storage/
 ```
 
-`velora profile export` and `import` copy the fingerprint folder atomically.
+`koko profile export` and `import` copy the fingerprint folder atomically.
 `scripts/capture-fingerprint.js` also writes to a staging folder and atomically
 publishes the completed fingerprint.
 

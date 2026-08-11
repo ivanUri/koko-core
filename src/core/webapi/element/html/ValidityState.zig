@@ -79,7 +79,7 @@ pub fn getStepMismatch(self: *const ValidityState) bool {
 pub fn getBadInput(self: *const ValidityState) bool {
     _ = self;
     // badInput flips when the UA cannot convert a user-typed string (e.g. the
-    // user typed "abc" into <input type=number>). Headless Velora receives
+    // user typed "abc" into <input type=number>). Headless Koko receives
     // values via attributes or JS assignment, never raw keystrokes — there is
     // no user input to be "bad". Always false.
     return false;

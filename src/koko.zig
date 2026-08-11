@@ -34,6 +34,11 @@ pub const WorkflowRunner = @import("protocols/automation/WorkflowRunner.zig");
 pub const URL = @import("core/browser/URL.zig");
 pub const build_config = @import("build_config");
 
+test "storage modules" {
+    _ = @import("runtime/storage/sqlite/Sqlite.zig");
+    _ = @import("runtime/storage/sqlite/Store.zig");
+}
+
 pub const FetchOpts = struct {
     wait_ms: u32 = 0,
     wait_until: Config.WaitUntil = .done,

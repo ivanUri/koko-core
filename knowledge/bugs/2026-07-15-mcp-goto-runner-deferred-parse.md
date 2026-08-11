@@ -1,10 +1,10 @@
 # MCP `goto` returned success with empty DOM
 
-> **Audience:** Velora engineers using `velora mcp` (Cursor MCP, stdio tools).
+> **Audience:** Koko engineers using `koko mcp` (Cursor MCP, stdio tools).
 
 ## Summary
 
-MCP `goto` / `navigate` reported success while `document.readyState` stayed `"loading"` and `document.body` was empty. The same URL loaded correctly via `velora serve` + CDP (`readyState: complete`, full HTML within ~1s for `https://github.com/`).
+MCP `goto` / `navigate` reported success while `document.readyState` stayed `"loading"` and `document.body` was empty. The same URL loaded correctly via `koko serve` + CDP (`readyState: complete`, full HTML within ~1s for `https://github.com/`).
 
 Root cause: `Runner._tick` for the non-CDP path (`runner.wait`, used by MCP) returned `.done` as soon as `http_active == 0` during in-flight navigation, **before** deferred HTML parse ran. `drainDeferredDocumentParse` was CDP-only, so MCP never promoted the downloaded document into the DOM.
 
@@ -40,13 +40,13 @@ No MCP-specific workaround (`waitCDP`) needed — `performGoto` keeps using `run
 ## Verification
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build
-node -e "… velora mcp … goto https://example.com/ …"   # ~200ms, bodyLen 207
-node -e "… velora mcp … goto https://github.com/ …"    # ~9s, bodyLen ~521k, rs complete
+node -e "… koko mcp … goto https://example.com/ …"   # ~200ms, bodyLen 207
+node -e "… koko mcp … goto https://github.com/ …"    # ~9s, bodyLen ~521k, rs complete
 ```
 
-Restart the MCP server (Cursor reload / restart `velora mcp`) to pick up the rebuilt binary.
+Restart the MCP server (Cursor reload / restart `koko mcp`) to pick up the rebuilt binary.
 
 ## References
 

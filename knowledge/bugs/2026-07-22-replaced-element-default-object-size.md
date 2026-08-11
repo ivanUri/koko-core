@@ -4,7 +4,7 @@
 
 ## Summary
 
-Unsized replaced elements (`img`, and previously only partially `iframe`) used Velora’s internal layout sentinel **5×5** instead of the CSS **default object size 300×150**. SPA image loaders that measure boxes / fire IntersectionObserver before setting `src` saw a collapsed rectangle; challenge iframes were similarly unusable for hit-testing. Layout now applies the CSS default object size for `img`, `iframe`, `video`, `embed`, and `object` when no CSS/attribute/intrinsic size is available. `HTMLImageElement.naturalWidth/Height` report non-zero values after a successful load (attribute or 300×150 fallback) instead of always `0`.
+Unsized replaced elements (`img`, and previously only partially `iframe`) used Koko’s internal layout sentinel **5×5** instead of the CSS **default object size 300×150**. SPA image loaders that measure boxes / fire IntersectionObserver before setting `src` saw a collapsed rectangle; challenge iframes were similarly unusable for hit-testing. Layout now applies the CSS default object size for `img`, `iframe`, `video`, `embed`, and `object` when no CSS/attribute/intrinsic size is available. `HTMLImageElement.naturalWidth/Height` report non-zero values after a successful load (attribute or 300×150 fallback) instead of always `0`.
 
 ## Problem
 
@@ -12,7 +12,7 @@ On `https://www.nike.com/vn/` (and any site that mounts responsive images withou
 
 - SSR emits `<img data-landscape-url=… data-portrait-url=… loading=eager>` **without** `src`.
 - Client code is expected to pick a URL after layout / intersection.
-- Velora reported `getBoundingClientRect()` **5×5** for those images.
+- Koko reported `getBoundingClientRect()` **5×5** for those images.
 - Export HTML therefore had **0** images with a real `src`.
 
 Same 5px sentinel previously broke unsized captcha iframes (mitigated only for `iframe`).

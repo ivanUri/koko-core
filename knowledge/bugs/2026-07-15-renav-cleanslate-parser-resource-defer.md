@@ -4,7 +4,7 @@
 
 ## Summary
 
-Sequential CDP navigations after **Google Search (knitsail)** or **Bing** crashed Velora (`SIGABRT` / `incorrect alignment` / `SIGBUS`). Cold loads of the same targets (Bing, Wikipedia, DuckDuckGo) worked. Bench harnesses then reported cascade `Transport closed` after the first hang.
+Sequential CDP navigations after **Google Search (knitsail)** or **Bing** crashed Koko (`SIGABRT` / `incorrect alignment` / `SIGBUS`). Cold loads of the same targets (Bing, Wikipedia, DuckDuckGo) worked. Bench harnesses then reported cascade `Transport closed` after the first hang.
 
 Root cause was **dual-page pending navigation** keeping a heavy page’s V8 context alive until the next document’s response headers, combined with **eval and resource side-effects mid-html5ever** on the next document. Fix: clean-slate tear-down for address-bar/form root navigations; defer non-critical parser resources and queue inline scripts until after HTML parse.
 
@@ -74,19 +74,19 @@ During main-document html5ever (`_document_parse_active`):
 ## Verification
 
 ```bash
-cd /Users/huydev/Desktop/velora && zig build -Doptimize=ReleaseSafe
+cd /Users/huydev/Desktop/koko && zig build -Doptimize=ReleaseSafe
 
 # CDP multi-nav (was crash after search)
-node /tmp/velora-probe-fails.mjs \
+node /tmp/koko-probe-fails.mjs \
   "https://www.google.com/" \
-  "https://www.google.com/search?q=velora" \
+  "https://www.google.com/search?q=koko" \
   "https://www.bing.com/" \
   "https://www.wikipedia.org/" \
   "https://duckduckgo.com/" \
   "https://en.wikipedia.org/wiki/Main_Page"
 # Expect: each Page.navigate OK + Page.domContentEventFired; no SIGABRT
 
-cd /Users/huydev/Desktop/velora-run && LIMIT=15 node test-100-urls.mjs
+cd /Users/huydev/Desktop/koko-run && LIMIT=15 node test-100-urls.mjs
 ```
 
 ## Trade-offs / follow-ups

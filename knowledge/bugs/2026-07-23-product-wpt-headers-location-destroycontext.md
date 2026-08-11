@@ -1,6 +1,6 @@
 # Product WPT triage: Headers iterable, location.hash no-op, destroyContext idempotent
 
-> **Audience:** Velora engineers  
+> **Audience:** Koko engineers  
 > **Date:** 2026-07-23  
 > **Scope:** Site-facing architecture only — not full WPT green, not `file://` edge corpus
 
@@ -43,7 +43,7 @@ After a failed-only WPT re-run (~388 remaining non-pass), we fixed three **produ
 ## Verification
 
 ```bash
-cd /Users/huydev/Desktop/velora && zig build
+cd /Users/huydev/Desktop/koko && zig build
 # targeted WPT (not full suite)
 ./scripts/retest-open.sh
 ```

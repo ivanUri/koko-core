@@ -124,7 +124,7 @@ pub fn replace(self: *const Location, url: [:0]const u8, frame: *Frame) !void {
 
 pub fn reload(self: *const Location, frame: *Frame) !void {
     const owner = self.ownerFrame(frame);
-    if (std.posix.getenv("VELORA_NAVIGATION_TRACE") != null) {
+    if (std.posix.getenv("KOKO_NAVIGATION_TRACE") != null) {
         log.info(.browser, "Location.reload", .{
             .url = owner.url,
             .frame_id = owner._frame_id,

@@ -4,7 +4,7 @@
 
 ## Summary
 
-Cold Velora Google Search (home → `/search` with session cookies) sent a **skeleton** request on hop-1: Host, UA, Accept-Encoding, Accept-Language, Cookie, Sec-Ch-Ua, X-Browser — **no `Accept` document list, no `Sec-Fetch-*`, no `Upgrade-Insecure-Requests`**. In-session `sei=` hops already used the full Chrome 150 document list. Wire capture (`VELORA_WIRE_HEADERS`) made the asymmetry obvious.
+Cold Koko Google Search (home → `/search` with session cookies) sent a **skeleton** request on hop-1: Host, UA, Accept-Encoding, Accept-Language, Cookie, Sec-Ch-Ua, X-Browser — **no `Accept` document list, no `Sec-Fetch-*`, no `Upgrade-Insecure-Requests`**. In-session `sei=` hops already used the full Chrome 150 document list. Wire capture (`KOKO_WIRE_HEADERS`) made the asymmetry obvious.
 
 Root cause: for document navigations with `omit_sec_fetch_user=false` (cold first hop), the code path used thin `appendCurlImpersonateDocumentOverrides`, assuming **curl-impersonate default_headers** would supply Accept/Sec-Fetch. Those defaults were **not present** on the captured request.
 
@@ -53,11 +53,11 @@ In `src/core/browser/Frame.zig`, document navigations always call `HttpProfile.a
 ## Verification
 
 ```bash
-VELORA_WIRE_HEADERS=1 VELORA_WIRE_HEADERS_FILE=/tmp/wire.ndjson \
+KOKO_WIRE_HEADERS=1 KOKO_WIRE_HEADERS_FILE=/tmp/wire.ndjson \
   # serve + navigate home then search
 # expect hop=initial: hasAccept, hasSecFetchDest, hasSecFetchUser, hasUIR
 
-node scripts/watch-nid-session.mjs --create-profile --profile cold-test --q velora
+node scripts/watch-nid-session.mjs --create-profile --profile cold-test --q koko
 ```
 
 Post-fix (2026-07-18, lab IP after many searches):

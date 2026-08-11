@@ -11,9 +11,12 @@ const CONFIG = {
   outputDirectory: "exports/urls-retry",
   logDirectory: "export-logs",
   keepScripts: false,
-  waitUntil: "domcontentloaded",
+  waitUntil: "domstable",
   waitMs: 2_000,
   terminateMs: 30_000,
+  terminateGraceMs: 2_000,
+  killGraceMs: 2_000,
+  maxSites: 5,
 };
 
 function stripScriptElements(html) {
@@ -63,7 +66,7 @@ function validateSite(entry, index) {
 }
 
 const projectRoot = path.resolve(__dirname, "..");
-const velora = path.join(projectRoot, "zig-out", "bin", "velora");
+const koko = path.join(projectRoot, "zig-out", "bin", "koko");
 
 function loadSitesFromFile(urlFile = CONFIG.urlFile) {
   const inputPath = path.resolve(projectRoot, urlFile);
@@ -149,7 +152,7 @@ document.querySelector("#export-rows").innerHTML = ${JSON.stringify(rows)};
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Velora HTML exports</title>
+  <title>Koko HTML exports</title>
   <style>
     :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
     body { max-width: 1400px; margin: 0 auto; padding: 24px; }
@@ -173,7 +176,7 @@ document.querySelector("#export-rows").innerHTML = ${JSON.stringify(rows)};
   </style>
 </head>
 <body>
-  <h1>Velora HTML exports</h1>
+  <h1>Koko HTML exports</h1>
   <p class="summary" id="export-summary">Đang tải danh sách…</p>
   <table>
     <thead><tr><th>#</th><th>URL gốc</th><th>HTML export</th><th>Trạng thái</th></tr></thead>
@@ -223,10 +226,35 @@ function exportSite(site, number, total) {
     console.log(`Output: ${output}`);
     console.log(`Log: ${logPath}`);
 
-    const child = spawn(velora, args, {
+    const child = spawn(koko, args, {
       cwd: projectRoot,
       stdio: ["ignore", outputFd, "pipe"],
     });
+
+    // --terminate-ms asks the browser core to stop and serialize gracefully.
+    // A native/V8 call that does not unwind can prevent the child from ever
+    // reaching process teardown, so contain every site with a parent-owned
+    // deadline as well. This is process lifecycle protection, independent of
+    // the URL being exported.
+    let forcedTermination = false;
+    let forceKillTimer = null;
+    const containmentTimer = setTimeout(() => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      forcedTermination = true;
+      console.error(
+        `Koko did not exit ${site.terminateGraceMs}ms after its ${site.terminateMs}ms deadline; sending SIGTERM.`,
+      );
+      child.kill("SIGTERM");
+      forceKillTimer = setTimeout(() => {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        console.error(
+          `Koko still did not exit after ${site.killGraceMs}ms; sending SIGKILL.`,
+        );
+        child.kill("SIGKILL");
+      }, site.killGraceMs);
+      forceKillTimer.unref();
+    }, site.terminateMs + site.terminateGraceMs);
+    containmentTimer.unref();
     child.stderr.on("data", (chunk) => {
       fs.writeSync(logFd, chunk);
       process.stderr.write(chunk);
@@ -238,13 +266,15 @@ function exportSite(site, number, total) {
     });
 
     child.once("close", (code, signal) => {
+      clearTimeout(containmentTimer);
+      if (forceKillTimer !== null) clearTimeout(forceKillTimer);
       fs.closeSync(outputFd);
       fs.closeSync(logFd);
 
       if (spawnError) {
         fs.rmSync(temporary, { force: true });
-        console.error(`Could not start Velora: ${spawnError.message}`);
-        resolve({ artifact: false, clean: false });
+        console.error(`Could not start Koko: ${spawnError.message}`);
+        resolve({ artifact: false, clean: false, forcedTermination });
         return;
       }
 
@@ -266,7 +296,7 @@ function exportSite(site, number, total) {
         console.error(
           `Export failed${signal ? ` (${signal})` : ` (exit ${code})`}: no complete HTML was produced.`,
         );
-        resolve({ artifact: false, clean: false });
+        resolve({ artifact: false, clean: false, forcedTermination });
         return;
       }
 
@@ -282,12 +312,13 @@ function exportSite(site, number, total) {
 
       if (code !== 0 || signal) {
         console.warn(
-          `Warning: HTML is valid, but Velora exited with ${signal || code} during teardown.`,
+          `Warning: HTML is valid, but Koko exited with ${signal || code} during teardown.`,
         );
       }
       resolve({
         artifact: true,
         clean: code === 0 && signal === null,
+        forcedTermination,
       });
     });
   });
@@ -299,8 +330,8 @@ async function main() {
       "This script no longer accepts arguments; edit CONFIG in export-site.js.",
     );
   }
-  if (!fs.existsSync(velora)) {
-    throw new Error(`Velora binary not found: ${velora}\nBuild it with: zig build`);
+  if (!fs.existsSync(koko)) {
+    throw new Error(`Koko binary not found: ${koko}\nBuild it with: zig build`);
   }
 
   const indexSites = loadSitesFromFile(CONFIG.urlFile)
@@ -311,17 +342,21 @@ async function main() {
   }
 
   const batchUrlFile =
-    process.env.VELORA_EXPORT_URL_FILE || CONFIG.urlFile;
-  const sites =
+    process.env.KOKO_EXPORT_URL_FILE || CONFIG.urlFile;
+  const batchSites =
     batchUrlFile === CONFIG.urlFile
       ? indexSites
       : loadSitesFromFile(batchUrlFile)
         .map(validateSite)
         .filter((site) => site !== null);
+  if (!Number.isSafeInteger(CONFIG.maxSites) || CONFIG.maxSites <= 0) {
+    throw new Error("CONFIG.maxSites must be a positive integer.");
+  }
+  const sites = batchSites.slice(0, CONFIG.maxSites);
 
   const states = new Map();
   writeIndex(indexSites, states);
-  if (process.env.VELORA_EXPORT_INDEX_ONLY === "1") {
+  if (process.env.KOKO_EXPORT_INDEX_ONLY === "1") {
     console.log(
       `Index: ${path.resolve(projectRoot, CONFIG.outputDirectory, "index.html")}`,
     );

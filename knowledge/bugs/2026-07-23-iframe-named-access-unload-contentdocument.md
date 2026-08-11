@@ -1,6 +1,6 @@
 # Iframe product fixes: named access, unload-nav, contentDocument, about:srcdoc
 
-> **Audience:** Velora engineers  
+> **Audience:** Koko engineers  
 > **Date:** 2026-07-23  
 > **Scope:** Window named browsing contexts, iframe same-origin document exposure, unload navigation ignore, about:srcdoc block, document.open stability follow-up
 
@@ -33,11 +33,11 @@ Full `the-iframe-element` WPT still mostly **harness stall** (5s no progress / i
 ## Verify
 
 ```bash
-cd /Users/huydev/Desktop/velora && zig build
+cd /Users/huydev/Desktop/koko && zig build
 # named access CDP: length 2, x/y objects
 # suite (after MANIFEST inject):
 cd /Users/huydev/Desktop/wpt-spa-tests
-python3 velora-probe/run.py --suite iframe --batch-size 2 --force
+python3 koko-probe/run.py --suite iframe --batch-size 2 --force
 ```
 
 ## Follow-up

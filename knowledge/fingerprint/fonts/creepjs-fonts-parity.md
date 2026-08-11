@@ -2,7 +2,7 @@
 
 ## Summary
 
-Velora's CreepJS **`fonts`** section failed on four independent fields: **`emojiSet`** logical sizing, **`FontFace.family`** quoting, **`pixelSizeSystemSum`** float serialization, and inferred **`platformVersion`**. Fixes align computed-style logical dimensions, font-load fingerprints, and JSON hash inputs with Chrome 149 on macOS for profile `chrome-local-huys-macbook-pro`.
+Koko's CreepJS **`fonts`** section failed on four independent fields: **`emojiSet`** logical sizing, **`FontFace.family`** quoting, **`pixelSizeSystemSum`** float serialization, and inferred **`platformVersion`**. Fixes align computed-style logical dimensions, font-load fingerprints, and JSON hash inputs with Chrome 149 on macOS for profile `chrome-local-huys-macbook-pro`.
 
 Unlike **`clientRects`**, which uses `getBoundingClientRect()`, CreepJS **`fonts`** probes **`getComputedStyle(el).inlineSize` / `blockSize`** on `.pixel-emoji` elements. Antidetect engines that only implement geometry APIs for one section will pass client rects and fail fonts—a common gap in forked Chromium patches.
 
@@ -12,7 +12,7 @@ Unlike **`clientRects`**, which uses `getBoundingClientRect()`, CreepJS **`fonts
 
 Field compare (`scripts/cdp-section-field-compare.mjs fonts`) reported:
 
-| Field | Velora (before) | Chrome |
+| Field | Koko (before) | Chrome |
 |-------|-----------------|--------|
 | `emojiSet` | `["😀"]` only (44 emojis missing) | 44 emoji entries with logical sizes |
 | `fontFaceLoadFonts` | Unquoted multi-word families | Quoted strings e.g. `"Helvetica Neue"` |
@@ -27,7 +27,7 @@ Section hash mismatched while `lies=0`—pure value / serialization drift.
 
 ### 1. Logical vs physical sizing
 
-The fonts probe measures **logical** used sizes from computed style, not border-box client rects. Velora returned `"auto"` for `inline-size` / `block-size` because those longhands were unimplemented in `CSSStyleDeclaration.getComputedPropertyValue`. Only a subset of emojis (😀) had special-case code paths.
+The fonts probe measures **logical** used sizes from computed style, not border-box client rects. Koko returned `"auto"` for `inline-size` / `block-size` because those longhands were unimplemented in `CSSStyleDeclaration.getComputedPropertyValue`. Only a subset of emojis (😀) had special-case code paths.
 
 CreepJS `getPixelEmojis()` in `code-check/sites/creep/creep.js` depends on non-auto logical sizes for each emoji in the test grid.
 
@@ -41,7 +41,7 @@ The fonts section requires baseline dims **divided by scale** and rounded to Chr
 
 Chrome's `FontFace.load()` reports multi-word families with **literal quote characters** in the returned family string (e.g. `"Helvetica Neue"`). CreepJS `getPlatformVersion()` checks `fonts.includes('Helvetica Neue')` **without** quotes; quoted names **intentionally fail** that match on real Chrome, yielding `platformVersion: undefined`.
 
-Velora's unquoted families both broke sort order in `fontFaceLoadFonts` and incorrectly inferred a macOS version string.
+Koko's unquoted families both broke sort order in `fontFaceLoadFonts` and incorrectly inferred a macOS version string.
 
 ### 4. JSON.stringify hashing
 
@@ -54,7 +54,7 @@ CreepJS section hashes use `JSON.stringify` on collected objects. Sub-ulp differ
 ### Probe commands
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build install
 node scripts/cdp-section-field-compare.mjs fonts
 node scripts/cdp-creepjs-section-compare.mjs \
@@ -101,7 +101,7 @@ After fixes, `fonts` section reports **MATCH** in section compare; remaining ses
 
 ### Why fonts matter for antidetect beyond CreepJS
 
-Commercial fingerprint vendors and open-source collectors increasingly combine **font metrics** with canvas and WebGL signals. A user claiming macOS Sonoma with Windows-only font metrics—or emoji logical sizes of `"auto"`—is trivially scored. Velora's approach mirrors other high-fidelity sections: capture Chrome ground truth into profile assets, then serve values through the same DOM APIs CreepJS calls (`getComputedStyle`, `FontFace.load`), not parallel shortcut getters that CreepJS never uses.
+Commercial fingerprint vendors and open-source collectors increasingly combine **font metrics** with canvas and WebGL signals. A user claiming macOS Sonoma with Windows-only font metrics—or emoji logical sizes of `"auto"`—is trivially scored. Koko's approach mirrors other high-fidelity sections: capture Chrome ground truth into profile assets, then serve values through the same DOM APIs CreepJS calls (`getComputedStyle`, `FontFace.load`), not parallel shortcut getters that CreepJS never uses.
 
 ### npm / CI entry points
 
@@ -110,7 +110,7 @@ npm run test:creepjs:compare   # wraps section compare
 npm run test:creepjs:local     # local CreepJS hosting variant
 ```
 
-Always `zig build install` before probes so `zig-out/bin/velora` reflects font/CSS changes.
+Always `zig build install` before probes so `zig-out/bin/koko` reflects font/CSS changes.
 
 ### Debugging checklist for fonts regressions
 

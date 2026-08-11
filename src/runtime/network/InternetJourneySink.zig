@@ -25,7 +25,7 @@ allocator: std.mem.Allocator,
 file: std.fs.File,
 
 pub fn initFromEnvironment(allocator: std.mem.Allocator) !?Self {
-    const path = std.process.getEnvVarOwned(allocator, "VELORA_INTERNET_JOURNEY_FILE") catch |err| switch (err) {
+    const path = std.process.getEnvVarOwned(allocator, "KOKO_INTERNET_JOURNEY_FILE") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => return null,
         else => return err,
     };
@@ -59,7 +59,7 @@ pub fn emit(
         "";
     const response_code = conn.getResponseCode() catch 0;
     const now = std.time.milliTimestamp();
-    const session_id = "velora-core";
+    const session_id = "koko-core";
     const content_encoding = headerValue(conn, "content-encoding");
     const cache_control = headerValue(conn, "cache-control");
     const server = headerValue(conn, "server");
@@ -178,7 +178,7 @@ pub fn emitBrowserStage(
     const sample = readProcessSample();
     try std.json.Stringify.value(.{.{
         .id = event_id,
-        .sessionId = "velora-core",
+        .sessionId = "koko-core",
         .sequence = process_sequence,
         .timestamp = std.time.milliTimestamp(),
         .duration = @as(f64, @floatFromInt(duration_us)) / 1000.0,
@@ -223,7 +223,7 @@ pub fn emitBrowserScript(self: *Self, duration_us: u64, frame_id: u32, loader_id
     const sample = readProcessSample();
     try std.json.Stringify.value(.{.{
         .id = event_id,
-        .sessionId = "velora-core",
+        .sessionId = "koko-core",
         .sequence = process_sequence,
         .timestamp = std.time.milliTimestamp(),
         .duration = @as(f64, @floatFromInt(duration_us)) / 1000.0,

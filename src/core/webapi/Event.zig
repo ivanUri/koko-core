@@ -101,6 +101,16 @@ pub fn initTrusted(typ: String, opts_: ?Options, page: *Page) !*Event {
     return initWithTrusted(arena, typ, opts_, true);
 }
 
+/// Creates a user-agent event whose type bytes are owned by the event arena.
+/// Use this when the caller cannot guarantee that a wrapped String outlives
+/// synchronous dispatch, or when the event name does not fit String's SSO.
+pub fn initTrustedSlice(typ: []const u8, opts_: ?Options, page: *Page) !*Event {
+    const arena = try page.getArena(.tiny, "Event.trusted");
+    errdefer page.releaseArena(arena);
+    const str = try String.init(arena, typ, .{});
+    return initWithTrusted(arena, str, opts_, true);
+}
+
 fn initWithTrusted(arena: Allocator, typ: String, opts_: ?Options, comptime trusted: bool) !*Event {
     const opts = opts_ orelse Options{};
 

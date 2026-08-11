@@ -70,7 +70,12 @@ pub fn acquire(self: *Pool) !Sqlite.Conn {
     while (true) {
         const available = self.available;
         if (available == 0) {
-            try self.cond.timedWait(&self.mutex, 5 * std.time.ns_per_s);
+            // Condition.timedWait reacquires the mutex before returning both
+            // success and error. Returning error.Timeout here would therefore
+            // leak the lock and deadlock every future acquire/release.
+            self.cond.timedWait(&self.mutex, 5 * std.time.ns_per_s) catch |err| switch (err) {
+                error.Timeout => continue,
+            };
             continue;
         }
         const index = available - 1;
@@ -97,12 +102,12 @@ test "Sqlite: Pool" {
     // :memory: _has_ to run with a single connetion in the pool, which isn't
     // that useful for testing. So we create a temp file.
 
-    std.fs.cwd().deleteFile("/tmp/velora_test.sqlite") catch {};
-    var pool = try Pool.init(testing.allocator, "/tmp/velora_test.sqlite");
+    std.fs.cwd().deleteFile("/tmp/koko_test.sqlite") catch {};
+    var pool = try Pool.init(testing.allocator, "/tmp/koko_test.sqlite");
 
     defer {
         pool.deinit(testing.allocator);
-        std.fs.cwd().deleteFile("/tmp/velora_test.sqlite") catch {};
+        std.fs.cwd().deleteFile("/tmp/koko_test.sqlite") catch {};
     }
 
     {

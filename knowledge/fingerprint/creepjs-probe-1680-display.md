@@ -2,7 +2,7 @@
 
 ## Summary
 
-Velora's reference antidetect profile `chrome-local-huys-macbook-pro` targets a **MacBook built-in Retina panel**: **1680×1050** logical resolution, `screen.availHeight` **936**, `colorDepth` **30**, wide-gamut **Display P3**. CreepJS and Velora CDP probes compare **live Chrome** `window.screen` against **static profile** screen values. Chrome reads the **OS primary display**; Velora serves profile JSON. When an external monitor is primary (e.g. **1920×1080**), section compare drops from **23/25** to **20/25** with **no code changes**—a harness geometry mismatch, not a regression.
+Koko's reference antidetect profile `chrome-local-huys-macbook-pro` targets a **MacBook built-in Retina panel**: **1680×1050** logical resolution, `screen.availHeight` **936**, `colorDepth` **30**, wide-gamut **Display P3**. CreepJS and Koko CDP probes compare **live Chrome** `window.screen` against **static profile** screen values. Chrome reads the **OS primary display**; Koko serves profile JSON. When an external monitor is primary (e.g. **1920×1080**), section compare drops from **23/25** to **20/25** with **no code changes**—a harness geometry mismatch, not a regression.
 
 Antidetect work must treat **display topology** as part of the test fixture, alongside profile JSON and Zig binaries.
 
@@ -34,10 +34,10 @@ Symptoms included:
 
 | Source | What it provides | When it applies |
 |--------|------------------|-----------------|
-| **Profile JSON** | Static `screen.width`, `screen.height`, `availHeight`, `colorDepth`, media features | Velora runtime, `matchMedia`, layout viewport |
+| **Profile JSON** | Static `screen.width`, `screen.height`, `availHeight`, `colorDepth`, media features | Koko runtime, `matchMedia`, layout viewport |
 | **Live Chrome CDP** | Whatever `window.screen` reports from macOS **primary display** | Ground truth for compare scripts |
 
-Velora intentionally uses static profile values so fingerprints are **deterministic** across machines. Chrome on the probe laptop is **not** deterministic unless display settings are fixed.
+Koko intentionally uses static profile values so fingerprints are **deterministic** across machines. Chrome on the probe laptop is **not** deterministic unless display settings are fixed.
 
 ### Why CDP emulation is insufficient
 
@@ -66,7 +66,7 @@ See `knowledge/bugs/2026-06-29-creepjs-svg-cssmedia-baseline-refresh.md` for the
 ### Section compare (full harness)
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build install
 node scripts/cdp-creepjs-section-compare.mjs \
   --profile chrome-local-huys-macbook-pro \
@@ -122,7 +122,7 @@ npm run test:creepjs:local     # local CreepJS server variant
 - **23/25** section hashes with matching FP ID after svg/cssMedia fixes
 - Remaining drift (if any): `clientRects.domrectSystemSum`, `fonts.pixelSizeSystemSum` — sub-ulp tuning in profile scale factors, not display topology
 
-### Velora code locations (unchanged by display fix)
+### Koko code locations (unchanged by display fix)
 
 | Area | Path |
 |------|------|
@@ -136,7 +136,7 @@ The fix is **procedural**; Zig screen emulation already serves profile values co
 
 ## Lessons Learned
 
-- **CreepJS compare is a system test**, not a unit test—it binds OS display, Chrome version, profile JSON, and `zig-out/bin/velora`.
+- **CreepJS compare is a system test**, not a unit test—it binds OS display, Chrome version, profile JSON, and `zig-out/bin/koko`.
 - **Always run `profile-screen.mjs` guard** (or read exit code 2) before trusting section counts in CI notes or PR descriptions.
 - **Field compare before section hash** isolates `screen.width` vs entire `cssMedia` object.
 - **Baselines are valid only for the Chrome session geometry** used during capture; document display settings in commit messages when refreshing assets.

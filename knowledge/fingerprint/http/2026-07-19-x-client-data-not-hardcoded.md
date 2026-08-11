@@ -1,25 +1,25 @@
 # X-Client-Data must not be a stale Zig hardcode
 
-> **Audience:** Velora engineers working on Google Search cold path and HTTP identity.  
+> **Audience:** Koko engineers working on Google Search cold path and HTTP identity.  
 > **Date:** 2026-07-19
 
 ## Summary
 
-Velora was emitting a hard-coded `X-Client-Data: CLaAywE=` from `XBrowser.zig`. That value was a *past* Chrome ExtraInfo capture, not a stable property of Chrome 150. A same-day A/B on this host showed live Chrome/150.0.7871.129 headed guest hop-1 sending **`CMjzygE=`** while Velora still sent `CLaAywE=`.
+Koko was emitting a hard-coded `X-Client-Data: CLaAywE=` from `XBrowser.zig`. That value was a *past* Chrome ExtraInfo capture, not a stable property of Chrome 150. A same-day A/B on this host showed live Chrome/150.0.7871.129 headed guest hop-1 sending **`CMjzygE=`** while Koko still sent `CLaAywE=`.
 
-Hardcoding a field-trial seed in Zig is wrong: the seed **rotates**. Source of truth is now `browser/policies/plugins/x-browser.json` → `clientData`, with env override `VELORA_X_CLIENT_DATA` for A/B. After the fix, Velora hop-1 XCD matches live Chrome (`CMjzygE=`). Cold Velora still reaches `/sorry` — XCD parity alone does not unlock SERP (consistent with prior pure-cold A/Bs).
+Hardcoding a field-trial seed in Zig is wrong: the seed **rotates**. Source of truth is now `browser/policies/plugins/x-browser.json` → `clientData`, with env override `KOKO_X_CLIENT_DATA` for A/B. After the fix, Koko hop-1 XCD matches live Chrome (`CMjzygE=`). Cold Koko still reaches `/sorry` — XCD parity alone does not unlock SERP (consistent with prior pure-cold A/Bs).
 
 ---
 
 ## Problem
 
-Chrome guest cold search on the same machine SERPs with hop-1 **Cookie=0**. Velora cold with empty jar hits `/sorry`. Hop-1 header ExtraInfo comparison showed near-full parity except `X-Client-Data`:
+Chrome guest cold search on the same machine SERPs with hop-1 **Cookie=0**. Koko cold with empty jar hits `/sorry`. Hop-1 header ExtraInfo comparison showed near-full parity except `X-Client-Data`:
 
 | Lane | X-Client-Data | Outcome |
 |------|---------------|---------|
 | Chrome headed fresh | `CMjzygE=` | SERP |
-| Velora cold (before) | `CLaAywE=` (Zig string) | sorry |
-| Velora cold (after) | `CMjzygE=` (from JSON) | still sorry |
+| Koko cold (before) | `CLaAywE=` (Zig string) | sorry |
+| Koko cold (after) | `CMjzygE=` (from JSON) | still sorry |
 
 Tempting assumption: “use any short XCD Chrome once used.” That freezes a **variations assignment** that Google re-seeds independently of UA major.
 
@@ -50,7 +50,7 @@ Architecture mistake: treating a **session/seed capture** like `X-Browser-Year` 
 
 2. **`XBrowser.zig`**
    - Load `clientData` into `Config.client_data` (required; empty → `MissingClientData`)
-   - `appendHeaders`: env `VELORA_X_CLIENT_DATA` **or** config (no Zig b64 default)
+   - `appendHeaders`: env `KOKO_X_CLIENT_DATA` **or** config (no Zig b64 default)
    - Unit test asserts loaded value matches JSON capture
 
 3. **Refresh** `code-check/tmp/chrome-hop1-extrainfo-ref.json` to the July-19 seed.
@@ -69,7 +69,7 @@ sei still h2 → /sorry 429  // residual elsewhere (TLS/QUIC, sei protocol stick
 ```bash
 # Wire XCD after change
 # serve + CDP Network.requestWillBeSent on google.com/search empty jar
-# expect hop-1 X-Client-Data == chrome-guest-vs-velora-cold2 hop1 (CMjzygE=)
+# expect hop-1 X-Client-Data == chrome-guest-vs-koko-cold2 hop1 (CMjzygE=)
 
 # Re-capture when Chrome major or seed drifts:
 # 1) headed Chrome empty user-data-dir → google.com/search
@@ -79,14 +79,14 @@ sei still h2 → /sorry 429  // residual elsewhere (TLS/QUIC, sei protocol stick
 
 Artifacts:
 
-- A/B: `code-check/tmp/chrome-guest-vs-velora-cold2/`
+- A/B: `code-check/tmp/chrome-guest-vs-koko-cold2/`
 - Post-fix probe: `code-check/tmp/xcd-sync-check/result.json`
 
 ---
 
 ## Follow-ups (not fixed here)
 
-- **sei hop stays h3 on Chrome, falls to h2 on Velora** — stronger residual than XCD value.
+- **sei hop stays h3 on Chrome, falls to h2 on Koko** — stronger residual than XCD value.
 - TLS/QUIC fingerprint under HTTP (prior knitsail notes still apply).
 - Optional: auto-refresh `clientData` from a capture script into the JSON policy (still data, not Zig).
 
@@ -95,6 +95,6 @@ Artifacts:
 ## Related
 
 - `knowledge/captcha/detection/2026-07-17-pure-cold-n-rate-and-residuals.md` — fat vs short XCD ruled out as sole unlock
-- `code-check/google-search-ab/ANALYSIS-cold-chrome-vs-velora.md`
+- `code-check/google-search-ab/ANALYSIS-cold-chrome-vs-koko.md`
 - `src/runtime/profile/plugins/XBrowser.zig`
 - `browser/policies/plugins/x-browser.json`

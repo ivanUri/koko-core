@@ -14,12 +14,14 @@ zig-out
 /vendor/curl-impersonate/linux/libcurl-impersonate.runtime-probe.so
 /vendor/curl-impersonate/linux/*.tar.gz
 /vendor/curl-impersonate/linux/lib.tgz
-velora.id
+koko.id
 /src/html5ever/target/
 src/snapshot.bin
 *.bak
 *.bak/
 node_modules/.lp-cache/
+.koko-cache
+# Legacy cache name retained so existing checkouts stay ignored after rename.
 .velora-cache
 curl-impersonate/
 node_modules
@@ -43,5 +45,5 @@ telegram.config.local.js
 browser/profiles/sessions/
 browser/profiles/assets/*cookies*
 browser/profiles/assets/*session-cookies*
-.velora-user-data/
+.koko-user-data/
 dist/

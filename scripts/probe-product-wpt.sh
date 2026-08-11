@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Targeted product WPT smoke after core fixes (not full suite).
 set -euo pipefail
-VELORA_ROOT="${VELORA_ROOT:-$HOME/Desktop/velora}"
+KOKO_ROOT="${KOKO_ROOT:-$HOME/Desktop/koko}"
 WPT_ROOT="${WPT_ROOT:-$HOME/Desktop/wpt-spa-tests}"
-BIN="$VELORA_ROOT/zig-out/bin/velora"
-LOG=/tmp/velora-product-wpt.log
-PIDF=/tmp/velora-product-wpt.pid
+BIN="$KOKO_ROOT/zig-out/bin/koko"
+LOG=/tmp/koko-product-wpt.log
+PIDF=/tmp/koko-product-wpt.pid
 
 if [[ -f "$PIDF" ]]; then
   kill "$(cat "$PIDF")" 2>/dev/null || true
@@ -13,7 +13,7 @@ if [[ -f "$PIDF" ]]; then
   sleep 0.5
 fi
 
-cd "$VELORA_ROOT"
+cd "$KOKO_ROOT"
 "$BIN" serve --host 127.0.0.1 --port 9222 \
   --insecure-disable-tls-host-verification --log-level warn \
   >"$LOG" 2>&1 &
@@ -25,19 +25,19 @@ curl -sf http://127.0.0.1:9222/json/version >/dev/null || {
 
 cd "$WPT_ROOT"
 export WPT_ADDR=http://localhost:8000 CDP_WS=ws://127.0.0.1:9222
-RUNNER=./velora-probe/bin/wptrunner
+RUNNER=./koko-probe/bin/wptrunner
 
 run_one() {
   local t="$1"
   echo "==== $t ===="
   "$RUNNER" -wpt-addr "$WPT_ADDR" -cdp "$CDP_WS" -concurrency 1 -json "$t" 2>&1 | tail -8
   if curl -sf http://127.0.0.1:9222/json/version >/dev/null; then
-    echo "  velora: ALIVE"
+    echo "  koko: ALIVE"
   else
-    echo "  velora: DEAD"
+    echo "  koko: DEAD"
     tail -15 "$LOG" || true
     # restart for next tests
-    cd "$VELORA_ROOT"
+    cd "$KOKO_ROOT"
     "$BIN" serve --host 127.0.0.1 --port 9222 \
       --insecure-disable-tls-host-verification --log-level warn \
       >"$LOG" 2>&1 &

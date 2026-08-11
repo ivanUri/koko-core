@@ -70,7 +70,7 @@ pub fn scopeChannel(scope: Scope) Channel {
 }
 
 pub fn jsSubfile(msg: []const u8) JsSubfile {
-    if (std.mem.eql(u8, msg, "velora-js-call")) return .calls;
+    if (std.mem.eql(u8, msg, "koko-js-call")) return .calls;
     if (std.mem.startsWith(u8, msg, "console.")) return .console;
     return .engine;
 }

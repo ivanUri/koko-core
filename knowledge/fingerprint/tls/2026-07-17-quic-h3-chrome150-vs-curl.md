@@ -10,7 +10,7 @@ On this machine, **TLS over HTTP/2 is solved** (JA4 / JA3n / Akamai match Chrome
 **QUIC/HTTP3 is not.** Google Search cold hop-1 uses **h3**, so the remaining demotion surface is **QUIC ClientHello + H3 control frames**, not TCP JA4 and not cookies.
 
 Real Chrome 150 cold search: **Cookie=0**, **protocol=h3**, **SERP** (~800 KB).  
-`curl_chrome150 --http3` and Velora cold: **Cookie=0**, **h3**, still **knitsail** (~91 KB).
+`curl_chrome150 --http3` and Koko cold: **Cookie=0**, **h3**, still **knitsail** (~91 KB).
 
 ---
 
@@ -42,7 +42,7 @@ Real Chrome 150 cold search: **Cookie=0**, **protocol=h3**, **SERP** (~800 KB).
 | **Extra extensions (curl only)** | — | **`0005`** (status_request), **`0012`** (SCT) |
 | **Sig algs** | classic + trailing **`0201`** (rsa_pkcs1_sha1); **no** 0904/05/06 | default classic; **with TCP ML-DSA injected → also 0904/05/06 on QUIC** (worse) |
 | **h3_text** | `1:65536;6:262144;7:100;51:1;GREASE\|GREASE\|984832\|m,a,s,p` | `1:65536;6:262144;7:100;51:1;GREASE\|m,a,s,p` |
-| **h3 control frames** | GREASE frame + **PRIORITY_UPDATE `984832` (=0x0f0700)** | missing in stock prebuilt (Velora patches not in v2rc3 tarball) |
+| **h3 control frames** | GREASE frame + **PRIORITY_UPDATE `984832` (=0x0f0700)** | missing in stock prebuilt (Koko patches not in v2rc3 tarball) |
 
 ### QUIC JA4_r breakdown
 
@@ -64,7 +64,7 @@ Therefore for **h3** hops (Google Search document):
 - Do **not** set ML-DSA on `ssl_sig_hash_algs`.
 - Use classic list only.
 
-Velora `applyChromeTlsKnobs` is **version-aware**: ML-DSA only when `ProfileHttpVersion == .h2` and target is chrome150.
+Koko `applyChromeTlsKnobs` is **version-aware**: ML-DSA only when `ProfileHttpVersion == .h2` and target is chrome150.
 
 ---
 
@@ -82,12 +82,12 @@ So cookie is a **crutch**, not the cold-path root. Remaining score gap is below 
 |-----|-----------|-------|
 | QUIC ext **0005 + 0012** present | BoringSSL / curl-impersonate QUIC ClientHello template | Chrome omits status_request + SCT on QUIC |
 | Trailing sig **0201** | Optional | Chrome has it; low priority vs ext set |
-| **h3 GREASE + PRIORITY_UPDATE 0x0f0700** | Re-apply `vendor/curl-impersonate-patches/velora-h3-fingerprint-*.patch` on v2.0.0rc3 build | Stock release tarball lacks frames; `h3_text` misses `GREASE\|984832` |
+| **h3 GREASE + PRIORITY_UPDATE 0x0f0700** | Re-apply `vendor/curl-impersonate-patches/koko-h3-fingerprint-*.patch` on v2.0.0rc3 build | Stock release tarball lacks frames; `h3_text` misses `GREASE\|984832` |
 | ECH on QUIC | CLI works with `--ech true --doh-url …`; multi crashes | Secondary; ECH alone did not unlock SERP earlier |
 
 ---
 
-## Velora code changes from this spike
+## Koko code changes from this spike
 
 1. `http.zig` `applyChromeTlsKnobs(…, version)` — ML-DSA **only on h2**.  
 2. **H3 knobs (setopt, stock v2.0.0rc3):** disable `TLS_SIGNED_CERT_TIMESTAMPS` + `TLS_STATUS_REQUEST`; set SSL/HTTP3 sig list to classic + `rsa_pkcs1_sha1`.  
@@ -101,7 +101,7 @@ So cookie is a **crutch**, not the cold-path root. Remaining score gap is below 
 |--------|----------|------------------|
 | Chrome 150 | match | **SERP** |
 | libcurl setopts (above) | **match** | still **knitsail** ~91 KB |
-| Velora cold (same knobs) | h3 hop | still **knitsail** |
+| Koko cold (same knobs) | h3 hop | still **knitsail** |
 
 **Conclusion:** browserleaks QUIC JA4 parity is **necessary but not sufficient** for Google Search cold. Remaining candidates: H3 PRIORITY_UPDATE `0x0f0700`, ECH on google.com, QUIC transport params, or non-fingerprint signals.
 
@@ -119,7 +119,7 @@ Empty-jar Google hop-1:
 
 ## Update 2026-07-17 evening — H3 PRIORITY_UPDATE rebuild
 
-Ported Velora patches onto **lexiforest v2.0.0rc3** source tree (file rename `curl_ngtcp2.c` → `cf-ngtcp2.c`):
+Ported Koko patches onto **lexiforest v2.0.0rc3** source tree (file rename `curl_ngtcp2.c` → `cf-ngtcp2.c`):
 
 | Component | Change |
 |-----------|--------|
@@ -134,7 +134,7 @@ Ported Velora patches onto **lexiforest v2.0.0rc3** source tree (file rename `cu
 | QUIC JA4 | `q13d0311h3_55b375c5d22e_653d80c3fe9d` | **match** |
 | h3_text | `…GREASE\|GREASE\|984832\|m,a,s,p` | **match** on `/fp` |
 
-### Cold Google empty jar (Velora serve)
+### Cold Google empty jar (Koko serve)
 
 Still **knitsail** ~91 KB, hop-1 **h3**, Cookie=0, X-Client-Data present.
 

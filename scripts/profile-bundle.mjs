@@ -19,8 +19,8 @@ const repoRoot = resolve(scriptDir, "..");
 
 function defaultUserDataDir() {
     return process.platform === "darwin"
-        ? join(homedir(), "Library", "Application Support", "velora")
-        : join(homedir(), ".config", "velora");
+        ? join(homedir(), "Library", "Application Support", "koko")
+        : join(homedir(), ".config", "koko");
 }
 
 function parseArgs(argv) {
@@ -30,7 +30,7 @@ function parseArgs(argv) {
         from: null,
         out: null,
         userDataDir: defaultUserDataDir(),
-        veloraRoot: process.env.VELORA_ROOT ? resolve(process.env.VELORA_ROOT) : repoRoot,
+        kokoRoot: process.env.KOKO_ROOT ? resolve(process.env.KOKO_ROOT) : repoRoot,
     };
     const args = argv.slice(2);
     for (let i = 0; i < args.length; i++) {
@@ -40,7 +40,7 @@ function parseArgs(argv) {
         else if (arg === "--from") out.from = resolve(args[++i]);
         else if (arg === "--out") out.out = resolve(args[++i]);
         else if (arg === "--user-data-dir") out.userDataDir = resolve(args[++i]);
-        else if (arg === "--velora-root") out.veloraRoot = resolve(args[++i]);
+        else if (arg === "--koko-root") out.kokoRoot = resolve(args[++i]);
         else throw new Error(`unknown argument: ${arg}`);
     }
     return out;
@@ -57,7 +57,7 @@ function readPreferences(profileDir) {
 function fingerprintSource(opts, profileDir, id) {
     const embedded = join(profileDir, "fingerprint");
     if (existsSync(join(embedded, "fingerprint.json"))) return embedded;
-    const installed = join(opts.veloraRoot, "browser", "fingerprints", id);
+    const installed = join(opts.kokoRoot, "browser", "fingerprints", id);
     if (existsSync(join(installed, "fingerprint.json"))) return installed;
     throw new Error(`fingerprint not found: ${id}`);
 }
@@ -68,7 +68,7 @@ function exportProfile(opts) {
     if (!existsSync(profileDir)) throw new Error(`profile not found: ${profileDir}`);
     const prefs = readPreferences(profileDir);
     const source = fingerprintSource(opts, profileDir, prefs.fingerprint);
-    const destination = opts.out ?? join(opts.userDataDir, `${opts.name}.velora-profile`);
+    const destination = opts.out ?? join(opts.userDataDir, `${opts.name}.koko-profile`);
     const staging = `${destination}.staging-${process.pid}`;
 
     rmSync(staging, { recursive: true, force: true });

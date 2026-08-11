@@ -1,6 +1,6 @@
 # document.open UAF teardown + Fetch CORS preflight OPTIONS
 
-> **Audience:** Velora engineers  
+> **Audience:** Koko engineers  
 > **Date:** 2026-07-23  
 > **Scope:** Product stability for iframe `document.open` / teardown, and real-site CORS preflight for non-simple fetch
 
@@ -8,7 +8,7 @@
 
 Two product-facing failures blocked SPA/ad/widget patterns and authenticated APIs:
 
-1. **`document.open` process death** — after destroyContext was made idempotent, Velora still crashed with `incorrect alignment` / `ArenaPool: double-free` when iframes were opened, removed, or re-navigated. Root cause was **double `Frame.deinit`** (deferred iframe detach racing `processFrameNavigation`) plus open using a departing browsing context.
+1. **`document.open` process death** — after destroyContext was made idempotent, Koko still crashed with `incorrect alignment` / `ArenaPool: double-free` when iframes were opened, removed, or re-navigated. Root cause was **double `Frame.deinit`** (deferred iframe detach racing `processFrameNavigation`) plus open using a departing browsing context.
 2. **CORS preflight missing** — cross-origin `fetch` with non-safelisted methods/headers never sent OPTIONS, so real APIs (custom headers, PUT/PATCH) failed.
 
 Both are implemented and smoke-verified. Full WPT `url.window.html` harness can still stall on nested empty-body iframe load timing; product open/write and preflight paths are solid.
@@ -83,7 +83,7 @@ Fetch §4.3: cors mode + cross-origin + non-safelisted method or request header 
 ## Verification
 
 ```bash
-cd /Users/huydev/Desktop/velora && zig build
+cd /Users/huydev/Desktop/koko && zig build
 # headers combine (WPT)
 # open: CDP smoke — fully active open inherits parent URL; remove+open no-op; process stays up
 # CORS: two ports (8766 page → 8765 API PUT + x-test-header1) → OPTIONS then 200

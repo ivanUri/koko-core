@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 "use strict";
 
-// Convert a decoded Kameleo profile into Velora's self-contained fingerprint
+// Convert a decoded Kameleo profile into Koko's self-contained fingerprint
 // folder. Raw Kameleo files are never modified.
 
 const fs = require("node:fs");

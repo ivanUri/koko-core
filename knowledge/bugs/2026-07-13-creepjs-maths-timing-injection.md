@@ -2,12 +2,12 @@
 
 ## Summary
 
-CreepJS reported `maths.lied` and nine `chrome: false` math probes on Velora even with a correct Chrome maths baseline. V8/libm returns different IEEE-754 bits than Chrome on nine edge-case inputs. A temporary JS injection into `creep.js` source fixed timing but failed lie detection architecture. The durable fix installs V8 native `Math.*` callbacks when each JS context is created, before any page script runs.
+CreepJS reported `maths.lied` and nine `chrome: false` math probes on Koko even with a correct Chrome maths baseline. V8/libm returns different IEEE-754 bits than Chrome on nine edge-case inputs. A temporary JS injection into `creep.js` source fixed timing but failed lie detection architecture. The durable fix installs V8 native `Math.*` callbacks when each JS context is created, before any page script runs.
 
 ## Root cause
 
 1. CreepJS `getMaths()` compares probe results with `==` (bit-exact) against the Chrome column.
-2. Velora's V8/libm stack mismatches Chrome on nine inputs (e.g. `cos(13*Math.E)`, `pow(Math.PI,-100)`).
+2. Koko's V8/libm stack mismatches Chrome on nine inputs (e.g. `cos(13*Math.E)`, `pow(Math.PI,-100)`).
 3. A JS hook installed after `lieProps` capture worked for values but was architecturally wrong (script-source patching, non-native `toString`).
 4. Installing at `Env.createContext` is early enough for `getMaths()` and uses `[native code]` callbacks that pass CreepJS `lieProps` for `Math.*`.
 
@@ -23,7 +23,7 @@ CreepJS reported `maths.lied` and nine `chrome: false` math probes on Velora eve
 ## Verify
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build
 # CDP probe against https://abrahamjuliot.github.io/creepjs/
 # Expect: maths.lied=false, badCount=0, totalLies=0

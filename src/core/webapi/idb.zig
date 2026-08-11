@@ -188,7 +188,7 @@ pub const IDBOpenDBRequest = struct {
                 ._active = true,
             });
             self._transaction = txn;
-            const event = try Event.init("upgradeneeded", .{}, self._frame._page);
+            const event = try Event.initTrustedSlice("upgradeneeded", .{}, self._frame._page);
             try self._frame._event_manager.dispatchDirect(self._proto, event, self._on_upgrade_needed, .{
                 .context = "IDBOpenDBRequest.upgradeneeded",
             });

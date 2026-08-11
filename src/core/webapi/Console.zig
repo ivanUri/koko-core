@@ -42,17 +42,17 @@ pub fn info(_: *const Console, values: []js.Value) void {
 }
 
 pub fn log(_: *const Console, values: []js.Value) void {
-    if (isVeloraJsCall(values)) {
-        logger.info(.js, "velora-js-call", .{ValueWriter{ .values = values }});
+    if (isKokoJsCall(values)) {
+        logger.info(.js, "koko-js-call", .{ValueWriter{ .values = values }});
         return;
     }
     logger.info(.js, "console.log", .{ValueWriter{ .values = values }});
 }
 
-fn isVeloraJsCall(values: []js.Value) bool {
+fn isKokoJsCall(values: []js.Value) bool {
     if (values.len == 0) return false;
     const text = values[0].toStringSlice() catch return false;
-    return std.mem.startsWith(u8, text, "[velora-js-call]");
+    return std.mem.startsWith(u8, text, "[koko-js-call]");
 }
 
 pub fn warn(_: *const Console, values: []js.Value) void {

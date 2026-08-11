@@ -2,13 +2,13 @@
 
 ## Summary
 
-Between **2026-06-29** and **2026-06-30**, Velora shipped end-to-end verification and two reference workflows for `@velora/sdk`:
+Between **2026-06-29** and **2026-06-30**, Koko shipped end-to-end verification and two reference workflows for `@koko/sdk`:
 
-1. **`scripts/sdk-smoke.mjs`** — a bounded, CI-friendly probe of Velora-specific APIs over the **Velora CDP domain**, plus session persistence and `NodeHandle` actions.
+1. **`scripts/sdk-smoke.mjs`** — a bounded, CI-friendly probe of Koko-specific APIs over the **Koko CDP domain**, plus session persistence and `NodeHandle` actions.
 2. **`sdk/examples/crawl-wikipedia.mjs`** — Workflow **B**: multi-worker Wikipedia crawl shaped like the benchmark harness (`createCrawlWorker`, TTFX expressions, `waitUntil: "done"`).
 3. **`sdk/examples/agent-semantic.mjs`** — Workflow **C**: MCP-equivalent agent loop (semantic tree → forms → NodeHandle) runnable without Cursor.
 
-The SDK's **public surface mirrors Playwright** (`page.goto`, locators, `getByRole`) so scripts port with minimal edits. **Velora-only value** lives behind the **`Velora.*` CDP namespace**—markdown, semantic tree, `detectForms`, stable `backendNodeId` handles—and behind stricter navigation (`waitUntil: "done"`). Smoke verified **9/9 checks in ~6.5s** on 2026-06-30; `searchGoogle` remains opt-in. Known gaps: **`Velora.clickNode` can hang** on some buttons (smoke uses fill-only), and **`browser.newPage()` may return `TargetAlreadyLoaded`** when reusing a loaded target.
+The SDK's **public surface mirrors Playwright** (`page.goto`, locators, `getByRole`) so scripts port with minimal edits. **Koko-only value** lives behind the **`Koko.*` CDP namespace**—markdown, semantic tree, `detectForms`, stable `backendNodeId` handles—and behind stricter navigation (`waitUntil: "done"`). Smoke verified **9/9 checks in ~6.5s** on 2026-06-30; `searchGoogle` remains opt-in. Known gaps: **`Koko.clickNode` can hang** on some buttons (smoke uses fill-only), and **`browser.newPage()` may return `TargetAlreadyLoaded`** when reusing a loaded target.
 
 ---
 
@@ -16,23 +16,23 @@ The SDK's **public surface mirrors Playwright** (`page.goto`, locators, `getByRo
 
 ### Playwright parity is necessary but insufficient
 
-Automation authors expect `Browser.connect`, `page.goto`, locators, and `evaluate` to behave like [Playwright](https://playwright.dev/docs/api/class-playwright). Velora delivers that via direct WebSocket CDP—no Playwright or Puppeteer dependency. However, **AI agents and high-density crawlers** need APIs Playwright does not expose: token-efficient page markdown, pruned semantic trees, form schemas with stable node IDs, and proactive dialog handling.
+Automation authors expect `Browser.connect`, `page.goto`, locators, and `evaluate` to behave like [Playwright](https://playwright.dev/docs/api/class-playwright). Koko delivers that via direct WebSocket CDP—no Playwright or Puppeteer dependency. However, **AI agents and high-density crawlers** need APIs Playwright does not expose: token-efficient page markdown, pruned semantic trees, form schemas with stable node IDs, and proactive dialog handling.
 
-Without a single smoke entrypoint, regressions in Velora handlers (`src/protocols/cdp/domains/velora.zig`) could slip through while Playwright-shaped locator tests still passed. Conversely, MCP tools in Cursor could work while the published npm package broke.
+Without a single smoke entrypoint, regressions in Koko handlers (`src/protocols/cdp/domains/koko.zig`) could slip through while Playwright-shaped locator tests still passed. Conversely, MCP tools in Cursor could work while the published npm package broke.
 
 ### Production paths were undocumented
 
-Benchmark crawl scripts in `code-check/bench/` are comparative (Velora vs Chromium) and heavy. SDK consumers needed **copy-pasteable examples** that:
+Benchmark crawl scripts in `code-check/bench/` are comparative (Koko vs Chromium) and heavy. SDK consumers needed **copy-pasteable examples** that:
 
 - Scale to N workers without reimplementing queue logic.
 - Mirror MCP tool ordering so SDK and Cursor agents stay semantically aligned.
-- Run against a launched binary *or* an existing `VELORA_CDP` endpoint.
+- Run against a launched binary *or* an existing `KOKO_CDP` endpoint.
 
 ---
 
 ## Root Cause
 
-Velora's architecture splits **generic CDP compatibility** from **agent-native LP methods**:
+Koko's architecture splits **generic CDP compatibility** from **agent-native LP methods**:
 
 ```mermaid
 flowchart LR
@@ -42,11 +42,11 @@ flowchart LR
     CDP_STD["Page / DOM / Runtime CDP"]
   end
 
-  subgraph lp_layer [Velora LP domain]
-    MD["Velora.getMarkdown"]
-    ST["Velora.getSemanticTree"]
-    DF["Velora.detectForms"]
-    NH["Velora.fillNode / clickNode / …"]
+  subgraph lp_layer [Koko LP domain]
+    MD["Koko.getMarkdown"]
+    ST["Koko.getSemanticTree"]
+    DF["Koko.detectForms"]
+    NH["Koko.fillNode / clickNode / …"]
   end
 
   PG --> CDP_STD
@@ -55,14 +55,14 @@ flowchart LR
   ST --> lp_layer
   DF --> lp_layer
   NH --> lp_layer
-  lp_layer --> ENGINE["Velora engine — semantic + DOM registry"]
+  lp_layer --> ENGINE["Koko engine — semantic + DOM registry"]
 ```
 
-**Playwright parity** routes through standard CDP domains implemented for compatibility.**LP domain** methods read Velora's DOM registry and semantic pipeline directly—faster for extraction, stable for `backendNodeId`, but **only implemented in Velora**, not Chromium.
+**Playwright parity** routes through standard CDP domains implemented for compatibility.**LP domain** methods read Koko's DOM registry and semantic pipeline directly—faster for extraction, stable for `backendNodeId`, but **only implemented in Koko**, not Chromium.
 
-Gaps like `TargetAlreadyLoaded` stem from Velora's target model: creating a second page while the default target already finished initial navigation triggers `error.TargetAlreadyLoaded` in `target.zig`. Playwright's browser spawns fresh targets more liberally.
+Gaps like `TargetAlreadyLoaded` stem from Koko's target model: creating a second page while the default target already finished initial navigation triggers `error.TargetAlreadyLoaded` in `target.zig`. Playwright's browser spawns fresh targets more liberally.
 
-`Velora.clickNode` hangs on some fixtures because click synthesis waits for hit-target stability and navigation side-effects that differ from Playwright's input dispatcher; submit buttons that trigger full navigation without a predictable CDP lifecycle event are the worst case (smoke deliberately avoids clicking the fixture submit button).
+`Koko.clickNode` hangs on some fixtures because click synthesis waits for hit-target stability and navigation side-effects that differ from Playwright's input dispatcher; submit buttons that trigger full navigation without a predictable CDP lifecycle event are the worst case (smoke deliberately avoids clicking the fixture submit button).
 
 ---
 
@@ -70,22 +70,22 @@ Gaps like `TargetAlreadyLoaded` stem from Velora's target model: creating a seco
 
 ### Playwright parity vs LP domain
 
-| Concern | Playwright-shaped API | LP / Velora-only API |
+| Concern | Playwright-shaped API | LP / Koko-only API |
 |---------|----------------------|----------------------|
 | Primary consumer | Ported test suites, locators | AI agents, MCP, crawlers |
-| CDP path | Page, DOM, Input, Network | Custom `Velora.*` namespace |
+| CDP path | Page, DOM, Input, Network | Custom `Koko.*` namespace |
 | Element identity | CSS / role locators (fragile across re-renders) | `backendNodeId` from semantic scan |
 | Navigation wait | `domcontentloaded`, `load`, `networkidle` | + **`waitUntil: "done"`** (load + network idle + document complete) |
 | Page text for LLMs | `page.content()` (full HTML) | `page.markdown()`, `page.semanticTree()` |
 | Forms | Manual selectors | `page.detectForms()` → field `backendNodeId` |
-| Dialogs | Reactive (breaks headless auto-dismiss) | `page.armDialog()` → `Velora.handleJavaScriptDialog` |
+| Dialogs | Reactive (breaks headless auto-dismiss) | `page.armDialog()` → `Koko.handleJavaScriptDialog` |
 
-The SDK README maps ~40 Playwright methods to Velora equivalents. Items **not** ported (`page.route`, `frameLocator`, full a11y tree parity on `getByRole`) are intentional; agents should prefer **`findElement` + `NodeHandle`** for Velora deployments.
+The SDK README maps ~40 Playwright methods to Koko equivalents. Items **not** ported (`page.route`, `frameLocator`, full a11y tree parity on `getByRole`) are intentional; agents should prefer **`findElement` + `NodeHandle`** for Koko deployments.
 
 ### Smoke test design (`scripts/sdk-smoke.mjs`)
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 npm run build:sdk
 npm run test:sdk:smoke
 
@@ -123,7 +123,7 @@ npm run example:crawl
 # default: --launch --limit 8 --concurrency 2
 
 # Attach + tune:
-VELORA_CDP=http://127.0.0.1:9222 \
+KOKO_CDP=http://127.0.0.1:9222 \
   node sdk/examples/crawl-wikipedia.mjs --limit 20 --concurrency 4
 ```
 
@@ -134,7 +134,7 @@ sequenceDiagram
   participant Main
   participant W0 as Worker 0
   participant W1 as Worker N
-  participant V as velora serve
+  participant V as koko serve
 
   Main->>W0: createCrawlWorker(endpoint)
   Main->>W1: createCrawlWorker(endpoint)
@@ -168,27 +168,27 @@ Agent loop (matches MCP tool order):
 2. `semanticTree` (text, depth 5)
 3. `getStructuredData` (og:title probe)
 4. `detectForms` → find field `q` with `backendNodeId`
-5. **`NodeHandle.fill`** — `page.node(id).fill("velora agent demo")`
+5. **`NodeHandle.fill`** — `page.node(id).fill("koko agent demo")`
 6. `findElement({ role: "button", name: "search" })` — assert button handle exists
 7. Final `markdown()` + URL for sanity
 
-**Verified 2026-06-30:** full loop ~3.4s on local fixture. Cursor users should still prefer `velora mcp --browser-profile <id>` for daily work; this script proves SDK parity with MCP semantics.
+**Verified 2026-06-30:** full loop ~3.4s on local fixture. Cursor users should still prefer `koko mcp --browser-profile <id>` for daily work; this script proves SDK parity with MCP semantics.
 
 ### NodeHandle model
 
 `NodeHandle` (`sdk/src/browser/node-handle.ts`) wraps a **`backendNodeId`** from LP scans—stable across semantic re-serialization unlike CSS paths.
 
-| Method | Velora CDP method | Status in smoke |
+| Method | Koko CDP method | Status in smoke |
 |--------|---------------|-----------------|
-| `fill(text)` | `Velora.fillNode` | ✅ exercised |
-| `click()` | `Velora.clickNode` | ⚠️ known hang risk — not in smoke |
-| `hover()` | `Velora.hoverNode` | Added Jun 30 in `lp.zig` |
-| `press(key)` | `Velora.pressKey` | Supported |
-| `selectOption(v)` | `Velora.selectOptionNode` | Supported |
-| `check()` / `uncheck()` | `Velora.setCheckedNode` | Supported |
-| `details()` | `Velora.getNodeDetails` | ✅ via `waitForSelectorHandle` |
+| `fill(text)` | `Koko.fillNode` | ✅ exercised |
+| `click()` | `Koko.clickNode` | ⚠️ known hang risk — not in smoke |
+| `hover()` | `Koko.hoverNode` | Added Jun 30 in `lp.zig` |
+| `press(key)` | `Koko.pressKey` | Supported |
+| `selectOption(v)` | `Koko.selectOptionNode` | Supported |
+| `check()` / `uncheck()` | `Koko.setCheckedNode` | Supported |
+| `details()` | `Koko.getNodeDetails` | ✅ via `waitForSelectorHandle` |
 
-Jun 30 CDP additions: `Velora.hoverNode`, `Velora.pressKey`, `Velora.selectOptionNode`, `Velora.setCheckedNode` complete the action set for agent parity with MCP.
+Jun 30 CDP additions: `Koko.hoverNode`, `Koko.pressKey`, `Koko.selectOptionNode`, `Koko.setCheckedNode` complete the action set for agent parity with MCP.
 
 ---
 
@@ -201,12 +201,12 @@ Jun 30 CDP additions: `Velora.hoverNode`, `Velora.pressKey`, `Velora.selectOptio
 | `scripts/sdk-smoke.mjs` | Fast regression gate; LP + session + NodeHandle |
 | `sdk/examples/crawl-wikipedia.mjs` | Production crawl template |
 | `sdk/examples/agent-semantic.mjs` | Agent / MCP semantic reference |
-| `src/protocols/cdp/domains/velora.zig` | Server-side Velora handlers |
+| `src/protocols/cdp/domains/koko.zig` | Server-side Koko handlers |
 | `npm run test:sdk:smoke` | Wired in root `package.json` with `prebuild:sdk` |
 
 ### Operational guidance
 
-**Prefer one page per session** when launching Velora fresh:
+**Prefer one page per session** when launching Koko fresh:
 
 ```ts
 const page = await browser.newPage();
@@ -233,19 +233,19 @@ await page.press("Enter");
 2. **Smoke must track MCP ordering** — semantic tree before form fill — or Cursor and SDK diverge silently.
 3. **`backendNodeId` > CSS** for agents; re-run `detectForms` after navigation if DOM changed.
 4. **`waitUntil: "done"` is stricter than Playwright `networkidle`** — crawl TTFX numbers are comparable to MCP defaults, not to loose `domcontentloaded` scripts.
-5. **Do not infer click health from fill health** — `Velora.fillNode` and `Velora.clickNode` use different synchronization paths; track click hangs as a separate bug.
+5. **Do not infer click health from fill health** — `Koko.fillNode` and `Koko.clickNode` use different synchronization paths; track click hangs as a separate bug.
 6. **`searchGoogle` stays off by default** — live SERP probes invite rate limits and captcha noise; opt in locally only.
 
 ---
 
 ## References
 
-- [`sdk/README.md`](../../sdk/README.md) — Playwright → Velora API map, Velora-only features
+- [`sdk/README.md`](../../sdk/README.md) — Playwright → Koko API map, Koko-only features
 - [`scripts/sdk-smoke.mjs`](../../scripts/sdk-smoke.mjs) — smoke implementation
 - [`sdk/examples/crawl-wikipedia.mjs`](../../sdk/examples/crawl-wikipedia.mjs) — Workflow B
 - [`sdk/examples/agent-semantic.mjs`](../../sdk/examples/agent-semantic.mjs) — Workflow C
 - [`sdk/src/browser/node-handle.ts`](../../sdk/src/browser/node-handle.ts) — NodeHandle
-- [`src/protocols/cdp/domains/velora.zig`](../../src/protocols/cdp/domains/velora.zig) — Velora CDP handlers
+- [`src/protocols/cdp/domains/koko.zig`](../../src/protocols/cdp/domains/koko.zig) — Koko CDP handlers
 - [`src/protocols/cdp/domains/target.zig`](../../src/protocols/cdp/domains/target.zig) — `TargetAlreadyLoaded`
 - [`sdk/examples/fixtures/agent-form.html`](../../sdk/examples/fixtures/agent-form.html) — agent smoke fixture
 

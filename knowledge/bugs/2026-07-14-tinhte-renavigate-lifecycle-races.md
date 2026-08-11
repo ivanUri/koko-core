@@ -4,7 +4,7 @@
 
 Rapid re-navigation to `https://tinhte.vn/` fails reliably after **~10 successful loads** (`10/100` in `demo.mjs`, `10/15` in shorter probes). Wikipedia-style re-nav (v1.0.2 CDP gates) is fixed; tinhte exposes **additional** races tied to heavy ad/analytics scripts, WebSockets, IntersectionObserver, and `document.write` during SPA-style re-nav.
 
-Velora then crashes with `Segmentation fault at address 0xaaaaaaaaaaaaaaaa` (freed-memory UAF) while the outgoing realm is `draining` at `epoch=1`.
+Koko then crashes with `Segmentation fault at address 0xaaaaaaaaaaaaaaaa` (freed-memory UAF) while the outgoing realm is `draining` at `epoch=1`.
 
 ## Root causes found
 
@@ -57,7 +57,7 @@ iterated `_rtc_peer_connections` on the **outgoing** page whose arena was freed 
 
 Single navigation to tinhte.vn (and any pending-root swap) could fail CDP with
 `ProtocolError: Promise was collected` on `Runtime.evaluate` / `awaitPromise` while the
-document body was still downloading. Velora did not crash (`exit=0`); V8 Inspector discarded
+document body was still downloading. Koko did not crash (`exit=0`); V8 Inspector discarded
 in-flight promise handlers.
 
 **Root cause:** `Session.commitPendingPage` step 1 dispatches `frame_remove` →
@@ -81,8 +81,8 @@ on the live replacement context.
 **Verify:**
 
 ```bash
-cd /Users/huydev/Desktop/velora-run
-VELORA_BIN=~/Desktop/velora/zig-out/bin/velora node tinhte-once-probe.mjs
+cd /Users/huydev/Desktop/koko-run
+KOKO_BIN=~/Desktop/koko/zig-out/bin/koko node tinhte-once-probe.mjs
 # OK title=Tinhte.vn - ...
 ```
 
@@ -144,7 +144,7 @@ draining/freed frame.
 
 - Site JS: `ReferenceError: IDBIndex is not defined` (IndexedDB incomplete) breaks
   firebase-analytics; other inline scripts throw `JsException`.
-- CLI `velora fetch --dump html` can still return only `<!DOCTYPE html>` while
+- CLI `koko fetch --dump html` can still return only `<!DOCTYPE html>` while
   CDP load works — separate dump/timing path.
 - Nested `IsOnCentralStack` on deferred async scripts is largely gated; re-check
   under Debug if new sites regress.
@@ -152,14 +152,14 @@ draining/freed frame.
 ## Verification
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build -Doptimize=ReleaseSafe -Dstrip=false
-cd ../velora-run
-DEMO_PAGES=30 VELORA_BIN=~/Desktop/velora/zig-out/bin/velora node demo.mjs
+cd ../koko-run
+DEMO_PAGES=30 KOKO_BIN=~/Desktop/koko/zig-out/bin/koko node demo.mjs
 # 30/30 ok (×3 runs)
 
 DEMO_PAGES=50 node tinhte-crash-capture.mjs
-# done ok=50/50, velora exit=0, titles present
+# done ok=50/50, koko exit=0, titles present
 ```
 
 ## Files touched

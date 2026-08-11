@@ -2,7 +2,7 @@
 
 ## Summary
 
-Velora now uses a unified stale-load cancellation pattern for HTTP terminal callbacks (done / error / shutdown). Script, Image, and Link subresource loads capture a `TaskOwner` at request start via `LoadGuard.Guard`. Document navigation captures `_nav_task_owner` on each `navigate()`. `Session.canDestructivelyTeardown()` gates pending-root commit and deferred commit.
+Koko now uses a unified stale-load cancellation pattern for HTTP terminal callbacks (done / error / shutdown). Script, Image, and Link subresource loads capture a `TaskOwner` at request start via `LoadGuard.Guard`. Document navigation captures `_nav_task_owner` on each `navigate()`. `Session.canDestructivelyTeardown()` gates pending-root commit and deferred commit.
 
 Site JS errors surface in the console without killing the process. Process crashes on re-navigate were engine lifecycle bugs (UAF / double-free on aborted HTTP callbacks), not site script failures.
 
@@ -26,9 +26,9 @@ Site JS errors surface in the console without killing the process. Process crash
 ## Verification
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build
-node code-check/site-stability/debug-reload.mjs "https://www.bbc.com/news"   # 2/2, velora alive
+node code-check/site-stability/debug-reload.mjs "https://www.bbc.com/news"   # 2/2, koko alive
 node code-check/site-stability/stress-renavigate.mjs --cycles 15             # 15/15, 100% pass
 ```
 

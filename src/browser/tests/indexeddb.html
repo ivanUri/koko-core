@@ -8,11 +8,12 @@
     printTimeoutState: () => console.log(document.body.textContent),
   };
   const order = [];
-  const openRequest = indexedDB.open("velora-regression", 1);
+  const openRequest = indexedDB.open("koko-regression", 1);
   if (openRequest instanceof Promise) throw new Error("open returned Promise");
   if (openRequest.readyState !== "pending") throw new Error("request was not pending");
 
-  openRequest.onupgradeneeded = () => {
+  openRequest.onupgradeneeded = (event) => {
+    if (!event.isTrusted) throw new Error("upgradeneeded was not user-agent generated");
     order.push("upgrade");
     const store = openRequest.result.createObjectStore("records");
     if (!openRequest.result.objectStoreNames.contains("records")) {

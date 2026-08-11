@@ -1,13 +1,13 @@
-# Velora Codebase Overview
+# Koko Codebase Overview
 
 > This document gives engineers and coding agents a reliable starting point
-> before they modify Velora. It is an orientation guide, not a substitute for
+> before they modify Koko. It is an orientation guide, not a substitute for
 > reading the relevant implementation, its callers, tests, and architecture
 > notes. Read [`AGENTS.md`](AGENTS.md) before making changes.
 
-## 1. What Velora Is
+## 1. What Koko Is
 
-Velora is an AI-first, headless browser runtime written primarily in Zig. It
+Koko is an AI-first, headless browser runtime written primarily in Zig. It
 implements its own browser engine instead of embedding Chromium and is designed
 for automation, agents, crawling, testing, and programmable web execution.
 
@@ -20,7 +20,7 @@ The project focuses on:
 - persistent browser profiles and fingerprint configuration;
 - lower-level control than a Chromium wrapper can provide.
 
-Velora is not intended to be a desktop-browser replacement. Its primary product
+Koko is not intended to be a desktop-browser replacement. Its primary product
 surface is programmable browser infrastructure.
 
 The repository currently contains roughly 500 Zig source files. The largest
@@ -110,26 +110,26 @@ post-processing. Fix the component that owns the violated invariant.
 The executable entry point is `src/adapters/cli/main.zig`. Configuration and
 command parsing live in `src/runtime/Config.zig`.
 
-Velora supports these command modes:
+Koko supports these command modes:
 
 | Command | Purpose |
 |---|---|
-| `velora fetch` | Navigate one page, wait for a lifecycle condition, and optionally dump HTML, Markdown, or another supported representation. |
-| `velora serve` | Run the CDP-compatible HTTP/WebSocket server. |
-| `velora mcp` | Run an MCP server over stdio, optionally with a local CDP endpoint. |
-| `velora profile` | Create, list, import, export, and manage persistent browser profiles. |
-| `velora help` / `velora version` | CLI metadata and usage. |
+| `koko fetch` | Navigate one page, wait for a lifecycle condition, and optionally dump HTML, Markdown, or another supported representation. |
+| `koko serve` | Run the CDP-compatible HTTP/WebSocket server. |
+| `koko mcp` | Run an MCP server over stdio, optionally with a local CDP endpoint. |
+| `koko profile` | Create, list, import, export, and manage persistent browser profiles. |
+| `koko help` / `koko version` | CLI metadata and usage. |
 
 The main supported automation surfaces are:
 
 1. **CDP server** — implemented in `src/protocols/cdp/` and exposed by
-   `velora serve`.
+   `koko serve`.
 2. **MCP server** — implemented in `src/protocols/mcp/` and exposed by
-   `velora mcp`.
-3. **CLI fetch path** — implemented by `src/velora.zig::fetch` and the CLI
+   `koko mcp`.
+3. **CLI fetch path** — implemented by `src/koko.zig::fetch` and the CLI
    adapter.
 4. **TypeScript SDK** — maintained in the separate
-   [`ivanUri/velora-sdk`](https://github.com/ivanUri/velora-sdk) repository and
+   [`ivanUri/koko-sdk`](https://github.com/ivanUri/koko-sdk) repository and
    communicates with the engine through CDP.
 
 The wrappers under `src/public/` are experimental. Some methods are thin
@@ -138,7 +138,7 @@ the production SDK contract.
 
 ## 5. Navigation and Page Execution Flow
 
-A typical `velora fetch` operation follows this path:
+A typical `koko fetch` operation follows this path:
 
 ```text
 CLI main
@@ -230,22 +230,22 @@ zig build
 The executable is written to:
 
 ```text
-zig-out/bin/velora
+zig-out/bin/koko
 ```
 
 Common local commands:
 
 ```bash
-./zig-out/bin/velora fetch --dump html https://example.com/
-./zig-out/bin/velora serve --host 127.0.0.1 --port 9222
-./zig-out/bin/velora mcp
-./zig-out/bin/velora profile list
+./zig-out/bin/koko fetch --dump html https://example.com/
+./zig-out/bin/koko serve --host 127.0.0.1 --port 9222
+./zig-out/bin/koko mcp
+./zig-out/bin/koko profile list
 ```
 
-Use `velora help` or inspect `src/runtime/Config.zig` for the authoritative
+Use `koko help` or inspect `src/runtime/Config.zig` for the authoritative
 option list. Do not guess option names from old scripts or notes.
 
-Velora currently targets Zig 0.15.2. `build.zig` defaults to stripped binaries,
+Koko currently targets Zig 0.15.2. `build.zig` defaults to stripped binaries,
 including Debug builds, as a workaround for Zig/LLVM debug-type crashes. For a
 diagnostic build, `-Dstrip=false` may provide better stack information, but it
 can re-expose the compiler issue documented in
@@ -257,7 +257,7 @@ can re-expose the compiler issue documented in
 zig build test
 ```
 
-`src/velora.zig` uses `std.testing.refAllDecls` so the build discovers tests
+`src/koko.zig` uses `std.testing.refAllDecls` so the build discovers tests
 through the imported source graph. The custom runner supports:
 
 ```bash
@@ -281,10 +281,10 @@ Recommended validation order:
 For runtime behavior, start with structured logs:
 
 ```bash
-./zig-out/bin/velora fetch \
+./zig-out/bin/koko fetch \
   --dump html \
   --log-level debug \
-  --log-dir /tmp/velora-log \
+  --log-dir /tmp/koko-log \
   https://example.com/
 ```
 
@@ -344,7 +344,7 @@ redesign the fix around the underlying browser invariant.
 | `vendor/` | Vendored native dependencies and local patches. |
 | `dist/` | Packaged release artifacts when present. |
 | `exports/`, `export-logs/` | Generated integration outputs and logs; these are evidence/artifacts, not engine source. |
-| `.velora-cache/` | Large bootstrapped dependency cache, including V8/depot_tools data. |
+| `.koko-cache/` | Large bootstrapped dependency cache, including V8/depot_tools data. |
 | `.zig-cache/` | Regenerable Zig build cache. |
 | `.github/workflows/` | Release and repository automation. |
 

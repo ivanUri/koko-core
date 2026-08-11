@@ -1,11 +1,11 @@
 # SPA classic scripts: same-turn microtasks and checkpoint re-entry
 
-> **Audience:** Velora engineers fixing Next/App Router client bootstrap and any SPA that ships large classic webpack chunks.  
+> **Audience:** Koko engineers fixing Next/App Router client bootstrap and any SPA that ships large classic webpack chunks.  
 > **Sites:** `demo.fingerprint.com/playground` (repro), any Next App Router CSR bailout shell.
 
 ## Summary
 
-Fingerprint Pro’s playground (and other Next App Router CSR pages) loaded every `_next/static` chunk under Velora but stayed on the `BAILOUT_TO_CLIENT_SIDE_RENDERING` shell: `window.next` had only `{ version, appDir }`, no router, no Fingerprint agent network.
+Fingerprint Pro’s playground (and other Next App Router CSR pages) loaded every `_next/static` chunk under Koko but stayed on the `BAILOUT_TO_CLIENT_SIDE_RENDERING` shell: `window.next` had only `{ version, appDir }`, no router, no Fingerprint agent network.
 
 Root causes were **core lifecycle**, not site-specific JS shims:
 
@@ -19,7 +19,7 @@ After generalizing those paths, Next’s `appBootstrap` → hydrate path install
 
 ## Problem
 
-| Symptom | Chrome | Velora (before) |
+| Symptom | Chrome | Koko (before) |
 |---------|--------|-----------------|
 | Document | 200, CSR bailout shell then results | 200 shell forever |
 | Scripts | all chunks execute | all chunks execute |
@@ -79,12 +79,12 @@ No page-level JS shims. No “if fingerprint.com then …” in the microtask lo
 ## Verification
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build -Doptimize=ReleaseSafe
 node scripts/cdp-fingerprint-playground-probe.mjs --max-sec 50
 # Expect: push interceptor installed, window.next.router present, no immediate shell-only stall
 # OfflineAudio smoke:
-#   velora fetch --wait-ms 3000 --dump html http://127.0.0.1:8765/oac-fp.html
+#   koko fetch --wait-ms 3000 --dump html http://127.0.0.1:8765/oac-fp.html
 ```
 
 Pass criteria for this note: Next router + React fiber attach without host-specific shims; OfflineAudio standalone does not segfault.

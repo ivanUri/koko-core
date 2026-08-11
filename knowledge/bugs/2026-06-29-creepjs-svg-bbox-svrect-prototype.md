@@ -4,15 +4,15 @@
 
 ## Summary
 
-Online CreepJS reported Velora `svg.bBox` checksum **1192.66** versus Chrome **661.17** — nearly double — while a fresh CDP re-run of the same DOM measurement logic on Velora returned correct bbox components. Root cause: CreepJS aggregates `getBBox()` results by enumerating `Object.keys(svgBox.getBBox().__proto__)`, and Chrome's `SVGRect.prototype` exposes only **four** fields (`x`, `y`, `width`, `height`). Velora returned a `DOMRect`-shaped object whose immediate prototype also enumerated **edge getters** (`top`, `right`, `bottom`, `left`), so CreepJS summed **eight** numeric fields instead of four. Fix: dedicated `SVGRect` type with prototype chain `SVGRect → DOMRectReadOnly`, exposing only the SVG geometry quad, plus `_skip_quantize` on read paths so f64 sums match Chrome.
+Online CreepJS reported Koko `svg.bBox` checksum **1192.66** versus Chrome **661.17** — nearly double — while a fresh CDP re-run of the same DOM measurement logic on Koko returned correct bbox components. Root cause: CreepJS aggregates `getBBox()` results by enumerating `Object.keys(svgBox.getBBox().__proto__)`, and Chrome's `SVGRect.prototype` exposes only **four** fields (`x`, `y`, `width`, `height`). Koko returned a `DOMRect`-shaped object whose immediate prototype also enumerated **edge getters** (`top`, `right`, `bottom`, `left`), so CreepJS summed **eight** numeric fields instead of four. Fix: dedicated `SVGRect` type with prototype chain `SVGRect → DOMRectReadOnly`, exposing only the SVG geometry quad, plus `_skip_quantize` on read paths so f64 sums match Chrome.
 
 ---
 
 ## Problem
 
-The `svg` section hash failed on Velora despite plausible individual `getBBox()` values when inspected in isolation. Field compare showed:
+The `svg` section hash failed on Koko despite plausible individual `getBBox()` values when inspected in isolation. Field compare showed:
 
-| Field | Chrome | Velora (before) |
+| Field | Chrome | Koko (before) |
 |-------|--------|-----------------|
 | `bBox` (abs-sum) | 661.1685009 | **1192.66** |
 | `extentOfChar` | ~305.95 | inflated similarly |
@@ -24,7 +24,7 @@ CreepJS was not flagging prototype lies — the failure was **semantic miscounti
 
 SVG geometry APIs (`SVGGraphicsElement.getBBox()`, `getExtentOfChar()`) return `DOMRectReadOnly`-like objects in the spec, but Web IDL distinguishes **`SVGRect`** as a separate interface for SVG-specific rectangles. Chromium's `SVGRect.prototype` is intentionally minimal: it carries the four component fields used in SVG user space without duplicating CSS box edge aliases on the same prototype tier that CreepJS enumerates.
 
-Velora initially reused `DOMRect` for all rectangle-like returns. That was spec-adjacent but **fingerprint-wrong** because CreepJS's aggregation algorithm keys off **enumerable own keys of the immediate prototype object**, not `Object.getOwnPropertyNames` across the full interface set.
+Koko initially reused `DOMRect` for all rectangle-like returns. That was spec-adjacent but **fingerprint-wrong** because CreepJS's aggregation algorithm keys off **enumerable own keys of the immediate prototype object**, not `Object.getOwnPropertyNames` across the full interface set.
 
 ---
 
@@ -46,7 +46,7 @@ const bBoxSum = Object.keys(bBox).reduce((acc, k) => acc + Math.abs(bBox[k]), 0)
 
 `bBoxSum ≈ 661.17` on the reference MacBook Chrome profile.
 
-### Velora behavior (before fix)
+### Koko behavior (before fix)
 
 `getBBox()` returned `DOMRect` with prototype enumerating **also**:
 
@@ -65,7 +65,7 @@ Even with correct keys, sub-pixel quantization on `DOMRectReadOnly` getters coul
 ### Step 1 — Section field compare
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 node scripts/cdp-section-field-compare.mjs svg
 node scripts/cdp-creepjs-section-compare.mjs --profile chrome-local-huys-macbook-pro --sections svg
 ```
@@ -74,7 +74,7 @@ Confirmed `bBox` as primary outlier; `emojiSet` and `svgrectSystemSum` were sepa
 
 ### Step 2 — Live prototype probe
 
-CDP on Velora during CreepJS probe:
+CDP on Koko during CreepJS probe:
 
 ```javascript
 const box = document.querySelector('#svgBox')?.getBBox?.() 
@@ -98,7 +98,7 @@ CreepJS `searchLies(() => SVGRect)` gate stayed 0 — confirms fix target is pro
 
 ### Step 6 — Cross-engine prototype audit
 
-Compared `Object.getOwnPropertyNames(SVGRect.prototype)` in Chrome vs Velora via CDP. Chrome lists exactly four enumerable geometry fields on the `SVGRect` tier; Velora pre-fix listed eight on the object returned by `getBBox()`, matching `DOMRect` layout. This confirmed we needed a **separate `SVGRect` binding** in the Web IDL layer, not a tweak to CreepJS aggregation or lie-detector bypass.
+Compared `Object.getOwnPropertyNames(SVGRect.prototype)` in Chrome vs Koko via CDP. Chrome lists exactly four enumerable geometry fields on the `SVGRect` tier; Koko pre-fix listed eight on the object returned by `getBBox()`, matching `DOMRect` layout. This confirmed we needed a **separate `SVGRect` binding** in the Web IDL layer, not a tweak to CreepJS aggregation or lie-detector bypass.
 
 ---
 
@@ -147,8 +147,8 @@ After fix:
 - [SVGRect — MDN](https://developer.mozilla.org/en-US/docs/Web/API/SVGRect)
 - [DOMRectReadOnly — MDN](https://developer.mozilla.org/en-US/docs/Web/API/DOMRectReadOnly)
 - CreepJS `getSVG()` / `searchLies(() => SVGRect)` in `code-check/sites/creep/creep.js`
-- Velora: `src/core/dom/SVGRect.zig`
-- Velora: `src/runtime/profile/SvgIntelligent.zig`
+- Koko: `src/core/dom/SVGRect.zig`
+- Koko: `src/runtime/profile/SvgIntelligent.zig`
 - Probe: `scripts/cdp-creepjs-section-compare.mjs`, `scripts/cdp-section-field-compare.mjs`
 
 ---

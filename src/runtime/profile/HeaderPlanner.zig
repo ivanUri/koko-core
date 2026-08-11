@@ -20,10 +20,10 @@ const testing = @import("../../testing/testing.zig");
 
 const google_search_policy = [_][]const u8{"google-search"};
 
-test "HeaderPlanner: velora mode skips x-browser" {
+test "HeaderPlanner: koko mode skips x-browser" {
     var registry = try PolicyRegistry.PolicyRegistry.init(testing.allocator);
     defer registry.deinit();
-    const plan = headerPlan(&registry, .velora, &google_search_policy, "https://www.google.com/search?q=test");
+    const plan = headerPlan(&registry, .koko, &google_search_policy, "https://www.google.com/search?q=test");
     try testing.expect(plan.header_plugin == null);
 }
 

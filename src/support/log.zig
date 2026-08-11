@@ -269,7 +269,7 @@ fn logPretty(comptime scope: Scope, level: Level, comptime msg: []const u8, data
 }
 
 fn logPrettyPrefix(comptime scope: Scope, level: Level, comptime msg: []const u8, writer: *std.Io.Writer) !void {
-    if (scope == .console and level == .fatal and comptime std.mem.eql(u8, msg, "velora")) {
+    if (scope == .console and level == .fatal and comptime std.mem.eql(u8, msg, "koko")) {
         try writer.writeAll("\x1b[0;104mWARN  ");
     } else {
         try writer.writeAll(switch (level) {
@@ -478,7 +478,7 @@ test "log: scope channel map" {
     try testing.expectEqual(sink.Channel.protocol, sink.scopeChannel(.cdp));
     try testing.expectEqual(sink.Channel.system, sink.scopeChannel(.app));
     try testing.expectEqual(sink.JsSubfile.console, sink.jsSubfile("console.log"));
-    try testing.expectEqual(sink.JsSubfile.calls, sink.jsSubfile("velora-js-call"));
+    try testing.expectEqual(sink.JsSubfile.calls, sink.jsSubfile("koko-js-call"));
     try testing.expectEqual(sink.JsSubfile.engine, sink.jsSubfile("script error"));
     try testing.expect(sink.shouldRedactField("set-cookie"));
     try testing.expect(sink.shouldRedactField("Authorization"));

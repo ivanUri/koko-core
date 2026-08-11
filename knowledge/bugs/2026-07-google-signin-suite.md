@@ -4,7 +4,7 @@
 
 ## Summary
 
-Google Accounts sign-in inside Velora surfaced **dozens of correlated failures**: silent `rib`/`sya` telemetry, **boq module load order**, **SubtleCrypto** gaps, **PKC static methods**, **async script races**, **mi613e** chain telemetry, **browserinfo** probes, **iframe fingerprint** timeouts, and **frame/document UAF** during redirects. This consolidates fourteen hypothesis-driven notes into one investigation arc.
+Google Accounts sign-in inside Koko surfaced **dozens of correlated failures**: silent `rib`/`sya` telemetry, **boq module load order**, **SubtleCrypto** gaps, **PKC static methods**, **async script races**, **mi613e** chain telemetry, **browserinfo** probes, **iframe fingerprint** timeouts, and **frame/document UAF** during redirects. This consolidates fourteen hypothesis-driven notes into one investigation arc.
 
 ## Problem
 

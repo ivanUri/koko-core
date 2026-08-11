@@ -1,17 +1,17 @@
-# SerpBase Knitsail / SG_SS: what it actually measures (and what Velora still lacks)
+# SerpBase Knitsail / SG_SS: what it actually measures (and what Koko still lacks)
 
-> **Audience:** Velora engineers working on Google Search cold path and knitsail bootstrap.  
-> **Source:** [SerpBase — Google Knitsail and SG_SS](https://serpbase.dev/blog/google-knitsail-and-sg-ss-generation-logic-and-its-role-in-distinguishing-automa) (2026-04-15), cross-checked with Velora live A/B (2026-07-16…17).
+> **Audience:** Koko engineers working on Google Search cold path and knitsail bootstrap.  
+> **Source:** [SerpBase — Google Knitsail and SG_SS](https://serpbase.dev/blog/google-knitsail-and-sg-ss-generation-logic-and-its-role-in-distinguishing-automa) (2026-04-15), cross-checked with Koko live A/B (2026-07-16…17).
 
 ## Summary
 
 `SG_SS` is **not** a hash, HMAC, or signature of “who the user is.” It is a **base64url-framed binary telemetry packet** produced by Google’s **Knitsail VM**: decrypt bytecode from parameter `p`, run a custom VM against the live browser environment, pack channels + random header/padding, emit `*…`.
 
-The VM’s job is **environment authenticity** — “does this look like a real browser executing naturally inside a real page?” — not human identification. That score feeds anti-automation. For Velora, this means:
+The VM’s job is **environment authenticity** — “does this look like a real browser executing naturally inside a real page?” — not human identification. That score feeds anti-automation. For Koko, this means:
 
 1. **Client knitsail fixes** (pageT freeze, DCL during parse, trustedTypes, timing texture) only shape the **failure / bootstrap** path.
 2. **Cold SERP unlock** still lives on **hop-1** (TLS/QUIC, brands, cookies). Improving SG_SS quality does not turn empty-jar knitsail HTML into SERP by itself.
-3. Cookies from a real Chrome session (even guest `velora57`) remain the practical Layer-0 bypass.
+3. Cookies from a real Chrome session (even guest `koko57`) remain the practical Layer-0 bypass.
 
 ---
 
@@ -53,9 +53,9 @@ Environment/device fingerprinting and session linkability — not name/email dis
 
 ---
 
-## What Velora already implements (aligned with SerpBase)
+## What Koko already implements (aligned with SerpBase)
 
-| SerpBase requirement | Velora status |
+| SerpBase requirement | Koko status |
 |----------------------|---------------|
 | DCL / `readyState` before encode (~200ms window) | `Frame.tryPumpKnitsailDocumentLifecycle` during parse (not post full HTML drain) — see `knowledge/bugs/2026-07-15-google-knitsail-dcl-during-parse.md` |
 | `chrome.csi().pageT` ~185–195ms | Freeze `192.59999999403954` for `frozenNowMs()` / CSI |
@@ -71,7 +71,7 @@ Environment/device fingerprinting and session linkability — not name/email dis
 
 ### 1. Flat freeze on `performance.now()` (fixed)
 
-SerpBase §V.1: multi-sample **timing texture**. After DCL pump, Velora set `_frozen_now_ms` and returned the **same float** on every `now()` call. That is correct for *magnitude* (avoid 5–15s wall clock) but **wrong for texture** (too flat).
+SerpBase §V.1: multi-sample **timing texture**. After DCL pump, Koko set `_frozen_now_ms` and returned the **same float** on every `now()` call. That is correct for *magnitude* (avoid 5–15s wall clock) but **wrong for texture** (too flat).
 
 **Fix:** `Performance.now()` while frozen adds 0–82μs jitter from the high-res clock; `frozenNowMs()` / `chrome.csi().pageT` stay exact. Integer-now mode (Accounts) unchanged.
 
@@ -81,7 +81,7 @@ Live results (same IP):
 
 | Jar | Hop-1 trust | Result |
 |-----|-------------|--------|
-| Empty / native Velora warm (NID only) | Low | knitsail or `/sorry` |
+| Empty / native Koko warm (NID only) | Low | knitsail or `/sorry` |
 | Chrome Profile 57 guest (NID+AEC+YT…) | Medium | **SERP** |
 | Chrome Profile 45 mature (SID…) | High | **SERP** |
 
@@ -91,7 +91,7 @@ So even a perfect SG_SS encode only helps **after** Google already chose the boo
 
 | Path | How | Cold empty jar | Result |
 |------|-----|----------------|--------|
-| Pure Velora curl hop-1 | default serve | yes | knitsail / `/sorry` |
+| Pure Koko curl hop-1 | default serve | yes | knitsail / `/sorry` |
 | **Chrome cookie jar** | `scripts/chrome-profile-cookie-search.mjs --chrome-profile 57` | no (9 guest cookies) | **SERP OK** (~670KB) |
 | **Chrome sidecar hop-1** | `--google-chrome-transport` + policy `first_hop_or_query_contains` | yes | **SERP OK** (~380KB, with `sei=`) |
 
@@ -128,7 +128,7 @@ flowchart TD
 
 ```bash
 # Build
-cd /Users/huydev/Desktop/velora && zig build
+cd /Users/huydev/Desktop/koko && zig build
 
 # Cold empty jar should still show knitsail OR sorry (hop-1), but:
 # - pageT ≈ 192.6, readyState interactive, trustedTypes true

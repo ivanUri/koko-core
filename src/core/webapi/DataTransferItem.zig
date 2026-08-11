@@ -1,5 +1,5 @@
 //
-// Adapted for Velora architecture.
+// Adapted for Koko architecture.
 
 const std = @import("std");
 

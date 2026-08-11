@@ -1,9 +1,9 @@
 {
   "version": 1,
-  "id": "velora",
-  "mode": "velora",
+  "id": "koko",
+  "mode": "koko",
   "navigator": {
-    "userAgent": "Velora/1.0 (Macintosh; Intel Mac OS X 10_15_7)",
+    "userAgent": "Koko/1.0 (Macintosh; Intel Mac OS X 10_15_7)",
     "platform": "MacIntel",
     "languages": [
       "en-US",
@@ -19,7 +19,7 @@
   "userAgentData": {
     "brands": [
       {
-        "brand": "Velora",
+        "brand": "Koko",
         "version": "1"
       }
     ],

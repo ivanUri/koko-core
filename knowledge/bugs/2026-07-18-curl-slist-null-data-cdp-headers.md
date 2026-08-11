@@ -1,6 +1,6 @@
 # curl_slist null `data` panics CDP request-header serialization
 
-> **Audience:** Velora engineers working on HTTP/CDP, Google Search cold-path, and libcurl header lists.  
+> **Audience:** Koko engineers working on HTTP/CDP, Google Search cold-path, and libcurl header lists.  
 > **Date:** 2026-07-18 · **Area:** `runtime/network/http.zig` + CDP `Network` · **Status:** Fixed
 
 ## Summary
@@ -25,7 +25,7 @@ Repro path that was reliable on ReleaseSafe:
 
 1. Empty profile, no cookie jar.
 2. Navigate `https://www.google.com/?hl=en`.
-3. Focus search box, type `velora`, press Enter (CDP `Input.dispatchKeyEvent`).
+3. Focus search box, type `koko`, press Enter (CDP `Input.dispatchKeyEvent`).
 4. Process dies during navigation / response-header handling while Network domain is enabled.
 
 Direct cold `/search?q=…` often reached knitsail then `/sorry` **without** this panic once CacheLayer `_conn` null was already handled; the home→Enter path still hit the slist cast.
@@ -87,7 +87,7 @@ No change to Google-specific JS or cookie logic. Crash vs `/sorry` is now distin
 ## Verification
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build -Doptimize=ReleaseSafe -Dstrip=false
 
 # Repro: empty profile home → type → Enter (must not abort)
@@ -99,7 +99,7 @@ Post-fix (2026-07-18):
 | Case | Before | After |
 |------|--------|-------|
 | home + Enter + Network.enable | SIGABRT `cast causes pointer to be null` | **no crash** (observed webhp settle on hot IP) |
-| direct `/search?q=velora` empty | sometimes crash / knitsail | **no crash** → knitsail → `/sorry` |
+| direct `/search?q=koko` empty | sometimes crash / knitsail | **no crash** → knitsail → `/sorry` |
 | mature NID jar | SERP | SERP (unchanged) |
 
 ---

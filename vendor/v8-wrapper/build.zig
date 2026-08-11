@@ -203,7 +203,7 @@ fn bootstrapDepotTools(b: *std.Build, depot_tools_dir: []const u8) !*std.Build.S
 
     const build_telemetry_config_content =
         \\ {
-        \\   "user": "velora",
+        \\   "user": "koko",
         \\   "status": "opt-out",
         \\   "countdown": 20,
         \\   "version": 1

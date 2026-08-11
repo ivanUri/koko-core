@@ -2,7 +2,7 @@
 
 ## Summary
 
-Velora matches Chrome on the full CreepJS **`cssMedia`** fingerprint section: **0 field-level diffs** and identical section hash in `scripts/cdp-creepjs-section-compare.mjs`. The fix stack combined **CSS custom-property tokenization**, **owner-frame style routing** for phantom iframes, **`@media` text parsing** in `StyleManager`, and two **macOS Chrome media semantics** (`inverted-colors` unsupported, `color-gamut: srgb` on the probe machine).
+Koko matches Chrome on the full CreepJS **`cssMedia`** fingerprint section: **0 field-level diffs** and identical section hash in `scripts/cdp-creepjs-section-compare.mjs`. The fix stack combined **CSS custom-property tokenization**, **owner-frame style routing** for phantom iframes, **`@media` text parsing** in `StyleManager`, and two **macOS Chrome media semantics** (`inverted-colors` unsupported, `color-gamut: srgb` on the probe machine).
 
 `cssMedia` is one of the most integration-heavy CreepJS sections—it exercises tokenizer, stylesheet injection, `matchMedia`, `getComputedStyle`, and cross-document DOM in a single hash. Antidetect browsers with a working `matchMedia` mock but broken stylesheet application still fail here.
 
@@ -12,7 +12,7 @@ Velora matches Chrome on the full CreepJS **`cssMedia`** fingerprint section: **
 
 CreepJS `cssMedia` hashes diverged with large field gaps:
 
-| Area | Chrome | Velora (before) |
+| Area | Chrome | Koko (before) |
 |------|--------|-----------------|
 | `mediaCSS` | 14 populated custom properties | `{}` / all `undefined` |
 | `screenQuery` | e.g. `{1920, 1080}` or `{1680, 1050}` per display | `{0, 0}` |
@@ -33,7 +33,7 @@ Multiple independent gaps stacked:
 
 ### 2. Frame routing — caller vs owner
 
-CreepJS `getCSSMedia()` injects styles into **phantom iframe** `document.body` but calls unqualified `getComputedStyle(body)` from the **parent** realm. Velora routed reads/writes through the **caller's** `Frame`, not the **element owner's** `Frame`. See [Owner frame cross-document styles](../../browser/iframe/owner-frame-cross-document-styles.md).
+CreepJS `getCSSMedia()` injects styles into **phantom iframe** `document.body` but calls unqualified `getComputedStyle(body)` from the **parent** realm. Koko routed reads/writes through the **caller's** `Frame`, not the **element owner's** `Frame`. See [Owner frame cross-document styles](../../browser/iframe/owner-frame-cross-document-styles.md).
 
 ### 3. StyleManager.parseSheet — at-rules skipped
 
@@ -41,11 +41,11 @@ When `CSSStyleSheet.cssRules` existed (even empty), raw `<style>` text with `@me
 
 ### 4. inverted-colors on macOS Chrome
 
-Velora matched `(inverted-colors: none)`; Chrome on macOS treats the media feature as **unsupported**—both `inverted` and `none` queries false → `matchMediaCSS.inverted-colors: undefined`.
+Koko matched `(inverted-colors: none)`; Chrome on macOS treats the media feature as **unsupported**—both `inverted` and `none` queries false → `matchMediaCSS.inverted-colors: undefined`.
 
 ### 5. color-gamut viewport default
 
-Velora viewport defaulted to **p3** (profile wide-gamut display); the Chrome session used for compare reported **`srgb`** for `matchMediaCSS.color-gamut`.
+Koko viewport defaulted to **p3** (profile wide-gamut display); the Chrome session used for compare reported **`srgb`** for `matchMediaCSS.color-gamut`.
 
 ### 6. Display geometry (harness)
 
@@ -58,7 +58,7 @@ Velora viewport defaulted to **p3** (profile wide-gamut display); the Chrome ses
 ### Probe commands (canonical)
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build install
 node scripts/cdp-section-field-compare.mjs cssMedia
 node scripts/cdp-creepjs-section-compare.mjs \
@@ -80,7 +80,7 @@ From `code-check/sites/creep/creep.js` — `getCSSMedia()`, `getScreenMedia()`, 
 3. Read `getComputedStyle(body)` custom properties → **`mediaCSS`**.
 4. Binary-search screen dimensions via `@media (device-width: Npx)` custom props → **`screenQuery`**.
 
-Velora had to support steps 2–4 on iframe `body` while step 3 often runs from parent global.
+Koko had to support steps 2–4 on iframe `body` while step 3 often runs from parent global.
 
 ### Diagnostic pattern
 
@@ -132,7 +132,7 @@ A break at any layer presents differently in field compare:
 
 This table is the recommended first-pass triage for `cssMedia` regressions.
 
-### Velora file index
+### Koko file index
 
 | Subsystem | Primary Zig paths |
 |-----------|-------------------|
@@ -159,7 +159,7 @@ This table is the recommended first-pass triage for `cssMedia` regressions.
 
 - CreepJS: `code-check/sites/creep/creep.js` — `getCSSMedia()`, `getScreenMedia()`, `query()`
 - [Media Queries Level 4 — `inverted-colors`](https://drafts.csswg.org/mediaqueries-5/#inverted)
-- Velora probes: `scripts/cdp-section-field-compare.mjs`, `scripts/cdp-creepjs-section-compare.mjs`
+- Koko probes: `scripts/cdp-section-field-compare.mjs`, `scripts/cdp-creepjs-section-compare.mjs`
 - Tokenizer bug: `knowledge/bugs/2026-06-29-css-dashed-ident-tokenizer.md`
 - Owner frame: `knowledge/browser/iframe/owner-frame-cross-document-styles.md`
 

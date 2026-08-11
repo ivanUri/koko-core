@@ -2,7 +2,7 @@
 
 ## Summary
 
-CreepJS **`voices`** failed when Velora deferred loading macOS **remote** speech voices by **3.5 seconds**. Chrome returns remote voices on the **first** `speechSynthesis.getVoices()` call that CreepJS snapshots (~800ms–2s after load). Loading remote voices **synchronously** inside `getVoices()` when a profile provides voice data restored hash parity (**`remoteLen=19`**, section **MATCH**).
+CreepJS **`voices`** failed when Koko deferred loading macOS **remote** speech voices by **3.5 seconds**. Chrome returns remote voices on the **first** `speechSynthesis.getVoices()` call that CreepJS snapshots (~800ms–2s after load). Loading remote voices **synchronously** inside `getVoices()` when a profile provides voice data restored hash parity (**`remoteLen=19`**, section **MATCH**).
 
 The case illustrates a broader antidetect rule: **fingerprint probes read APIs once, early**—async lifecycle realism must not break first-call snapshots. Event timing (`voiceschanged` later) and getter completeness (what CreepJS hashes) are separate requirements.
 
@@ -12,7 +12,7 @@ The case illustrates a broader antidetect rule: **fingerprint probes read APIs o
 
 On profile `chrome-local-huys-macbook-pro`, CreepJS section compare reported `voices` hash mismatch vs Chrome:
 
-- Velora under-reported **remote** voice count on the first probe pass
+- Koko under-reported **remote** voice count on the first probe pass
 - Gate `voices local: 190` could pass while section hash still diverged
 - `lies=0` — not a lie-detection failure
 
@@ -29,9 +29,9 @@ On macOS, `speechSynthesis.getVoices()` returns:
 - **Local voices** — available immediately
 - **Remote voices** — system voices loaded from network/voice assets; Chrome includes them in the first synchronous enumeration when already cached
 
-### Velora's delayed load
+### Koko's delayed load
 
-Velora initially scheduled `loadRemoteVoices` on a **3500ms** timer to mimic Chrome's delayed **`voiceschanged`** event (voices sometimes arrive after async system callback).
+Koko initially scheduled `loadRemoteVoices` on a **3500ms** timer to mimic Chrome's delayed **`voiceschanged`** event (voices sometimes arrive after async system callback).
 
 CreepJS captures `getVoices()` much earlier in its pipeline. The snapshot therefore saw **only local voices**, changing:
 
@@ -42,7 +42,7 @@ The delay was a reasonable guess for **event timing** but wrong for **synchronou
 
 ### Profile-driven antidetect
 
-When `frame.loadedProfile().speech_voices` is populated, Velora should serve **deterministic profile data** on first getter—not emulate discovery latency that CreepJS never observes.
+When `frame.loadedProfile().speech_voices` is populated, Koko should serve **deterministic profile data** on first getter—not emulate discovery latency that CreepJS never observes.
 
 ---
 
@@ -51,7 +51,7 @@ When `frame.loadedProfile().speech_voices` is populated, Velora should serve **d
 ### Section compare
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build install
 node scripts/cdp-creepjs-section-compare.mjs \
   --profile chrome-local-huys-macbook-pro \
@@ -116,7 +116,7 @@ Voice arrays load from profile assets into `ProfileStore` (`speech_voices` or eq
 
 ### Optional voiceschanged behavior
 
-After synchronous `getVoices()` returns the full profile list, Velora may still dispatch `voiceschanged` on a timer for scripts that listen for updates. That path must **not clear or replace** the voice list with a smaller async snapshot on first event—some detectors call `getVoices()` twice and diff results.
+After synchronous `getVoices()` returns the full profile list, Koko may still dispatch `voiceschanged` on a timer for scripts that listen for updates. That path must **not clear or replace** the voice list with a smaller async snapshot on first event—some detectors call `getVoices()` twice and diff results.
 
 ### Broader antidetect pattern
 
@@ -128,7 +128,7 @@ After synchronous `getVoices()` returns the full profile list, Velora may still 
 
 ### macOS-specific note
 
-Remote voices on macOS correspond to system voices that may download on first use in a **real** user session. Velora's profile captures the post-download list Chrome returned during baseline capture. When refreshing voice assets, run Chrome on the same machine, call `speechSynthesis.getVoices()` once in DevTools after system voices have settled, then export into `browser/profiles/assets/*-voices.json`—do not hand-edit remote entries without a Chrome snapshot.
+Remote voices on macOS correspond to system voices that may download on first use in a **real** user session. Koko's profile captures the post-download list Chrome returned during baseline capture. When refreshing voice assets, run Chrome on the same machine, call `speechSynthesis.getVoices()` once in DevTools after system voices have settled, then export into `browser/profiles/assets/*-voices.json`—do not hand-edit remote entries without a Chrome snapshot.
 
 Related synchronous-read fix: [navigator WebGPU parity](../navigator/creepjs-navigator-parity.md) (`adapter.info` available on first probe).
 
@@ -150,7 +150,7 @@ Re-verify with `node scripts/cdp-creepjs-section-compare.mjs --profile chrome-lo
 
 - [Web Speech API — `getVoices()`](https://wicg.github.io/speech-api/#tts-getvoices-method)
 - CreepJS: `code-check/sites/creep/creep.js` — voices section
-- Velora: `src/core/webapi/speech/SpeechSynthesis.zig`
+- Koko: `src/core/webapi/speech/SpeechSynthesis.zig`
 - Profile assets: `browser/profiles/assets/*-voices.json`
 - Section compare: `scripts/cdp-creepjs-section-compare.mjs`
 - Field compare: `scripts/cdp-section-field-compare.mjs`

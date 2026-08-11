@@ -27,7 +27,7 @@ const Page = @import("../../browser/Page.zig");
 ///
 /// https://html.spec.whatwg.org/multipage/canvas.html#canvasgradient
 ///
-/// Velora is headless: gradients are not rasterized, but the class still
+/// Koko is headless: gradients are not rasterized, but the class still
 /// holds the stops so it round-trips correctly and any spec-mandated
 /// validation (offset/color parsing) is performed. The geometry kind/coords
 /// are kept so future rendering work can consume them without changing the

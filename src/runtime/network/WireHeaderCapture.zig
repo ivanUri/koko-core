@@ -7,11 +7,11 @@ const Allocator = std.mem.Allocator;
 
 pub fn enabled() bool {
     if (comptime !build_config.curl_impersonate) return false;
-    return std.posix.getenv("VELORA_WIRE_HEADERS") != null;
+    return std.posix.getenv("KOKO_WIRE_HEADERS") != null;
 }
 
 fn outputPath() ?[:0]const u8 {
-    return std.posix.getenv("VELORA_WIRE_HEADERS_FILE");
+    return std.posix.getenv("KOKO_WIRE_HEADERS_FILE");
 }
 
 pub fn shouldCapture(url: []const u8, resource_type: HttpClient.RequestParams.ResourceType) bool {

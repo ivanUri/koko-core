@@ -1,5 +1,5 @@
 //
-// Adapted for Velora architecture.
+// Adapted for Koko architecture.
 
 const js = @import("../js/js.zig");
 const Frame = @import("../browser/Frame.zig");
@@ -30,7 +30,7 @@ pub fn add(
     type_: ?[]const u8,
     frame: *Frame,
 ) !?*DataTransferItem {
-    // Accept string + type, or File. Full Velora fidelity is deferred; presence of
+    // Accept string + type, or File. Full Koko fidelity is deferred; presence of
     // the method is what most feature-detects need.
     _ = self;
     _ = data;

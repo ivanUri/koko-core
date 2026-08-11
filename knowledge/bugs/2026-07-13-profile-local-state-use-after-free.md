@@ -2,7 +2,7 @@
 
 ## Summary
 
-`ProfileManager.syncLocalState` called `freeLocalState` while still reading `state.last_used`, and merged stale JSON profile names after freeing the profiles slice. This caused segfaults on `velora profile list` / `velora version` and wrote garbage entries like `[170,170,...]` into `Local State.json`.
+`ProfileManager.syncLocalState` called `freeLocalState` while still reading `state.last_used`, and merged stale JSON profile names after freeing the profiles slice. This caused segfaults on `koko profile list` / `koko version` and wrote garbage entries like `[170,170,...]` into `Local State.json`.
 
 ## Root cause
 
@@ -19,4 +19,4 @@
 
 ## Recovery
 
-If `Local State.json` already contains garbage arrays, delete it and run `velora profile list` to regenerate from disk.
+If `Local State.json` already contains garbage arrays, delete it and run `koko profile list` to regenerate from disk.

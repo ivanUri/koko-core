@@ -2,12 +2,12 @@
 
 ## Summary
 
-Multi-page CDP flows (`example.com` → Wikipedia → HN) intermittently crashed Velora with `Transport closed` / `SIGTRAP` / segfault. The root cause was **reentrant inbound CDP** processed from HTTP callbacks while `commitPendingPage` or `initiateRootNavigation` was tearing down the active page.
+Multi-page CDP flows (`example.com` → Wikipedia → HN) intermittently crashed Koko with `Transport closed` / `SIGTRAP` / segfault. The root cause was **reentrant inbound CDP** processed from HTTP callbacks while `commitPendingPage` or `initiateRootNavigation` was tearing down the active page.
 
 ## Problem
 
 - SDK `demo.mjs` and `stress-renavigate.mjs` failed on the 2nd+ `Page.navigate`.
-- Velora process exited (`SIGTRAP` / segfault); CDP WebSocket closed → SDK reported `Transport closed`.
+- Koko process exited (`SIGTRAP` / segfault); CDP WebSocket closed → SDK reported `Transport closed`.
 - Failure was intermittent (~40–60% on rapid re-nav) and site-agnostic.
 
 ## Root Cause
@@ -52,11 +52,11 @@ Stack: `HttpCtx.doneCallback` → `Script.eval` → `appendChild` → `setTimeou
 ## Verification
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build install -Doptimize=ReleaseSafe
 node code-check/site-stability/stress-renavigate.mjs "https://en.wikipedia.org/wiki/Earth" --cycles 20
-cd ../velora-run && node demo.mjs   # 100/100 ok
-VELORA_PORT=<port> CYCLES=5 node scripts/repro-multi-nav.mjs
+cd ../koko-run && node demo.mjs   # 100/100 ok
+KOKO_PORT=<port> CYCLES=5 node scripts/repro-multi-nav.mjs
 ```
 
 ## Files

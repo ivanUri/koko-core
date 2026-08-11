@@ -33,9 +33,9 @@ Superseding root navigation calls `discardPendingPage` while the previous pendin
 ## Verification
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build
-node code-check/site-stability/debug-reload.mjs "https://www.bbc.com/news"  # 2/2, velora alive
+node code-check/site-stability/debug-reload.mjs "https://www.bbc.com/news"  # 2/2, koko alive
 ```
 
 ## Files

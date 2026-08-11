@@ -7,7 +7,7 @@ const path = require("node:path");
 
 const root = path.resolve(__dirname, "..");
 const logPath = path.resolve(process.argv[2] || path.join(root, "export-logs/demo.fingerprint.com.log"));
-const cacheDir = path.resolve(process.argv[3] || "/Users/huydev/Library/Application Support/velora/huynew-recapture-20260727/Cache");
+const cacheDir = path.resolve(process.argv[3] || "/Users/huydev/Library/Application Support/koko/huynew-recapture-20260727/Cache");
 const outDir = path.resolve(process.argv[4] || path.join(root, "exports/fingerprint-js-audit"));
 const filesDir = path.join(outDir, "files");
 
@@ -23,7 +23,7 @@ const safeName = (url, index) => {
   return `${String(index).padStart(3, "0")}-${stem}-${sha256(url).slice(0, 10)}.js`;
 };
 
-function parseVeloraCache(file) {
+function parseKokoCache(file) {
   const data = fs.readFileSync(file);
   const marker = Buffer.from('{"version":2,"metadata":');
   const metadataOffset = data.lastIndexOf(marker);
@@ -103,7 +103,7 @@ async function main() {
   const seenHashes = new Set();
 
   for (const name of fs.readdirSync(cacheDir).filter((name) => name.endsWith(".cache"))) {
-    const parsed = parseVeloraCache(path.join(cacheDir, name));
+    const parsed = parseKokoCache(path.join(cacheDir, name));
     if (!parsed) continue;
     const type = String(parsed.metadata.content_type || parsed.metadata.contentType || "");
     const looksJs = type.includes("javascript") || /\/web\/v\d+\//.test(parsed.url) || parsed.body.includes(Buffer.from("FingerprintJS"));
@@ -113,7 +113,7 @@ async function main() {
     seenHashes.add(hash);
     const file = path.join("files", safeName(parsed.url, records.length + 1));
     fs.writeFileSync(path.join(outDir, file), parsed.body);
-    records.push({ source: "velora-cache", role: /\/web\/v\d+\//.test(parsed.url) ? "fingerprint-agent" : "cached-script", url: parsed.url, status: parsed.metadata.status || 200, contentType: type, bytes: parsed.body.length, sha256: hash, file });
+    records.push({ source: "koko-cache", role: /\/web\/v\d+\//.test(parsed.url) ? "fingerprint-agent" : "cached-script", url: parsed.url, status: parsed.metadata.status || 200, contentType: type, bytes: parsed.body.length, sha256: hash, file });
   }
 
   for (const url of urls) {

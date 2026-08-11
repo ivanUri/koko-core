@@ -27,7 +27,7 @@
   // FontFace.load() rejects synchronously in the native binding for a missing
   // local face. Attaching the handler in the calling JS job must prevent an
   // unhandledrejection event, just like Promise.reject(...).catch(...).
-  new FontFace("missing", "local(velora-promise-rejection-test-missing)")
+  new FontFace("missing", "local(koko-promise-rejection-test-missing)")
     .load()
     .catch(() => {});
 

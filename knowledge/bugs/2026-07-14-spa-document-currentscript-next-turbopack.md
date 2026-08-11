@@ -1,11 +1,11 @@
 # SPA bootstrap: `document.currentScript` null breaks Next/Turbopack
 
-> **Audience:** Velora engineers fixing SPA / Next.js client bootstrap.  
+> **Audience:** Koko engineers fixing SPA / Next.js client bootstrap.  
 > **Sites:** Next App Router + Turbopack (e.g. `dovihome-sale.vercel.app`), and any classic-script bundle that reads `document.currentScript` during evaluation.
 
 ## Summary
 
-Unauthenticated Next App Router pages that should client-redirect to `/login` stayed on the sale URL with a spinner (or empty body) under Velora. The hard failure was:
+Unauthenticated Next App Router pages that should client-redirect to `/login` stayed on the sale URL with a spinner (or empty body) under Koko. The hard failure was:
 
 ```text
 InvariantError: Expected document.currentScript to be a <script> element. Received null instead
@@ -13,7 +13,7 @@ InvariantError: Expected document.currentScript to be a <script> element. Receiv
 
 from Next’s `getAssetPrefix` (chunk `0mstyq…`, module factory for `appBootstrap`). That path is not server 302: the document is HTTP 200, then client JS must bootstrap Turbopack, hydrate, and router-replace to `/login`.
 
-Root causes in Velora core:
+Root causes in Koko core:
 
 1. **`Document.currentScript` was missing on `Document.prototype`** — only `HTMLDocument` exposed the real accessor, while `creepjs_compat_shim.js` installed a permanent `get: () => null` on `Document.prototype` whenever the key was absent. HTML puts `currentScript` on **Document**.
 2. **V8 microtasks are `kExplicit`** — classic script evaluation must drain promise reactions **while** `_current_script` is still set. Turbopack’s `async registerChunk` + Next `getAssetPrefix` read `document.currentScript` on that same turn. Without an explicit same-turn checkpoint, continuations saw `null`.
@@ -30,7 +30,7 @@ After the fix, instrumentation shows `document.currentScript` is a real `HTMLScr
 
 ## Problem
 
-| Symptom | Chrome | Velora (before) |
+| Symptom | Chrome | Koko (before) |
 |---------|--------|-----------------|
 | `GET /m/sale` | 200, then client → `/login` | 200, URL stuck, spinner / empty body |
 | Console | — | `InvariantError` … `document.currentScript` … `null` |
@@ -44,7 +44,7 @@ Affected class of sites: any SPA that uses **classic** scripts and reads `docume
 
 ### Spec / IDL placement
 
-HTML: `document.currentScript` is on the **Document** interface. Chrome exposes it on `Document.prototype`. Velora only wired the accessor on `HTMLDocument`, so CreepJS feature-fill did:
+HTML: `document.currentScript` is on the **Document** interface. Chrome exposes it on `Document.prototype`. Koko only wired the accessor on `HTMLDocument`, so CreepJS feature-fill did:
 
 ```js
 // creepjs_compat_shim.js (before fix)
@@ -56,7 +56,7 @@ Depending on lookup and property reordering, SPA code that expects a Document-le
 
 ### Explicit microtasks vs Turbopack
 
-Velora isolates use `kExplicit` microtasks. Classic `Script.eval` sets `document._current_script`, runs the body, then must **PerformCheckpoint** before clearing it. Turbopack does:
+Koko isolates use `kExplicit` microtasks. Classic `Script.eval` sets `document._current_script`, runs the body, then must **PerformCheckpoint** before clearing it. Turbopack does:
 
 ```js
 TURBOPACK.push([document.currentScript, factories...]); // capture at push
@@ -72,7 +72,7 @@ function getAssetPrefix() {
 }
 ```
 
-`getAssetPrefix` uses the **live** `document.currentScript`, not the value captured at `push`. Chrome’s same-turn microtask checkpoint keeps the evaluating script visible; Velora had to match that under `kExplicit`.
+`getAssetPrefix` uses the **live** `document.currentScript`, not the value captured at `push`. Chrome’s same-turn microtask checkpoint keeps the evaluating script visible; Koko had to match that under `kExplicit`.
 
 ```mermaid
 sequenceDiagram
@@ -146,7 +146,7 @@ to keep SPA runtimes: `next`, `TURBOPACK`, `TURBOPACK_NEXT_CHUNK_URLS`, React/Vu
 
 ### Remaining parity note
 
-With both fixes, Velora keeps `window.next` + router, fetches `/login?_rsc=…`, and
+With both fixes, Koko keeps `window.next` + router, fetches `/login?_rsc=…`, and
 renders login inputs (`input[type=password]`). Soft-nav may still keep the address
 bar on `/m/sale` in some runs while the login UI is shown — separate from the
 prune / currentScript killers.

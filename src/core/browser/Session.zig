@@ -140,6 +140,7 @@ pub fn init(self: *Session, browser: *Browser, notification: *Notification) !voi
             @intCast(std.time.nanoTimestamp()),
         ),
     };
+    self.enableProfilePersistence();
 }
 
 /// Record `Accept-CH` from a response so subsequent requests to the same origin
@@ -189,6 +190,10 @@ pub fn deinit(self: *Session) void {
         }
     }
     self.destroySharedWorkers();
+    if (self.browser.app.storage.usesSqlite()) {
+        self.browser.app.storage.flush() catch |err| log.err(.storage, "session sqlite flush", .{ .err = err });
+        self.cookie_jar.setMutationSink(null);
+    }
     self.cookie_jar.deinit();
     self._client_hints_origins.deinit(self.arena);
 
@@ -215,6 +220,46 @@ pub fn prepareForBrowserShutdown(self: *Session) void {
     var it = self._shared_workers.valueIterator();
     while (it.next()) |runtime| {
         runtime.*.host._frame.prepareForBrowserShutdown();
+    }
+}
+
+pub fn enableProfilePersistence(self: *Session) void {
+    if (!self.browser.app.storage.usesSqlite()) return;
+    self.cookie_jar.setMutationSink(.{ .ctx = self, .notify = persistCookieMutation });
+}
+
+fn persistCookieMutation(ctx: *anyopaque, mutation: storage.Cookie.Jar.Mutation) void {
+    const self: *Session = @ptrCast(@alignCast(ctx));
+    const persistent = &self.browser.app.storage;
+    switch (mutation) {
+        .upsert => |cookie| persistent.cookieUpsert(cookie.*) catch |err| log.err(.storage, "cookie enqueue", .{ .err = err }),
+        .delete => |cookie| persistent.cookieDelete(cookie.*) catch |err| log.err(.storage, "cookie delete enqueue", .{ .err = err }),
+        .clear => persistent.cookieClear() catch |err| log.err(.storage, "cookie clear enqueue", .{ .err = err }),
+    }
+}
+
+pub fn persistLocalSet(self: *Session, origin: []const u8, key: []const u8, value: []const u8) void {
+    self.browser.app.storage.localSet(origin, key, value) catch |err| log.err(.storage, "localStorage set enqueue", .{ .err = err });
+}
+
+pub fn persistLocalRemove(self: *Session, origin: []const u8, key: []const u8) void {
+    self.browser.app.storage.localRemove(origin, key) catch |err| log.err(.storage, "localStorage remove enqueue", .{ .err = err });
+}
+
+pub fn persistLocalClear(self: *Session, origin: []const u8) void {
+    self.browser.app.storage.localClear(origin) catch |err| log.err(.storage, "localStorage clear enqueue", .{ .err = err });
+}
+
+pub fn enqueueCurrentProfileState(self: *Session) void {
+    var it = self.storage_shed._origins.iterator();
+    while (it.next()) |origin_entry| {
+        var local = origin_entry.value_ptr.*.local._data.iterator();
+        while (local.next()) |item| {
+            self.persistLocalSet(origin_entry.key_ptr.*, item.key_ptr.*, item.value_ptr.*);
+        }
+    }
+    for (self.cookie_jar.cookies.items) |*cookie| {
+        self.browser.app.storage.cookieUpsert(cookie.*) catch |err| log.err(.storage, "cookie seed enqueue", .{ .err = err });
     }
 }
 

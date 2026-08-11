@@ -1,4 +1,4 @@
-# Velora Core Engineering Rule
+# Koko Core Engineering Rule
 
 Before changing this project, read the relevant implementation, surrounding
 callers, lifecycle ownership, existing tests, and related architecture/bug
@@ -26,7 +26,7 @@ site-independent abstraction and must preserve browser semantics:
   release path.
 - Treat caches as derived state. Define their key, generation, and invalidation
   contract before modifying them.
-- Match standards and real browser behavior where practical. If Velora uses an
+- Match standards and real browser behavior where practical. If Koko uses an
   intentional approximation, document the invariant and its limits rather
   than naming a site that exposed it.
 

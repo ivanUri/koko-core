@@ -125,6 +125,10 @@ private_symbols: PrivateSymbols,
 
 checkpoint_active: bool,
 checkpoint_pending: bool,
+// V8's IsExecutionTerminating is scoped to active isolate execution and is
+// not a durable cancellation token for native callbacks. Mirror every host
+// termination request so Zig loops can observe it while control is outside V8.
+termination_requested: std.atomic.Value(bool) = .init(false),
 scheduler_pump_depth: u8 = 0,
 macrotask_run_depth: u8 = 0,
 
@@ -445,12 +449,12 @@ pub fn cleanupFrameInternalGlobals(context: *Context) void {
     defer ls.deinit();
     const global_handle = v8.v8__Context__Global(ls.local.handle) orelse return;
     inline for (.{
-        "__veloraConstructThrow",
-        "__veloraRethrow",
-        "__veloraDomExceptionThrow",
-        "__veloraWorkerConstructing",
-        "__veloraWorkerConstructEnter",
-        "__veloraWorkerConstructExit",
+        "__kokoConstructThrow",
+        "__kokoRethrow",
+        "__kokoDomExceptionThrow",
+        "__kokoWorkerConstructing",
+        "__kokoWorkerConstructEnter",
+        "__kokoWorkerConstructExit",
     }) |name| deleteOwnGlobal(&ls.local, global_handle, name);
 }
 
@@ -557,13 +561,13 @@ fn installConstructThrowShim(context: *Context) void {
         \\      });
         \\    } catch (e) { globalThis[name] = fn; }
         \\  }
-        \\  hide("__veloraConstructThrow", function(name) {
+        \\  hide("__kokoConstructThrow", function(name) {
         \\    const C = globalThis[name];
         \\    if (typeof C === "function") throw new C("");
         \\    throw new Error(name || "");
         \\  });
-        \\  hide("__veloraDomExceptionThrow", function(n,m){throw new DOMException(m||"",n||"Error")});
-        \\  hide("__veloraRethrow", function(v){throw v});
+        \\  hide("__kokoDomExceptionThrow", function(n,m){throw new DOMException(m||"",n||"Error")});
+        \\  hide("__kokoRethrow", function(v){throw v});
         \\})();
     ;
     ls.local.eval(src, "construct-throw-shim") catch |err| {
@@ -573,17 +577,17 @@ fn installConstructThrowShim(context: *Context) void {
 
     const global_handle = v8.v8__Context__Global(ls.local.handle) orelse return;
     const global = js.Object{ .local = &ls.local, .handle = global_handle };
-    if (global.getFunction("__veloraConstructThrow") catch null) |helper| {
+    if (global.getFunction("__kokoConstructThrow") catch null) |helper| {
         context.construct_throw_helper = helper.persist() catch null;
-        deleteOwnGlobal(&ls.local, global.handle, "__veloraConstructThrow");
+        deleteOwnGlobal(&ls.local, global.handle, "__kokoConstructThrow");
     }
-    if (global.getFunction("__veloraRethrow") catch null) |helper| {
+    if (global.getFunction("__kokoRethrow") catch null) |helper| {
         context.rethrow_helper = helper.persist() catch null;
-        deleteOwnGlobal(&ls.local, global.handle, "__veloraRethrow");
+        deleteOwnGlobal(&ls.local, global.handle, "__kokoRethrow");
     }
-    if (global.getFunction("__veloraDomExceptionThrow") catch null) |helper| {
+    if (global.getFunction("__kokoDomExceptionThrow") catch null) |helper| {
         context.dom_exception_throw_helper = helper.persist() catch null;
-        deleteOwnGlobal(&ls.local, global.handle, "__veloraDomExceptionThrow");
+        deleteOwnGlobal(&ls.local, global.handle, "__kokoDomExceptionThrow");
     }
 }
 
@@ -618,7 +622,7 @@ fn installWorkerRethrowShim(context: *Context) void {
     defer ls.deinit();
 
     const src =
-        \\globalThis.__veloraRethrow=function(v){throw v};
+        \\globalThis.__kokoRethrow=function(v){throw v};
     ;
     ls.local.eval(src, "worker-rethrow-shim") catch |err| {
         log.warn(.js, "worker rethrow shim", .{ .err = err });
@@ -632,7 +636,7 @@ fn installWorkerDomExceptionThrowShim(context: *Context) void {
     defer ls.deinit();
 
     const src =
-        \\globalThis.__veloraDomExceptionThrow=function(n,m){throw new DOMException(m||"",n||"Error")};
+        \\globalThis.__kokoDomExceptionThrow=function(n,m){throw new DOMException(m||"",n||"Error")};
     ;
     ls.local.eval(src, "worker-domexception-throw-shim") catch |err| {
         log.warn(.js, "worker domexception throw shim", .{ .err = err });
@@ -646,7 +650,7 @@ fn installWorkerImportScriptsMimeShim(context: *Context) void {
     defer ls.deinit();
 
     const src =
-        \\(function(){var blobMime=new Map();var oc=URL.createObjectURL;URL.createObjectURL=function(b){var u=oc.call(URL,b);blobMime.set(u,b.type||"");return u};var or=URL.revokeObjectURL;URL.revokeObjectURL=function(u){blobMime.delete(u);return or.call(URL,u)};function isJsMime(m){m=(m||"").split(";")[0].trim().toLowerCase();return m==="text/javascript"||m==="application/javascript"||m==="text/ecmascript"}function mimeFromHttpQuery(u){var q=u.indexOf("?");if(q<0)return null;var s=u.slice(q+1),p="mime=",i=s.indexOf(p);if(i<0)return null;var v=s.slice(i+p.length),a=v.indexOf("&");return a<0?v:v.slice(0,a)}function mimeForUrl(u){if(u.startsWith("data:")){var r=u.slice(5),c=r.indexOf(",");return c<0?r:r.slice(0,c)||"text/plain"}if(u.startsWith("blob:"))return blobMime.get(u)||"";return mimeFromHttpQuery(u)}var n=Object.getPrototypeOf(globalThis).importScripts;globalThis.importScripts=function(){if(globalThis.__veloraWorkerIsModule)throw new TypeError("importScripts is not available in module workers");for(var i=0;i<arguments.length;i++){var u=arguments[i],m=mimeForUrl(u);if(m!==null&&!isJsMime(m))throw new DOMException("","NetworkError")}globalThis.__veloraImportScriptError=null;n.apply(globalThis,arguments);var e=globalThis.__veloraImportScriptError;if(e){globalThis.__veloraImportScriptError=null;throw e}}})();
+        \\(function(){var blobMime=new Map();var oc=URL.createObjectURL;URL.createObjectURL=function(b){var u=oc.call(URL,b);blobMime.set(u,b.type||"");return u};var or=URL.revokeObjectURL;URL.revokeObjectURL=function(u){blobMime.delete(u);return or.call(URL,u)};function isJsMime(m){m=(m||"").split(";")[0].trim().toLowerCase();return m==="text/javascript"||m==="application/javascript"||m==="text/ecmascript"}function mimeFromHttpQuery(u){var q=u.indexOf("?");if(q<0)return null;var s=u.slice(q+1),p="mime=",i=s.indexOf(p);if(i<0)return null;var v=s.slice(i+p.length),a=v.indexOf("&");return a<0?v:v.slice(0,a)}function mimeForUrl(u){if(u.startsWith("data:")){var r=u.slice(5),c=r.indexOf(",");return c<0?r:r.slice(0,c)||"text/plain"}if(u.startsWith("blob:"))return blobMime.get(u)||"";return mimeFromHttpQuery(u)}var n=Object.getPrototypeOf(globalThis).importScripts;globalThis.importScripts=function(){if(globalThis.__kokoWorkerIsModule)throw new TypeError("importScripts is not available in module workers");for(var i=0;i<arguments.length;i++){var u=arguments[i],m=mimeForUrl(u);if(m!==null&&!isJsMime(m))throw new DOMException("","NetworkError")}globalThis.__kokoImportScriptError=null;n.apply(globalThis,arguments);var e=globalThis.__kokoImportScriptError;if(e){globalThis.__kokoImportScriptError=null;throw e}}})();
     ;
     ls.local.eval(src, "worker-importscripts-mime-shim") catch |err| {
         log.warn(.js, "worker importScripts mime shim", .{ .err = err });
@@ -1283,17 +1287,20 @@ pub fn dumpMemoryStats(self: *Env) void {
 }
 
 pub fn terminate(self: *Env) void {
+    self.termination_requested.store(true, .release);
     v8.v8__Isolate__TerminateExecution(self.isolate.handle);
 }
 
 pub fn isExecutionTerminating(self: *const Env) bool {
-    return v8.v8__Isolate__IsExecutionTerminating(self.isolate.handle);
+    return self.termination_requested.load(.acquire) or
+        v8.v8__Isolate__IsExecutionTerminating(self.isolate.handle);
 }
 
 /// Clears explicit CLI/server teardown termination only. Microtask containment
 /// must not use temporary TerminateExecution/CancelTerminateExecution cycles.
 pub fn cancelTerminate(self: *Env) void {
     v8.v8__Isolate__CancelTerminateExecution(self.isolate.handle);
+    self.termination_requested.store(false, .release);
 }
 
 fn uncaughtExceptionCallback(message_handle: ?*const v8.Message, data_handle: ?*const v8.Value) callconv(.c) void {

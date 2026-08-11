@@ -1,18 +1,18 @@
 # WPT SPA workflow (scientific runner)
 
-Tooling lives in the WPT tree (not Velora `scripts/`):
+Tooling lives in the WPT tree (not Koko `scripts/`):
 
-**`/Users/huydev/Desktop/wpt-spa-tests/velora-probe/`**
+**`/Users/huydev/Desktop/wpt-spa-tests/koko-probe/`**
 
-See `velora-probe/README.md` for skip rules, cause taxonomy, and commands.
+See `koko-probe/README.md` for skip rules, cause taxonomy, and commands.
 
 ```bash
 cd /Users/huydev/Desktop/wpt-spa-tests
-./velora-probe/preflight.sh
-python3 velora-probe/inventory.py --all
-python3 velora-probe/run.py --suite url --batch-size 25
+./koko-probe/preflight.sh
+python3 koko-probe/inventory.py --all
+python3 koko-probe/run.py --suite url --batch-size 25
 # triage:
 open results/runs/*/FAILURES.md
 ```
 
-Design goals: no wasted re-runs (state keyed by test+velora_sha), JSONL truth, every failure has `cause_class`.
+Design goals: no wasted re-runs (state keyed by test+koko_sha), JSONL truth, every failure has `cause_class`.

@@ -32,7 +32,7 @@ const Origin = @This();
 rc: usize = 1,
 arena: Allocator,
 
-// The key, e.g. velora.io:443
+// The key, e.g. kokoio.com:443
 key: []const u8,
 
 // Security token - all contexts in this origin must use the same v8::Value instance

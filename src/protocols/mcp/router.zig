@@ -89,7 +89,7 @@ fn handleInitialize(server: *Server, req: protocol.Request) !void {
             .tools = .{},
         },
         .serverInfo = .{
-            .name = "velora",
+            .name = "koko",
             .version = "0.1.0",
         },
     };

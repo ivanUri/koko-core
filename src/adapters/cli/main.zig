@@ -1,4 +1,4 @@
-const v = @import("velora");
+const v = @import("koko");
 
 //
 // This program is free software: you can redistribute it and/or modify
@@ -226,7 +226,7 @@ fn run(allocator: Allocator, main_arena: Allocator) !void {
 
             if (opts.port != null and opts.cdp_port != null) {
                 log.fatal(.mcp, "MCP HTTP and CDP cannot share the process listener", .{
-                    .hint = "Run CDP and MCP HTTP as separate Velora processes.",
+                    .hint = "Run CDP and MCP HTTP as separate Koko processes.",
                 });
                 return error.TooManyListeners;
             }

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 "use strict";
 
-// Standalone authenticated HTTP-proxy checker. It intentionally has no Velora
+// Standalone authenticated HTTP-proxy checker. It intentionally has no Koko
 // imports and no third-party dependencies, so proxy health can be established
 // independently from browser-core behavior.
 

@@ -4,7 +4,7 @@
 
 ## Summary
 
-Headless Velora has no compositor timeline. When Fluent (signup.live.com) swaps a CSS class to run a route fade-out, React only commits the next location in **`onAnimationEnd`**. Without a synthetic **`animationend` / `transitionend`**, the app stayed on the “New email” step after `CheckAvailableSigninNames` returned `isAvailable: true`, even though trusted Next, form fill, Location/`pushState`, and availability API all worked.
+Headless Koko has no compositor timeline. When Fluent (signup.live.com) swaps a CSS class to run a route fade-out, React only commits the next location in **`onAnimationEnd`**. Without a synthetic **`animationend` / `transitionend`**, the app stayed on the “New email” step after `CheckAvailableSigninNames` returned `isAvailable: true`, even though trusted Next, form fill, Location/`pushState`, and availability API all worked.
 
 `Frame.attributeChange` for `class` now queues a short scheduler task that dispatches trusted `animationend` and `transitionend` on the element. Probe: password field mounts after email Next.
 
@@ -12,9 +12,9 @@ Headless Velora has no compositor timeline. When Fluent (signup.live.com) swaps 
 
 ## Problem
 
-Hotmail register automation (`scripts/hotmail-register-velora.mjs --probe-email-step`):
+Hotmail register automation (`scripts/hotmail-register-koko.mjs --probe-email-step`):
 
-1. Email filled; trusted `Velora.clickNode` Next succeeds.
+1. Email filled; trusted `Koko.clickNode` Next succeeds.
 2. `CheckAvailableSigninNames` → **200** + `isAvailable: true`.
 3. UI never showed `input[type=password]`.
 
@@ -42,7 +42,7 @@ flowchart LR
   E --> F[Commit SignUpPasswordCollection]
 ```
 
-In a real browser, the compositor fires `animationend` when the class animation finishes. Velora headless never runs that timeline, so:
+In a real browser, the compositor fires `animationend` when the class animation finishes. Koko headless never runs that timeline, so:
 
 - Class attributes change (mutations/observers fine).
 - No native `animationend` / `transitionend`.
@@ -66,7 +66,7 @@ In a real browser, the compositor fires `animationend` when the class animation 
 Probe (Debug binary, 2026-07-22):
 
 ```text
-[click] Next (email) via Velora.clickNode text="Next"
+[click] Next (email) via Koko.clickNode text="Next"
 [page:response] CheckAvailableSigninNames … 200
 [1/4] password field visible
 Email-step probe passed: Microsoft rendered the password step.
@@ -103,11 +103,11 @@ No compositor; events are synthetic. Good enough for SPAs that only gate on end-
 ## Verify
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build   # Debug for iterate
-node scripts/hotmail-register-velora.mjs \
+node scripts/hotmail-register-koko.mjs \
   --profile chrome-local-huys-macbook-pro \
-  --email "veloratest$(date +%s)@outlook.com" \
+  --email "kokotest$(date +%s)@outlook.com" \
   --probe-email-step --timeout-ms 45000 --trace
 # Expect: Email-step probe passed: Microsoft rendered the password step.
 ```

@@ -25,11 +25,11 @@ fn resolve(allocator: Allocator) ![]const u8 {
         return try allocator.dupe(u8, ".");
     }
 
-    if (std.posix.getenv("VELORA_ROOT")) |env_root| {
+    if (std.posix.getenv("KOKO_ROOT")) |env_root| {
         const abs = try std.fs.cwd().realpathAlloc(allocator, env_root);
         if (browserBundleExists(abs)) return abs;
         allocator.free(abs);
-        log.warn(.app, "browser_root.velora_root_invalid", .{ .path = env_root });
+        log.warn(.app, "browser_root.koko_root_invalid", .{ .path = env_root });
     }
 
     const exe = std.fs.selfExePathAlloc(allocator) catch null;
@@ -45,7 +45,7 @@ fn resolve(allocator: Allocator) ![]const u8 {
         }
         allocator.free(dev_root);
 
-        const share_root = try std.fs.path.join(allocator, &.{ exe_dir, "..", "share", "velora" });
+        const share_root = try std.fs.path.join(allocator, &.{ exe_dir, "..", "share", "koko" });
         if (browserBundleExists(share_root)) {
             const abs = try std.fs.cwd().realpathAlloc(allocator, share_root);
             allocator.free(share_root);
@@ -63,12 +63,12 @@ fn resolve(allocator: Allocator) ![]const u8 {
 
 fn browserBundleExists(root: []const u8) bool {
     var buf: [512]u8 = undefined;
-    const velora_json = std.fmt.bufPrint(
+    const koko_json = std.fmt.bufPrint(
         &buf,
-        "{s}/browser/fingerprints/velora/fingerprint.json",
+        "{s}/browser/fingerprints/koko/fingerprint.json",
         .{root},
     ) catch return false;
-    std.fs.cwd().access(velora_json, .{}) catch return false;
+    std.fs.cwd().access(koko_json, .{}) catch return false;
     return true;
 }
 
@@ -81,7 +81,7 @@ const testing = @import("../../testing/testing.zig");
 test "BrowserRoot: dev layout finds default fingerprint folder" {
     const root = try get(std.testing.allocator);
     var buf: [512]u8 = undefined;
-    const path = try joinPath(std.testing.allocator, root, "browser/fingerprints/velora/fingerprint.json");
+    const path = try joinPath(std.testing.allocator, root, "browser/fingerprints/koko/fingerprint.json");
     defer std.testing.allocator.free(path);
     _ = std.fmt.bufPrint(&buf, "{s}", .{path}) catch unreachable;
     try std.fs.cwd().access(path, .{});

@@ -2,7 +2,7 @@
 
 ## Summary
 
-CreepJS builds a high-entropy **`css`** fingerprint from `getComputedStyle(document.body)` by merging three enumeration channels on `CSSStyleDeclaration`: prototype own-property names, `Object.keys()` strings (camelCase accessors), and shorthand **alias** keys discovered via the `in` operator. Velora now matches Chrome's **1392-key** merged list and correct `interfaceName` (`CSSStyleDeclaration`) on the `chrome-local-huys-macbook-pro` profile.
+CreepJS builds a high-entropy **`css`** fingerprint from `getComputedStyle(document.body)` by merging three enumeration channels on `CSSStyleDeclaration`: prototype own-property names, `Object.keys()` strings (camelCase accessors), and shorthand **alias** keys discovered via the `in` operator. Koko now matches Chrome's **1392-key** merged list and correct `interfaceName` (`CSSStyleDeclaration`) on the `chrome-local-huys-macbook-pro` profile.
 
 The fix split profile data into **indexed dash-case keys** (472), **enumerable camelCase keys** (732), and a full **`in`-allowlist** (1392), then rewired `CSSStyleDeclaration` computed-style paths so CreepJS's `computeStyle` algorithm sees Chrome-identical key count, order, and empty-string semantics for unset shorthand aliases.
 
@@ -14,9 +14,9 @@ For antidetect browsers, the `css` section is easy to underestimate: it is not �
 
 The `css` section failed `computedStyle.keys` with three symptom classes across investigation:
 
-1. **`interfaceName`** — Velora reported `Object` instead of `CSSStyleDeclaration` (fixed earlier via prototype `Symbol.toStringTag`).
+1. **`interfaceName`** — Koko reported `Object` instead of `CSSStyleDeclaration` (fixed earlier via prototype `Symbol.toStringTag`).
 2. **System colors** — `-apple-system-*` and `Canvas` resolved wrong (fixed earlier in `resolveSystemColor`).
-3. **Key count and order** — Velora emitted **1396** keys (four extra `background-repeat-x/y` aliases) and diverged in order after index 15 (`anchor-name` missing from indexed enumeration).
+3. **Key count and order** — Koko emitted **1396** keys (four extra `background-repeat-x/y` aliases) and diverged in order after index 15 (`anchor-name` missing from indexed enumeration).
 
 Section hash stayed red while `lies=0`, indicating **semantic enumeration drift**, not lie-detection trips.
 
@@ -26,7 +26,7 @@ Section hash stayed red while `lies=0`, indicating **semantic enumeration drift*
 
 Chrome's `CSSStyleDeclaration` for computed style exposes properties through **two enumerable channels** that CreepJS merges with alias expansion:
 
-| Channel | Chrome behavior | Velora bug (before fix) |
+| Channel | Chrome behavior | Koko bug (before fix) |
 |---------|-----------------|-------------------------|
 | Indexed `0..length-1` | **472** dash-case properties via `item()` | Stale `computed_style_properties.zig` list (old CreepJS export, no `anchor-name`) |
 | `Object.keys()` strings | **732** camelCase accessors | Returned full 1392 merged baseline or wrong merged list |
@@ -42,12 +42,12 @@ Set([
 ])
 ```
 
-Velora failed because:
+Koko failed because:
 
 - **Indexed enumeration** used a stale hardcoded list instead of Chrome-order 472 dash-case names.
 - **`getNamedKeys`** returned the CreepJS **final merged** array (1392) rather than Chrome's smaller `Object.keys` camelCase set (732).
 - **`getNamed`** returned `NotHandled` for shorthand properties Chrome exposes through `in` with value `""` when unset—e.g. aliases not listed in `Object.keys`.
-- **`background-repeat-x` / `background-repeat-y`** appeared in Velora's fallback map but `background-repeat-x in style` is **`false`** on Chrome—CreepJS only adds aliases that pass `in`.
+- **`background-repeat-x` / `background-repeat-y`** appeared in Koko's fallback map but `background-repeat-x in style` is **`false`** on Chrome—CreepJS only adds aliases that pass `in`.
 
 Additionally, `Window.getComputedStyle` returned a `CSSStyleProperties` wrapper in some paths; CreepJS reads the prototype chain and expects **`CSSStyleDeclaration`**.
 
@@ -58,7 +58,7 @@ Additionally, `Window.getComputedStyle` returned a `CSSStyleProperties` wrapper 
 ### Field compare (canonical)
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build install
 node scripts/cdp-section-field-compare.mjs css
 ```
@@ -85,7 +85,7 @@ A one-off probe (`code-check/tmp/probe-css-objkeys.mjs`) captured:
 | `background-repeat-x in style` | `false` |
 | CreepJS merged output | 1392 keys (= 1204 enumerable + 188 `in`-only aliases) |
 
-Diff analysis showed four Velora-only keys and order divergence at `anchor-name`—the first indexed property present in Chrome 149 but missing from Velora's stale list.
+Diff analysis showed four Koko-only keys and order divergence at `anchor-name`—the first indexed property present in Chrome 149 but missing from Koko's stale list.
 
 ### CreepJS source
 
@@ -93,7 +93,7 @@ In `code-check/sites/creep/creep.js`, `getCSS()` → `computeStyle()` performs t
 
 ### Build cache pitfall
 
-`zig build` may not rebuild `zig-out/bin/velora` when only cached artifacts change. Delete the binary or touch Zig sources before probing; otherwise field compare reports stale behavior.
+`zig build` may not rebuild `zig-out/bin/koko` when only cached artifacts change. Delete the binary or touch Zig sources before probing; otherwise field compare reports stale behavior.
 
 ---
 
@@ -145,7 +145,7 @@ Profile JSON references these via `cssComputedKeys` in `browser/profiles/chrome-
 - CreepJS: `code-check/sites/creep/creep.js` — `getCSS` → `computeStyle`
 - Probe: `scripts/cdp-section-field-compare.mjs css`
 - Section compare: `scripts/cdp-creepjs-section-compare.mjs`
-- Velora: `src/core/webapi/css/CSSStyleDeclaration.zig`, `computed_style_properties.zig`, `ProfileStore.zig`
+- Koko: `src/core/webapi/css/CSSStyleDeclaration.zig`, `computed_style_properties.zig`, `ProfileStore.zig`
 - Profile: `browser/profiles/chrome-local-huys-macbook-pro.json` → `cssComputedKeys`
 
 ---

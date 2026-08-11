@@ -1,0 +1,48 @@
+<!doctype html>
+<meta charset="utf-8">
+<base href="https://creator.example/first/">
+<body>pending</body>
+<script>
+window.testing = {
+  attempts: 0,
+  assertOk() {
+    if (document.body.id === "pass") return true;
+    this.attempts += 1;
+    if (this.attempts > 80) throw new Error(document.body.textContent);
+    return false;
+  },
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+const frame = document.createElement("iframe");
+document.body.appendChild(frame);
+
+setTimeout(() => {
+  try {
+    const childDocument = frame.contentDocument;
+    const before = childDocument.createElement("script");
+    before.src = "//rumcdn.geoedge.be/path/grumi.js";
+
+    document.querySelector("base").href = "https://creator.example/second/";
+    const after = childDocument.createElement("script");
+    after.src = "relative.js";
+
+    const result = {
+      networkPathUsesCreatorScheme:
+        before.src === "https://rumcdn.geoedge.be/path/grumi.js",
+      neverBuildsAboutAuthority: !before.src.startsWith("about://"),
+      laterResolutionUsesSnapshot:
+        after.src === "https://creator.example/first/relative.js",
+      childDocumentUrlPreserved: childDocument.URL === "about:blank",
+    };
+    if (Object.values(result).every(Boolean)) {
+      document.body.id = "pass";
+      document.body.textContent = "pass";
+    } else {
+      document.body.textContent = JSON.stringify(result);
+    }
+  } catch (error) {
+    document.body.textContent = String(error?.stack || error);
+  }
+}, 0);
+</script>

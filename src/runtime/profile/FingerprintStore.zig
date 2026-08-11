@@ -93,14 +93,14 @@ const testing = @import("../../testing/testing.zig");
 
 test "FingerprintStore: explicit source is a folder" {
     const allocator = std.testing.allocator;
-    const base = "/tmp/velora-fingerprint-folder-test";
-    const profile_dir = "/tmp/velora-fingerprint-folder-test/profile";
-    const fingerprint_dir = "/tmp/velora-fingerprint-folder-test/artifact";
+    const base = "/tmp/koko-fingerprint-folder-test";
+    const profile_dir = "/tmp/koko-fingerprint-folder-test/profile";
+    const fingerprint_dir = "/tmp/koko-fingerprint-folder-test/artifact";
     std.fs.cwd().deleteTree(base) catch {};
     defer std.fs.cwd().deleteTree(base) catch {};
     try std.fs.cwd().makePath(fingerprint_dir);
     var file = try std.fs.cwd().createFile(
-        "/tmp/velora-fingerprint-folder-test/artifact/fingerprint.json",
+        "/tmp/koko-fingerprint-folder-test/artifact/fingerprint.json",
         .{},
     );
     file.close();

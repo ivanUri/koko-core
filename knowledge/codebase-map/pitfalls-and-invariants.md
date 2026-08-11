@@ -42,11 +42,11 @@ Panic Zig runtime an toàn khi `@alignCast`/`@ptrCast` phát hiện con trỏ kh
 
 ## 6. Stack trace panic gần như luôn vô dụng — biết trước để không mất thời gian
 
-`build.zig` (~dòng 130) **luôn set `strip = true`** kể cả ở Debug build, vì lý do: *"Zig 0.15.2: LLVM+Debug SIGSEGV in lowerDebugType; native+Debug SIGSEGV in updateLazySymbol. Strip debug info in Debug builds to avoid LLVM debug-type recursion."* — tức là build với debug info đầy đủ khiến CHÍNH TRÌNH BIÊN DỊCH Zig 0.15.2 crash. Hệ quả: `crash_handler.zig` (bộ xử lý panic tuỳ biến của Velora, in ra "Velora has crashed...") sẽ luôn in `Unable to dump stack trace: debug info stripped`.
+`build.zig` (~dòng 130) **luôn set `strip = true`** kể cả ở Debug build, vì lý do: *"Zig 0.15.2: LLVM+Debug SIGSEGV in lowerDebugType; native+Debug SIGSEGV in updateLazySymbol. Strip debug info in Debug builds to avoid LLVM debug-type recursion."* — tức là build với debug info đầy đủ khiến CHÍNH TRÌNH BIÊN DỊCH Zig 0.15.2 crash. Hệ quả: `crash_handler.zig` (bộ xử lý panic tuỳ biến của Koko, in ra "Koko has crashed...") sẽ luôn in `Unable to dump stack trace: debug info stripped`.
 
-**Cách lách**: binary KHÔNG bị strip symbol table hoàn toàn (đã kiểm chứng: `nm zig-out/bin/velora | wc -l` ra ~264,000 symbol) — chỉ thiếu debug line-info. Chạy trực tiếp dưới `lldb`:
+**Cách lách**: binary KHÔNG bị strip symbol table hoàn toàn (đã kiểm chứng: `nm zig-out/bin/koko | wc -l` ra ~264,000 symbol) — chỉ thiếu debug line-info. Chạy trực tiếp dưới `lldb`:
 ```bash
-lldb -b -o "run" -o "thread backtrace all" -o "quit" -- ./zig-out/bin/velora fetch ... <url>
+lldb -b -o "run" -o "thread backtrace all" -o "quit" -- ./zig-out/bin/koko fetch ... <url>
 ```
 sẽ cho tên hàm (không có số dòng chính xác) khi bắt được crash — vẫn hữu ích hơn nhiều so với log mặc định.
 
@@ -81,7 +81,7 @@ Nếu `ms_to_wait` bị ép về 0 liên tục (do `script_pending == true` mãi
 
 ## 8. Đĩa cứng: `.zig-cache/` có thể phình tới 20-24GB — an toàn để xoá
 
-Gặp thật trong session này: build fail với `error: failed to write: NoSpaceLeft` không phải do lỗi code mà do `.zig-cache/` chiếm 24GB trên đĩa gần đầy (335MB trống). `rm -rf .zig-cache` là an toàn (cache biên dịch Zig, tự tạo lại, giống `node_modules`) — build lại sẽ compile lại từ đầu (vài phút, không phải giờ). **KHÔNG xoá `.velora-cache/`** (~9GB, chứa V8 + depot_tools đã bootstrap sẵn) — xoá cái này sẽ buộc tải/build lại V8 rất lâu.
+Gặp thật trong session này: build fail với `error: failed to write: NoSpaceLeft` không phải do lỗi code mà do `.zig-cache/` chiếm 24GB trên đĩa gần đầy (335MB trống). `rm -rf .zig-cache` là an toàn (cache biên dịch Zig, tự tạo lại, giống `node_modules`) — build lại sẽ compile lại từ đầu (vài phút, không phải giờ). **KHÔNG xoá `.koko-cache/`** (~9GB, chứa V8 + depot_tools đã bootstrap sẵn) — xoá cái này sẽ buộc tải/build lại V8 rất lâu.
 
 ## 9. Danh mục bug đã biết trong `knowledge/bugs/` (tra cứu trước khi báo "phát hiện bug mới")
 

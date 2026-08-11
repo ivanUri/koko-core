@@ -80,5 +80,5 @@ fn generateBoundary(allocator: Allocator) ![]const u8 {
     std.crypto.random.bytes(&bytes);
     var hex: [32]u8 = undefined;
     _ = std.fmt.bufPrint(&hex, "{s}", .{std.fmt.bytesToHex(&bytes, .lower)}) catch unreachable;
-    return try std.fmt.allocPrint(allocator, "----veloraboundary{s}", .{hex});
+    return try std.fmt.allocPrint(allocator, "----kokoboundary{s}", .{hex});
 }

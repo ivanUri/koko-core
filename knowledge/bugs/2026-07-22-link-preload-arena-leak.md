@@ -6,7 +6,7 @@
 
 Exporting `https://www.shein.com/` (redirects to `shein.com.vn`) under Debug panics on browser teardown with `ArenaPool leak` / `name = Link.preload` (often a dozen arenas). The page itself hydrates fine for tens of seconds and produces multi‑MB DOM, but process shutdown aborts the export script before a final write. Root cause: `fetchPreloadImage` acquired a scratch arena then **returned early on a duplicate preload URL without `releaseArena`**. The same ownership handoff pattern already used by `HTMLImageElement` was missing.
 
-`site-export-velora.mjs` now also **flushes the best `documentElement.outerHTML` to disk incrementally** while the page grows, so a later CDP drop or teardown panic still leaves a usable dump.
+`site-export-koko.mjs` now also **flushes the best `documentElement.outerHTML` to disk incrementally** while the page grows, so a later CDP drop or teardown panic still leaves a usable dump.
 
 ## Problem
 
@@ -51,7 +51,7 @@ Mirror `Image.load` ownership:
 - Always clear `_preload_loading` and release in `done` / `error` / `shutdown` (even when `!deliverable`).
 - Always dispatch resource `error` events (listeners, not only `onerror` property).
 
-### Tooling — `scripts/site-export-velora.mjs`
+### Tooling — `scripts/site-export-koko.mjs`
 
 - Score snapshots by `htmlLength` + images-with-`src`.
 - When the score improves (or readiness is met), serialize and **`writeFileSync` immediately**.
@@ -61,9 +61,9 @@ Mirror `Image.load` ownership:
 ## Verification
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build
-node scripts/site-export-velora.mjs \
+node scripts/site-export-koko.mjs \
   --url "https://www.shein.com/" \
   --output artifacts/site-export/shein.com.html \
   --timeout-ms 90000 --min-wait-ms 12000 --min-images 5 --scroll

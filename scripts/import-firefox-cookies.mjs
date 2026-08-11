@@ -13,8 +13,8 @@ const source = join(firefoxProfile, "cookies.sqlite");
 if (!existsSync(source)) throw new Error(`Firefox cookies database not found: ${source}`);
 
 // Firefox keeps the database locked while running. Read a temporary snapshot,
-// never mutate the browser's profile and never expose its path to Velora.
-const temp = mkdtempSync(join("/tmp", "velora-firefox-cookie-"));
+// never mutate the browser's profile and never expose its path to Koko.
+const temp = mkdtempSync(join("/tmp", "koko-firefox-cookie-"));
 try {
   const snapshot = join(temp, "cookies.sqlite");
   cpSync(source, snapshot);

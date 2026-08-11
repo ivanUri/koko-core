@@ -26,7 +26,7 @@ const Value = @This();
 local: *const js.Local,
 handle: *const v8.Value,
 
-/// True when `handle` is a Velora host object whose prototype chain includes `T`.
+/// True when `handle` is a Koko host object whose prototype chain includes `T`.
 /// True when `self`'s prototype is the `.prototype` of `global[constructor_name]`.
 pub fn hasGlobalConstructorPrototype(self: Value, constructor_name: []const u8) bool {
     if (!self.isObject()) return false;

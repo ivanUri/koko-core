@@ -1,13 +1,13 @@
 # MessagePort delivery broke React 18 MessageChannel scheduling (FP playground CSR)
 
-> **Audience:** Velora engineers debugging silent SPA/CSR hangs (Next App Router, Fingerprint playground).  
+> **Audience:** Koko engineers debugging silent SPA/CSR hangs (Next App Router, Fingerprint playground).  
 > **Sites:** `demo.fingerprint.com/playground` (and any React 18+ app using `MessageChannel` as host scheduler).
 
 ## Summary
 
-Chrome reaches **Your Visitor ID** on the Fingerprint playground in ~5s. Velora stayed on the BAILOUT shell (`bodyLen≈248`, no agent `/web/v4` or identify POST).
+Chrome reaches **Your Visitor ID** on the Fingerprint playground in ~5s. Koko stayed on the BAILOUT shell (`bodyLen≈248`, no agent `/web/v4` or identify POST).
 
-A/B network showed Chrome completes agent pipeline (`web/v4` → `/e?` → identify POST → `/api/event`); Velora never requested agent URLs.
+A/B network showed Chrome completes agent pipeline (`web/v4` → `/e?` → identify POST → `/api/event`); Koko never requested agent URLs.
 
 Root cause in the engine (not agent-specific): **`MessagePort` async delivery re-applied sync reentrancy gates and failed to drain chained `postMessage` tasks**, so React 18’s host scheduler could not run. Local fixtures proved MessageChannel callbacks never fired; Chrome did.
 
@@ -15,7 +15,7 @@ Fixes in `MessagePort.zig` restore React-style chains (`work1…work8`). **Visit
 
 ## Problem
 
-| Check | Chrome | Velora (before) |
+| Check | Chrome | Koko (before) |
 |-------|--------|-----------------|
 | Your Visitor ID | yes (~5s) | no |
 | Agent `…/web/v4/…?ci=jsl` | 200 | never requested |

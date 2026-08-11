@@ -2,7 +2,7 @@
 
 ## Summary
 
-CreepJS runs many CSS probes inside a **nested phantom `<iframe>`** but calls unqualified **`getComputedStyle(body)`** from the **main window** realm. Velora routed style operations through the **caller's** `Frame` instead of the **element owner's** `Frame`, so custom properties and stylesheets landed on the parent document while reads targeted the iframe `body`. Fixing **`Node.ownerFrame()`** usage across `innerHTML`, `<style>` sheet registration, and `getComputedStyle` was required for correct `cssMedia` parity—even after custom-property tokenization was fixed.
+CreepJS runs many CSS probes inside a **nested phantom `<iframe>`** but calls unqualified **`getComputedStyle(body)`** from the **main window** realm. Koko routed style operations through the **caller's** `Frame` instead of the **element owner's** `Frame`, so custom properties and stylesheets landed on the parent document while reads targeted the iframe `body`. Fixing **`Node.ownerFrame()`** usage across `innerHTML`, `<style>` sheet registration, and `getComputedStyle` was required for correct `cssMedia` parity—even after custom-property tokenization was fixed.
 
 **Caller frame ≠ owner frame** is a recurring antidetect bug pattern: fingerprint scripts and ad iframes intentionally use globals and cross-document DOM writes. Engines must resolve the element's document internally, as Chrome does.
 
@@ -31,7 +31,7 @@ Symptoms before the full fix set:
 
 In the Web platform, a `Node` belongs to a `Document`, which belongs to a browsing context (`Frame`). Operations that mutate or query **tree-local state** (stylesheets, custom properties, layout caches) must use that document's frame.
 
-Velora had call sites using the `Frame` from the **currently executing JavaScript context**:
+Koko had call sites using the `Frame` from the **currently executing JavaScript context**:
 
 | Operation | Wrong frame used | Effect |
 |-----------|------------------|--------|
@@ -55,7 +55,7 @@ Traced in `code-check/sites/creep/creep.js`:
 2. `getCSSMedia()` sets `body.innerHTML` with `@media` rules on iframe document
 3. Calls bare `getComputedStyle(body)` — **not** `win.getComputedStyle(body)`
 
-Chrome resolves the element's document internally per [HTML `getComputedStyle(elt)`](https://html.spec.whatwg.org/#dom-window-getcomputedstyle). Velora required explicit **`ownerFrame`**.
+Chrome resolves the element's document internally per [HTML `getComputedStyle(elt)`](https://html.spec.whatwg.org/#dom-window-getcomputedstyle). Koko required explicit **`ownerFrame`**.
 
 ### Frame linkage
 
@@ -64,7 +64,7 @@ Confirmed `document._frame` set in `Frame.init` for iframe `about:blank` documen
 ### Probes
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 node scripts/cdp-section-field-compare.mjs cssMedia
 node scripts/cdp-creepjs-section-compare.mjs \
   --profile chrome-local-huys-macbook-pro \
@@ -111,9 +111,9 @@ Always parse raw `<style>` text for `@media` blocks when CreepJS injects at-rule
 
 Together with dashed-ident tokenization (`knowledge/bugs/2026-06-29-css-dashed-ident-tokenizer.md`), iframe phantom probes match Chrome. Documented outcome: [CreepJS cssMedia parity](../../fingerprint/css-media/creepjs-cssmedia-parity.md).
 
-### Chrome vs Velora mental model
+### Chrome vs Koko mental model
 
-In Chromium, `getComputedStyle(element)` is implemented in C++ with direct access to the element's `Document` and `ComputedStyle`. The incumbent JavaScript `Window` is not consulted for style storage lookup. Velora's explicit `ownerFrame` parameter recreates that invariant in a multi-frame Zig runtime where `StyleManager` is per-`Frame`, not global.
+In Chromium, `getComputedStyle(element)` is implemented in C++ with direct access to the element's `Document` and `ComputedStyle`. The incumbent JavaScript `Window` is not consulted for style storage lookup. Koko's explicit `ownerFrame` parameter recreates that invariant in a multi-frame Zig runtime where `StyleManager` is per-`Frame`, not global.
 
 Without `ownerFrame`, symptoms can look like “CSS parser bugs” or “custom properties unsupported” because reads hit an empty `custom_props` map on the parent document's `body`—while writes appeared to succeed when inspected via the wrong frame's DevTools view.
 
@@ -128,7 +128,7 @@ Any DOM service keyed by document should default to owner frame, not caller:
 | `matchMedia` tied to viewport | Less common cross-frame, but iframe `screen` matters for CreepJS |
 | `getSelection()` | Wrong document selection |
 
-Velora fixed the style-critical path first because CreepJS `cssMedia` failed loudly; layout parity sections may need the same audit over time.
+Koko fixed the style-critical path first because CreepJS `cssMedia` failed loudly; layout parity sections may need the same audit over time.
 
 ### reCAPTCHA and enterprise scripts
 
@@ -151,7 +151,7 @@ Cross-frame DOM is not unique to CreepJS. reCAPTCHA injects into nested iframes 
 - [HTML — `getComputedStyle(elt)`](https://html.spec.whatwg.org/#dom-window-getcomputedstyle)
 - [DOM — node document](https://dom.spec.whatwg.org/#concept-node-document)
 - CreepJS: `getPhantomIframe`, `getBehemothIframe`, `getCSSMedia()` in `code-check/sites/creep/creep.js`
-- Velora: `src/core/dom/Node.zig` (`ownerFrame`), `Element.zig`, `CSSStyleDeclaration.zig`, `Style.zig`
+- Koko: `src/core/dom/Node.zig` (`ownerFrame`), `Element.zig`, `CSSStyleDeclaration.zig`, `Style.zig`
 - Probes: `scripts/cdp-section-field-compare.mjs cssMedia`, `scripts/cdp-creepjs-section-compare.mjs`
 
 ---

@@ -1,7 +1,7 @@
 # DOM-stable navigation wait
 
 `wait_until=domstable` is a snapshot policy, not a new rendering phase.
-Velora continues parsing, executing JavaScript, and updating DOM/layout
+Koko continues parsing, executing JavaScript, and updating DOM/layout
 progressively as before.
 
 ## Invariant

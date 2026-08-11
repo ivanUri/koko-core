@@ -1,7 +1,7 @@
-# 100 common URLs for Lightpanda vs Velora compare
+# 100 common URLs for Lightpanda vs Koko compare
 # Lines starting with # are ignored. One URL per line.
 https://www.google.com/
-https://www.google.com/search?q=velora
+https://www.google.com/search?q=koko
 https://www.bing.com/
 https://duckduckgo.com/
 https://www.wikipedia.org/

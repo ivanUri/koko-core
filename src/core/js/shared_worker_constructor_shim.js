@@ -1,7 +1,7 @@
 (function () {
   const Native = SharedWorker;
-  const constructEnter = globalThis.__veloraWorkerConstructEnter;
-  const constructExit = globalThis.__veloraWorkerConstructExit;
+  const constructEnter = globalThis.__kokoWorkerConstructEnter;
+  const constructExit = globalThis.__kokoWorkerConstructExit;
   function workerBase() {
     try {
       return globalThis.location && globalThis.location.href;

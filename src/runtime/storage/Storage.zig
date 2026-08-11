@@ -16,7 +16,8 @@ const std = @import("std");
 const log = @import("../../support/log.zig");
 const Config = @import("../Config.zig");
 const Blackhole = @import("Blackhole.zig");
-const Sqlite = @import("sqlite/Sqlite.zig");
+const SqliteStore = @import("sqlite/Store.zig");
+pub const model = @import("Command.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -29,13 +30,13 @@ pub const EngineType = enum {
 
 const Engine = union(EngineType) {
     none: Blackhole,
-    sqlite: Sqlite,
+    sqlite: *SqliteStore,
 };
 
 engine: Engine,
 
 pub fn init(allocator: Allocator, config: *const Config) !Storage {
-    const engine_type = config.storageEngine() orelse .none;
+    const engine_type = config.storageEngine() orelse .sqlite;
     const engine = initEngine(allocator, engine_type, config) catch |err| {
         log.fatal(.storage, "storage setup", .{ .engine = engine_type, .err = err });
         return err;
@@ -50,14 +51,96 @@ fn initEngine(allocator: Allocator, engine_type: EngineType, config: *const Conf
     switch (engine_type) {
         .none => return .{ .none = Blackhole{} },
         .sqlite => {
-            const sqlite_path = config.storageSqlitePath();
-            return .{ .sqlite = try Sqlite.init(allocator, sqlite_path) };
+            if (config.storageSqlitePath()) |sqlite_path| {
+                return .{ .sqlite = try SqliteStore.create(allocator, sqlite_path, config.activeProfileDir()) };
+            }
+            const sqlite_path = try std.fmt.allocPrintSentinel(allocator, "{s}/Storage.sqlite", .{config.activeProfileDir()}, 0);
+            defer allocator.free(sqlite_path);
+            return .{ .sqlite = try SqliteStore.create(allocator, sqlite_path, config.activeProfileDir()) };
         },
     }
 }
 
 pub fn deinit(self: *Storage, allocator: Allocator) void {
     switch (self.engine) {
-        inline else => |*engine| engine.deinit(allocator),
+        .none => |*engine| engine.deinit(allocator),
+        .sqlite => |engine| engine.destroy(),
+    }
+}
+
+pub fn usesSqlite(self: *const Storage) bool {
+    return switch (self.engine) {
+        .sqlite => true,
+        .none => false,
+    };
+}
+
+pub fn hasProfile(self: *Storage) !bool {
+    return switch (self.engine) {
+        .none => false,
+        .sqlite => |engine| engine.hasProfile(),
+    };
+}
+
+pub fn loadLocal(self: *Storage, allocator: Allocator) ![]model.StoredLocal {
+    return switch (self.engine) {
+        .none => try allocator.alloc(model.StoredLocal, 0),
+        .sqlite => |engine| engine.loadLocal(allocator),
+    };
+}
+
+pub fn loadCookies(self: *Storage, allocator: Allocator) ![]model.StoredCookie {
+    return switch (self.engine) {
+        .none => try allocator.alloc(model.StoredCookie, 0),
+        .sqlite => |engine| engine.loadCookies(allocator),
+    };
+}
+
+pub fn localSet(self: *Storage, origin: []const u8, key: []const u8, value: []const u8) !void {
+    switch (self.engine) {
+        .none => {},
+        .sqlite => |engine| try engine.localSet(origin, key, value),
+    }
+}
+
+pub fn localRemove(self: *Storage, origin: []const u8, key: []const u8) !void {
+    switch (self.engine) {
+        .none => {},
+        .sqlite => |engine| try engine.localRemove(origin, key),
+    }
+}
+
+pub fn localClear(self: *Storage, origin: []const u8) !void {
+    switch (self.engine) {
+        .none => {},
+        .sqlite => |engine| try engine.localClear(origin),
+    }
+}
+
+pub fn cookieUpsert(self: *Storage, cookie: anytype) !void {
+    switch (self.engine) {
+        .none => {},
+        .sqlite => |engine| try engine.cookieUpsert(cookie),
+    }
+}
+
+pub fn cookieDelete(self: *Storage, cookie: anytype) !void {
+    switch (self.engine) {
+        .none => {},
+        .sqlite => |engine| try engine.cookieDelete(cookie),
+    }
+}
+
+pub fn cookieClear(self: *Storage) !void {
+    switch (self.engine) {
+        .none => {},
+        .sqlite => |engine| try engine.cookieClear(),
+    }
+}
+
+pub fn flush(self: *Storage) !void {
+    switch (self.engine) {
+        .none => {},
+        .sqlite => |engine| try engine.flush(),
     }
 }

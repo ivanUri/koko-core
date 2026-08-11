@@ -59,7 +59,7 @@ pub fn asNode(self: *Svg) *Node {
 // SVGGraphicsElement / SVGTextContentElement geometry surface
 // ---------------------------------------------------------------------------
 //
-// Velora is headless and does not perform SVG layout, so geometry queries
+// Koko is headless and does not perform SVG layout, so geometry queries
 // return heuristic estimates based on text content and character counting.
 // This provides deterministic values for fingerprinting and basic layout code
 // without requiring a full SVG rendering engine.

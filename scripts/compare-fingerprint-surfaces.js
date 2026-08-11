@@ -31,35 +31,35 @@ function firstArrayDifference(left, right) {
   const count = Math.max(left?.length || 0, right?.length || 0);
   for (let index = 0; index < count; index += 1) {
     if (!equal(left?.[index], right?.[index])) {
-      return { index, chrome: left?.[index], velora: right?.[index] };
+      return { index, chrome: left?.[index], koko: right?.[index] };
     }
   }
   return null;
 }
 
-function compare(chrome, velora) {
+function compare(chrome, koko) {
   const canvasChrome = chrome.asset("canvas-probe");
-  const canvasVelora = velora.asset("canvas-probe");
+  const canvasKoko = koko.asset("canvas-probe");
   const fontsChrome = chrome.asset("fonts") || [];
-  const fontsVelora = velora.asset("fonts") || [];
+  const fontsKoko = koko.asset("fonts") || [];
   const measureChrome = chrome.asset("measuretext");
-  const measureVelora = velora.asset("measuretext");
+  const measureKoko = koko.asset("measuretext");
   const audioChrome = chrome.asset("audio-probe");
-  const audioVelora = velora.asset("audio-probe");
+  const audioKoko = koko.asset("audio-probe");
   const webglChrome = chrome.asset("webgl-probe");
-  const webglVelora = velora.asset("webgl-probe");
+  const webglKoko = koko.asset("webgl-probe");
   const windowChrome = chrome.asset("window-keys") || [];
-  const windowVelora = velora.asset("window-keys") || [];
+  const windowKoko = koko.asset("window-keys") || [];
   const navigatorChrome = chrome.asset("navigator-keys") || [];
-  const navigatorVelora = velora.asset("navigator-keys") || [];
+  const navigatorKoko = koko.asset("navigator-keys") || [];
   const htmlChrome = chrome.asset("html-element-keys");
-  const htmlVelora = velora.asset("html-element-keys");
+  const htmlKoko = koko.asset("html-element-keys");
   const cssChrome = chrome.asset("css-computed-keys");
-  const cssVelora = velora.asset("css-computed-keys");
+  const cssKoko = koko.asset("css-computed-keys");
   const webgl2Chrome = chrome.definition._future?.webgl2 || null;
-  const webgl2Velora = velora.definition._future?.webgl2 || null;
+  const webgl2Koko = koko.definition._future?.webgl2 || null;
   const webgpuChrome = chrome.definition._future?.webgpu || null;
-  const webgpuVelora = velora.definition._future?.webgpu || null;
+  const webgpuKoko = koko.definition._future?.webgpu || null;
 
   const webgl2Parameters = [
     "maxColorAttachments",
@@ -77,83 +77,83 @@ function compare(chrome, velora) {
       id: chrome.definition.id,
       capturedFrom: chrome.definition.capturedFrom,
     },
-    velora: {
-      id: velora.definition.id,
-      capturedFrom: velora.definition.capturedFrom,
+    koko: {
+      id: koko.definition.id,
+      capturedFrom: koko.definition.capturedFrom,
     },
     canvas: {
-      exact: equal(canvasChrome, canvasVelora),
+      exact: equal(canvasChrome, canvasKoko),
       chromeDataUrlLengths: canvasChrome?.map((entry) => entry.dataUrl.length) || [],
-      veloraDataUrlLengths: canvasVelora?.map((entry) => entry.dataUrl.length) || [],
-      firstDifference: firstArrayDifference(canvasChrome, canvasVelora),
+      kokoDataUrlLengths: canvasKoko?.map((entry) => entry.dataUrl.length) || [],
+      firstDifference: firstArrayDifference(canvasChrome, canvasKoko),
     },
     fonts: {
-      exact: equal(fontsChrome, fontsVelora),
+      exact: equal(fontsChrome, fontsKoko),
       chromeCount: fontsChrome.length,
-      veloraCount: fontsVelora.length,
-      sharedCount: fontsChrome.length - setDifference(fontsChrome, fontsVelora).length,
-      chromeOnlyCount: setDifference(fontsChrome, fontsVelora).length,
-      veloraOnlyCount: setDifference(fontsVelora, fontsChrome).length,
-      chromeOnlySample: setDifference(fontsChrome, fontsVelora).slice(0, 30),
-      veloraOnlySample: setDifference(fontsVelora, fontsChrome).slice(0, 30),
+      kokoCount: fontsKoko.length,
+      sharedCount: fontsChrome.length - setDifference(fontsChrome, fontsKoko).length,
+      chromeOnlyCount: setDifference(fontsChrome, fontsKoko).length,
+      kokoOnlyCount: setDifference(fontsKoko, fontsChrome).length,
+      chromeOnlySample: setDifference(fontsChrome, fontsKoko).slice(0, 30),
+      kokoOnlySample: setDifference(fontsKoko, fontsChrome).slice(0, 30),
     },
     measureText: {
-      exact: equal(measureChrome, measureVelora),
+      exact: equal(measureChrome, measureKoko),
       chromeCount: measureChrome?.length || 0,
-      veloraCount: measureVelora?.length || 0,
-      firstDifference: firstArrayDifference(measureChrome, measureVelora),
+      kokoCount: measureKoko?.length || 0,
+      firstDifference: firstArrayDifference(measureChrome, measureKoko),
     },
     webgl1: {
-      exact: equal(webglChrome, webglVelora),
+      exact: equal(webglChrome, webglKoko),
     },
     webgl2: {
-      exact: equal(webgl2Chrome, webgl2Velora),
+      exact: equal(webgl2Chrome, webgl2Koko),
       parameterDifferences: webgl2Parameters
-        .filter((key) => webgl2Chrome?.[key] !== webgl2Velora?.[key])
-        .map((key) => ({ key, chrome: webgl2Chrome?.[key], velora: webgl2Velora?.[key] })),
-      extensionsExact: equal(webgl2Chrome?.extensions, webgl2Velora?.extensions),
+        .filter((key) => webgl2Chrome?.[key] !== webgl2Koko?.[key])
+        .map((key) => ({ key, chrome: webgl2Chrome?.[key], koko: webgl2Koko?.[key] })),
+      extensionsExact: equal(webgl2Chrome?.extensions, webgl2Koko?.extensions),
     },
     webgpu: {
-      exact: equal(webgpuChrome, webgpuVelora),
+      exact: equal(webgpuChrome, webgpuKoko),
       chromeAvailable: webgpuChrome?.available ?? false,
-      veloraAvailable: webgpuVelora?.available ?? false,
+      kokoAvailable: webgpuKoko?.available ?? false,
       chromeFeatureCount: webgpuChrome?.features?.length || 0,
-      veloraFeatureCount: webgpuVelora?.features?.length || 0,
+      kokoFeatureCount: webgpuKoko?.features?.length || 0,
     },
     audio: {
-      exact: equal(audioChrome, audioVelora),
+      exact: equal(audioChrome, audioKoko),
       chromeError: audioChrome?.error || null,
-      veloraError: audioVelora?.error || null,
+      kokoError: audioKoko?.error || null,
       chromeSampleCount: audioChrome?.samples?.length || 0,
-      veloraSampleCount: audioVelora?.samples?.length || 0,
+      kokoSampleCount: audioKoko?.samples?.length || 0,
     },
     apiShape: {
       window: {
-        exact: equal(windowChrome, windowVelora),
+        exact: equal(windowChrome, windowKoko),
         chromeCount: windowChrome.length,
-        veloraCount: windowVelora.length,
+        kokoCount: windowKoko.length,
       },
       navigator: {
-        exact: equal(navigatorChrome, navigatorVelora),
+        exact: equal(navigatorChrome, navigatorKoko),
         chromeCount: navigatorChrome.length,
-        veloraCount: navigatorVelora.length,
+        kokoCount: navigatorKoko.length,
       },
       htmlElement: {
-        exact: equal(htmlChrome, htmlVelora),
+        exact: equal(htmlChrome, htmlKoko),
         chromeCount: htmlChrome?.length || 0,
-        veloraCount: htmlVelora?.length || 0,
-        veloraCaptured: htmlVelora !== null,
+        kokoCount: htmlKoko?.length || 0,
+        kokoCaptured: htmlKoko !== null,
       },
       cssComputed: {
-        exact: equal(cssChrome, cssVelora),
+        exact: equal(cssChrome, cssKoko),
         chromeCount: cssChrome?.length || 0,
-        veloraCount: cssVelora?.length || 0,
-        veloraCaptured: cssVelora !== null,
+        kokoCount: cssKoko?.length || 0,
+        kokoCaptured: cssKoko !== null,
       },
     },
     stableReplay: {
-      mathsExact: equal(chrome.asset("maths-baseline"), velora.asset("maths-baseline")),
-      voicesExact: equal(chrome.asset("voices"), velora.asset("voices")),
+      mathsExact: equal(chrome.asset("maths-baseline"), koko.asset("maths-baseline")),
+      voicesExact: equal(chrome.asset("voices"), koko.asset("voices")),
     },
   };
 }
@@ -161,24 +161,24 @@ function compare(chrome, velora) {
 function markdown(report) {
   const status = (value) => value ? "PASS" : "FAIL";
   return [
-    "# Chrome / Velora fingerprint surface comparison",
+    "# Chrome / Koko fingerprint surface comparison",
     "",
     `Chrome: \`${report.chrome.id}\` from \`${report.chrome.capturedFrom}\`  `,
-    `Velora: \`${report.velora.id}\` from \`${report.velora.capturedFrom}\``,
+    `Koko: \`${report.koko.id}\` from \`${report.koko.capturedFrom}\``,
     "",
     "| Surface | Result | Evidence |",
     "|---|---:|---|",
-    `| Canvas | ${status(report.canvas.exact)} | data URL lengths Chrome ${report.canvas.chromeDataUrlLengths.join(", ")}; Velora ${report.canvas.veloraDataUrlLengths.join(", ")} |`,
-    `| Fonts | ${status(report.fonts.exact)} | Chrome ${report.fonts.chromeCount}; Velora ${report.fonts.veloraCount}; shared ${report.fonts.sharedCount} |`,
+    `| Canvas | ${status(report.canvas.exact)} | data URL lengths Chrome ${report.canvas.chromeDataUrlLengths.join(", ")}; Koko ${report.canvas.kokoDataUrlLengths.join(", ")} |`,
+    `| Fonts | ${status(report.fonts.exact)} | Chrome ${report.fonts.chromeCount}; Koko ${report.fonts.kokoCount}; shared ${report.fonts.sharedCount} |`,
     `| measureText | ${status(report.measureText.exact)} | ${report.measureText.chromeCount} entries |`,
     `| WebGL 1 | ${status(report.webgl1.exact)} | Full probe equality |`,
     `| WebGL 2 | ${status(report.webgl2.exact)} | ${report.webgl2.parameterDifferences.length} parameter differences; extensions ${report.webgl2.extensionsExact ? "match" : "differ"} |`,
-    `| WebGPU | ${status(report.webgpu.exact)} | available Chrome ${report.webgpu.chromeAvailable}; Velora ${report.webgpu.veloraAvailable} |`,
-    `| Offline Audio | ${status(report.audio.exact)} | Chrome samples ${report.audio.chromeSampleCount}; Velora samples ${report.audio.veloraSampleCount}; Velora error: ${report.audio.veloraError || "none"} |`,
-    `| Window keys | ${status(report.apiShape.window.exact)} | Chrome ${report.apiShape.window.chromeCount}; Velora ${report.apiShape.window.veloraCount} |`,
-    `| Navigator keys | ${status(report.apiShape.navigator.exact)} | Chrome ${report.apiShape.navigator.chromeCount}; Velora ${report.apiShape.navigator.veloraCount} |`,
-    `| HTMLElement keys | ${status(report.apiShape.htmlElement.exact)} | Chrome ${report.apiShape.htmlElement.chromeCount}; Velora ${report.apiShape.htmlElement.veloraCount} |`,
-    `| CSS computed keys | ${status(report.apiShape.cssComputed.exact)} | Chrome ${report.apiShape.cssComputed.chromeCount}; Velora ${report.apiShape.cssComputed.veloraCount} |`,
+    `| WebGPU | ${status(report.webgpu.exact)} | available Chrome ${report.webgpu.chromeAvailable}; Koko ${report.webgpu.kokoAvailable} |`,
+    `| Offline Audio | ${status(report.audio.exact)} | Chrome samples ${report.audio.chromeSampleCount}; Koko samples ${report.audio.kokoSampleCount}; Koko error: ${report.audio.kokoError || "none"} |`,
+    `| Window keys | ${status(report.apiShape.window.exact)} | Chrome ${report.apiShape.window.chromeCount}; Koko ${report.apiShape.window.kokoCount} |`,
+    `| Navigator keys | ${status(report.apiShape.navigator.exact)} | Chrome ${report.apiShape.navigator.chromeCount}; Koko ${report.apiShape.navigator.kokoCount} |`,
+    `| HTMLElement keys | ${status(report.apiShape.htmlElement.exact)} | Chrome ${report.apiShape.htmlElement.chromeCount}; Koko ${report.apiShape.htmlElement.kokoCount} |`,
+    `| CSS computed keys | ${status(report.apiShape.cssComputed.exact)} | Chrome ${report.apiShape.cssComputed.chromeCount}; Koko ${report.apiShape.cssComputed.kokoCount} |`,
     `| Math baseline | ${status(report.stableReplay.mathsExact)} | Full equality |`,
     `| Speech voices | ${status(report.stableReplay.voicesExact)} | Full equality |`,
     "",
@@ -186,11 +186,11 @@ function markdown(report) {
 }
 
 function main() {
-  const [chromeDirectory, veloraDirectory, outputDirectory] = process.argv.slice(2);
-  if (!chromeDirectory || !veloraDirectory || !outputDirectory) {
-    throw new Error("usage: compare-fingerprint-surfaces.js <chrome-dir> <velora-dir> <output-dir>");
+  const [chromeDirectory, kokoDirectory, outputDirectory] = process.argv.slice(2);
+  if (!chromeDirectory || !kokoDirectory || !outputDirectory) {
+    throw new Error("usage: compare-fingerprint-surfaces.js <chrome-dir> <koko-dir> <output-dir>");
   }
-  const result = compare(profile(path.resolve(chromeDirectory)), profile(path.resolve(veloraDirectory)));
+  const result = compare(profile(path.resolve(chromeDirectory)), profile(path.resolve(kokoDirectory)));
   const out = path.resolve(outputDirectory);
   fs.mkdirSync(out, { recursive: true });
   fs.writeFileSync(path.join(out, "surface-comparison.json"), `${JSON.stringify(result, null, 2)}\n`);

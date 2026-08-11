@@ -5,7 +5,7 @@ const NativeCanvas = @import("NativeCanvas.zig");
 
 pub const ProbeId = enum {
     none,
-    canvas_240_velora,
+    canvas_240_koko,
     canvas_50_text,
     canvas_50_emoji,
     canvas_75_data,
@@ -27,7 +27,7 @@ pub const ProbeState = struct {
 
     pub fn recordDimensions(self: *ProbeState, width: u32, height: u32) void {
         if (width == 240 and height == 60) {
-            self.active = .canvas_240_velora;
+            self.active = .canvas_240_koko;
             self.low_entropy_ready = false;
             return;
         }
@@ -55,14 +55,14 @@ pub const ProbeState = struct {
         x: f64,
         y: f64,
     ) void {
-        if (width == 240 and height == 60 and std.mem.eql(u8, text, "velora") and x == 2 and y == 2) {
+        if (width == 240 and height == 60 and std.mem.eql(u8, text, "koko") and x == 2 and y == 2) {
             const parsed = NativeCanvas.parseFont(font);
             if (parsed.size == 14 and fontFamilyMatchesArial(parsed.family)) {
-                self.active = .canvas_240_velora;
+                self.active = .canvas_240_koko;
             }
             return;
         }
-        if (width == 50 and height == 50 and std.mem.eql(u8, text, "velora") and x == 2 and y == 2) {
+        if (width == 50 and height == 50 and std.mem.eql(u8, text, "koko") and x == 2 and y == 2) {
             const parsed = NativeCanvas.parseFont(font);
             if (parsed.size == 14 and fontFamilyMatchesArial(parsed.family)) {
                 self.active = .canvas_50_text;

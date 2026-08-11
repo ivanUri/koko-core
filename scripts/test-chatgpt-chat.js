@@ -3,7 +3,7 @@
 
 const CDP_URL = "ws://127.0.0.1:9223/";
 const TARGET_URL = "https://chatgpt.com/";
-const MESSAGE = "Xin chào, hãy trả lời ngắn gọn: Velora chat test thành công.";
+const MESSAGE = "Xin chào, hãy trả lời ngắn gọn: Koko chat test thành công.";
 
 const ws = new WebSocket(CDP_URL);
 let nextId = 1;

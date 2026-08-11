@@ -14,10 +14,10 @@ pub fn isDisabled() bool {
         return true;
     }
 
-    return std.process.hasEnvVarConstant("VELORA_DISABLE_TELEMETRY");
+    return std.process.hasEnvVarConstant("KOKO_DISABLE_TELEMETRY");
 }
 
-pub const Telemetry = TelemetryT(@import("velora.zig"));
+pub const Telemetry = TelemetryT(@import("koko.zig"));
 
 fn TelemetryT(comptime P: type) type {
     return struct {
@@ -120,11 +120,11 @@ extern fn unsetenv(name: [*:0]u8) c_int;
 const testing = @import("../../testing/testing.zig");
 test "telemetry: always disabled in debug builds" {
     // Must be disabled regardless of environment variable.
-    _ = unsetenv(@constCast("VELORA_DISABLE_TELEMETRY"));
+    _ = unsetenv(@constCast("KOKO_DISABLE_TELEMETRY"));
     try testing.expectEqual(true, isDisabled());
 
-    _ = setenv(@constCast("VELORA_DISABLE_TELEMETRY"), @constCast(""), 0);
-    defer _ = unsetenv(@constCast("VELORA_DISABLE_TELEMETRY"));
+    _ = setenv(@constCast("KOKO_DISABLE_TELEMETRY"), @constCast(""), 0);
+    defer _ = unsetenv(@constCast("KOKO_DISABLE_TELEMETRY"));
     try testing.expectEqual(true, isDisabled());
 
     const FailingProvider = struct {

@@ -36,7 +36,7 @@ Debug also used `unreachable` when html5ever re-appended a node that already had
 ## Verification
 
 ```
-google.com/search?q=velora → bing.com  (no crash, DCL)
+google.com/search?q=koko → bing.com  (no crash, DCL)
 google → search → bing → ddg → wikipedia  (sequential same process)
 ```
 

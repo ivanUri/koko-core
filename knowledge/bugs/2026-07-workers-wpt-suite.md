@@ -29,7 +29,7 @@ Worker WPT coverage required fixes across **constructor shims**, **global exposu
 
 ## Root Cause
 
-Workers combine **new JS realms**, **separate network clients**, and **CDP session attribution**. Bugs clustered where Velora reused page-frame assumptions (cookies, incumbent settings, TAO pointers) inside worker contexts.
+Workers combine **new JS realms**, **separate network clients**, and **CDP session attribution**. Bugs clustered where Koko reused page-frame assumptions (cookies, incumbent settings, TAO pointers) inside worker contexts.
 
 ## Solution highlights
 

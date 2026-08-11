@@ -63,7 +63,7 @@ pub const Plugin = struct {
         // A diagnostic override remains available for capture comparison.
         // Production behavior is derived from the current persona UA and its
         // platform-specific key; it never selects a frozen browser capture.
-        const validation = if (std.posix.getenv("VELORA_X_BROWSER_VALIDATION")) |override|
+        const validation = if (std.posix.getenv("KOKO_X_BROWSER_VALIDATION")) |override|
             try allocator.dupeZ(u8, override)
         else
             try validationToken(allocator, &self.config, user_agent);
@@ -103,8 +103,8 @@ pub const Plugin = struct {
 
         // X-Client-Data: Chromium ClientVariations formula (never a frozen base64).
         // Priority:
-        // 1) VELORA_X_CLIENT_DATA — full base64 override for A/B only
-        // 2) VELORA_VARIATION_IDS — comma-separated study IDs → encodeBase64
+        // 1) KOKO_X_CLIENT_DATA — full base64 override for A/B only
+        // 2) KOKO_VARIATION_IDS — comma-separated study IDs → encodeBase64
         // 3) session entropy → one google-web variation_id → encodeBase64
         // Empty encode → omit header (Chromium when total_id_count == 0).
         try appendClientDataHeader(headers, allocator, fingerprint_seed);
@@ -116,7 +116,7 @@ fn appendClientDataHeader(
     allocator: Allocator,
     fingerprint_seed: u64,
 ) !void {
-    if (std.posix.getenv("VELORA_X_CLIENT_DATA")) |override| {
+    if (std.posix.getenv("KOKO_X_CLIENT_DATA")) |override| {
         if (override.len == 0) return;
         const xcd_hdr = try std.fmt.allocPrintSentinel(
             allocator,
@@ -129,7 +129,7 @@ fn appendClientDataHeader(
     }
 
     const b64 = blk: {
-        if (std.posix.getenv("VELORA_VARIATION_IDS")) |csv| {
+        if (std.posix.getenv("KOKO_VARIATION_IDS")) |csv| {
             const ids = try ClientVariations.parseIdList(allocator, csv);
             defer allocator.free(ids);
             break :blk try ClientVariations.encodeBase64(allocator, ids, &[_]i32{});

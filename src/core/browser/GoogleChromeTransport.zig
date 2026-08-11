@@ -119,12 +119,12 @@ pub const AsyncJob = struct {
     fn spawnChild(self: *AsyncJob) !void {
         const script = scriptPath() orelse return error.ChromeTransportScriptNotFound;
         var child = std.process.Child.init(&.{ "node", script }, self.arena);
-        if (std.posix.getenv("VELORA_ROOT")) |root| {
+        if (std.posix.getenv("KOKO_ROOT")) |root| {
             child.cwd = root;
         }
         var env_map = try std.process.getEnvMap(self.arena);
-        if (env_map.get("VELORA_CHROME_SPAWN") == null) {
-            try env_map.put("VELORA_CHROME_SPAWN", "1");
+        if (env_map.get("KOKO_CHROME_SPAWN") == null) {
+            try env_map.put("KOKO_CHROME_SPAWN", "1");
         }
         child.env_map = &env_map;
         child.stdin_behavior = .Pipe;
@@ -201,7 +201,7 @@ fn appendJsonString(allocator: Allocator, buf: *std.ArrayList(u8), s: []const u8
 }
 
 fn scriptPath() ?[:0]const u8 {
-    if (std.posix.getenv("VELORA_CHROME_TRANSPORT_SCRIPT")) |p| return p;
+    if (std.posix.getenv("KOKO_CHROME_TRANSPORT_SCRIPT")) |p| return p;
     return "scripts/chrome-google-transport.mjs";
 }
 

@@ -46,7 +46,7 @@ flowchart TD
 
 ## Verification
 
-After rebuild (`velora 1.0.0-dev.67+b158aca9`):
+After rebuild (`koko 1.0.0-dev.67+b158aca9`):
 
 | Case | Result |
 |------|--------|

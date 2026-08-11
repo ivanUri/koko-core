@@ -4,11 +4,11 @@
 
 ## Summary
 
-Automating `signup.live.com` (Hotmail register) stalled on step 1 because **Velora’s text-control model for `input[type=email]` was incomplete**:
+Automating `signup.live.com` (Hotmail register) stalled on step 1 because **Koko’s text-control model for `input[type=email]` was incomplete**:
 
 1. **`select()` / `setSelectionRange` threw `InvalidStateError`** — `selectionAvailable` only listed text/search/url/tel/password (not email/number).
 2. **`Backspace` did nothing** — `Frame.handleKeydown` never deleted characters.
-3. **Caret jumped to 0 after React rewrote `.value`** — HTML/Chrome move selection to the **end** of the new value when the value IDL is set; Velora left a stale caret, so domain keystrokes landed *before* the local-part (`outlook.comstevenmiller…@`).
+3. **Caret jumped to 0 after React rewrote `.value`** — HTML/Chrome move selection to the **end** of the new value when the value IDL is set; Koko left a stale caret, so domain keystrokes landed *before* the local-part (`outlook.comstevenmiller…@`).
 
 After the fixes, a plain `type=email` CDP probe passes insertText of a full address, select+replace, one-char Backspace, and React-style value rewrite with caret at end.
 
@@ -47,7 +47,7 @@ Chromium treats email/number as text-control hosts. Without this, `howSelected()
 
 ### React caret / setValue selection
 
-Fluent/React assigns `element.value = store` on every `input` event. Per HTML/Chrome, setting the value IDL attribute on a text control **moves selection to the end** of the new value. Velora only updated `_value` and left `selectionStart` at 0 (or past EOF), so the next keystroke inserted at the start.
+Fluent/React assigns `element.value = store` on every `input` event. Per HTML/Chrome, setting the value IDL attribute on a text control **moves selection to the end** of the new value. Koko only updated `_value` and left `selectionStart` at 0 (or past EOF), so the next keystroke inserted at the start.
 
 Fix: `setValue` sets `_selection_start = _selection_end = new_len` for selection-available types.
 
@@ -60,7 +60,7 @@ Still returns the host element’s computed style (same as before) but **no long
 ## Verification
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build
 # Isolated CDP probe (insert / select / replace / backspace / key)
 # see session probe: type=email full address, caret after React rewrite

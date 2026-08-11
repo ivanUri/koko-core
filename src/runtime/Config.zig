@@ -659,7 +659,7 @@ pub fn googleChromeTransport(self: *const Config) bool {
     };
     // Explicit flag or env override. Antidetect profiles also enable this from
     // Frame.navigate (google-search sg_ss= policy uses real Chrome network).
-    return flag or std.posix.getenv("VELORA_CHROME_SPAWN") != null;
+    return flag or std.posix.getenv("KOKO_CHROME_SPAWN") != null;
 }
 
 pub fn maxConnections(self: *const Config) u16 {
@@ -868,7 +868,7 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\
         \\--user-data-dir
         \\                Chrome-style user data root (default: OS app data dir, e.g.
-        \\                ~/Library/Application Support/velora on macOS).
+        \\                ~/Library/Application Support/koko on macOS).
         \\
         \\profile command
         \\Manage browser profiles (Chrome-style user-data-dir folders).
@@ -904,7 +904,7 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\                Incompatible with --user-agent-suffix
         \\
         \\--user-agent-suffix
-        \\                Suffix to append to the Velora/X.Y User-Agent
+        \\                Suffix to append to the Koko/X.Y User-Agent
         \\
         \\--web-bot-auth-key-file
         \\                Path to the Ed25519 private key PEM file.
@@ -920,7 +920,7 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\
         \\--storage-engine
         \\                The storage engine to use. Choices are: none, sqlite.
-        \\                Default to none.
+        \\                Defaults to sqlite. Use none for ephemeral/JSON compatibility mode.
         \\
         \\--storage-sqlite-path
         \\                Path to SQLite database file for persistent storage.
@@ -935,7 +935,7 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\
         \\fetch command
         \\Fetches the specified URL
-        \\Example: {0s} fetch --dump html https://velora.io/
+        \\Example: {0s} fetch --dump html https://kokoio.com/
         \\
         \\Options:
         \\--dump          Dumps document to stdout.

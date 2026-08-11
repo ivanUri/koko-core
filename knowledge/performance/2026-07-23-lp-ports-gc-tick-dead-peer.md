@@ -1,18 +1,18 @@
 # Lightpanda ports: GC cadence, macrotask tick signal, CDP dead-peer
 
-> **Audience:** Velora engineers working on runner liveness, CDP stability, or CPU during long waits.  
+> **Audience:** Koko engineers working on runner liveness, CDP stability, or CPU during long waits.  
 > **Date:** 2026-07-23  
 > **Upstream:** lightpanda-io/browser PRs #3005, #2999, #3018 (July 2026)
 
 ## Summary
 
-Three stability/perf ports from Lightpanda landed in Velora’s event loop and CDP socket path:
+Three stability/perf ports from Lightpanda landed in Koko’s event loop and CDP socket path:
 
 1. **GC hint every 5s** instead of every 1s during `Runner.wait` — less V8 pressure on heavy pages.
 2. **`HttpClient.tick` returns `.idle`** when nothing can be polled; **Runner sleeps until the next macrotask** instead of spinning at 100% CPU on I/O-idle, timer-only pages.
 3. **Linux `TCP_USER_TIMEOUT` (10s)** on accepted CDP sockets, plus **`shutdown(SHUT_RDWR)`** when a CDP peer is known dead so a blocked `send()` unblocks.
 
-`zig build` (Debug) succeeded after these changes (V8 also rebuilt once for the unrelated embedder-string rename to `-velora`).
+`zig build` (Debug) succeeded after these changes (V8 also rebuilt once for the unrelated embedder-string rename to `-koko`).
 
 ---
 
@@ -62,18 +62,18 @@ macOS has no `TCP_USER_TIMEOUT`; keepalive + `shutdownPeer` still apply.
 ## Verification
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build   # Debug; exit 0
 ```
 
-Binary: `zig-out/bin/velora`.
+Binary: `zig-out/bin/koko`.
 
-Not re-run: full WPT suite (user can re-run `wpt-spa-tests/velora-probe/run-all.sh`). Expect fewer cascade timeouts from stuck CDP and less CPU on timer-heavy idle pages.
+Not re-run: full WPT suite (user can re-run `wpt-spa-tests/koko-probe/run-all.sh`). Expect fewer cascade timeouts from stuck CDP and less CPU on timer-heavy idle pages.
 
 ---
 
 ## Non-goals / deferred
 
-- Full Lightpanda `msToNextTask` / `hasMacrotasks` rename — Velora already uses `scheduler.msToNext()` across both priority queues via `Env.msToNextMacrotask`.
+- Full Lightpanda `msToNextTask` / `hasMacrotasks` rename — Koko already uses `scheduler.msToNext()` across both priority queues via `Env.msToNextMacrotask`.
 - V8 `lowMemoryNotification` removal (unused; LP dropped it) — optional cleanup later.
 - macOS equivalent of `TCP_USER_TIMEOUT` — none; rely on keepalive + explicit shutdown.

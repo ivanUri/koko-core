@@ -5,7 +5,7 @@ const Frame = @import("../../core/browser/Frame.zig");
 const color = @import("../../core/browser/color.zig");
 const PixelBuffer = @import("../../core/webapi/canvas/PixelBuffer.zig").PixelBuffer;
 
-extern fn velora_canvas_fill_text(
+extern fn koko_canvas_fill_text(
     pixels: [*]u8,
     width: u32,
     height: u32,
@@ -70,7 +70,7 @@ pub fn fillText(
     const family_z = try frame.call_arena.dupeZ(u8, parsed.family);
     const text_z = try frame.call_arena.dupeZ(u8, text);
 
-    const ok = velora_canvas_fill_text(
+    const ok = koko_canvas_fill_text(
         buffer.pixels.ptr,
         buffer.width,
         buffer.height,

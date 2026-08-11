@@ -570,5 +570,7 @@ test "Sqlite: Migration" {
     const conn = try sqlite.pool.acquire();
     defer sqlite.pool.release(conn);
 
-    try testing.expectEqual(1, (try conn.scalar(i64, "select max(id) from migrations", .{})).?);
+    try testing.expectEqual(4, (try conn.scalar(i64, "select max(version) from schema_migrations", .{})).?);
+    try testing.expectEqual(true, (try conn.scalar(bool, "select exists(select 1 from sqlite_schema where type='table' and name='local_storage')", .{})).?);
+    try testing.expectEqual(true, (try conn.scalar(bool, "select exists(select 1 from sqlite_schema where type='table' and name='cookies')", .{})).?);
 }

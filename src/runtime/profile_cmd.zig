@@ -108,7 +108,7 @@ fn runBundleScript(allocator: Allocator, args: []const []const u8, out_path: ?[]
     defer argv.deinit(allocator);
     try argv.append(allocator, "node");
     try argv.append(allocator, script);
-    try argv.append(allocator, "--velora-root");
+    try argv.append(allocator, "--koko-root");
     try argv.append(allocator, root);
     for (args) |arg| try argv.append(allocator, arg);
     if (out_path) |out| {
@@ -149,19 +149,19 @@ fn runList(allocator: Allocator, user_data_dir: []const u8) !void {
 }
 
 fn defaultUserDataDir(allocator: Allocator) ![]const u8 {
-    return std.fs.getAppDataDir(allocator, "velora") catch try allocator.dupe(u8, ".velora-user-data");
+    return std.fs.getAppDataDir(allocator, "koko") catch try allocator.dupe(u8, ".koko-user-data");
 }
 
 fn printUsage() !void {
     var stdout = std.fs.File.stdout().writer(&.{});
     try stdout.interface.writeAll(
         \\profile commands:
-        \\  velora profile list
-        \\  velora profile create --name <id> [--fingerprint <id>]
-        \\  velora profile delete --name <id>
-        \\  velora profile import-cookies [--name <id>] --from <cookies.json>
-        \\  velora profile export --name <id> [--to <bundle-dir>]
-        \\  velora profile import --name <id> --from <bundle-dir>
+        \\  koko profile list
+        \\  koko profile create --name <id> [--fingerprint <id>]
+        \\  koko profile delete --name <id>
+        \\  koko profile import-cookies [--name <id>] --from <cookies.json>
+        \\  koko profile export --name <id> [--to <bundle-dir>]
+        \\  koko profile import --name <id> --from <bundle-dir>
         \\
     );
 }

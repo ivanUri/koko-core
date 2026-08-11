@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 // CGBitmapContext on macOS uses premultiplied ARGB (A,R,G,B per pixel in memory).
-// Velora PixelBuffer / PNG encoder use straight RGBA.
+// Koko PixelBuffer / PNG encoder use straight RGBA.
 static void rgba_to_argb_premul(uint8_t *pixels, uint32_t width, uint32_t height) {
     const uint32_t count = width * height;
     for (uint32_t i = 0; i < count; i++) {
@@ -46,7 +46,7 @@ static void argb_premul_to_rgba(uint8_t *pixels, uint32_t width, uint32_t height
     }
 }
 
-bool velora_canvas_fill_text(
+bool koko_canvas_fill_text(
     uint8_t *pixels,
     uint32_t width,
     uint32_t height,

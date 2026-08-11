@@ -250,7 +250,7 @@ pub const SpeechSynthesis = struct {
         const data = try frame.arena.create(TaskData);
         data.* = .{ .synth = self, .frame = frame };
 
-        // Delay past typical CreepJS voices probe (Chrome ~800ms, Velora ~2s).
+        // Delay past typical CreepJS voices probe (Chrome ~800ms, Koko ~2s).
         try frame.js.scheduler.add(data, struct {
             fn run(ctx: *anyopaque) !?u32 {
                 const d: *TaskData = @ptrCast(@alignCast(ctx));

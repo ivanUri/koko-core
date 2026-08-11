@@ -60,7 +60,7 @@ pub fn close(self: *Dialog, return_value: ?[]const u8, frame: *Frame) !void {
 }
 
 pub fn requestClose(self: *Dialog, return_value: ?[]const u8, frame: *Frame) !void {
-    // The cancel event is not yet cancellable in Velora's dialog top-layer
+    // The cancel event is not yet cancellable in Koko's dialog top-layer
     // controller, so the default action is the close algorithm.
     try self.close(return_value, frame);
 }

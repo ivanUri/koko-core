@@ -42,7 +42,7 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 90
     env:
-      VELORA_DISABLE_TELEMETRY: "true"
+      KOKO_DISABLE_TELEMETRY: "true"
       TEST_FAIL_FIRST: "true"
     steps:
       - uses: actions/checkout@v4
@@ -54,12 +54,12 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: |
-            .velora-cache
+            .koko-cache
             .zig-cache
             ~/Library/Caches/zig
-          key: velora-macos-arm64-zig-0.15.2-${{ hashFiles('build.zig', 'build.zig.zon', 'vendor/v8-wrapper/**') }}
+          key: koko-macos-arm64-zig-0.15.2-${{ hashFiles('build.zig', 'build.zig.zon', 'vendor/v8-wrapper/**') }}
           restore-keys: |
-            velora-macos-arm64-zig-0.15.2-
+            koko-macos-arm64-zig-0.15.2-
       - name: Compile check
         run: zig build check
       - name: Run deterministic tests

@@ -2,7 +2,7 @@
 
 ## Summary
 
-Velora Google Search document navigations now emit **Chrome 150 Accept-first** request header order on both cold hop-1 and in-session `sei=` hops. Wire capture (`VELORA_WIRE_HEADERS`) matches live Chrome CDP `requestWillBeSentExtraInfo` name order (LCS 24/24 hop-1, 29/29 sei).
+Koko Google Search document navigations now emit **Chrome 150 Accept-first** request header order on both cold hop-1 and in-session `sei=` hops. Wire capture (`KOKO_WIRE_HEADERS`) matches live Chrome CDP `requestWillBeSentExtraInfo` name order (LCS 24/24 hop-1, 29/29 sei).
 
 ## Before
 
@@ -39,6 +39,6 @@ Velora Google Search document navigations now emit **Chrome 150 Accept-first** r
 ## Verify
 
 ```bash
-VELORA_WIRE_HEADERS=1 VELORA_WIRE_HEADERS_FILE=/tmp/wire.ndjson \
+KOKO_WIRE_HEADERS=1 KOKO_WIRE_HEADERS_FILE=/tmp/wire.ndjson \
   # serve + navigate google.com/search, inspect headerOrder per hop
 ```

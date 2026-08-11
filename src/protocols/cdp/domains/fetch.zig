@@ -1,4 +1,4 @@
-// Copyright (C) 2023-2025    Velora (Selecy SAS)
+// Copyright (C) 2023-2025    Koko (Selecy SAS)
 
 //
 // This program is free software: you can redistribute it and/or modify

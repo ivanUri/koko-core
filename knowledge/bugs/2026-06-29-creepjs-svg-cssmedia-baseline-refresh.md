@@ -4,7 +4,7 @@
 
 ## Summary
 
-Velora reached **23/25** CreepJS section hash matches against live Chrome on the MacBook profile (`chrome-local-huys-macbook-pro`) when Chrome reported the same display geometry (1680×1050, P3 gamut). This session closed `svg` and `cssMedia` outright, refreshed Chrome-captured baselines for SVG geometry and client rects, and narrowed `clientRects` / `fonts` to sub-ulp `pixelSizeSystemSum` / `domrectSystemSum` drift. Root causes split three ways: wrong `color-gamut` media default (`srgb` vs `p3`), stale offline SVG baselines captured before full font warmup, and `getBBox` ignoring profile JSON. The lesson: CreepJS probes are **async, font-dependent integration tests** — isolated HTML fixtures lie.
+Koko reached **23/25** CreepJS section hash matches against live Chrome on the MacBook profile (`chrome-local-huys-macbook-pro`) when Chrome reported the same display geometry (1680×1050, P3 gamut). This session closed `svg` and `cssMedia` outright, refreshed Chrome-captured baselines for SVG geometry and client rects, and narrowed `clientRects` / `fonts` to sub-ulp `pixelSizeSystemSum` / `domrectSystemSum` drift. Root causes split three ways: wrong `color-gamut` media default (`srgb` vs `p3`), stale offline SVG baselines captured before full font warmup, and `getBBox` ignoring profile JSON. The lesson: CreepJS probes are **async, font-dependent integration tests** — isolated HTML fixtures lie.
 
 ---
 
@@ -12,7 +12,7 @@ Velora reached **23/25** CreepJS section hash matches against live Chrome on the
 
 After the `SVGRect` prototype fix ([prior note](./2026-06-29-creepjs-svg-bbox-svrect-prototype.md)), four sections still diffed:
 
-| Section | Symptom | Chrome | Velora |
+| Section | Symptom | Chrome | Koko |
 |---------|---------|--------|--------|
 | `svg` | `bBox`, `emojiSet` (® missing), `extentOfChar`, `svgrectSystemSum` | match targets | drift |
 | `cssMedia` | `color-gamut` | `p3` | `srgb` |
@@ -30,7 +30,7 @@ CreepJS fingerprint sections are not independent unit tests. They form a **pipel
 3. **CSS media injection** — `@media` blocks set `--prefers-*` custom properties on `body`; `getComputedStyle` reads them.
 4. **Checksum aggregation** — sums of absolute values over prototype keys, emoji ctl strings, DOMRect lists.
 
-Velora's profile system (`browser/profiles/assets/*.json`) supplies golden outputs per machine. If capture tooling runs **before** fonts settle or with a **short font stack**, baselines encode wrong geometry while the engine might be correct — or vice versa.
+Koko's profile system (`browser/profiles/assets/*.json`) supplies golden outputs per machine. If capture tooling runs **before** fonts settle or with a **short font stack**, baselines encode wrong geometry while the engine might be correct — or vice versa.
 
 ---
 
@@ -70,7 +70,7 @@ CreepJS loads the full font list, awaits async font events, then measures. Stale
 ### Probe commands
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 
 # Full section compare (20s budget)
 node scripts/cdp-creepjs-section-compare.mjs \

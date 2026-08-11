@@ -519,7 +519,7 @@ pub const Connection = struct {
 
     pub fn clearInternalCookies(self: *const Connection) !void {
         // Drop cookies libcurl auto-stored from prior responses on this easy handle.
-        // Velora uses CookieJar + a single consolidated Cookie header (Chrome behavior).
+        // Koko uses CookieJar + a single consolidated Cookie header (Chrome behavior).
         try libcurl.curl_easy_setopt(self._easy, .cookielist, "ALL");
     }
 
@@ -669,7 +669,7 @@ pub const Connection = struct {
 
     /// Apply curl-impersonate profile + Chrome TLS knobs (GREASE, ALPS, ext permutation).
     /// Must be the last SSL-affecting setup before curl_easy_perform.
-    /// `default_headers`: curl_chrome146 built-in header set. Disable when Velora
+    /// `default_headers`: curl_chrome146 built-in header set. Disable when Koko
     /// supplies the full document header list (e.g. Google search sei=/sg_ss= hops
     /// must not leak Sec-Fetch-User from impersonate defaults).
     pub fn applyProfileTransport(self: *const Connection, config: *const Config, default_headers: bool) !void {

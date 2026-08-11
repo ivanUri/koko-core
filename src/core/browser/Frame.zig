@@ -380,8 +380,8 @@ _cdp_mouse_pending_x: f64 = 0,
 _cdp_mouse_pending_y: f64 = 0,
 _cdp_mouse_release_x: f64 = 0,
 _cdp_mouse_release_y: f64 = 0,
-/// Element pending Velora/MCP click — activation runs on next scheduler tick.
-_velora_pending_activation: ?*Element = null,
+/// Element pending Koko/MCP click — activation runs on next scheduler tick.
+_koko_pending_activation: ?*Element = null,
 
 // Cached hosting `<iframe>` client size for child-frame hit-test layout.
 _hosting_iframe_layout_size: ?struct { width: f64, height: f64 } = null,
@@ -1336,7 +1336,7 @@ pub fn headersForRequest(self: *Frame, headers: *HttpClient.Headers, opts: Heade
             // Always emit the full Chrome 150 document list (Accept-first + Sec-Fetch-*).
             // The old branch used thin `appendCurlImpersonateDocumentOverrides` for cold
             // hops, assuming libcurl default_headers would supply Accept/Sec-Fetch/UIR.
-            // Wire capture (VELORA_WIRE_HEADERS) showed those defaults are *not* on the
+            // Wire capture (KOKO_WIRE_HEADERS) showed those defaults are *not* on the
             // hop-1 request — only Host/UA/AE/AL/Cookie/Sec-Ch-Ua/X-Browser — so cold
             // Google /search looked non-browser → knitsail / /sorry. In-session sei=
             // already used full headers (omit_sec_fetch_user path).
@@ -3828,6 +3828,16 @@ pub fn iframeAddedCallback(self: *Frame, iframe: *IFrame) !void {
         .loader_id = new_frame._loader_id,
         .timestamp = timestamp(.monotonic),
     });
+
+    // The initial about:blank Document inherits a snapshot of its creator's
+    // fallback base URL. Keep that snapshot on the child: resolving against
+    // the literal document URL would turn a network-path reference such as
+    // `//cdn.example/script.js` into the invalid `about://cdn.example/...`.
+    // This mirrors the srcdoc path above and deliberately does not follow a
+    // later <base> mutation in the embedding Document.
+    if (std.mem.eql(u8, src, "about:blank")) {
+        new_frame.fallback_base_url = try new_frame.arena.dupeZ(u8, self.base());
+    }
 
     const url = blk: {
         if (std.mem.eql(u8, src, "about:blank")) {
@@ -6909,20 +6919,20 @@ pub fn scheduleCdpMousePress(self: *Frame, x: f64, y: f64) !void {
     }.run, 0, .{ .name = "input.mousePressed" });
 }
 
-/// Queue element activation after Velora.clickNode CDP reply (avoids blocking transport).
+/// Queue element activation after Koko.clickNode CDP reply (avoids blocking transport).
 pub fn scheduleActivationOnElement(self: *Frame, element: *Element) !void {
-    self._velora_pending_activation = element;
+    self._koko_pending_activation = element;
     try self.js.scheduler.add(self, struct {
         fn run(ctx: *anyopaque) !?u32 {
             const frame: *Frame = @ptrCast(@alignCast(ctx));
-            const el = frame._velora_pending_activation orelse return null;
-            frame._velora_pending_activation = null;
+            const el = frame._koko_pending_activation orelse return null;
+            frame._koko_pending_activation = null;
             @import("InputController.zig").dispatchActivationOnElementFast(el, frame) catch |err| {
                 log.err(.frame, "scheduled activation failed", .{ .err = err });
             };
             return null;
         }
-    }.run, 0, .{ .name = "velora.clickNode" });
+    }.run, 0, .{ .name = "koko.clickNode" });
 }
 
 /// Queue mouseReleased independently; mousePressed has already established
@@ -7369,6 +7379,57 @@ test "Frame: srcdoc fallback base URL is snapshotted from its creator" {
     try testing.htmlRunner("regression/iframe_srcdoc_base_snapshot.html", .{});
 }
 
+test "Frame: initial about blank fallback base URL is snapshotted from its creator" {
+    try testing.htmlRunner("regression/iframe_about_blank_base_snapshot.html", .{});
+}
+
+test "Frame: static module wait exits when V8 execution is terminated" {
+    const frame = try testing.test_session.createPage();
+    defer testing.test_session.removePage();
+
+    const manager = &frame._script_manager.base;
+    const url = try manager.allocator.dupeZ(u8, "https://example.test/pending-module.js");
+    const entry = try manager.imported_modules.getOrPut(manager.allocator, url);
+    try testing.expect(!entry.found_existing);
+    entry.key_ptr.* = url;
+    entry.value_ptr.* = .{}; // Deliberately remains in `.loading`.
+
+    const Terminator = struct {
+        fn run(env: *JS.Env) void {
+            std.Thread.sleep(25 * std.time.ns_per_ms);
+            env.terminate();
+        }
+    };
+    const terminator = try std.Thread.spawn(.{}, Terminator.run, .{&testing.test_browser.env});
+    defer terminator.join();
+    defer testing.test_browser.env.cancelTerminate();
+
+    try testing.expectError(error.ExecutionTerminated, manager.waitForImport(url));
+}
+
+test "Frame: host termination remains visible outside V8 and cancel restores execution" {
+    const frame = try testing.test_session.createPage();
+    defer testing.test_session.removePage();
+
+    const env = &testing.test_browser.env;
+    env.terminate();
+    defer env.cancelTerminate();
+
+    // V8's own IsExecutionTerminating may be false while no JavaScript stack
+    // is active. Native module/network loops still need a durable host signal.
+    try testing.expect(env.isExecutionTerminating());
+
+    env.cancelTerminate();
+    try testing.expect(!env.isExecutionTerminating());
+
+    // Cancellation must not poison the isolate for the next operation.
+    var scope: JS.Local.Scope = undefined;
+    frame.js.localScope(&scope);
+    defer scope.deinit();
+    const result = try scope.local.exec("21 * 2", "termination recovery test");
+    try testing.expectEqual(@as(i32, 42), try result.toI32());
+}
+
 test "Frame: iframe navigation drops callbacks owned by the previous realm" {
     try testing.htmlRunner("regression/navigation_drops_stale_realm_callbacks.html", .{});
 }
@@ -7459,6 +7520,10 @@ test "Frame: timer scheduling does not checkpoint microtasks inside host call" {
 
 test "Frame: Window omits non-browser immediate timer APIs" {
     try testing.htmlRunner("regression/window_omits_set_immediate.html", .{});
+}
+
+test "Frame: user-agent media events release dispatch-owned arenas" {
+    try testing.htmlRunner("regression/media_internal_event_ownership.html", .{});
 }
 
 test "Frame: image error event is queued after src setter returns" {

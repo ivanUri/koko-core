@@ -32,8 +32,8 @@ First major WPT push covered the **`url/`** tree: `URL` constructor canonicaliza
 # WPT server
 cd wpt && ./wpt serve --config config.local.json
 
-# Velora CDP
-./zig-out/bin/velora serve --host 127.0.0.1 --port 9222 \
+# Koko CDP
+./zig-out/bin/koko serve --host 127.0.0.1 --port 9222 \
   --insecure-disable-tls-host-verification --log-level error
 
 # Single test

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
-VELORA_ROOT="${VELORA_ROOT:-$HOME/Desktop/velora}"
+KOKO_ROOT="${KOKO_ROOT:-$HOME/Desktop/koko}"
 WPT_ROOT="${WPT_ROOT:-$HOME/Desktop/wpt-spa-tests}"
-BIN="$VELORA_ROOT/zig-out/bin/velora"
-LOG=/tmp/velora-open-probe.log
-PIDF=/tmp/velora-open-probe.pid
+BIN="$KOKO_ROOT/zig-out/bin/koko"
+LOG=/tmp/koko-open-probe.log
+PIDF=/tmp/koko-open-probe.pid
 
 # Stop previous probe only
 if [[ -f "$PIDF" ]]; then
@@ -13,7 +13,7 @@ if [[ -f "$PIDF" ]]; then
 fi
 sleep 0.5
 
-cd "$VELORA_ROOT"
+cd "$KOKO_ROOT"
 "$BIN" serve --host 127.0.0.1 --port 9222 \
   --insecure-disable-tls-host-verification --log-level warn \
   >"$LOG" 2>&1 &
@@ -29,7 +29,7 @@ fi
 TEST="${1:-/html/webappapis/dynamic-markup-insertion/opening-the-input-stream/url.window.html}"
 cd "$WPT_ROOT"
 WPT_ADDR=http://localhost:8000 CDP_WS=ws://127.0.0.1:9222 \
-  ./velora-probe/bin/wptrunner -wpt-addr http://localhost:8000 -cdp ws://127.0.0.1:9222 \
+  ./koko-probe/bin/wptrunner -wpt-addr http://localhost:8000 -cdp ws://127.0.0.1:9222 \
   "$TEST" -json -concurrency 1 2>&1 | tail -50
 
 echo "ALIVE=$(curl -sf http://127.0.0.1:9222/json/version >/dev/null && echo yes || echo no)"

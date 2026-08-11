@@ -1,6 +1,6 @@
 # Browser resources must not inherit a short total timeout
 
-Velora previously configured every reused curl easy handle with a 5000 ms
+Koko previously configured every reused curl easy handle with a 5000 ms
 total timeout. That is not browser network behavior: image, stylesheet,
 script, and Fetch requests do not fail merely because five seconds elapsed.
 Under normal page concurrency, valid image CDN requests therefore completed

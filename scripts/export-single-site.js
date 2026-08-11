@@ -4,34 +4,34 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
-const url = "https://x.com";
+const url = "https://github.com/";
 // Chỉ cần sửa cấu hình trong khối này.
 const CONFIG = {
   url,
-  output: "exports/single/x.com.html",
-  log: "export-logs/x.com.log",
+  output: "exports/single/www.github.com.html",
+  log: "export-logs/www.github.com.log",
 
   // Keep single-page exports isolated from profiles created by other runners.
   // The run starts without cookies or origin storage, while retaining the
   // selected fingerprint identity and browser preferences.
-  userDataDir: "/tmp/velora-export-single-site",
+  userDataDir: "/tmp/koko-export-single-site",
   profile: "chrome-current",
-  // Optional proxy pool. Velora selects one entry at process startup and keeps
+  // Optional proxy pool. Koko selects one entry at process startup and keeps
   // it for the complete browser session; it never rotates per request.
   proxyFile: null,
   cookieJar: null,
   keepScripts: false,
   includeFrames: true,
-  waitUntil: "done",
-  waitMs: 40_000,
-  terminateMs: 40_000,
+  waitUntil: "networkidle",
+  waitMs: 80_000,
+  terminateMs: 80_000,
   // Wait for finite presentation animations to settle before serializing.
   // Infinite decorative animations are intentionally ignored.
   waitScript: null,
 };
 
 const projectRoot = path.resolve(__dirname, "..");
-const velora = path.join(projectRoot, "zig-out", "bin", "velora");
+const koko = path.join(projectRoot, "zig-out", "bin", "koko");
 const output = path.resolve(projectRoot, CONFIG.output);
 const temporary = `${output}.partial-${process.pid}`;
 const logPath = path.resolve(projectRoot, CONFIG.log);
@@ -93,8 +93,8 @@ function validateConfig() {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new Error("CONFIG.url must use http:// or https://");
   }
-  if (!fs.existsSync(velora)) {
-    throw new Error(`Velora binary not found: ${velora}`);
+  if (!fs.existsSync(koko)) {
+    throw new Error(`Koko binary not found: ${koko}`);
   }
   return url;
 }
@@ -159,7 +159,7 @@ function main() {
   console.log(`Output: ${output}`);
   console.log(`Log: ${logPath}`);
 
-  const child = spawn(velora, args, {
+  const child = spawn(koko, args, {
     cwd: projectRoot,
     stdio: ["ignore", outputFd, "pipe"],
   });
@@ -180,7 +180,7 @@ function main() {
 
     if (spawnError) {
       fs.rmSync(temporary, { force: true });
-      console.error(`Could not start Velora: ${spawnError.message}`);
+      console.error(`Could not start Koko: ${spawnError.message}`);
       process.exitCode = 1;
       return;
     }
@@ -224,7 +224,7 @@ function main() {
 
     if (code !== 0 || signal) {
       console.warn(
-        `Warning: HTML is valid, but Velora exited with ${signal || code} during teardown.`,
+        `Warning: HTML is valid, but Koko exited with ${signal || code} during teardown.`,
       );
       process.exitCode = 1;
     }

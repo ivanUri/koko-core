@@ -1,16 +1,16 @@
-# Velora
+# Koko
 
 AI-first browser runtime for automation, agents, and programmable web execution.
 
-Velora is a lightweight headless browser engine built for AI workflows, browser automation, crawling, testing, and large-scale web interaction without relying on the Chromium monolith.
+Koko is a lightweight headless browser engine built for AI workflows, browser automation, crawling, testing, and large-scale web interaction without relying on the Chromium monolith.
 
-Unlike browser stacks designed primarily for human browsing, Velora treats the browser as programmable infrastructure: deterministic, embeddable, multi-session, and automation-native.
+Unlike browser stacks designed primarily for human browsing, Koko treats the browser as programmable infrastructure: deterministic, embeddable, multi-session, and automation-native.
 
-## Why Velora
+## Why Koko
 
 Modern AI systems increasingly depend on browsers for search, navigation, extraction, task execution, and web-based tool use. Existing automation stacks are usually built on top of large Chromium-based runtimes that are heavy to embed, expensive to scale, and difficult to customize deeply.
 
-Velora takes a different approach. It focuses on browser infrastructure for automation and AI from the start:
+Koko takes a different approach. It focuses on browser infrastructure for automation and AI from the start:
 
 - Deterministic automation behavior
 - Multi-session browser execution
@@ -32,7 +32,7 @@ That creates real costs for AI agents and automation infrastructure:
 - Difficult deep customization below the automation API layer
 - Architecture optimized for interactive browsing, not machine-driven execution
 
-Velora is not trying to be a full desktop-browser replacement. It focuses on the subset that automation systems need most: deterministic navigation, DOM and Web API execution, protocol control, lifecycle correctness, and embeddable multi-session runtime behavior.
+Koko is not trying to be a full desktop-browser replacement. It focuses on the subset that automation systems need most: deterministic navigation, DOM and Web API execution, protocol control, lifecycle correctness, and embeddable multi-session runtime behavior.
 
 The goal is a browser runtime that can be treated like infrastructure: smaller, easier to control, easier to embed, and better suited for AI-native workloads.
 
@@ -40,7 +40,7 @@ The goal is a browser runtime that can be treated like infrastructure: smaller, 
 
 ### AI-First Runtime
 
-Velora is built for machine-driven browser execution, including:
+Koko is built for machine-driven browser execution, including:
 
 - AI agents
 - Autonomous browsing
@@ -52,7 +52,7 @@ The browser is treated as programmable runtime infrastructure, not as a desktop 
 
 ### Lightweight Browser Infrastructure
 
-Velora avoids the Chromium-scale runtime model and focuses on:
+Koko avoids the Chromium-scale runtime model and focuses on:
 
 - Lower runtime overhead
 - Simpler embedding
@@ -62,7 +62,7 @@ Velora avoids the Chromium-scale runtime model and focuses on:
 
 ### Lifecycle Correctness
 
-Reliable automation depends heavily on browser lifecycle behavior. Velora focuses on correctness around:
+Reliable automation depends heavily on browser lifecycle behavior. Koko focuses on correctness around:
 
 - Navigation ordering
 - Realm isolation
@@ -76,7 +76,7 @@ These details are critical for automation frameworks, AI agents, protocol integr
 
 ### Built for Automation
 
-Velora exposes browser behavior through automation-oriented interfaces:
+Koko exposes browser behavior through automation-oriented interfaces:
 
 - CDP-compatible runtime
 - MCP integration support
@@ -107,13 +107,13 @@ The goal is not only to run a page, but to provide the foundation for browser-na
 
 ```bash
 brew tap ivanUri/tap
-brew install velora
-velora serve --host 127.0.0.1 --port 9222
+brew install koko
+koko serve --host 127.0.0.1 --port 9222
 ```
 
 See [docs/homebrew.md](docs/homebrew.md) for publishing releases to the tap.
 
-### Build Velora
+### Build Koko
 
 ```bash
 zig build
@@ -125,17 +125,17 @@ zig build
 zig build run -- serve --host 127.0.0.1 --port 9222
 ```
 
-### Connect with Velora SDK (separate repo)
+### Connect with Koko SDK (separate repo)
 
-CDP client and agent APIs live in **[velora-sdk](https://github.com/ivanUri/velora-sdk)** (`@velora/sdk`), not in this engine repo. Typical layout:
+CDP client and agent APIs live in the separate **koko-sdk** submodule (`koko-sdk`), not in this engine repo.
 
 ```text
-Desktop/velora/      # this repo — zig build
-Desktop/velora-sdk/  # npm install && npm run build
+Desktop/koko/      # this repo — zig build
+Desktop/koko-sdk/  # npm install && npm run build
 ```
 
 ```ts
-import { Browser } from "@velora/sdk";
+import { Browser } from "@koko/sdk";
 
 const browser = await Browser.connect("http://127.0.0.1:9222");
 const page = await browser.newPage();
@@ -144,7 +144,7 @@ console.log(await page.content());
 await browser.close();
 ```
 
-See `velora-sdk/README.md` for launch profiles, semantic tree, NodeHandle, and CLI `velora-fetch`.
+See `koko-sdk/README.md` for launch profiles, semantic tree, NodeHandle, and CLI `koko-fetch`.
 
 ### Fingerprint probes
 
@@ -152,7 +152,7 @@ Probe / bench npm scripts were removed with `scripts/` — rebuild runners under
 
 ## Use Cases
 
-Velora is designed for:
+Koko is designed for:
 
 - AI agents
 - Browser automation
@@ -167,7 +167,7 @@ Velora is designed for:
 
 ## Architecture
 
-Velora separates browser execution into explicit runtime layers:
+Koko separates browser execution into explicit runtime layers:
 
 ```text
 Core Engine -> Runtime -> Protocols -> Adapters -> Public API
@@ -207,7 +207,7 @@ Current development priorities include:
 
 ## Benchmarks
 
-Velora vs Playwright Chromium (startup, static navigation, JS workloads) on local fixtures:
+Koko vs Playwright Chromium (startup, static navigation, JS workloads) on local fixtures:
 
 - Microbench (local fixtures): [`docs/benchmarks/latest.md`](docs/benchmarks/latest.md)
 - Real-world crawl (100× en.wikipedia.org): [`docs/benchmarks/crawl-wikipedia-latest.md`](docs/benchmarks/crawl-wikipedia-latest.md)
@@ -223,7 +223,7 @@ Numbers are machine-local and use Playwright bundled Chromium (not Google Chrome
 
 ## Performance Direction
 
-Velora is optimized toward:
+Koko is optimized toward:
 
 - Lower runtime overhead
 - Scalable automation workloads
@@ -263,11 +263,11 @@ zig build run -- serve --host 127.0.0.1 --port 9222
 
 ## Status
 
-Velora is under active development. The project is currently focused on automation reliability, lifecycle correctness, runtime architecture, and browser execution infrastructure for AI systems.
+Koko is under active development. The project is currently focused on automation reliability, lifecycle correctness, runtime architecture, and browser execution infrastructure for AI systems.
 
 ## Credits
 
-Velora builds upon prior browser-engine and runtime work from the open-source ecosystem. Additional architectural and runtime work is actively developed independently as part of the Velora runtime direction.
+Koko builds upon prior browser-engine and runtime work from the open-source ecosystem. Additional architectural and runtime work is actively developed independently as part of the Koko runtime direction.
 
 ## License
 

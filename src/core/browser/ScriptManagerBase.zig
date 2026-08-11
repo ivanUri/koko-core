@@ -34,7 +34,7 @@ const log = @import("../../support/log.zig");
 const String = @import("../../support/string.zig").String;
 const Allocator = std.mem.Allocator;
 const IS_DEBUG = builtin.mode == .Debug;
-const JS_CALL_LOG_ENV = "VELORA_JS_CALL_LOG";
+const JS_CALL_LOG_ENV = "KOKO_JS_CALL_LOG";
 
 fn jsCallLogEnabled() bool {
     const value = std.posix.getenv(JS_CALL_LOG_ENV) orelse return false;
@@ -59,8 +59,8 @@ fn appendJsStringLiteral(list: *std.ArrayList(u8), arena: Allocator, value: []co
 fn instrumentClassicScript(arena: Allocator, src: []const u8, script_url: []const u8) ![]const u8 {
     const hook =
         \\(function(){
-        \\  if (globalThis.__veloraJsCallLogHooked) return;
-        \\  Object.defineProperty(globalThis, "__veloraJsCallLogHooked", { value: true, configurable: true });
+        \\  if (globalThis.__kokoJsCallLogHooked) return;
+        \\  Object.defineProperty(globalThis, "__kokoJsCallLogHooked", { value: true, configurable: true });
         \\  const scriptUrl = 
     ;
     const hook_tail =
@@ -68,14 +68,14 @@ fn instrumentClassicScript(arena: Allocator, src: []const u8, script_url: []cons
         \\  const log = (kind, fn) => { try {
         \\    const raw = String((new Error()).stack || "").split("\n").slice(2, 9);
         \\    const frame = raw.find(line => line.includes(scriptUrl)) || raw[0] || "";
-        \\    console.log("[velora-js-call] file=" + scriptUrl + " kind=" + kind + " fn=" + ((fn && (fn.name || fn.displayName)) || "<anonymous>") + " at=" + frame.trim());
+        \\    console.log("[koko-js-call] file=" + scriptUrl + " kind=" + kind + " fn=" + ((fn && (fn.name || fn.displayName)) || "<anonymous>") + " at=" + frame.trim());
         \\  } catch (_) {} };
         \\  const seen = new WeakMap();
         \\  const wrap = (kind, fn) => {
         \\    if (typeof fn !== "function") return fn;
         \\    const old = seen.get(fn); if (old) return old;
         \\    const wrapped = function(...args) { log(kind, fn); return Reflect.apply(fn, this, args); };
-        \\    try { Object.defineProperty(wrapped, "name", { value: fn.name || "veloraWrapped", configurable: true }); } catch (_) {}
+        \\    try { Object.defineProperty(wrapped, "name", { value: fn.name || "kokoWrapped", configurable: true }); } catch (_) {}
         \\    seen.set(fn, wrapped);
         \\    return wrapped;
         \\  };
@@ -654,6 +654,15 @@ pub fn waitForImport(self: *ScriptManagerBase, url: [:0]const u8) !ModuleSource 
     // graph compilation failure; transport/navigation cancellation already
     // owns the error and shutdown terminal paths.
     while (true) {
+        // This loop runs inside V8's synchronous static-module resolver.
+        // TerminateExecution can interrupt JavaScript, but it cannot unwind a
+        // native Zig callback by itself. Observe the isolate cancellation at
+        // every transport quantum so script watchdogs and host deadlines can
+        // return control to V8 instead of leaving the browser stuck here.
+        if (self.owner.jsContext().env.isExecutionTerminating()) {
+            return error.ExecutionTerminated;
+        }
+
         const entry = self.imported_modules.getEntry(url) orelse {
             // Should not happen unless preload was skipped / map cleared mid-nav.
             return error.UnknownModule;
@@ -867,7 +876,7 @@ fn hasPendingEvaluateWork(self: *const ScriptManagerBase) bool {
 
 /// True while classic/module scripts still need evaluation (or evaluate is
 /// deferred). Runner `.done` / network-idle must not resolve while SPA chunks
-/// evaluate; Velora can have a gap if only evaluate_pending is set).
+/// evaluate; Koko can have a gap if only evaluate_pending is set).
 pub fn hasPendingJsWork(self: *const ScriptManagerBase) bool {
     return self.evaluate_pending or
         self.deferred_evaluate_queued or

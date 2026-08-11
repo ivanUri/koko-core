@@ -1,6 +1,6 @@
-# Velora Engineering Knowledge Base
+# Koko Engineering Knowledge Base
 
-Internal engineering notebook for Velora. This is **not** user documentation or guides.
+Internal engineering notebook for Koko. This is **not** user documentation or guides.
 
 Every bug fixed, browser behavior understood, GitHub issue investigated, WPT analyzed, or architecture decision made should eventually become a knowledge note here. The long-term goal is a searchable engineering memory for the project.
 
@@ -101,7 +101,7 @@ Each knowledge article is written to become **one public blog page** later. Stub
 ## Probing discipline
 
 - CDP probes: `node scripts/cdp-profile-probe.mjs --profile <id> --max-sec 20`
-- WPT: one stable velora + `scripts/wpt-run.sh` per file
+- WPT: one stable koko + `scripts/wpt-run.sh` per file
 - Google Search: warmed profile cookie jar — see investigation journey
 
 ## Questions This Should Answer

@@ -1,4 +1,4 @@
-# WPT `url/` category — layout, runner, and Velora status
+# WPT `url/` category — layout, runner, and Koko status
 
 > **Date:** 2026-07-04  
 > **Spec:** [URL Standard](https://url.spec.whatwg.org/)  
@@ -6,7 +6,7 @@
 
 ## Summary
 
-Velora runs the official WPT `url/` directory via `scripts/wpt-run.sh` + `~/Desktop/demo/wptrunner` against `wpt/` served on `:8000` and Velora CDP on `:9222`.
+Koko runs the official WPT `url/` directory via `scripts/wpt-run.sh` + `~/Desktop/demo/wptrunner` against `wpt/` served on `:8000` and Koko CDP on `:9222`.
 
 **Category A (isolated testharness `.any.js` / small HTML)** is largely green: all **URLSearchParams** suites, **URL statics** (`canParse` / `parse`), **historical**, **url-searchparams**, **url-tojson**, and **url-setters** `javascript` / `mailto` variants.
 
@@ -39,7 +39,7 @@ wpt/url/
 ├── *.any.js                     # testharness — window + worker (Category A)
 ├── *.window.js                  # window-only testharness
 ├── *.html                       # Classic HTML tests (often multi-variant)
-└── scripts/ (repo)              # Velora probes, not WPT
+└── scripts/ (repo)              # Koko probes, not WPT
     └── cdp-usp-constructor-probe.mjs
 ```
 
@@ -67,13 +67,13 @@ Always pass the **variant** to `wpt-run.sh` when targeting a slice; omitting it 
 
 ---
 
-## Runner wiring (Velora)
+## Runner wiring (Koko)
 
 | Component | Path / command |
 |-----------|----------------|
-| WPT tree | `/Users/huydev/Desktop/velora/wpt/` |
+| WPT tree | `/Users/huydev/Desktop/koko/wpt/` |
 | WPT serve | `cd wpt && ./wpt serve --config config.local.json` → `:8000` |
-| Velora CDP | `./zig-out/bin/velora serve --host 127.0.0.1 --port 9222 --insecure-disable-tls-host-verification` |
+| Koko CDP | `./zig-out/bin/koko serve --host 127.0.0.1 --port 9222 --insecure-disable-tls-host-verification` |
 | Wrapper | `./scripts/wpt-run.sh -concurrency 1 /url/<test>.any.html` |
 | Batch + restart | `./scripts/wpt-run.sh` via `scripts/wpt-batch-resilient.sh` |
 | wptrunner | `~/Desktop/demo/wptrunner` (`WPT_ADDR`, `CDP_WS` env overrides) |
@@ -82,7 +82,7 @@ See also: [`knowledge/bugs/2026-07-04-wpt-runner-setup-and-fixes.md`](../bugs/20
 
 ---
 
-## Velora status by suite (2026-07-04)
+## Koko status by suite (2026-07-04)
 
 ### Tier 1 — fully passing (100%)
 
@@ -128,7 +128,7 @@ See also: [`knowledge/bugs/2026-07-04-wpt-runner-setup-and-fixes.md`](../bugs/20
 
 ### Tier 3 — not reliably run (crash / 0/0 in batch)
 
-Velora died mid-batch (`Crash 0/0`) — **re-run after restart**, do not treat as scored:
+Koko died mid-batch (`Crash 0/0`) — **re-run after restart**, do not treat as scored:
 
 - `IdnaTestV2`, `percent-encoding`, `toascii`
 - `data-uri-fragment`, `failure`, `a-element`, `a-element-origin`
@@ -152,7 +152,7 @@ Velora died mid-batch (`Crash 0/0`) — **re-run after restart**, do not treat a
 
 1. **Smoke (fast):** Tier 1 list above — ~2 min, confirms no regression.
 2. **Parser progress:** `url-origin` → `url-constructor?exclude=…` → `url-setters?exclude=…`.
-3. **Heavy / fragile:** IDNA, `a-element`, `failure` — one file per Velora restart (`wpt-batch-resilient.sh`).
+3. **Heavy / fragile:** IDNA, `a-element`, `failure` — one file per Koko restart (`wpt-batch-resilient.sh`).
 
 ```bash
 # Full Tier 1 smoke
@@ -170,7 +170,7 @@ done
 1. **`url-origin` / `url-constructor` shared parser** — finish port normalization edge cases, failure + base fallback, file:/IPv6.
 2. **`url-setters` main variant** — align with `setters_tests.json` + percent-encoding.
 3. **`urlencoded-parser`** — separate from URL parser but same sprint.
-4. **Stability** — avoid long chained batches on 98% disk; restart Velora between heavy HTML suites.
+4. **Stability** — avoid long chained batches on 98% disk; restart Koko between heavy HTML suites.
 
 ---
 

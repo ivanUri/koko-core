@@ -28,7 +28,7 @@ window.testing = {
     // WebDriver is a WPT testdriver helper, not a web-platform constructor.
     checks.push(typeof WebDriver === "undefined" && !("webdriver" in window));
 
-    const key = "__velora_fingerprint_surface__";
+    const key = "__koko_fingerprint_surface__";
     localStorage.setItem(key, "ok");
     checks.push(localStorage.getItem(key) === "ok");
     localStorage.removeItem(key);
@@ -50,7 +50,7 @@ window.testing = {
     if (typeof indexedDB !== "undefined") {
       document.body.textContent = "indexeddb-pending";
       await new Promise((resolve, reject) => {
-        const req = indexedDB.open("velora-fingerprint-surface", 2);
+        const req = indexedDB.open("koko-fingerprint-surface", 2);
         req.onupgradeneeded = () => {
           if (!req.result.objectStoreNames.contains("kv")) req.result.createObjectStore("kv");
         };

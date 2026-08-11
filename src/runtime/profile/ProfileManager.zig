@@ -20,7 +20,7 @@ pub const ProfileEntry = struct {
 };
 
 pub fn defaultFingerprintForName(name: []const u8) []const u8 {
-    if (std.mem.eql(u8, name, ProfilePaths.default_profile_name)) return "velora";
+    if (std.mem.eql(u8, name, ProfilePaths.default_profile_name)) return "koko";
     return name;
 }
 
@@ -344,11 +344,11 @@ pub fn freeProfileEntries(allocator: Allocator, entries: []ProfileEntry) void {
 
 pub fn ensureFirstRun(allocator: Allocator, user_data_dir: []const u8) !void {
     try std.fs.cwd().makePath(user_data_dir);
-    if (!try fingerprintExists("velora")) return;
+    if (!try fingerprintExists("koko")) return;
 
     var default_paths = try ProfilePaths.ProfilePaths.init(allocator, user_data_dir, ProfilePaths.default_profile_name, null);
     defer default_paths.deinit();
-    try default_paths.ensureProfileReadyWithFingerprint("velora");
+    try default_paths.ensureProfileReadyWithFingerprint("koko");
 
     var state = try syncLocalState(allocator, user_data_dir);
     defer freeLocalState(allocator, &state);
@@ -372,6 +372,6 @@ fn writePreferences(path: []const u8, prefs: ProfilePaths.Preferences) !void {
 const testing = @import("../../testing/testing.zig");
 
 test "ProfileManager: default fingerprint mapping" {
-    try testing.expectEqualStrings("velora", defaultFingerprintForName("Default"));
+    try testing.expectEqualStrings("koko", defaultFingerprintForName("Default"));
     try testing.expectEqualStrings("chrome-macos-sonoma", defaultFingerprintForName("chrome-macos-sonoma"));
 }

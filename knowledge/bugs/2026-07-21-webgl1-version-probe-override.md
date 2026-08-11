@@ -14,9 +14,9 @@ Fix: for WebGL1 contexts, skip probe overrides of `VERSION` and `SHADING_LANGUAG
 
 ## Problem
 
-Comparing Chrome vs Velora on `https://demo.fingerprint.com/playground`:
+Comparing Chrome vs Koko on `https://demo.fingerprint.com/playground`:
 
-| Surface | Chrome | Velora (before) |
+| Surface | Chrome | Koko (before) |
 |---------|--------|-----------------|
 | `getContext('webgl').getParameter(VERSION)` | `WebGL 1.0 (OpenGL ES 2.0 Chromium)` | **`WebGL 2.0 (OpenGL ES 3.0 Chromium)`** |
 | Unmasked GPU (good profile) | Apple M1 Metal | Apple M1 Metal (OK) |
@@ -59,7 +59,7 @@ Secondary cleanups (same session):
 Verify:
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build -Doptimize=ReleaseSafe
 # WebGL1 must print WebGL 1.0; WebGL2 must print WebGL 2.0
 node scripts/cdp-fingerprint-playground-probe.mjs --profile chrome-local-huys-macbook-pro --max-sec 20

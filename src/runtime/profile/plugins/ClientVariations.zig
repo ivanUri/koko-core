@@ -102,7 +102,7 @@ pub fn decodeBase64(
 /// Session-stable Google-web variation IDs (Chromium field 1), from client entropy.
 ///
 /// Real Chrome fills this from Finch field trials + first-run randomization seed
-/// (`clientservices.googleapis.com/chrome-variations/seed`). Until Velora runs that
+/// (`clientservices.googleapis.com/chrome-variations/seed`). Until Koko runs that
 /// seed stack, we only mirror the **client entropy half**: a per-session id set that
 /// is stable for the session and produced via the same encode formula — never a
 /// frozen base64 capture string in source or JSON.
@@ -117,7 +117,7 @@ pub fn sessionGoogleWebIds(seed: u64, out: *[1]i32) void {
     out.* = .{id};
 }
 
-/// Parse `VELORA_VARIATION_IDS=1,2,3` style lists (optional force / A/B).
+/// Parse `KOKO_VARIATION_IDS=1,2,3` style lists (optional force / A/B).
 pub fn parseIdList(allocator: Allocator, csv: []const u8) ![]i32 {
     var list: std.ArrayList(i32) = .empty;
     errdefer list.deinit(allocator);

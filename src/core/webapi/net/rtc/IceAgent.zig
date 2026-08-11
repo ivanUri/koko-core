@@ -845,7 +845,7 @@ fn formatCandidateAddress(addr: std.net.Address, out: *[64]u8) ?u8 {
 fn emitCandidate(self: *IceAgent, cand: *const Candidate) !void {
     if (!cand.expose) return;
     // Raw LAN addresses are transport state, not script-visible identity.
-    // Chrome protects these host candidates with mDNS. Until Velora owns an
+    // Chrome protects these host candidates with mDNS. Until Koko owns an
     // mDNS responder, omit only the exposure event while retaining the real
     // candidate internally for ICE connectivity.
     if (cand.typ == .host and isPrivateOrLocalAddress(cand.addr)) return;

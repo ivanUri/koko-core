@@ -2,11 +2,11 @@
 "use strict";
 
 /**
- * Capture and compare Chrome/Velora TLS, HTTP/2 and QUIC/HTTP/3 reports.
+ * Capture and compare Chrome/Koko TLS, HTTP/2 and QUIC/HTTP/3 reports.
  *
  * Chrome must already be running with a remote-debugging endpoint. The same
  * Chrome target is used both by capture-fingerprint.js and by this script so
- * the Velora persona comes from the browser that produced the wire baseline.
+ * the Koko persona comes from the browser that produced the wire baseline.
  *
  * Example:
  *   node scripts/transport-parity-audit.js \
@@ -14,7 +14,7 @@
  *     --profile-id chrome-transport-20260730 \
  *     --runs 5
  *
- * A partial Velora-only run is useful when Chrome capture is temporarily
+ * A partial Koko-only run is useful when Chrome capture is temporarily
  * unavailable:
  *   node scripts/transport-parity-audit.js \
  *     --skip-chrome --profile-id chrome-current --runs 1
@@ -53,15 +53,15 @@ function parseArgs(argv) {
     profileId: `chrome-transport-${DEFAULT_DATE.slice(0, 10)}`,
     runs: 5,
     out: DEFAULT_OUT,
-    userDataDir: path.join("/tmp", "velora-transport-audit"),
+    userDataDir: path.join("/tmp", "koko-transport-audit"),
     skipChrome: false,
-    skipVelora: false,
+    skipKoko: false,
     reportOnly: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--skip-chrome") options.skipChrome = true;
-    else if (arg === "--skip-velora") options.skipVelora = true;
+    else if (arg === "--skip-koko") options.skipKoko = true;
     else if (arg === "--report-only") options.reportOnly = true;
     else if (arg === "--cdp") options.cdp = argv[++i];
     else if (arg === "--profile-id") options.profileId = argv[++i];
@@ -73,8 +73,8 @@ function parseArgs(argv) {
   if (!Number.isInteger(options.runs) || options.runs < 1 || options.runs > 20) {
     throw new Error("--runs must be an integer from 1 to 20");
   }
-  if (options.skipChrome && options.skipVelora && !options.reportOnly) {
-    throw new Error("cannot skip both Chrome and Velora");
+  if (options.skipChrome && options.skipKoko && !options.reportOnly) {
+    throw new Error("cannot skip both Chrome and Koko");
   }
   return options;
 }
@@ -270,26 +270,26 @@ async function captureChrome(options) {
   }
 }
 
-function ensureVeloraProfile(options) {
-  const velora = path.join(ROOT, "zig-out", "bin", "velora");
-  if (!fs.existsSync(velora)) throw new Error(`Velora binary not found: ${velora}`);
+function ensureKokoProfile(options) {
+  const koko = path.join(ROOT, "zig-out", "bin", "koko");
+  if (!fs.existsSync(koko)) throw new Error(`Koko binary not found: ${koko}`);
   mkdir(options.userDataDir);
   const profileDir = path.join(options.userDataDir, options.profileId);
   if (fs.existsSync(profileDir)) return;
-  const result = spawnSync(velora, [
+  const result = spawnSync(koko, [
     "profile", "create",
     "--name", options.profileId,
     "--fingerprint", options.profileId,
     "--user-data-dir", options.userDataDir,
   ], { cwd: ROOT, encoding: "utf8" });
   if (result.status !== 0) {
-    throw new Error(`Velora profile creation failed: ${result.stderr || result.stdout}`);
+    throw new Error(`Koko profile creation failed: ${result.stderr || result.stdout}`);
   }
 }
 
-function captureVelora(options) {
-  ensureVeloraProfile(options);
-  const velora = path.join(ROOT, "zig-out", "bin", "velora");
+function captureKoko(options) {
+  ensureKokoProfile(options);
+  const koko = path.join(ROOT, "zig-out", "bin", "koko");
   const transportProbe = path.join(ROOT, "vendor", "curl-impersonate", "curl_chrome150");
   const fingerprint = JSON.parse(fs.readFileSync(
     path.join(ROOT, "browser", "fingerprints", options.profileId, "fingerprint.json"),
@@ -310,9 +310,9 @@ function captureVelora(options) {
   ];
   for (const target of TARGETS) {
     for (let run = 1; run <= options.runs; run += 1) {
-      const directory = path.join(options.out, "velora", target.id);
+      const directory = path.join(options.out, "koko", target.id);
       mkdir(directory);
-      const smoke = spawnSync(velora, [
+      const smoke = spawnSync(koko, [
         "fetch",
         "--dump", "html",
         "--browser-profile", options.profileId,
@@ -326,14 +326,14 @@ function captureVelora(options) {
         encoding: "utf8",
         maxBuffer: 16 * 1024 * 1024,
       });
-      fs.writeFileSync(path.join(directory, `run-${run}.velora.html`), smoke.stdout || "");
-      fs.writeFileSync(path.join(directory, `run-${run}.velora.log`), smoke.stderr || "");
+      fs.writeFileSync(path.join(directory, `run-${run}.koko.html`), smoke.stdout || "");
+      fs.writeFileSync(path.join(directory, `run-${run}.koko.log`), smoke.stderr || "");
       if (smoke.status !== 0) {
-        throw new Error(`Velora ${target.id} run ${run} failed (${smoke.status})`);
+        throw new Error(`Koko ${target.id} run ${run} failed (${smoke.status})`);
       }
 
       // JSON top-level documents currently serialize as an empty HTML shell.
-      // Capture the report through Velora's vendored transport probe instead
+      // Capture the report through Koko's vendored transport probe instead
       // of treating the empty DOM dump as response data. This exercises the
       // exact patched curl/BoringSSL/ngtcp2/nghttp3 bundle, while the smoke
       // navigation above verifies that the browser runtime can navigate with
@@ -351,18 +351,18 @@ function captureVelora(options) {
       fs.writeFileSync(path.join(directory, `run-${run}.raw.txt`), transport.stdout || "");
       fs.writeFileSync(path.join(directory, `run-${run}.transport.log`), transport.stderr || "");
       writeJson(path.join(directory, `run-${run}.meta.json`), {
-        veloraExitCode: smoke.status,
-        veloraSignal: smoke.signal,
+        kokoExitCode: smoke.status,
+        kokoSignal: smoke.signal,
         transportExitCode: transport.status,
         transportSignal: transport.signal,
         transportBackend: "vendor/curl-impersonate/curl_chrome150",
         expectedProtocol: target.expectedProtocol,
       });
       if (transport.status !== 0) {
-        throw new Error(`Velora transport ${target.id} run ${run} failed (${transport.status})`);
+        throw new Error(`Koko transport ${target.id} run ${run} failed (${transport.status})`);
       }
       writeJson(path.join(directory, `run-${run}.json`),
-        parseJsonText(transport.stdout, `${target.id} Velora transport run ${run}`));
+        parseJsonText(transport.stdout, `${target.id} Koko transport run ${run}`));
     }
   }
 }
@@ -391,11 +391,11 @@ function normalize(value) {
 function firstDifference(left, right, trail = "$") {
   if (Object.is(left, right)) return null;
   if (typeof left !== typeof right || left === null || right === null) {
-    return { path: trail, chrome: left, velora: right };
+    return { path: trail, chrome: left, koko: right };
   }
   if (Array.isArray(left) || Array.isArray(right)) {
     if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
-      return { path: trail, chrome: left, velora: right };
+      return { path: trail, chrome: left, koko: right };
     }
     for (let i = 0; i < left.length; i += 1) {
       const difference = firstDifference(left[i], right[i], `${trail}[${i}]`);
@@ -407,17 +407,17 @@ function firstDifference(left, right, trail = "$") {
     const keys = [...new Set([...Object.keys(left), ...Object.keys(right)])].sort();
     for (const key of keys) {
       if (!(key in left) || !(key in right)) {
-        return { path: `${trail}.${key}`, chrome: left[key], velora: right[key] };
+        return { path: `${trail}.${key}`, chrome: left[key], koko: right[key] };
       }
       const difference = firstDifference(left[key], right[key], `${trail}.${key}`);
       if (difference) return difference;
     }
   }
-  return typeof left === "object" ? null : { path: trail, chrome: left, velora: right };
+  return typeof left === "object" ? null : { path: trail, chrome: left, koko: right };
 }
 
 function compare(options) {
-  if (options.skipChrome || options.skipVelora) return;
+  if (options.skipChrome || options.skipKoko) return;
   const summary = {
     profileId: options.profileId,
     runs: options.runs,
@@ -428,11 +428,11 @@ function compare(options) {
     for (let run = 1; run <= options.runs; run += 1) {
       const chrome = normalize(JSON.parse(fs.readFileSync(
         path.join(options.out, "chrome", target.id, `run-${run}.json`), "utf8")));
-      const velora = normalize(JSON.parse(fs.readFileSync(
-        path.join(options.out, "velora", target.id, `run-${run}.json`), "utf8")));
+      const koko = normalize(JSON.parse(fs.readFileSync(
+        path.join(options.out, "koko", target.id, `run-${run}.json`), "utf8")));
       writeJson(path.join(options.out, "normalized", "chrome", target.id, `run-${run}.json`), chrome);
-      writeJson(path.join(options.out, "normalized", "velora", target.id, `run-${run}.json`), velora);
-      const difference = firstDifference(chrome, velora);
+      writeJson(path.join(options.out, "normalized", "koko", target.id, `run-${run}.json`), koko);
+      const difference = firstDifference(chrome, koko);
       targetSummary.push({ run, equal: difference === null, firstDifference: difference });
     }
     summary.targets[target.id] = targetSummary;
@@ -474,14 +474,14 @@ function writeMetricReport(options) {
   ];
   const rows = metrics.map(([targetId, metricPath, label]) => {
     const chrome = uniqueMetricValues(options, "chrome", targetId, metricPath);
-    const velora = uniqueMetricValues(options, "velora", targetId, metricPath);
+    const koko = uniqueMetricValues(options, "koko", targetId, metricPath);
     return {
       targetId,
       metricPath,
       label,
       chrome,
-      velora,
-      exact: chrome.length === velora.length && chrome.every((value) => velora.includes(value)),
+      koko,
+      exact: chrome.length === koko.length && chrome.every((value) => koko.includes(value)),
     };
   });
   writeJson(path.join(options.out, "metric-summary.json"), {
@@ -497,18 +497,18 @@ function writeMetricReport(options) {
   });
 
   const lines = [
-    "# Chrome / Velora transport parity",
+    "# Chrome / Koko transport parity",
     "",
     `Profile: \`${options.profileId}\`  `,
     `Runs per target: ${options.runs}`,
     "",
-    "| Target | Metric | Exact | Chrome | Velora |",
+    "| Target | Metric | Exact | Chrome | Koko |",
     "|---|---|---:|---|---|",
   ];
   for (const row of rows) {
     const chrome = row.chrome.join("<br>").replace(/\|/g, "\\|");
-    const velora = row.velora.join("<br>").replace(/\|/g, "\\|");
-    lines.push(`| ${row.targetId} | ${row.label} | ${row.exact ? "yes" : "no"} | \`${chrome}\` | \`${velora}\` |`);
+    const koko = row.koko.join("<br>").replace(/\|/g, "\\|");
+    lines.push(`| ${row.targetId} | ${row.label} | ${row.exact ? "yes" : "no"} | \`${chrome}\` | \`${koko}\` |`);
   }
   lines.push(
     "",
@@ -539,10 +539,10 @@ async function main() {
     userDataDir: options.userDataDir,
     targets: TARGETS,
     chromeCaptured: !options.skipChrome,
-    veloraCaptured: !options.skipVelora,
+    kokoCaptured: !options.skipKoko,
   });
   if (!options.skipChrome) await captureChrome(options);
-  if (!options.skipVelora) captureVelora(options);
+  if (!options.skipKoko) captureKoko(options);
   compare(options);
   console.log(options.out);
 }

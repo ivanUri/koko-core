@@ -221,11 +221,11 @@ const testing = @import("../../testing/testing.zig");
 
 const google_search_policy = [_][]const u8{"google-search"};
 
-test "NavigationPlanner: velora mode is no-op" {
+test "NavigationPlanner: koko mode is no-op" {
     var registry = try PolicyRegistry.PolicyRegistry.init(testing.allocator);
     defer registry.deinit();
 
-    const plan = try navigationPlan(testing.allocator, .velora, &google_search_policy, &registry, .{
+    const plan = try navigationPlan(testing.allocator, .koko, &google_search_policy, &registry, .{
         .prior_url = "about:blank",
         .request_url = "https://www.google.com/search?q=test",
         .reason = .address_bar,

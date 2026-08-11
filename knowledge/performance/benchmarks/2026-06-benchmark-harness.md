@@ -1,10 +1,10 @@
-# Velora benchmark harness — microbench restore, crawl, density, ReleaseFast
+# Koko benchmark harness — microbench restore, crawl, density, ReleaseFast
 
 > **Date:** 2026-06-29 – 2026-06-30 · **Area:** `code-check/bench/` · **Status:** Active harness; always use ReleaseFast for ratios
 
 ## Summary
 
-Velora’s performance measurement lives in **`code-check/bench/`** — not in deleted `docs/benchmarks/` snapshots or the removed `benchmark-suite.mjs` orchestrator. The microbench runner (`compare-runner.mjs`) was accidentally deleted during a `curl-impersonate` cleanup on **2026-06-29** and restored the same day. A fresh **ReleaseFast** baseline on git `f17a19d9` showed Velora beating Playwright Chromium on navigation (geomean **0.22×**), near parity on startup (**1.04×**) and JS (**~1.05–1.20×**), with **`dom-heavy` navigation flipping from 6.28× slower (Jun 23) to 0.26–0.27× faster**.
+Koko’s performance measurement lives in **`code-check/bench/`** — not in deleted `docs/benchmarks/` snapshots or the removed `benchmark-suite.mjs` orchestrator. The microbench runner (`compare-runner.mjs`) was accidentally deleted during a `curl-impersonate` cleanup on **2026-06-29** and restored the same day. A fresh **ReleaseFast** baseline on git `f17a19d9` showed Koko beating Playwright Chromium on navigation (geomean **0.22×**), near parity on startup (**1.04×**) and JS (**~1.05–1.20×**), with **`dom-heavy` navigation flipping from 6.28× slower (Jun 23) to 0.26–0.27× faster**.
 
 Crawl (100 Wikipedia pages, c=8) and density sweep (c=1..32) confirm the win on live network workloads: throughput **1.34×**, TTFX **0.86×**, and at c=32 **24 sessions/GB** vs Chromium **5** (**4.80×** density).
 
@@ -20,7 +20,7 @@ Commit `c73875d4` removed `compare-runner.mjs`, `compare-core.mjs`, fixtures, an
 
 ### Misleading baselines
 
-Jun 23 published ratios (e.g. dom-query **72.48×**) reflected an older engine state. Optimization without reproducible measurement mis-prioritized work. Jun 30’s first ad-hoc suite run without ReleaseFast looked catastrophic (navigation geomean **3.49×**) while Jun 29 ReleaseFast showed Velora winning navigation.
+Jun 23 published ratios (e.g. dom-query **72.48×**) reflected an older engine state. Optimization without reproducible measurement mis-prioritized work. Jun 30’s first ad-hoc suite run without ReleaseFast looked catastrophic (navigation geomean **3.49×**) while Jun 29 ReleaseFast showed Koko winning navigation.
 
 ---
 
@@ -42,12 +42,12 @@ Jun 23 published ratios (e.g. dom-query **72.48×**) reflected an older engine s
 ## Solution — canonical commands
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 
 # Build for fair comparison
 zig build -Doptimize=ReleaseFast
 
-# Microbench (fixtures in velora-test/)
+# Microbench (fixtures in koko-test/)
 npm run bench:compare
 npm run bench:compare:report    # writes code-check/tmp/benchmarks/compare.json
 
@@ -65,7 +65,7 @@ Raw JSON lands in `code-check/tmp/benchmarks/` (gitignored). Reports render to t
 
 ### Jun 29 ReleaseFast highlights
 
-| Workload | Velora/Chromium geomean |
+| Workload | Koko/Chromium geomean |
 |----------|------------------------:|
 | Navigation | **0.22×** (faster) |
 | Startup | **1.04×** |
@@ -90,7 +90,7 @@ Crawl: throughput **1.34×**, TTFX **0.86×**. Density c=32: **24 vs 5 sessions/
 
 - `code-check/bench/compare-runner.mjs`, `lib/compare-core.mjs`, `render-report.mjs`
 - `code-check/bench/crawl-wikipedia-compare.mjs`, `density-sweep.mjs`
-- `velora-test/{minimal,js-compute,mixed,dom-heavy}.html`
+- `koko-test/{minimal,js-compute,mixed,dom-heavy}.html`
 - `package.json` — `bench:compare:*`, `bench:crawl:*`, `bench:density:*`, `bench:google:agent:*`
 
 ---

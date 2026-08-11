@@ -70,12 +70,12 @@ build-dev:
 ## Run the server in release mode
 run: build
 	@printf "\033[36mRunning...\033[0m\n"
-	@./zig-out/bin/velora || (printf "\033[33mRun ERROR\033[0m\n"; exit 1;)
+	@./zig-out/bin/koko || (printf "\033[33mRun ERROR\033[0m\n"; exit 1;)
 
 ## Run the server in debug mode
 run-debug: build-dev
 	@printf "\033[36mRunning...\033[0m\n"
-	@./zig-out/bin/velora || (printf "\033[33mRun ERROR\033[0m\n"; exit 1;)
+	@./zig-out/bin/koko || (printf "\033[33mRun ERROR\033[0m\n"; exit 1;)
 
 ## Test - `grep` is used to filter out the huge compile command on build
 ifeq ($(OS), macos)
@@ -88,7 +88,7 @@ test:
 		| grep --line-buffered -v "^/.*zig test -freference-trace"
 endif
 
-## Microbench Velora vs Chromium (ReleaseFast preflight via npm)
+## Microbench Koko vs Chromium (ReleaseFast preflight via npm)
 bench: build
 	npm run bench:compare:publish
 

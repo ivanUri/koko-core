@@ -613,7 +613,7 @@ pub fn evaluate(
     result: ?*XPathResult,
     frame: *Frame,
 ) !*XPathResult {
-    // Namespace resolver / result reuse are no-ops in HTML mode (Velora decision #2).
+    // Namespace resolver / result reuse are no-ops in HTML mode (Koko decision #2).
     _ = resolver;
     _ = result;
     return XPathResult.fromExpression(

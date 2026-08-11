@@ -37,8 +37,8 @@ pub noinline fn crash(
 
                 writer.writeAll(
                     \\
-                    \\Velora has crashed. Please report the issue:
-                    \\https://github.com/ivanUri/velora/issues
+                    \\Koko has crashed. Please report the issue:
+                    \\https://github.com/ivanUri/koko/issues
                     \\
                 ) catch abort();
 

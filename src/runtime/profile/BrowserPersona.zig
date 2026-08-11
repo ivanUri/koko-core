@@ -231,14 +231,14 @@ fn testingPersona() BrowserPersona {
         .family = .chrome,
         .version = BrowserPersona.Version.fromIdentity(
             .chrome,
-            "Velora/1.0 (Macintosh; Intel Mac OS X 10_15_7)",
+            "Koko/1.0 (Macintosh; Intel Mac OS X 10_15_7)",
             identity.ua_full_version,
         ),
         .identity = identity,
         .network = .{
-            .user_agent = "Velora/1.0 (Macintosh; Intel Mac OS X 10_15_7)",
-            .brands = &.{.{ .brand = "Velora", .version = "1" }},
-            .sec_ch_ua = "Sec-Ch-Ua: \"Velora\";v=\"1\"",
+            .user_agent = "Koko/1.0 (Macintosh; Intel Mac OS X 10_15_7)",
+            .brands = &.{.{ .brand = "Koko", .version = "1" }},
+            .sec_ch_ua = "Sec-Ch-Ua: \"Koko\";v=\"1\"",
             .accept_language = "Accept-Language: en-US,en;q=0.9",
             .prefers_color_scheme = "light",
             .transport_target = target,
@@ -246,7 +246,7 @@ fn testingPersona() BrowserPersona {
         },
         .features = BrowserPersona.FeatureMatrix.forIdentity(
             .chrome,
-            "Velora/1.0 (Macintosh; Intel Mac OS X 10_15_7)",
+            "Koko/1.0 (Macintosh; Intel Mac OS X 10_15_7)",
         ),
     };
 }

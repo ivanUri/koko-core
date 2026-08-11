@@ -12,7 +12,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
-const js = @import("velora").js;
+const js = @import("koko").js;
 
 pub fn main() !void {
     const allocator = std.heap.c_allocator;

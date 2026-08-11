@@ -2,7 +2,7 @@
 
 ## Problem
 
-Velora can load `google.com` and run JS (`navigator.webdriver: false`, UA/UA-CH match Chrome 120), but searches often redirect to:
+Koko can load `google.com` and run JS (`navigator.webdriver: false`, UA/UA-CH match Chrome 120), but searches often redirect to:
 
 `https://www.google.com/sorry/index?...`
 
@@ -10,7 +10,7 @@ The same `/sorry` page appears on **Playwright Chrome headless** from the same I
 
 ## Root cause (confirmed)
 
-| Layer | Velora today | What Google checks |
+| Layer | Koko today | What Google checks |
 |-------|--------------|-------------------|
 | JS fingerprint | OK (`chrome-macos-catalina` profile) | Secondary |
 | HTTP headers (`Sec-CH-UA`, `Referer`, …) | OK (`Frame.headersForRequest`) | Secondary |
@@ -19,13 +19,13 @@ The same `/sorry` page appears on **Playwright Chrome headless** from the same I
 
 HTTP stack: [`src/runtime/network/http.zig`](../src/runtime/network/http.zig) via libcurl.
 
-On macOS arm64, Velora links vendored libcurl-impersonate **v2.0.0rc3** (`vendor/curl-impersonate/`, `curl 8.21.0-IMPERSONATE`).
+On macOS arm64, Koko links vendored libcurl-impersonate **v2.0.0rc3** (`vendor/curl-impersonate/`, `curl 8.21.0-IMPERSONATE`).
 
 - Base preset: `chrome146`
 - **Chrome 150+ profiles:** same preset + runtime `CURLOPT_SSL_SIG_HASH_ALGS` with ML-DSA (`mldsa44:mldsa65:mldsa87:…`) → JA4 `t13d1516h2_8daaf6152771_806a8c22fdea` (matches headless Chrome 150)
 - CLI wrapper: `vendor/curl-impersonate/curl_chrome150`
 
-**Fork / source:** [lexiforest/curl-impersonate](https://github.com/lexiforest/curl-impersonate) (Velora also documents ivanUri fork for patch workflow). Docs: [curl-impersonate-fork.md](curl-impersonate-fork.md). Capture notes: `knowledge/fingerprint/tls/2026-07-17-chrome150-vs-chrome146-ja4-gap.md`.
+**Fork / source:** [lexiforest/curl-impersonate](https://github.com/lexiforest/curl-impersonate) (Koko also documents ivanUri fork for patch workflow). Docs: [curl-impersonate-fork.md](curl-impersonate-fork.md). Capture notes: `knowledge/fingerprint/tls/2026-07-17-chrome150-vs-chrome146-ja4-gap.md`.
 
 ## Spike procedure
 
@@ -54,18 +54,18 @@ vendor/curl-impersonate/curl_chrome150 -sS "https://tls.peet.ws/api/all" | jq '.
 
 ## Complementary work (not sufficient alone)
 
-- Session/cookie persist (velora-sdk `session-state.ts`)
-- Consent dismiss + `page.search()` type+Enter (velora-sdk `page.ts`)
+- Session/cookie persist (koko-sdk `session-state.ts`)
+- Consent dismiss + `page.search()` type+Enter (koko-sdk `page.ts`)
 - Residential proxy for production scale
 - reCAPTCHA solver (fallback only)
 
 ## Runtime (no code-check harness)
 
 Google document hops with `sg_ss=` use the `google-search` profile policy and
-`scripts/chrome-google-transport.mjs` (real Chrome CDP network via **velora-sdk**). Build SDK first:
+`scripts/chrome-google-transport.mjs` (real Chrome CDP network via **koko-sdk**). Build SDK first:
 
 ```bash
-cd ../velora-sdk && npm install && npm run build
+cd ../koko-sdk && npm install && npm run build
 ```
 
-Prerequisite: Chrome with `--remote-debugging-port=9222`, or set `VELORA_CHROME_SPAWN=1`.
+Prerequisite: Chrome with `--remote-debugging-port=9222`, or set `KOKO_CHROME_SPAWN=1`.

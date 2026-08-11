@@ -15,7 +15,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const velora_version = std.SemanticVersion.parse(@import("build.zig.zon").version) catch unreachable;
+const koko_version = std.SemanticVersion.parse(@import("build.zig.zon").version) catch unreachable;
 const min_zig_version = std.SemanticVersion.parse(@import("build.zig.zon").minimum_zig_version) catch unreachable;
 
 const Build = blk: {
@@ -39,7 +39,7 @@ pub fn build(b: *Build) !void {
     const snapshot_path = b.option([]const u8, "snapshot_path", "Path to v8 snapshot");
     const version = resolveVersion(b);
     var stdout = std.fs.File.stdout().writer(&.{});
-    try stdout.interface.print("Velora {f}\n", .{version});
+    try stdout.interface.print("Koko {f}\n", .{version});
 
     const version_string = b.fmt("{f}", .{version});
     const version_encoded = std.mem.replaceOwned(u8, b.allocator, version_string, "+", "%2B") catch @panic("OOM");
@@ -49,14 +49,14 @@ pub fn build(b: *Build) !void {
     opts.addOption([]const u8, "version_encoded", version_encoded);
     opts.addOption(?[]const u8, "snapshot_path", snapshot_path);
     opts.addOption(bool, "curl_impersonate", hasCurlImpersonate(b, target.result.os.tag));
-    const strip_binaries = b.option(bool, "strip", "Strip debug symbols from velora binaries") orelse true;
+    const strip_binaries = b.option(bool, "strip", "Strip debug symbols from koko binaries") orelse true;
     const enable_tsan = b.option(bool, "tsan", "Enable Thread Sanitizer") orelse false;
     const enable_asan = b.option(bool, "asan", "Enable Address Sanitizer") orelse false;
     const enable_csan = b.option(std.zig.SanitizeC, "csan", "Enable C Sanitizers");
 
-    const velora_module = blk: {
-        const mod = b.addModule("velora", .{
-            .root_source_file = b.path("src/velora.zig"),
+    const koko_module = blk: {
+        const mod = b.addModule("koko", .{
+            .root_source_file = b.path("src/koko.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
@@ -64,7 +64,7 @@ pub fn build(b: *Build) !void {
             .sanitize_c = enable_csan,
             .sanitize_thread = enable_tsan,
         });
-        mod.addImport("velora", mod); // allow circular "velora" import
+        mod.addImport("koko", mod); // allow circular "koko" import
         mod.addImport("build_config", opts.createModule());
 
         // Format check
@@ -83,7 +83,7 @@ pub fn build(b: *Build) !void {
         linkZlibModule(b, mod, enable_tsan);
         try linkHtml5Ever(b, mod);
         try linkWebRtc(b, mod, enable_tsan);
-        try linkNghttp2ForVelora(b, mod, enable_tsan);
+        try linkNghttp2ForKoko(b, mod, enable_tsan);
         if (target.result.os.tag == .macos) {
             mod.addSystemFrameworkPath(.{ .cwd_relative = "/System/Library/Frameworks" });
             mod.linkFramework("CoreGraphics", .{});
@@ -106,15 +106,15 @@ pub fn build(b: *Build) !void {
         break :blk mod;
     };
 
-    linkSqlite(b, velora_module, enable_csan, enable_tsan);
-    linkStbImageWrite(b, velora_module);
+    linkSqlite(b, koko_module, enable_csan, enable_tsan);
+    linkStbImageWrite(b, koko_module);
 
     // Check compilation
-    const check = b.step("check", "Check if velora compiles");
+    const check = b.step("check", "Check if koko compiles");
 
     const check_lib = b.addLibrary(.{
-        .name = "velora_check",
-        .root_module = velora_module,
+        .name = "koko_check",
+        .root_module = koko_module,
     });
     check.dependOn(&check_lib.step);
 
@@ -126,7 +126,7 @@ pub fn build(b: *Build) !void {
     {
         // browser
         const exe = b.addExecutable(.{
-            .name = "velora",
+            .name = "koko",
             // Zig 0.15.2: LLVM+Debug SIGSEGV in lowerDebugType; native+Debug SIGSEGV in updateLazySymbol.
             // Strip debug info in Debug builds to avoid LLVM debug-type recursion.
             .use_llvm = true,
@@ -138,14 +138,14 @@ pub fn build(b: *Build) !void {
                 .sanitize_c = enable_csan,
                 .sanitize_thread = enable_tsan,
                 .imports = &.{
-                    .{ .name = "velora", .module = velora_module },
+                    .{ .name = "koko", .module = koko_module },
                 },
             }),
         });
         b.installArtifact(exe);
 
         const exe_check = b.addLibrary(.{
-            .name = "velora_exe_check",
+            .name = "koko_exe_check",
             .root_module = exe.root_module,
         });
         check.dependOn(&exe_check.step);
@@ -166,14 +166,14 @@ pub fn build(b: *Build) !void {
     {
         // snapshot creator
         const exe = b.addExecutable(.{
-            .name = "velora-snapshot-creator",
+            .name = "koko-snapshot-creator",
             .use_llvm = true,
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/main_snapshot_creator.zig"),
                 .target = target,
                 .optimize = optimize,
                 .imports = &.{
-                    .{ .name = "velora", .module = velora_module },
+                    .{ .name = "koko", .module = koko_module },
                 },
             }),
         });
@@ -196,7 +196,7 @@ pub fn build(b: *Build) !void {
     {
         // test
         const tests = b.addTest(.{
-            .root_module = velora_module,
+            .root_module = koko_module,
             .use_llvm = true,
             .test_runner = .{ .path = b.path("src/testing/test_runner.zig"), .mode = .simple },
         });
@@ -217,7 +217,7 @@ pub fn build(b: *Build) !void {
                 .sanitize_c = enable_csan,
                 .sanitize_thread = enable_tsan,
                 .imports = &.{
-                    .{ .name = "velora", .module = velora_module },
+                    .{ .name = "koko", .module = koko_module },
                 },
             }),
         });
@@ -254,7 +254,7 @@ fn linkV8(
         .is_tsan = is_tsan,
         .inspector_subtype = false,
         .v8_enable_sandbox = is_tsan,
-        .cache_root = b.pathFromRoot(".velora-cache"),
+        .cache_root = b.pathFromRoot(".koko-cache"),
         .prebuilt_v8_path = prebuilt_v8_path,
     });
     mod.addImport("v8", dep.module("v8"));
@@ -462,7 +462,7 @@ fn linkCurl(b: *Build, mod: *Build.Module, is_tsan: bool) !void {
     const libidn2 = buildLibidn2(b, target, mod.optimize.?, is_tsan);
     curl.root_module.linkLibrary(libidn2);
     // Also expose libidn2 to the consuming module so src/sys/idna.zig's
-    // @cImport of <idn2.h> resolves. Without this, velora_module only
+    // @cImport of <idn2.h> resolves. Without this, koko_module only
     // sees idn2.h transitively if a system libidn2 happens to be installed.
     mod.linkLibrary(libidn2);
 
@@ -626,7 +626,7 @@ fn buildNghttp2(b: *Build, target: Build.ResolvedTarget, optimize: std.builtin.O
     return lib;
 }
 
-fn linkNghttp2ForVelora(b: *Build, mod: *Build.Module, is_tsan: bool) !void {
+fn linkNghttp2ForKoko(b: *Build, mod: *Build.Module, is_tsan: bool) !void {
     const target = mod.resolved_target.?;
     const optimize = mod.optimize.?;
     const nghttp2 = buildNghttp2(b, target, optimize, is_tsan);
@@ -1148,12 +1148,12 @@ fn resolveVersion(b: *std.Build) std.SemanticVersion {
 
     const version = if (opt_version) |v|
         std.SemanticVersion.parse(v) catch blk: {
-            var fallback = velora_version;
+            var fallback = koko_version;
             fallback.pre = v;
             break :blk fallback;
         }
     else
-        velora_version;
+        koko_version;
 
     // Only enrich versions that have a pre-release field and no explicit build metadata.
     if (version.pre == null or version.build != null) return version;
@@ -1174,8 +1174,8 @@ fn resolveVersion(b: *std.Build) std.SemanticVersion {
     };
 }
 
-/// Build usrsctp as a static library and link it into the velora module.
-/// Also exposes the BoringSSL ssl+crypto libs to velora for DTLS.
+/// Build usrsctp as a static library and link it into the koko module.
+/// Also exposes the BoringSSL ssl+crypto libs to koko for DTLS.
 fn linkWebRtc(b: *Build, mod: *Build.Module, is_tsan: bool) !void {
     const target = mod.resolved_target.?;
     const optimize = mod.optimize.?;

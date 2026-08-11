@@ -1052,7 +1052,7 @@ fn tryCatchMessageSite(tc: *const JS.TryCatch, local: *const JS.Local, fallback:
 fn stashImportScriptError(local: *const JS.Local, err: JS.Value) void {
     const global_handle = v8.v8__Context__Global(local.handle).?;
     const global = JS.Object{ .local = local, .handle = global_handle };
-    _ = global.set("__veloraImportScriptError", err, .{}) catch {};
+    _ = global.set("__kokoImportScriptError", err, .{}) catch {};
 }
 
 fn stashImportScriptNetworkError(local: *const JS.Local) void {

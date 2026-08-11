@@ -31,7 +31,7 @@ jobs:
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "asset=velora-${VERSION}-darwin-arm64.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "asset=koko-${VERSION}-darwin-arm64.tar.gz" >> "$GITHUB_OUTPUT"
           NOTES=".github/release-notes/v${VERSION}.md"
           if [ ! -f "$NOTES" ]; then
             NOTES=".github/release-notes/RELEASE.md"
@@ -54,7 +54,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
-          name: Velora ${{ steps.meta.outputs.tag }}
+          name: Koko ${{ steps.meta.outputs.tag }}
           body_path: ${{ steps.meta.outputs.notes }}
           files: ${{ steps.meta.outputs.asset }}
           draft: false

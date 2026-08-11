@@ -1,6 +1,6 @@
 # Bitbucket hang — O(n²) HTML parser text merge
 
-> **Audience:** Velora engineers  
+> **Audience:** Koko engineers  
 > **Date:** 2026-07-16
 
 ## Summary

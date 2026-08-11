@@ -2,7 +2,7 @@
 
 ## Summary
 
-Velora matches Chrome on the full CreepJS **`navigator`** fingerprint section for profile `chrome-local-huys-macbook-pro`: **0 field-level diffs** in `cdp-section-field-compare.mjs` and identical section hash within the 20-second probe budget. The work spanned **prototype key order**, **WebGPU adapter metadata and limits**, **`userAgentData.uaFullVersion`**, and earlier fixes for permissions / `bluetoothAvailability`.
+Koko matches Chrome on the full CreepJS **`navigator`** fingerprint section for profile `chrome-local-huys-macbook-pro`: **0 field-level diffs** in `cdp-section-field-compare.mjs` and identical section hash within the 20-second probe budget. The work spanned **prototype key order**, **WebGPU adapter metadata and limits**, **`userAgentData.uaFullVersion`**, and earlier fixes for permissions / `bluetoothAvailability`.
 
 The `navigator` section is among the densest CreepJS surfaces—hardware concurrency, UA-CH, GPU limits, MIME types, and prototype reflection in one hash. Antidetect browsers that patch `userAgent` alone still fail here.
 
@@ -16,7 +16,7 @@ Initial compare showed **34 field diffs**:
 |------|---------|
 | `properties` | `Object.keys(Object.getPrototypeOf(navigator))` order entirely differed |
 | `userAgentData.uaFullVersion` | Profile stale (`149.0.7827.158`) vs live Chrome (`.197`) |
-| `webgpu.adapterInfo` | Velora `google` / `angle`; Apple Silicon Chrome `apple` / `metal-3` |
+| `webgpu.adapterInfo` | Koko `google` / `angle`; Apple Silicon Chrome `apple` / `metal-3` |
 | `webgpu.limits` | ~30 limit keys missing or wrong magnitudes |
 
 Permissions and `bluetoothAvailability` had been fixed in an earlier pass; section hash still failed on enumeration and GPU surfaces with `lies=0`.
@@ -29,7 +29,7 @@ Permissions and `bluetoothAvailability` had been fixed in an earlier pass; secti
 
 CreepJS `getNavigator()` hashes **`properties`**: ordered keys from `Object.keys(Object.getPrototypeOf(navigator))`. This is a **different API pattern** than `windowFeatures`, which uses `Object.getOwnPropertyNames(window)` (see [window-features-opn-hook.md](./window-features-opn-hook.md)).
 
-Velora exposed a different set and **insertion order** on `Navigator.prototype` because:
+Koko exposed a different set and **insertion order** on `Navigator.prototype` because:
 
 - IDL bindings installed properties in implementation order
 - Some Chrome-only keys were missing entirely
@@ -55,7 +55,7 @@ Partial limit objects or wrong vendor strings (`google`/`angle` vs `apple`/`meta
 ### Field compare
 
 ```bash
-cd /Users/huydev/Desktop/velora
+cd /Users/huydev/Desktop/koko
 zig build install
 node scripts/cdp-section-field-compare.mjs navigator
 ```
@@ -119,7 +119,7 @@ Real-world collectors rarely isolate a single `navigator` field. They combine:
 - **GPU** (WebGPU limits exceed legacy `webgl` renderer string entropy on Apple Silicon)
 - **Prototype shape** (`properties` order catches incomplete Chromium forks)
 
-Velora's split strategy—**profile JSON for values**, **KeysIntelligent for enumeration order**, **navigator_extras for WebGPU**—keeps each concern updatable when Chrome ships a new limit key without rewriting the entire binding layer.
+Koko's split strategy—**profile JSON for values**, **KeysIntelligent for enumeration order**, **navigator_extras for WebGPU**—keeps each concern updatable when Chrome ships a new limit key without rewriting the entire binding layer.
 
 ### Refresh procedure when Chrome updates
 
@@ -153,7 +153,7 @@ Use `npm run test:creepjs:compare` for full 25-section regression after navigato
 - CreepJS: `code-check/sites/creep/creep.js` — `getNavigator()`, `getWebGpu()`
 - Probe: `scripts/cdp-section-field-compare.mjs navigator`
 - Section compare: `scripts/cdp-creepjs-section-compare.mjs`
-- Velora: `src/runtime/profile/NavigatorKeysIntelligent.zig`, `navigator_extras.zig`, `Frame.zig`
+- Koko: `src/runtime/profile/NavigatorKeysIntelligent.zig`, `navigator_extras.zig`, `Frame.zig`
 - Profile asset: `browser/profiles/assets/chrome-local-huys-macbook-pro-navigator-keys.json`
 
 ---
