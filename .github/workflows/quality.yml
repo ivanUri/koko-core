@@ -39,7 +39,8 @@ jobs:
   check-and-test:
     name: Check and test (macOS arm64)
     needs: format
-    runs-on: macos-14
+    # V8 14 requires a macOS 15+ SDK. macos-14 images can expose only SDK 14.x.
+    runs-on: macos-15
     timeout-minutes: 90
     env:
       KOKO_DISABLE_TELEMETRY: "true"
@@ -57,9 +58,9 @@ jobs:
             .koko-cache
             .zig-cache
             ~/Library/Caches/zig
-          key: koko-macos-arm64-zig-0.15.2-${{ hashFiles('build.zig', 'build.zig.zon', 'vendor/v8-wrapper/**') }}
+          key: koko-macos-15-arm64-zig-0.15.2-${{ hashFiles('build.zig', 'build.zig.zon', 'vendor/v8-wrapper/**') }}
           restore-keys: |
-            koko-macos-arm64-zig-0.15.2-
+            koko-macos-15-arm64-zig-0.15.2-
       - name: Compile check
         run: zig build check
       - name: Run deterministic tests
