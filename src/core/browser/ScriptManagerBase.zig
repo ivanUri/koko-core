@@ -888,10 +888,14 @@ pub fn hasPendingJsWork(self: *const ScriptManagerBase) bool {
 
 /// True when it is safe to run Script.eval (V8 central stack).
 /// Must NOT gate DCL/tailHook — only individual script bodies.
-/// doneCallback → evaluate() in processMessages. Blocking inTransferCallback
-/// left parsed DOM without DCL (go.dev/netlify). Nested curl uses HttpClient
-/// ready_queue; only block when V8 is on-stack.
+/// Static module resolution may synchronously wait for a preloaded dependency.
+/// Starting that resolution from an HTTP terminal callback deadlocks progress:
+/// waitForImport can drive curl, but processMessages cannot re-enter to publish
+/// the dependency's `.done` state until the outer callback returns. Defer the
+/// script body to the central scheduler whenever curl mutation/completion
+/// ownership is active.
 fn canEvalScriptsFromHttpCallback(self: *const ScriptManagerBase) bool {
+    if (self.client.mutationsBlocked()) return false;
     const env = &self.owner.parentFrame()._page.session.browser.env;
     if (env.anyContextOnV8Stack()) return false;
     return true;

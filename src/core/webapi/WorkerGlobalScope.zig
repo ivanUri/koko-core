@@ -210,6 +210,11 @@ pub fn deinit(self: *WorkerGlobalScope) void {
 
 pub fn deinitForSession(self: *WorkerGlobalScope, session: *Session) void {
     self.enterRealmDraining();
+    // Worker-owned callbacks retain this scope and V8 function handles.  Drop
+    // them before destroying the worker context; otherwise the next browser
+    // tick (or the next test session) can dispatch a queued message into a
+    // dead realm and call a poisoned V8 handle.
+    self.js.scheduler.reset();
     self.releasePendingUndelivered();
     self._script_manager.deinit();
 
@@ -413,7 +418,14 @@ pub fn flushPendingUndelivered(self: *WorkerGlobalScope) !void {
     const target = self.asEventTarget();
 
     while (self._pending_undelivered.items.len > 0) {
-        const on_message = handlerFromCurrentGlobal(&ls.local, "onmessage");
+        // The IDL setter keeps `_on_message` as a persistent handle.  Resolve
+        // that handle in the current local scope instead of retaining a raw
+        // V8 Local returned by a property lookup; the latter can outlive its
+        // HandleScope when another worker task runs before dispatch.
+        const on_message = if (self._on_message) |handler|
+            handler.local(&ls.local)
+        else
+            null;
         if (!self._event_manager.hasDirectListeners(target, "message", on_message)) {
             break;
         }
@@ -806,6 +818,12 @@ pub fn notifyPromiseRejection(self: *WorkerGlobalScope, no_handler: bool, promis
             .target = "worker",
             .value = reason,
         });
+    }
+
+    if (no_handler) {
+        const message = if (reason) |value| value.toStringSlice() catch "Unhandled promise rejection" else "Unhandled promise rejection";
+        const stack = promise.local.stackTrace() catch null;
+        self._page.session.browser.observeJavaScriptError("unhandled-rejection", message, self.url, 0, 0, self._frame_id, self._loader_id, stack);
     }
 
     const event_name, const attribute_callback = blk: {
@@ -1377,7 +1395,10 @@ const ReceiveMessageCallback = struct {
 
         // If data is null, structured clone failed - fire messageerror
         if (self.data == null) {
-            const on_messageerror = handlerFromCurrentGlobal(&ls.local, "onmessageerror");
+            const on_messageerror = if (worker_scope._on_messageerror) |handler|
+                handler.local(&ls.local)
+            else
+                null;
             if (!worker_scope._event_manager.hasDirectListeners(target, "messageerror", on_messageerror)) {
                 return null;
             }
@@ -1389,7 +1410,10 @@ const ReceiveMessageCallback = struct {
             return null;
         }
 
-        const on_message = handlerFromCurrentGlobal(&ls.local, "onmessage");
+        const on_message = if (worker_scope._on_message) |handler|
+            handler.local(&ls.local)
+        else
+            null;
 
         // Queue until onmessage / addEventListener is registered (reCAPTCHA worker setup).
         if (!worker_scope._event_manager.hasDirectListeners(target, "message", on_message)) {

@@ -8,13 +8,17 @@ const uuidv4 = @import("../../support/id.zig").uuidv4;
 const log = @import("../../support/log.zig");
 const IID_FILE = "iid";
 const Allocator = std.mem.Allocator;
+// Keep product analytics off for local/browser-runtime builds. Observatory's
+// local JSONL stream is the supported diagnostics path; there is no runtime
+// environment switch for this policy.
+const PRODUCT_TELEMETRY_ENABLED = false;
 
 pub fn isDisabled() bool {
-    if (builtin.mode == .Debug or builtin.is_test) {
-        return true;
-    }
-
-    return std.process.hasEnvVarConstant("KOKO_DISABLE_TELEMETRY");
+    // Product telemetry is intentionally disabled in the local Core runtime.
+    // Observatory's local telemetry stream is the supported diagnostics path;
+    // Core must not make an implicit external request or require an env flag
+    // to keep a crawl offline and deterministic.
+    return !PRODUCT_TELEMETRY_ENABLED;
 }
 
 pub const Telemetry = TelemetryT(@import("koko.zig"));
@@ -114,17 +118,8 @@ pub const Event = union(enum) {
     };
 };
 
-extern fn setenv(name: [*:0]u8, value: [*:0]u8, override: c_int) c_int;
-extern fn unsetenv(name: [*:0]u8) c_int;
-
 const testing = @import("../../testing/testing.zig");
-test "telemetry: always disabled in debug builds" {
-    // Must be disabled regardless of environment variable.
-    _ = unsetenv(@constCast("KOKO_DISABLE_TELEMETRY"));
-    try testing.expectEqual(true, isDisabled());
-
-    _ = setenv(@constCast("KOKO_DISABLE_TELEMETRY"), @constCast(""), 0);
-    defer _ = unsetenv(@constCast("KOKO_DISABLE_TELEMETRY"));
+test "telemetry: product provider is disabled by code configuration" {
     try testing.expectEqual(true, isDisabled());
 
     const FailingProvider = struct {

@@ -148,7 +148,7 @@ See `koko-sdk/README.md` for launch profiles, semantic tree, NodeHandle, and CLI
 
 ### Fingerprint probes
 
-Probe / bench npm scripts were removed with `scripts/` — rebuild runners under a fresh layout when needed. TLS notes: `docs/tls-impersonate.md`.
+Fingerprint probes live under `scripts/`. TLS notes: `docs/tls-impersonate.md`.
 
 ## Use Cases
 
@@ -207,19 +207,15 @@ Current development priorities include:
 
 ## Benchmarks
 
-Koko vs Playwright Chromium (startup, static navigation, JS workloads) on local fixtures:
-
-- Microbench (local fixtures): [`docs/benchmarks/latest.md`](docs/benchmarks/latest.md)
-- Real-world crawl (100× en.wikipedia.org): [`docs/benchmarks/crawl-wikipedia-latest.md`](docs/benchmarks/crawl-wikipedia-latest.md)
+The reproducible Phase 1 harness compares Koko direct CDP with Chromium direct CDP on local deterministic fixtures. Playwright Chromium is available as an optional secondary baseline.
 
 ```bash
-zig build
-npx playwright install chromium   # first time only
+zig build benchmark -Doptimize=ReleaseFast -- --quick
+zig build benchmark -Doptimize=ReleaseFast -- --suite navigation --iterations 30
+zig build benchmark -Doptimize=ReleaseFast -- --baseline all
 ```
 
-Historical benchmark reports: [`docs/benchmarks/`](docs/benchmarks/).
-
-Numbers are machine-local and use Playwright bundled Chromium (not Google Chrome desktop). See the benchmark docs for methodology and limitations.
+It measures startup-to-first-document, navigation to `DOMContentLoaded`, session lifecycle, and whole-process-tree idle memory. Raw observations, environment metadata, summaries, and a Markdown report are written to the gitignored `bench-results/` directory. See [`bench/README.md`](bench/README.md) for the measurement contract and limitations.
 
 ## Performance Direction
 

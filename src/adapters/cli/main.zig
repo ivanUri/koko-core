@@ -195,6 +195,7 @@ fn run(allocator: Allocator, main_arena: Allocator) !void {
                     .with_base = opts.with_base,
                     .with_frames = opts.with_frames,
                 },
+                .dump_html_file = opts.dump_html_file,
             };
 
             var stdout = std.fs.File.stdout();

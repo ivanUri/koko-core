@@ -50,7 +50,30 @@ pub const FetchOpts = struct {
     dump_mode: ?Config.DumpFormat = null,
     dump: dump.Opts = .{},
     writer: ?*std.Io.Writer = null,
+    dump_html_file: ?[]const u8 = null,
 };
+
+const ProgressSnapshot = struct {
+    path: []const u8,
+    dump: dump.Opts,
+};
+
+/// Serialize the current DOM to the export sidecar while Runner is still
+/// waiting. The bridge treats this file as a best-effort live preview and the
+/// final fetch dump rewrites it with the authoritative snapshot.
+fn writeProgressSnapshot(context: *anyopaque, frame: *Frame) void {
+    const progress: *ProgressSnapshot = @ptrCast(@alignCast(context));
+    var file = std.fs.cwd().createFile(progress.path, .{ .truncate = true }) catch return;
+    defer file.close();
+    var writer = file.writer(&.{});
+    var opts = progress.dump;
+    // Repeated progress snapshots must not mutate the live document by adding
+    // a new <base> element on every tick. The final snapshot still honours the
+    // caller's dump options below.
+    opts.with_base = false;
+    dump.root(frame.document, opts, &writer.interface, frame) catch return;
+    writer.interface.flush() catch {};
+}
 
 pub fn fetch(_: *App, browser: *Browser, url: [:0]const u8, opts: FetchOpts) !void {
     const session = if (browser.session) |*session| session else return error.SessionNotAvailable;
@@ -60,7 +83,28 @@ pub fn fetch(_: *App, browser: *Browser, url: [:0]const u8, opts: FetchOpts) !vo
     try frame.navigate(url, .{});
     log.debug(.app, "fetch navigate submitted", .{ .url = url, .frame_url = frame.url });
 
+    // A page with long-lived reCAPTCHA/analytics activity may never reach the
+    // requested wait state. Application telemetry is still useful in that
+    // case, so capture the browser state accumulated so far before returning
+    // a wait/action error.
+    var application_snapshot_emitted = false;
+    errdefer if (!application_snapshot_emitted) {
+        session.emitApplicationStorageSnapshot(frame);
+        profile_session.saveExecutionCheckpoint(session, frame.url);
+    };
+
     var runner = try session.runner(.{});
+    var progress: ?ProgressSnapshot = if (opts.dump_html_file) |path| .{
+        .path = path,
+        .dump = opts.dump,
+    } else null;
+    if (progress) |*snapshot| {
+        runner.setProgressHook(.{
+            .context = snapshot,
+            .callback = writeProgressSnapshot,
+            .interval_ms = 250,
+        });
+    }
     log.debug(.app, "fetch wait start", .{ .url = url, .wait_ms = opts.wait_ms, .wait_until = opts.wait_until });
     try runner.wait(.{ .ms = opts.wait_ms, .until = opts.wait_until });
     const active_frame = session.currentFrame() orelse return error.SessionNotAvailable;
@@ -96,8 +140,29 @@ pub fn fetch(_: *App, browser: *Browser, url: [:0]const u8, opts: FetchOpts) !vo
         log.debug(.app, "fetch wait script done", .{ .url = url });
     }
 
-    const writer = opts.writer orelse return;
+    // Snapshot browser-owned storage after all requested waits/actions have
+    // settled. This powers Observatory's Application panel without exposing
+    // secret values in its persisted JSONL telemetry.
+    const storage_frame = session.currentFrame() orelse return error.SessionNotAvailable;
+    session.emitApplicationStorageSnapshot(storage_frame);
+    profile_session.saveExecutionCheckpoint(session, storage_frame.url);
+    application_snapshot_emitted = true;
+
     const dump_frame = session.currentFrame() orelse return error.SessionNotAvailable;
+
+    // Observatory needs the hydrated document, not only the original HTTP
+    // response body. Keep the normal stdout dump unchanged and optionally
+    // serialize this final DOM to a sidecar file for consumers that need both
+    // HTML and Markdown from the same browser run.
+    if (opts.dump_html_file) |path| {
+        var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+        defer file.close();
+        var file_writer = file.writer(&.{});
+        try dump.root(dump_frame.document, opts.dump, &file_writer.interface, dump_frame);
+        try file_writer.interface.flush();
+    }
+
+    const writer = opts.writer orelse return;
     log.debug(.app, "fetch dump start", .{ .url = url, .frame_url = dump_frame.url, .dump_mode = opts.dump_mode });
     switch (opts.dump_mode orelse return) {
         .html, .wpt => try dump.root(dump_frame.document, opts.dump, writer, dump_frame),

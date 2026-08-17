@@ -8,8 +8,17 @@ const http = @import("http.zig");
 
 const Self = @This();
 
+// Site export needs the complete text document, not only a small telemetry
+// preview. Keep a bounded limit so a pathological response cannot turn the
+// telemetry stream into an unbounded memory sink.
+const MAX_CAPTURE_BYTES: usize = 4 * 1024 * 1024;
+
 pub const ResponseMetadata = struct {
     method: []const u8,
+    resource_type: []const u8,
+    request_id: u32,
+    frame_id: u32,
+    loader_id: u32,
     redirect_count: u32,
     content_type: ?[]const u8,
 };
@@ -19,27 +28,39 @@ pub const ResponseMetadata = struct {
 // rather than on an individual sink.
 var process_mutex: std.Thread.Mutex = .{};
 var process_sequence: u64 = 0;
-var previous_sample: ?ProcessSample = null;
+var previous_cpu_sample: ?ProcessSample = null;
+var latest_cpu_sample: ?CpuSample = null;
 
 allocator: std.mem.Allocator,
 file: std.fs.File,
+session_id: []u8,
+capture_bodies: bool,
+checkpoint_enabled: bool,
+replay_enabled: bool,
 
-pub fn initFromEnvironment(allocator: std.mem.Allocator) !?Self {
-    const path = std.process.getEnvVarOwned(allocator, "KOKO_INTERNET_JOURNEY_FILE") catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => return null,
+pub fn init(allocator: std.mem.Allocator, path: ?[]const u8, capture_bodies: bool, checkpoint_enabled: bool, replay_enabled: bool) !?Self {
+    const output_path = path orelse return null;
+
+    const file = std.fs.cwd().openFile(output_path, .{ .mode = .write_only }) catch |err| switch (err) {
+        error.FileNotFound => try std.fs.cwd().createFile(output_path, .{}),
         else => return err,
     };
-    defer allocator.free(path);
-
-    const file = std.fs.cwd().openFile(path, .{ .mode = .write_only }) catch |err| switch (err) {
-        error.FileNotFound => try std.fs.cwd().createFile(path, .{}),
-        else => return err,
-    };
+    errdefer file.close();
     try file.seekFromEnd(0);
-    return .{ .allocator = allocator, .file = file };
+    const session_id = try std.fmt.allocPrint(allocator, "koko-{d}-{d}", .{ std.c.getpid(), std.time.nanoTimestamp() });
+    errdefer allocator.free(session_id);
+    return .{
+        .allocator = allocator,
+        .file = file,
+        .session_id = session_id,
+        .capture_bodies = capture_bodies,
+        .checkpoint_enabled = checkpoint_enabled,
+        .replay_enabled = replay_enabled,
+    };
 }
 
 pub fn deinit(self: *Self) void {
+    self.allocator.free(self.session_id);
     self.file.close();
 }
 
@@ -49,6 +70,10 @@ pub fn emit(
     timing: http.Connection.TransferTiming,
     metadata: ResponseMetadata,
     failed: bool,
+    request_headers: http.Headers,
+    response_headers: *http.HeaderIterator,
+    request_body: ?[]const u8,
+    response_body: []const u8,
 ) !void {
     process_mutex.lock();
     defer process_mutex.unlock();
@@ -59,7 +84,6 @@ pub fn emit(
         "";
     const response_code = conn.getResponseCode() catch 0;
     const now = std.time.milliTimestamp();
-    const session_id = "koko-core";
     const content_encoding = headerValue(conn, "content-encoding");
     const cache_control = headerValue(conn, "cache-control");
     const server = headerValue(conn, "server");
@@ -69,9 +93,24 @@ pub fn emit(
     const content_length = headerValue(conn, "content-length");
     const compressed_size = if (content_length) |value| std.fmt.parseInt(u64, std.mem.trim(u8, value, " \t\r\n"), 10) catch null else null;
 
+    var request_header_output: std.Io.Writer.Allocating = .init(self.allocator);
+    defer request_header_output.deinit();
+    var request_header_iterator = request_headers.iterator();
+    try writeSafeHeaders(&request_header_output.writer, &request_header_iterator);
+
+    var response_header_output: std.Io.Writer.Allocating = .init(self.allocator);
+    defer response_header_output.deinit();
+    try writeSafeHeaders(&response_header_output.writer, response_headers);
+
+    const response_capture = if (self.capture_bodies) captureBody(response_body, content_encoding, metadata.content_type) else "";
+    const request_capture = if (self.capture_bodies) captureBody(request_body orelse "", null, null) else "";
+
     const Stage = struct { id: []const u8, duration_us: u64, measurement: []const u8 = "measured" };
     const connection_reused = timing.num_connects == 0 and timing.connection_id >= 0;
-    const cache_decision = if (response_code == 304) "revalidated" else "network";
+    // libcurl does not expose a reliable memory/disk/service-worker cache
+    // source. Only a 304 response is directly observable; do not imply that
+    // every other transfer bypassed all browser caches.
+    const cache_decision = if (response_code == 304) "revalidated" else "not-observed";
     const stages = [_]Stage{
         .{ .id = "queue", .duration_us = timing.queue_us },
         .{ .id = "cache", .duration_us = 0, .measurement = "not-timed" },
@@ -104,7 +143,7 @@ pub fn emit(
     for (stages, 0..) |stage, index| {
         process_sequence += 1;
         if (index > 0) try writer.writeByte(',');
-        const event_id = try std.fmt.allocPrint(self.allocator, "journey-{d}", .{process_sequence});
+        const event_id = try std.fmt.allocPrint(self.allocator, "{s}:journey-{d}", .{ self.session_id, process_sequence });
         defer self.allocator.free(event_id);
         const stage_status = if (failed_index) |failure_index| blk: {
             if (index == failure_index and std.mem.eql(u8, stage.id, failed_stage.?)) break :blk "error";
@@ -113,7 +152,7 @@ pub fn emit(
         } else "ok";
         try std.json.Stringify.value(.{
             .id = event_id,
-            .sessionId = session_id,
+            .sessionId = self.session_id,
             .sequence = process_sequence,
             .timestamp = now,
             .duration = @as(f64, @floatFromInt(stage.duration_us)) / 1000.0,
@@ -121,9 +160,16 @@ pub fn emit(
             .name = stage.id,
             .status = stage_status,
             .payload = .{
+                .executionId = self.session_id,
+                .executionStatus = "recording",
+                .executionCapabilities = self.executionCapabilities(),
                 .journeyStage = stage.id,
                 .failureStage = failed_stage,
                 .url = url,
+                .resourceType = metadata.resource_type,
+                .requestId = metadata.request_id,
+                .frameId = metadata.frame_id,
+                .loaderId = metadata.loader_id,
                 .responseStatus = response_code,
                 .responseBodyBytes = timing.response_body_bytes,
                 .compressedSizeBytes = compressed_size,
@@ -141,6 +187,12 @@ pub fn emit(
                 .method = metadata.method,
                 .redirectCount = metadata.redirect_count,
                 .contentType = metadata.content_type,
+                .requestHeaders = if (request_header_output.written().len > 0) request_header_output.written() else null,
+                .responseHeaders = if (response_header_output.written().len > 0) response_header_output.written() else null,
+                .requestBody = if (request_capture.len > 0) request_capture else null,
+                .responseBody = if (response_capture.len > 0 and isTextContent(metadata.content_type, content_encoding)) response_capture else null,
+                .bodyCaptureState = if (!self.capture_bodies) "disabled" else if (isTextContent(metadata.content_type, content_encoding)) "captured" else "unsupported-content-type",
+                .bodyTruncated = self.capture_bodies and isTextContent(metadata.content_type, content_encoding) and response_body.len > response_capture.len,
                 .cacheControl = cache_control,
                 .server = server,
                 .age = age,
@@ -158,6 +210,39 @@ pub fn emit(
     try self.file.writeAll(output.written());
 }
 
+fn writeSafeHeaders(writer: *std.Io.Writer, iterator: *http.HeaderIterator) !void {
+    while (iterator.next()) |header| {
+        if (isSensitiveHeader(header.name)) continue;
+        try writer.print("{s}: {s}\\n", .{ header.name, header.value });
+    }
+}
+
+fn isSensitiveHeader(name: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(name, "authorization") or
+        std.ascii.eqlIgnoreCase(name, "proxy-authorization") or
+        std.ascii.eqlIgnoreCase(name, "cookie") or
+        std.ascii.eqlIgnoreCase(name, "set-cookie") or
+        std.ascii.eqlIgnoreCase(name, "x-api-key") or
+        std.ascii.eqlIgnoreCase(name, "x-auth-token") or
+        std.ascii.eqlIgnoreCase(name, "x-csrf-token") or
+        std.ascii.eqlIgnoreCase(name, "x-xsrf-token");
+}
+
+fn captureBody(body: []const u8, _: ?[]const u8, _: ?[]const u8) []const u8 {
+    return body[0..@min(body.len, MAX_CAPTURE_BYTES)];
+}
+
+fn isTextContent(content_type: ?[]const u8, content_encoding: ?[]const u8) bool {
+    _ = content_encoding;
+    const value = content_type orelse return false;
+    return std.ascii.startsWithIgnoreCase(value, "text/") or
+        std.ascii.indexOfIgnoreCase(value, "json") != null or
+        std.ascii.indexOfIgnoreCase(value, "javascript") != null or
+        std.ascii.indexOfIgnoreCase(value, "xml") != null or
+        std.ascii.indexOfIgnoreCase(value, "css") != null or
+        std.ascii.indexOfIgnoreCase(value, "svg") != null;
+}
+
 pub fn emitBrowserStage(
     self: *Self,
     stage: []const u8,
@@ -173,12 +258,12 @@ pub fn emitBrowserStage(
     process_sequence += 1;
     var output: std.Io.Writer.Allocating = .init(self.allocator);
     defer output.deinit();
-    const event_id = try std.fmt.allocPrint(self.allocator, "browser-{d}", .{process_sequence});
+    const event_id = try std.fmt.allocPrint(self.allocator, "{s}:browser-{d}", .{ self.session_id, process_sequence });
     defer self.allocator.free(event_id);
     const sample = readProcessSample();
     try std.json.Stringify.value(.{.{
         .id = event_id,
-        .sessionId = "koko-core",
+        .sessionId = self.session_id,
         .sequence = process_sequence,
         .timestamp = std.time.milliTimestamp(),
         .duration = @as(f64, @floatFromInt(duration_us)) / 1000.0,
@@ -201,6 +286,9 @@ pub fn emitBrowserStage(
             .physicalMemoryBytes = sample.physical_memory_bytes,
             .residentMemoryBytes = sample.resident_memory_bytes,
             .cpuPercent = sample.cpu_percent,
+            .cpuCoresUsed = sample.cpu_cores_used,
+            .cpuSampleWindowMs = sample.cpu_sample_window_ms,
+            .cpuSampleState = sample.cpu_sample_state,
             .contextSwitches = sample.context_switches,
             .diskReadBytes = sample.disk_read_bytes,
             .diskWriteBytes = sample.disk_write_bytes,
@@ -218,23 +306,165 @@ pub fn emitBrowserScript(self: *Self, duration_us: u64, frame_id: u32, loader_id
     process_sequence += 1;
     var output: std.Io.Writer.Allocating = .init(self.allocator);
     defer output.deinit();
-    const event_id = try std.fmt.allocPrint(self.allocator, "browser-{d}", .{process_sequence});
+    const event_id = try std.fmt.allocPrint(self.allocator, "{s}:browser-{d}", .{ self.session_id, process_sequence });
     defer self.allocator.free(event_id);
     const sample = readProcessSample();
     try std.json.Stringify.value(.{.{
         .id = event_id,
-        .sessionId = "koko-core",
+        .sessionId = self.session_id,
         .sequence = process_sequence,
         .timestamp = std.time.milliTimestamp(),
         .duration = @as(f64, @floatFromInt(duration_us)) / 1000.0,
         .kind = "render",
         .name = "javascript",
         .status = "ok",
-        .payload = .{ .browserStage = "javascript", .systemStage = "thread-scheduler", .scriptUrl = url, .scriptKind = script_kind, .functionName = "<script>", .callId = event_id, .callKind = "script", .callDepth = @as(u8, 0), .frameId = frame_id, .loaderId = loader_id, .measurementState = "measured", .process = "Renderer", .thread = "Main", .processName = "Renderer", .threadName = "Main", .processId = std.c.getpid(), .threadId = std.Thread.getCurrentId(), .logicalCpuCount = sample.logical_cpu_count, .physicalMemoryBytes = sample.physical_memory_bytes, .residentMemoryBytes = sample.resident_memory_bytes, .cpuPercent = sample.cpu_percent, .contextSwitches = sample.context_switches, .diskReadBytes = sample.disk_read_bytes, .diskWriteBytes = sample.disk_write_bytes, .systemSampleState = sample.state },
+        .payload = .{ .browserStage = "javascript", .systemStage = "thread-scheduler", .scriptUrl = url, .scriptKind = script_kind, .functionName = "<script>", .callId = event_id, .callKind = "script", .callDepth = @as(u8, 0), .frameId = frame_id, .loaderId = loader_id, .measurementState = "measured", .process = "Renderer", .thread = "Main", .processName = "Renderer", .threadName = "Main", .processId = std.c.getpid(), .threadId = std.Thread.getCurrentId(), .logicalCpuCount = sample.logical_cpu_count, .physicalMemoryBytes = sample.physical_memory_bytes, .residentMemoryBytes = sample.resident_memory_bytes, .cpuPercent = sample.cpu_percent, .cpuCoresUsed = sample.cpu_cores_used, .cpuSampleWindowMs = sample.cpu_sample_window_ms, .cpuSampleState = sample.cpu_sample_state, .contextSwitches = sample.context_switches, .diskReadBytes = sample.disk_read_bytes, .diskWriteBytes = sample.disk_write_bytes, .systemSampleState = sample.state },
     }}, .{}, &output.writer);
     try output.writer.writeByte('\n');
     try self.file.seekFromEnd(0);
     try self.file.writeAll(output.written());
+}
+
+pub fn emitJavaScriptError(
+    self: *Self,
+    error_kind: []const u8,
+    message: []const u8,
+    script_url: []const u8,
+    line: u32,
+    column: u32,
+    frame_id: u32,
+    loader_id: u32,
+    stack: ?[]const u8,
+) !void {
+    process_mutex.lock();
+    defer process_mutex.unlock();
+    process_sequence += 1;
+    var output: std.Io.Writer.Allocating = .init(self.allocator);
+    defer output.deinit();
+    const event_id = try std.fmt.allocPrint(self.allocator, "{s}:javascript-error-{d}", .{ self.session_id, process_sequence });
+    defer self.allocator.free(event_id);
+    try std.json.Stringify.value(.{
+        .id = event_id,
+        .sessionId = self.session_id,
+        .sequence = process_sequence,
+        .timestamp = std.time.milliTimestamp(),
+        .duration = @as(f64, 0),
+        .kind = "javascript",
+        .name = error_kind,
+        .status = "error",
+        .payload = .{
+            .errorType = error_kind,
+            .message = message,
+            .scriptUrl = script_url,
+            .line = line,
+            .column = column,
+            .frameId = frame_id,
+            .loaderId = loader_id,
+            .source = "page",
+            .handled = false,
+            .stack = stack,
+        },
+    }, .{ .emit_null_optional_fields = false }, &output.writer);
+    try output.writer.writeByte('\n');
+    try self.file.seekFromEnd(0);
+    try self.file.writeAll(output.written());
+}
+
+pub fn emitApplicationStorageEntry(
+    self: *Self,
+    storage_type: []const u8,
+    origin: []const u8,
+    key: []const u8,
+    value: ?[]const u8,
+    value_bytes: usize,
+    details: anytype,
+) !void {
+    process_mutex.lock();
+    defer process_mutex.unlock();
+    process_sequence += 1;
+    var output: std.Io.Writer.Allocating = .init(self.allocator);
+    defer output.deinit();
+    const event_id = try std.fmt.allocPrint(self.allocator, "{s}:application-storage-{d}", .{ self.session_id, process_sequence });
+    defer self.allocator.free(event_id);
+    try std.json.Stringify.value(.{
+        .id = event_id,
+        .sessionId = self.session_id,
+        .sequence = process_sequence,
+        .timestamp = std.time.milliTimestamp(),
+        .duration = @as(f64, 0),
+        .kind = "log",
+        .name = "storage-entry",
+        .status = "ok",
+        .payload = .{
+            .storageType = storage_type,
+            .origin = origin,
+            .key = key,
+            .value = value,
+            .valueBytes = value_bytes,
+            .valueState = if (value != null) "captured" else "unavailable",
+            .source = "browser-runtime",
+            .details = details,
+        },
+    }, .{ .emit_null_optional_fields = false }, &output.writer);
+    try output.writer.writeByte('\n');
+    try self.file.seekFromEnd(0);
+    try self.file.writeAll(output.written());
+}
+
+/// Records that the Core has atomically written a reconstructible state
+/// manifest. The checkpoint directory is deliberately not sent to telemetry:
+/// it contains credential-bearing browser state and is a local operator detail.
+pub fn emitExecutionCheckpoint(
+    self: *Self,
+    url: []const u8,
+    cookie_count: usize,
+    local_storage_entries: usize,
+    session_storage_entries: usize,
+) !void {
+    process_mutex.lock();
+    defer process_mutex.unlock();
+    process_sequence += 1;
+    var output: std.Io.Writer.Allocating = .init(self.allocator);
+    defer output.deinit();
+    const event_id = try std.fmt.allocPrint(self.allocator, "{s}:execution-checkpoint-{d}", .{ self.session_id, process_sequence });
+    defer self.allocator.free(event_id);
+    try std.json.Stringify.value(.{
+        .id = event_id,
+        .sessionId = self.session_id,
+        .sequence = process_sequence,
+        .timestamp = std.time.milliTimestamp(),
+        .duration = @as(f64, 0),
+        .kind = "log",
+        .name = "execution-checkpoint",
+        .status = "ok",
+        .payload = .{
+            .executionId = self.session_id,
+            .executionStatus = "completed",
+            .executionCapabilities = self.executionCapabilities(),
+            .executionCheckpoint = .{
+                .kind = "reconstructible",
+                .url = url,
+                .stateCoverage = &.{"browser-state"},
+                // A checkpoint is restorable even before a replay policy is
+                // selected. Observatory derives that policy from the recorded
+                // inputs after the inspection has completed.
+                .replayable = self.checkpoint_enabled,
+                .cookieCount = cookie_count,
+                .localStorageEntries = local_storage_entries,
+                .sessionStorageEntries = session_storage_entries,
+            },
+        },
+    }, .{}, &output.writer);
+    try output.writer.writeByte('\n');
+    try self.file.seekFromEnd(0);
+    try self.file.writeAll(output.written());
+}
+
+fn executionCapabilities(self: *const Self) []const []const u8 {
+    if (self.checkpoint_enabled and self.replay_enabled) return &.{ "recording", "bookmark", "checkpoint-reconstruct", "network-replay" };
+    if (self.checkpoint_enabled) return &.{ "recording", "bookmark", "checkpoint-reconstruct" };
+    if (self.replay_enabled) return &.{ "recording", "bookmark", "network-replay" };
+    return &.{ "recording", "bookmark" };
 }
 
 fn headerValue(conn: *const http.Connection, comptime name: [:0]const u8) ?[]const u8 {
@@ -255,6 +485,9 @@ const ProcessSample = struct {
     physical_memory_bytes: ?u64 = null,
     resident_memory_bytes: ?u64 = null,
     cpu_percent: ?f64 = null,
+    cpu_cores_used: ?f64 = null,
+    cpu_sample_window_ms: ?f64 = null,
+    cpu_sample_state: []const u8 = "warming-up",
     context_switches: ?u64 = null,
     disk_read_bytes: ?u64 = null,
     disk_write_bytes: ?u64 = null,
@@ -262,6 +495,14 @@ const ProcessSample = struct {
     wall_time_us: i128 = 0,
     state: []const u8 = "sampled",
 };
+
+const CpuSample = struct {
+    percent: f64,
+    cores_used: f64,
+    window_ms: f64,
+};
+
+const cpu_sample_min_window_us: i128 = 250_000;
 
 fn readProcessSample() ProcessSample {
     var sample = ProcessSample{
@@ -281,19 +522,34 @@ fn readProcessSample() ProcessSample {
     }
 
     if (sample.cpu_time_us) |cpu_time| {
-        if (previous_sample) |previous| {
+        if (previous_cpu_sample) |previous| {
             if (previous.cpu_time_us) |previous_cpu_time| {
                 const wall_delta = sample.wall_time_us - previous.wall_time_us;
-                if (wall_delta > 0 and cpu_time >= previous_cpu_time) {
+                if (wall_delta >= cpu_sample_min_window_us and cpu_time >= previous_cpu_time) {
                     const cpu_delta = cpu_time - previous_cpu_time;
                     const cpu_ratio = @as(f64, @floatFromInt(cpu_delta)) / @as(f64, @floatFromInt(wall_delta));
                     const cores = @max(sample.logical_cpu_count, 1);
-                    sample.cpu_percent = @min(100.0, cpu_ratio / @as(f64, @floatFromInt(cores)) * 100.0);
+                    const cores_used = @max(0.0, cpu_ratio);
+                    const window_ms = @as(f64, @floatFromInt(wall_delta)) / 1000.0;
+                    const percent = @min(100.0, cores_used / @as(f64, @floatFromInt(cores)) * 100.0);
+                    sample.cpu_percent = percent;
+                    sample.cpu_cores_used = cores_used;
+                    sample.cpu_sample_window_ms = window_ms;
+                    sample.cpu_sample_state = "sampled";
+                    latest_cpu_sample = .{ .percent = percent, .cores_used = cores_used, .window_ms = window_ms };
+                    previous_cpu_sample = sample;
+                    return sample;
                 }
             }
         }
     }
-    previous_sample = sample;
+    if (latest_cpu_sample) |latest| {
+        sample.cpu_percent = latest.percent;
+        sample.cpu_cores_used = latest.cores_used;
+        sample.cpu_sample_window_ms = latest.window_ms;
+        sample.cpu_sample_state = "cached";
+    }
+    if (previous_cpu_sample == null and sample.cpu_time_us != null) previous_cpu_sample = sample;
     return sample;
 }
 

@@ -255,6 +255,10 @@ pub fn Builder(comptime commands: anytype) type {
 
         /// Parses executable name, command and options via single call.
         pub fn parse(allocator: Allocator) !struct { []const u8, Union } {
+            // The option structs are generated at comptime. Larger commands
+            // (such as fetch with controlled-execution wiring) can exceed
+            // Zig's small default while specializing pointer argument paths.
+            @setEvalBranchQuota(10_000);
             var args = try std.process.argsWithAllocator(allocator);
             defer args.deinit();
 

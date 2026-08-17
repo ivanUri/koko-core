@@ -6,7 +6,10 @@ const KeyValue = struct { key: []const u8, value: []const u8 };
 
 const JsonEntry = struct {
     origin: []const u8,
-    local: []const KeyValue,
+    // Keep `local` optional on read so storage.json written by older Koko
+    // versions remains a valid restore source.
+    local: []const KeyValue = &.{},
+    session: []const KeyValue = &.{},
 };
 
 pub const storage_filename = "storage.json";
@@ -61,6 +64,9 @@ fn _loadStorage(session: *Session, path: []const u8) !void {
         for (entry.local) |kv| {
             try bucket.local.put(allocator, kv.key, kv.value);
         }
+        for (entry.session) |kv| {
+            try bucket.session.put(allocator, kv.key, kv.value);
+        }
     }
     log.info(.app, "session_persist.loadStorage", .{ .path = path, .origins = entries.len });
 }
@@ -81,15 +87,27 @@ fn _saveStorage(session: *Session, path: []const u8) !void {
 
     var it = session.storage_shed._origins.iterator();
     while (it.next()) |kv| {
-        var pairs = try std.ArrayList(KeyValue).initCapacity(allocator, 16);
-        defer pairs.deinit(allocator);
+        var local_pairs = try std.ArrayList(KeyValue).initCapacity(allocator, 16);
+        defer local_pairs.deinit(allocator);
 
         var lit = kv.value_ptr.*.local._data.iterator();
         while (lit.next()) |item| {
-            try pairs.append(allocator, .{ .key = item.key_ptr.*, .value = item.value_ptr.* });
+            try local_pairs.append(allocator, .{ .key = item.key_ptr.*, .value = item.value_ptr.* });
         }
-        if (pairs.items.len == 0) continue;
-        try origins.append(allocator, .{ .origin = kv.key_ptr.*, .local = try pairs.toOwnedSlice(allocator) });
+
+        var session_pairs = try std.ArrayList(KeyValue).initCapacity(allocator, 16);
+        defer session_pairs.deinit(allocator);
+        var sit = kv.value_ptr.*.session._data.iterator();
+        while (sit.next()) |item| {
+            try session_pairs.append(allocator, .{ .key = item.key_ptr.*, .value = item.value_ptr.* });
+        }
+
+        if (local_pairs.items.len == 0 and session_pairs.items.len == 0) continue;
+        try origins.append(allocator, .{
+            .origin = kv.key_ptr.*,
+            .local = try local_pairs.toOwnedSlice(allocator),
+            .session = try session_pairs.toOwnedSlice(allocator),
+        });
     }
 
     if (std.fs.path.dirname(path)) |parent| {

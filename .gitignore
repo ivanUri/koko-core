@@ -25,6 +25,7 @@ node_modules/.lp-cache/
 .velora-cache
 curl-impersonate/
 node_modules
+/bench-results/
 
 # Ephemeral probes / export dumps (do not accumulate in repo)
 /artifacts/

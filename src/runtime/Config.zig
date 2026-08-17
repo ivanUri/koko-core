@@ -198,6 +198,15 @@ const Commands = cli.Builder(.{
             .{ .name = "click_offset_x", .type = u16, .default = 28 },
             .{ .name = "click_offset_y", .type = ?u16 },
             .{ .name = "terminate_ms", .type = ?u32 },
+            // Observatory supplies these fetch-only plumbing flags. They are
+            // intentionally not shared with CDP/MCP process modes.
+            .{ .name = "internet_journey_file", .type = ?[]const u8 },
+            .{ .name = "execution_checkpoint_dir", .type = ?[]const u8 },
+            .{ .name = "execution_restore_dir", .type = ?[]const u8 },
+            .{ .name = "execution_replay_file", .type = ?[]const u8 },
+            .{ .name = "telemetry_capture_bodies", .type = bool },
+            .{ .name = "extra_headers_file", .type = ?[]const u8 },
+            .{ .name = "dump_html_file", .type = ?[]const u8 },
         },
         .shared_options = CommonOptions,
     },
@@ -576,6 +585,55 @@ pub fn httpCacheDir(self: *const Config) ?[]const u8 {
     };
 }
 
+pub fn internetJourneyFile(self: *const Config) ?[]const u8 {
+    return switch (self.mode) {
+        .fetch => |opts| opts.internet_journey_file,
+        else => null,
+    };
+}
+
+pub fn executionCheckpointDir(self: *const Config) ?[]const u8 {
+    return switch (self.mode) {
+        .fetch => |opts| opts.execution_checkpoint_dir,
+        else => null,
+    };
+}
+
+pub fn executionRestoreDir(self: *const Config) ?[]const u8 {
+    return switch (self.mode) {
+        .fetch => |opts| opts.execution_restore_dir,
+        else => null,
+    };
+}
+
+pub fn executionReplayFile(self: *const Config) ?[]const u8 {
+    return switch (self.mode) {
+        .fetch => |opts| opts.execution_replay_file,
+        else => null,
+    };
+}
+
+pub fn telemetryCaptureBodies(self: *const Config) bool {
+    return switch (self.mode) {
+        .fetch => |opts| opts.telemetry_capture_bodies,
+        else => false,
+    };
+}
+
+pub fn extraHeadersFile(self: *const Config) ?[]const u8 {
+    return switch (self.mode) {
+        .fetch => |opts| opts.extra_headers_file,
+        else => null,
+    };
+}
+
+pub fn dumpHtmlFile(self: *const Config) ?[]const u8 {
+    return switch (self.mode) {
+        .fetch => |opts| opts.dump_html_file,
+        else => null,
+    };
+}
+
 /// Explicit CLI `--cookie` only (does not include profile seed).
 pub fn cookieCliOverride(self: *const Config) ?[]const u8 {
     return switch (self.mode) {
@@ -716,6 +774,7 @@ pub const HttpHeaders = struct {
     accept_language_header: [:0]const u8,
     brands: []const ProfileStore.Brand,
     proxy_bearer_header: ?[:0]const u8,
+    extra_headers: std.ArrayList([:0]const u8),
     user_agent_owned: bool,
 
     pub fn init(allocator: Allocator, config: *const Config) !HttpHeaders {
@@ -735,6 +794,36 @@ pub const HttpHeaders = struct {
             try std.fmt.allocPrintSentinel(allocator, "Proxy-Authorization: Bearer {s}", .{token}, 0)
         else
             null;
+        errdefer if (proxy_bearer_header) |header| allocator.free(header);
+
+        var extra_headers: std.ArrayList([:0]const u8) = .empty;
+        errdefer {
+            for (extra_headers.items) |header| allocator.free(header);
+            extra_headers.deinit(allocator);
+        }
+        if (config.extraHeadersFile()) |path| {
+            const bytes = std.fs.cwd().readFileAlloc(allocator, path, 256 * 1024) catch |err| {
+                log.warn(.app, "failed to read extra headers file", .{ .path = path, .err = err });
+                return error.InvalidArgument;
+            };
+            defer allocator.free(bytes);
+            var lines = std.mem.splitScalar(u8, bytes, '\n');
+            while (lines.next()) |line| {
+                const trimmed = std.mem.trim(u8, line, " \t\r");
+                if (trimmed.len == 0 or trimmed[0] == '#') continue;
+                const colon = std.mem.indexOfScalar(u8, trimmed, ':') orelse {
+                    log.warn(.app, "ignoring malformed extra header", .{ .value = trimmed });
+                    continue;
+                };
+                const name = std.mem.trim(u8, trimmed[0..colon], " \t");
+                const value = std.mem.trim(u8, trimmed[colon + 1 ..], " \t");
+                if (!validExtraHeaderName(name) or value.len == 0) {
+                    log.warn(.app, "ignoring invalid extra header", .{ .name = name });
+                    continue;
+                }
+                try extra_headers.append(allocator, try std.fmt.allocPrintSentinel(allocator, "{s}: {s}", .{ name, value }, 0));
+            }
+        }
 
         return .{
             .user_agent = user_agent,
@@ -743,18 +832,41 @@ pub const HttpHeaders = struct {
             .accept_language_header = accept_language_header,
             .brands = profile.persona.network.brands,
             .proxy_bearer_header = proxy_bearer_header,
+            .extra_headers = extra_headers,
             .user_agent_owned = false,
         };
     }
 
-    pub fn deinit(self: *const HttpHeaders, allocator: Allocator) void {
+    pub fn deinit(self: *HttpHeaders, allocator: Allocator) void {
+        for (self.extra_headers.items) |header| allocator.free(header);
+        self.extra_headers.deinit(allocator);
         if (self.proxy_bearer_header) |hdr| allocator.free(hdr);
         allocator.free(self.accept_language_header);
         allocator.free(self.sec_ch_ua_header);
         allocator.free(self.user_agent_header);
         if (self.user_agent_owned) allocator.free(self.user_agent);
     }
+
+    fn validExtraHeaderName(name: []const u8) bool {
+        if (name.len == 0) return false;
+        if (std.ascii.eqlIgnoreCase(name, "host") or
+            std.ascii.eqlIgnoreCase(name, "content-length") or
+            std.ascii.eqlIgnoreCase(name, "connection") or
+            std.ascii.eqlIgnoreCase(name, "cookie")) return false;
+        for (name) |character| {
+            if (!(std.ascii.isAlphanumeric(character) or character == '-' or character == '_')) return false;
+        }
+        return true;
+    }
 };
+
+test "fixed request headers accept safe names and reject transport-owned names" {
+    try std.testing.expect(HttpHeaders.validExtraHeaderName("X-Run-Mode"));
+    try std.testing.expect(HttpHeaders.validExtraHeaderName("authorization"));
+    try std.testing.expect(!HttpHeaders.validExtraHeaderName("Host"));
+    try std.testing.expect(!HttpHeaders.validExtraHeaderName("Content-Length"));
+    try std.testing.expect(!HttpHeaders.validExtraHeaderName("bad header"));
+}
 
 pub fn printUsageAndExit(self: *const Config, success: bool) void {
     //                                                                     MAX_HELP_LEN|
@@ -942,6 +1054,10 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\                Argument must be 'html', 'markdown', 'semantic_tree', or 'semantic_tree_text'.
         \\                Defaults to no dump.
         \\
+        \\--dump-html-file  Writes the final hydrated HTML DOM to a sidecar file.
+        \\                Useful when stdout is used for a different dump format.
+        \\                Defaults to no sidecar file.
+        \\
         \\--strip-mode    Comma separated list of tag groups to remove from dump
         \\                the dump. e.g. --strip-mode js,css
         \\                  - "js" script and link[as=script, rel=preload]
@@ -996,6 +1112,11 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\--cookie-jar    Path to runtime cookie jar (overrides profile session.cookieRuntimeFile).
         \\                Available for fetch and mcp commands.
         \\                Defaults to no cookie saving.
+        \\
+        \\--extra-headers-file
+        \\                Path to a UTF-8 file containing fixed request headers,
+        \\                one `Name: value` entry per line. Applied to all requests.
+        \\                Defaults to no additional headers.
         \\
     ++ common_options ++
         \\
@@ -1062,6 +1183,10 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
 /// so `deinit(config_allocator)` can free without allocator mismatch.
 /// Must write in place: Config embeds non-copyable arena state in profile/runtime.
 pub fn parseArgsInPlace(self: *Config, cli_allocator: Allocator, config_allocator: Allocator) !void {
+    // CommonOptions is intentionally shared by three commands. Raising this
+    // quota keeps the generic CLI parser's compile-time field expansion below
+    // Zig's default after controlled-execution options were added.
+    @setEvalBranchQuota(4_000);
     const exec_name, const command = try Commands.parse(cli_allocator);
     if (command == .serve and command.serve.timeout != null) {
         log.warn(.app, "--timeout is deprecated", .{});

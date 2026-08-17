@@ -88,9 +88,9 @@ test:
 		| grep --line-buffered -v "^/.*zig test -freference-trace"
 endif
 
-## Microbench Koko vs Chromium (ReleaseFast preflight via npm)
-bench: build
-	npm run bench:compare:publish
+## Deterministic Koko vs Chromium browser-runtime benchmark
+bench:
+	$(ZIG) build benchmark -Doptimize=ReleaseFast
 
 ## Run demo/runner end to end tests
 end2end:

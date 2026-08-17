@@ -37,6 +37,12 @@ pub fn observeBrowserStage(self: *Browser, stage: []const u8, duration_us: u64, 
 pub fn observeBrowserScript(self: *Browser, duration_us: u64, frame_id: u32, loader_id: u32, url: []const u8, script_kind: []const u8) void {
     self.app.network.emitBrowserScript(duration_us, frame_id, loader_id, url, script_kind);
 }
+pub fn observeJavaScriptError(self: *Browser, error_kind: []const u8, message: []const u8, script_url: []const u8, line: u32, column: u32, frame_id: u32, loader_id: u32, stack: ?[]const u8) void {
+    self.app.network.emitJavaScriptError(error_kind, message, script_url, line, column, frame_id, loader_id, stack);
+}
+pub fn observeApplicationStorageEntry(self: *Browser, storage_type: []const u8, origin: []const u8, key: []const u8, value: ?[]const u8, value_bytes: usize, details: anytype) void {
+    self.app.network.emitApplicationStorageEntry(storage_type, origin, key, value, value_bytes, details);
+}
 
 env: js.Env,
 app: *App,

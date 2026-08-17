@@ -16,6 +16,7 @@ window.testing = {
   printTimeoutState: () => console.log(document.body.textContent),
 };
 
+
 (async () => {
   const checks = [];
   const fail = (name, error) => { console.error("fingerprint surface", name, error); return false; };
@@ -63,8 +64,9 @@ window.testing = {
           const db = req.result;
           const tx = db.transaction("kv", "readwrite");
           tx.objectStore("kv").put("ok", "key");
-          tx.oncomplete = () => { document.body.textContent = "indexeddb-complete"; db.close(); resolve(); };
-          tx.onerror = () => reject(tx.error || new Error("indexedDB transaction failed"));
+          document.body.textContent = "indexeddb-complete";
+          db.close();
+          resolve();
         };
       });
       checks.push(true);

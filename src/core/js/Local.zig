@@ -232,6 +232,7 @@ pub fn compileAndRun(self: *const Local, src: []const u8, name: ?[]const u8) !js
                     .exception = caught.exception,
                     .line = caught.line,
                 });
+                self.emitScriptRuntimeError(name, caught);
             }
         }
         return error.CompilationError;
@@ -254,6 +255,7 @@ pub fn compileAndRun(self: *const Local, src: []const u8, name: ?[]const u8) !js
                         .exception = caught.exception,
                         .line = caught.line,
                     });
+                    self.emitScriptRuntimeError(name, caught);
                 }
             }
             return error.JsException;
@@ -267,6 +269,32 @@ pub fn compileAndRun(self: *const Local, src: []const u8, name: ?[]const u8) !js
         return error.JsException;
     };
     return .{ .local = self, .handle = result };
+}
+
+fn emitScriptRuntimeError(self: *const Local, name: ?[]const u8, caught: js.TryCatch.Caught) void {
+    const script_url = name orelse self.ctx.execution.base();
+    switch (self.ctx.global) {
+        .frame => |frame| frame._page.session.browser.observeJavaScriptError(
+            "uncaught-exception",
+            caught.exception orelse "Uncaught exception",
+            script_url,
+            caught.line orelse 0,
+            0,
+            frame._frame_id,
+            frame._loader_id,
+            caught.stack,
+        ),
+        .worker => |worker| worker._page.session.browser.observeJavaScriptError(
+            "uncaught-exception",
+            caught.exception orelse "Uncaught exception",
+            script_url,
+            caught.line orelse 0,
+            0,
+            worker._frame_id,
+            worker._loader_id,
+            caught.stack,
+        ),
+    }
 }
 
 // == Zig -> JS ==

@@ -592,6 +592,18 @@ fn serveCDP(wg: *std.Thread.WaitGroup) !void {
 fn testHTTPHandler(req: *std.http.Server.Request) !void {
     const path = req.head.target;
 
+    if (std.mem.eql(u8, path, "/static-module-delayed-dependency.js")) {
+        // Ensure the entry module reaches V8 instantiation while this import is
+        // still in flight. Its terminal callback must be allowed to run after
+        // the outer entry-script HTTP callback unwinds.
+        std.Thread.sleep(50 * std.time.ns_per_ms);
+        return req.respond("export const dependencyValue = 42;", .{
+            .extra_headers = &.{
+                .{ .name = "Content-Type", .value = "application/javascript" },
+            },
+        });
+    }
+
     if (std.mem.eql(u8, path, "/fetch-stream-hold")) {
         var send_buffer: [1024]u8 = undefined;
         var res = try req.respondStreaming(&send_buffer, .{

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://koko.dev/schemas/browser-runtime-benchmark-observation-v1.json",
+  "title": "Koko browser runtime benchmark observation",
+  "type": "object",
+  "required": ["schemaVersion", "runId", "suite", "workload", "baseline", "iteration", "warmup", "startedAt", "success", "metrics"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "runId": { "type": "string" },
+    "suite": { "enum": ["startup", "navigation", "session-lifecycle", "idle-memory", "real-sites"] },
+    "workload": { "type": "string" },
+    "baseline": { "enum": ["koko-cdp", "chromium-cdp", "playwright-chromium"] },
+    "iteration": { "type": "integer", "minimum": 1 },
+    "warmup": { "type": "boolean" },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "success": { "type": "boolean" },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": { "type": "number" }
+    },
+    "details": {
+      "type": "object",
+      "additionalProperties": { "type": ["string", "number", "boolean", "null"] }
+    },
+    "error": {
+      "type": "object",
+      "required": ["name", "message"],
+      "properties": {
+        "name": { "type": "string" },
+        "message": { "type": "string" },
+        "stack": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

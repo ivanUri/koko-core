@@ -3,6 +3,7 @@ const Session = @import("../core/browser/Session.zig");
 const Config = @import("Config.zig");
 const cookies = @import("cookies.zig");
 const session_persist = @import("session_persist.zig");
+const Checkpoint = @import("execution/Checkpoint.zig");
 const log = @import("../support/log.zig");
 const Cookie = @import("../core/webapi/storage/Cookie.zig");
 const StoredCookie = @import("storage/Command.zig").StoredCookie;
@@ -18,10 +19,98 @@ fn cookieFileUsable(path: []const u8) bool {
 pub fn bootstrapCookies(session: *Session, config: *const Config) void {
     if (session.browser.app.storage.usesSqlite()) {
         bootstrapSqlite(session, config);
+    } else {
+        bootstrapJson(session, config);
+    }
+    // Restore is last so an explicit execution checkpoint wins over the
+    // profile baseline and any CLI cookie seed.
+    restoreExecutionCheckpoint(session, config);
+}
+
+/// Restores a checkpoint only when the caller explicitly supplies its local
+/// directory. This is intentionally separate from profile state: a replay
+/// should be able to override the profile baseline without changing it.
+pub fn restoreExecutionCheckpoint(session: *Session, config: *const Config) void {
+    const allocator = session.browser.app.allocator;
+    const directory = config.executionRestoreDir() orelse return;
+
+    Checkpoint.validate(allocator, directory) catch |err| {
+        log.err(.app, "execution checkpoint manifest", .{ .directory = directory, .err = err });
+        return;
+    };
+
+    const cookies_path = std.fs.path.join(allocator, &.{ directory, "cookies.json" }) catch |err| {
+        log.err(.app, "execution checkpoint cookie path", .{ .directory = directory, .err = err });
+        return;
+    };
+    defer allocator.free(cookies_path);
+    if (!checkpointFilesPresent(directory, cookies_path)) {
+        log.err(.app, "execution checkpoint files", .{ .directory = directory, .err = error.FileNotFound });
+        return;
+    }
+    cookies.loadFromFile(session, cookies_path);
+    session_persist.loadStorageDir(session, directory);
+    log.info(.app, "execution checkpoint restored", .{ .directory = directory });
+}
+
+/// Save browser state that can be reconstructed by a future process. The
+/// directory contains cookie and web-storage values, so callers must choose a
+/// private, non-versioned location.
+pub fn saveExecutionCheckpoint(session: *Session, url: []const u8) void {
+    const allocator = session.browser.app.allocator;
+    const directory = session.browser.app.config.executionCheckpointDir() orelse return;
+
+    std.fs.cwd().makePath(directory) catch |err| {
+        log.err(.app, "execution checkpoint directory", .{ .directory = directory, .err = err });
+        return;
+    };
+    const cookies_path = std.fs.path.join(allocator, &.{ directory, "cookies.json" }) catch |err| {
+        log.err(.app, "execution checkpoint cookie path", .{ .directory = directory, .err = err });
+        return;
+    };
+    defer allocator.free(cookies_path);
+
+    cookies.saveToFile(&session.cookie_jar, cookies_path);
+    session_persist.saveStorageDir(session, directory);
+    if (!checkpointFilesPresent(directory, cookies_path)) {
+        log.err(.app, "execution checkpoint write", .{ .directory = directory, .err = error.FileNotFound });
         return;
     }
 
-    bootstrapJson(session, config);
+    const counts = storageCounts(session);
+    Checkpoint.write(directory, .{
+        .createdAtMs = std.time.milliTimestamp(),
+        .url = url,
+        .cookieCount = session.cookie_jar.cookies.items.len,
+        .localStorageEntries = counts.local,
+        .sessionStorageEntries = counts.session,
+    }) catch |err| {
+        log.err(.app, "execution checkpoint manifest", .{ .directory = directory, .err = err });
+        return;
+    };
+
+    session.browser.app.network.emitExecutionCheckpoint(url, session.cookie_jar.cookies.items.len, counts.local, counts.session);
+    log.info(.app, "execution checkpoint saved", .{ .directory = directory, .cookies = session.cookie_jar.cookies.items.len, .local_storage = counts.local, .session_storage = counts.session });
+}
+
+const StorageCounts = struct { local: usize = 0, session: usize = 0 };
+
+fn storageCounts(session: *const Session) StorageCounts {
+    var result: StorageCounts = .{};
+    var origins = session.storage_shed._origins.iterator();
+    while (origins.next()) |origin| {
+        result.local += origin.value_ptr.*.local._data.count();
+        result.session += origin.value_ptr.*.session._data.count();
+    }
+    return result;
+}
+
+fn checkpointFilesPresent(directory: []const u8, cookies_path: []const u8) bool {
+    std.fs.cwd().access(cookies_path, .{}) catch return false;
+    var storage_path_buf: [512]u8 = undefined;
+    const storage_path = session_persist.storageFilePath(directory, &storage_path_buf) orelse return false;
+    std.fs.cwd().access(storage_path, .{}) catch return false;
+    return true;
 }
 
 fn bootstrapJson(session: *Session, config: *const Config) void {
@@ -57,6 +146,7 @@ fn bootstrapSqlite(session: *Session, config: *const Config) void {
         log.err(.storage, "profile sqlite probe", .{ .err = err });
         bootstrapJson(session, config);
         session.enableProfilePersistence();
+        restoreExecutionCheckpoint(session, config);
         return;
     };
 

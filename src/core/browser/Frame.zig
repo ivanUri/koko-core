@@ -883,6 +883,10 @@ pub fn deinit(self: *Frame) void {
     }
 
     self.enterRealmDraining();
+    // The frame scheduler also owns MessagePort/SharedWorker delivery tasks.
+    // Dedicated workers are removed above, but shared-worker callbacks are not
+    // frame-owned objects and can otherwise run after this realm is destroyed.
+    self.cancelOwnedSchedulerWork();
     // Idempotent if prepareForOutgoingAbort / detach already cleared it.
     self.document._frame = null;
     self.closeRtcPeerConnections();
@@ -957,7 +961,6 @@ pub fn deinit(self: *Frame) void {
 
     const browser = page.session.browser;
     self.enterRealmDead();
-
     // Abort in-flight HTTP transfers for this frame BEFORE destroying the V8
     // context. Each transfer's shutdown_callback (Fetch.httpShutdownCallback,
     // Worker.httpErrorCallback, etc.) reaches into Execution / Context to do
@@ -3431,6 +3434,11 @@ fn frameDoneCallback(ctx: *anyopaque) !void {
         .text => |*buf| {
             try buf.appendSlice(self.arena, "</pre></body></html>");
             parser.parse(buf.items);
+            // Text responses (JSON, plain text, CSS and JavaScript) have no
+            // document lifecycle to wait for. Once the synthetic preview
+            // document is parsed, mark the transfer terminal so Runner does
+            // not consume the full wait window for an already-complete body.
+            self._parse_state = .{ .raw_done = buf.items };
             self.documentIsComplete();
         },
         .image => |buf| {
@@ -7405,6 +7413,10 @@ test "Frame: static module wait exits when V8 execution is terminated" {
     defer testing.test_browser.env.cancelTerminate();
 
     try testing.expectError(error.ExecutionTerminated, manager.waitForImport(url));
+}
+
+test "Frame: static module dependency completion runs outside HTTP callback" {
+    try testing.htmlRunner("regression/static_module_dependency_completion.html", .{});
 }
 
 test "Frame: host termination remains visible outside V8 and cancel restores execution" {

@@ -44,6 +44,7 @@ pub const CacheLayer = @import("../../runtime/network/layer/CacheLayer.zig");
 pub const RobotsLayer = @import("../../runtime/network/layer/RobotsLayer.zig");
 pub const WebBotAuthLayer = @import("../../runtime/network/layer/WebBotAuthLayer.zig");
 pub const InterceptionLayer = @import("../../runtime/network/layer/InterceptionLayer.zig");
+pub const ReplayPolicyLayer = @import("../../runtime/network/layer/ReplayPolicyLayer.zig");
 const GoogleChromeTransport = @import("GoogleChromeTransport.zig");
 const Session = @import("Session.zig");
 
@@ -174,6 +175,7 @@ cache_layer: CacheLayer,
 robots_layer: RobotsLayer,
 web_bot_auth_layer: WebBotAuthLayer,
 interception_layer: InterceptionLayer,
+replay_policy_layer: ReplayPolicyLayer,
 entry_layer: Layer,
 
 pub const Layer = struct {
@@ -219,6 +221,9 @@ pub fn init(self: *Client, allocator: Allocator, network: *Network, cdp_client: 
     var handles = try http.Handles.init(network.config);
     errdefer handles.deinit();
 
+    var replay_policy_layer = try ReplayPolicyLayer.init(allocator, network.config.executionReplayFile());
+    errdefer replay_policy_layer.deinit();
+
     const http_proxy = network.config.httpProxy();
 
     self.* = Client{
@@ -238,6 +243,7 @@ pub fn init(self: *Client, allocator: Allocator, network: *Network, cdp_client: 
         .robots_layer = .{ .allocator = allocator },
         .web_bot_auth_layer = .{},
         .interception_layer = .{},
+        .replay_policy_layer = replay_policy_layer,
         .entry_layer = undefined,
     };
 
@@ -249,6 +255,13 @@ pub fn init(self: *Client, allocator: Allocator, network: *Network, cdp_client: 
 
     if (network.config.httpCacheDir() != null) {
         next = layerWith(&self.cache_layer, next);
+    }
+
+    // Replay fulfillment runs before normal cache/transport handling. In
+    // strict mode it blocks every unmatched request instead of letting a
+    // reconstructed execution reach the live Internet.
+    if (self.replay_policy_layer.enabled()) {
+        next = layerWith(&self.replay_policy_layer, next);
     }
 
     next = layerWith(&self.interception_layer, next);
@@ -271,6 +284,7 @@ pub fn deinit(self: *Client) void {
     self.alt_svc_h3.deinit(self.allocator);
 
     self.robots_layer.deinit(self.allocator);
+    self.replay_policy_layer.deinit();
 }
 
 fn altSvcMaxAge(value: []const u8) ?u64 {
@@ -435,17 +449,19 @@ pub fn currentProxyEndpointIp(self: *const Client) ?std.net.Address {
 }
 
 pub fn newHeaders(self: *const Client) !http.Headers {
-    if (comptime build_config.curl_impersonate) {
-        // Document nav: curl default_headers + small overrides. Subresources: full override list.
-        return http.Headers.initEmpty();
-    }
     const headers = &self.network.config.http_headers;
-    const ua_header = self.user_agent_header_override orelse headers.user_agent_header;
-    return http.Headers.init(
-        ua_header,
-        self.getSecChUaHeader(),
-        self.getAcceptLanguageHeader(),
-    );
+    var result = if (comptime build_config.curl_impersonate)
+        // Document nav: curl default_headers + small overrides. Subresources: full override list.
+        http.Headers.initEmpty()
+    else
+        try http.Headers.init(
+            self.user_agent_header_override orelse headers.user_agent_header,
+            self.getSecChUaHeader(),
+            self.getAcceptLanguageHeader(),
+        );
+    errdefer result.deinit();
+    for (headers.extra_headers.items) |header| try result.add(header);
+    return result;
 }
 
 pub fn getUserAgentHeader(self: *const Client) [:0]const u8 {
@@ -2626,11 +2642,17 @@ pub const Transfer = struct {
         if (self._journey_emitted) return;
         self._journey_emitted = true;
         const content_type = if (self.response_header) |*head| head.contentType() else null;
+        var response_headers = self.responseHeaderIterator();
+        const request_headers = self._effective_headers orelse self.req.params.headers;
         self.client.network.emitInternetJourney(conn, .{
             .method = @tagName(self.req.params.method),
+            .resource_type = self.req.params.resource_type.string(),
+            .request_id = self.req.params.request_id,
+            .frame_id = self.req.params.frame_id,
+            .loader_id = self.req.params.loader_id,
             .redirect_count = self._redirect_count,
             .content_type = content_type,
-        }, failed);
+        }, failed, request_headers, &response_headers, self.req.params.body, self._stream_buffer.items);
     }
 
     fn buildResponseHeader(self: *Transfer, conn: *const http.Connection) !void {

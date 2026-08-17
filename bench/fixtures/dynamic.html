@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Koko benchmark: dynamic</title></head>
+<body>
+<main id="fixture" data-checksum="pending"><h1>Dynamic deterministic document</h1><section id="rows"></section></main>
+<script>
+  const rows = document.getElementById("rows");
+  let checksum = 0;
+  for (let index = 0; index < 300; index += 1) {
+    const item = document.createElement("article");
+    item.setAttribute("data-index", String(index));
+    item.textContent = `row-${index}-${(index * 2654435761) >>> 0}`;
+    rows.appendChild(item);
+    checksum = (checksum + index * 17) % 1000003;
+  }
+  document.getElementById("fixture").setAttribute("data-checksum", `dynamic-${checksum}`);
+</script>
+</body>
+</html>
+

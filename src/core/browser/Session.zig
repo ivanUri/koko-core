@@ -27,6 +27,7 @@ const Frame = @import("Frame.zig");
 const Page = @import("Page.zig");
 const IFrame = @import("../webapi/element/html/IFrame.zig");
 const URL = @import("../webapi/URL.zig");
+const BrowserURL = @import("URL.zig");
 pub const Runner = @import("Runner.zig");
 const Browser = @import("Browser.zig");
 const ClientHints = @import("../../runtime/profile/ClientHints.zig");
@@ -261,6 +262,103 @@ pub fn enqueueCurrentProfileState(self: *Session) void {
     for (self.cookie_jar.cookies.items) |*cookie| {
         self.browser.app.storage.cookieUpsert(cookie.*) catch |err| log.err(.storage, "cookie seed enqueue", .{ .err = err });
     }
+}
+
+/// Emit a redacted, origin-scoped storage snapshot for local observability.
+/// Values are intentionally omitted because the JSONL sink is durable and may
+/// be opened outside the browser process.
+pub fn emitApplicationStorageSnapshot(self: *Session, frame: *Frame) void {
+    const max_entries = 1_000;
+    var emitted: usize = 0;
+    var cookie_count: usize = 0;
+    var local_storage_count: usize = 0;
+    var session_storage_count: usize = 0;
+    var indexed_db_count: usize = 0;
+
+    const maybe_inspected_origin = BrowserURL.getOrigin(self.arena, frame.url) catch return;
+    const inspected_origin = maybe_inspected_origin orelse return;
+    const inspected_host = BrowserURL.getHostname(frame.url);
+
+    for (self.cookie_jar.cookies.items) |*cookie| {
+        if (!cookieMatchesHost(cookie.domain, inspected_host)) continue;
+        cookie_count += 1;
+        if (emitted < max_entries) {
+            self.browser.observeApplicationStorageEntry("cookies", cookie.domain, cookie.name, cookie.value, cookie.value.len, .{
+                .domain = cookie.domain,
+                .path = cookie.path,
+                .expires = cookie.expires,
+                .secure = cookie.secure,
+                .httpOnly = cookie.http_only,
+                .sameSite = @tagName(cookie.same_site),
+                .partitioned = cookie.partitioned,
+                .partitionSite = cookie.partition_site,
+            });
+            emitted += 1;
+        }
+    }
+
+    var origins = self.storage_shed._origins.iterator();
+    while (origins.next()) |origin_entry| {
+        const origin = origin_entry.key_ptr.*;
+        if (!std.mem.eql(u8, origin, inspected_origin)) continue;
+        var local = origin_entry.value_ptr.*.local._data.iterator();
+        while (local.next()) |entry| {
+            local_storage_count += 1;
+            if (emitted < max_entries) {
+                self.browser.observeApplicationStorageEntry("local-storage", origin, entry.key_ptr.*, entry.value_ptr.*, entry.value_ptr.*.len, .{});
+                emitted += 1;
+            }
+        }
+        var session = origin_entry.value_ptr.*.session._data.iterator();
+        while (session.next()) |entry| {
+            session_storage_count += 1;
+            if (emitted < max_entries) {
+                self.browser.observeApplicationStorageEntry("session-storage", origin, entry.key_ptr.*, entry.value_ptr.*, entry.value_ptr.*.len, .{});
+                emitted += 1;
+            }
+        }
+    }
+
+    var indexed_databases: std.ArrayListUnmanaged(@import("../webapi/idb.zig").IDBFactory.Snapshot) = .empty;
+    defer indexed_databases.deinit(self.arena);
+    frame.window.getIndexedDB().appendSnapshot(&indexed_databases, self.arena) catch return;
+    for (indexed_databases.items) |database| {
+        indexed_db_count += 1;
+        if (emitted < max_entries) {
+            self.browser.observeApplicationStorageEntry("indexed-db", inspected_origin, database.name, null, 0, .{
+                .version = database.version,
+                .objectStoreCount = database.object_store_count,
+                .recordCount = database.record_count,
+                .snapshotState = "metadata-only",
+            });
+            emitted += 1;
+        }
+    }
+
+    self.browser.observeApplicationStorageEntry("snapshot", inspected_origin, "snapshot", null, 0, .{
+        .state = "complete",
+        .cookies = cookie_count,
+        .localStorage = local_storage_count,
+        .sessionStorage = session_storage_count,
+        .indexedDb = indexed_db_count,
+        .emittedEntries = emitted,
+        .truncated = emitted >= max_entries,
+    });
+}
+
+fn cookieMatchesHost(cookie_domain: []const u8, host: []const u8) bool {
+    if (cookie_domain.len == 0 or host.len == 0) return false;
+    if (cookie_domain[0] != '.') return std.ascii.eqlIgnoreCase(cookie_domain, host);
+    const domain = cookie_domain[1..];
+    return std.ascii.eqlIgnoreCase(domain, host) or
+        (host.len > domain.len and std.ascii.eqlIgnoreCase(host[host.len - domain.len ..], domain) and host[host.len - domain.len - 1] == '.');
+}
+
+test "Application snapshot only includes cookies visible to inspected host" {
+    try std.testing.expect(cookieMatchesHost("example.com", "example.com"));
+    try std.testing.expect(!cookieMatchesHost("example.com", "www.example.com"));
+    try std.testing.expect(cookieMatchesHost(".example.com", "www.example.com"));
+    try std.testing.expect(!cookieMatchesHost(".example.com", "notexample.com"));
 }
 
 // True iff there is an active Page. CDP / external callers should use this

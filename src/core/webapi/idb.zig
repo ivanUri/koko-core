@@ -537,6 +537,30 @@ pub const IDBObjectStore = struct {
 pub const IDBFactory = struct {
     _databases: std.StringHashMapUnmanaged(*DatabaseData) = .empty,
 
+    pub const Snapshot = struct {
+        name: []const u8,
+        version: u32,
+        object_store_count: usize,
+        record_count: usize,
+    };
+
+    /// Returns metadata only. IndexedDB record values deliberately stay in
+    /// the browser runtime and are never copied to durable observability logs.
+    pub fn appendSnapshot(self: *const IDBFactory, entries: *std.ArrayListUnmanaged(Snapshot), allocator: std.mem.Allocator) !void {
+        var database_iterator = self._databases.valueIterator();
+        while (database_iterator.next()) |database| {
+            var record_count: usize = 0;
+            var stores = database.*.stores.valueIterator();
+            while (stores.next()) |store| record_count += store.*.records.count();
+            try entries.append(allocator, .{
+                .name = database.*.name,
+                .version = database.*.version,
+                .object_store_count = database.*.stores.count(),
+                .record_count = record_count,
+            });
+        }
+    }
+
     pub fn open(self: *IDBFactory, name: []const u8, version: ?u32, frame: *Frame) !*IDBOpenDBRequest {
         const owned_name = try frame._page.frame_arena.dupe(u8, name);
         const request = try frame._factory.eventTarget(IDBOpenDBRequest{

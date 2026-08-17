@@ -1,0 +1,28 @@
+[
+  {
+    "id": "hacker-news",
+    "url": "https://news.ycombinator.com/",
+    "category": "server-rendered-static"
+  },
+  {
+    "id": "wikipedia",
+    "url": "https://www.wikipedia.org/",
+    "category": "content"
+  },
+  {
+    "id": "react",
+    "url": "https://react.dev/",
+    "category": "modern-ssr"
+  },
+  {
+    "id": "npm",
+    "url": "https://www.npmjs.com/",
+    "category": "application"
+  },
+  {
+    "id": "github",
+    "url": "https://github.com/",
+    "category": "application-heavy"
+  }
+]
+

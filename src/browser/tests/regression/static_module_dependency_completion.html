@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+</script>
+<script
+  type="module"
+  src="/src/browser/tests/regression/static_module_dependency_completion.js"
+></script>

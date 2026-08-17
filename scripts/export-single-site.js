@@ -4,12 +4,12 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
-const url = "https://github.com/";
+const url = "https://react.dev/";
 // Chỉ cần sửa cấu hình trong khối này.
 const CONFIG = {
   url,
-  output: "exports/single/www.github.com.html",
-  log: "export-logs/www.github.com.log",
+  output: "exports/single/react.dev.html",
+  log: "export-logs/react.dev.log",
 
   // Keep single-page exports isolated from profiles created by other runners.
   // The run starts without cookies or origin storage, while retaining the
@@ -22,7 +22,7 @@ const CONFIG = {
   cookieJar: null,
   keepScripts: false,
   includeFrames: true,
-  waitUntil: "networkidle",
+  waitUntil: "domstable",
   waitMs: 80_000,
   terminateMs: 80_000,
   // Wait for finite presentation animations to settle before serializing.

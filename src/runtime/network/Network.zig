@@ -186,7 +186,13 @@ pub fn init(allocator: Allocator, app: *App, config: *const Config) !Network {
         }
     else
         null;
-    const internet_journey_sink = try InternetJourneySink.initFromEnvironment(allocator);
+    const internet_journey_sink = try InternetJourneySink.init(
+        allocator,
+        config.internetJourneyFile(),
+        config.telemetryCaptureBodies(),
+        config.executionCheckpointDir() != null or config.executionRestoreDir() != null,
+        config.executionReplayFile() != null,
+    );
 
     return .{
         .allocator = allocator,
@@ -455,15 +461,19 @@ pub fn emitInternetJourney(
     conn: *const http.Connection,
     metadata: InternetJourneySink.ResponseMetadata,
     failed: bool,
+    request_headers: http.Headers,
+    response_headers: *http.HeaderIterator,
+    request_body: ?[]const u8,
+    response_body: []const u8,
 ) void {
-    const sink = if (self.internet_journey_sink) |*value| value else return;
+    const sink = if (self.internet_journey_sink) |*sink_value| sink_value else return;
     log.debug(.http, "internet journey snapshot", .{ .origin = conn.origin, .failed = failed });
     if (conn.origin == .telemetry) return;
     const timing = conn.transferTiming() catch |err| {
         log.warn(.http, "internet journey timing snapshot", .{ .err = err });
         return;
     };
-    sink.emit(conn, timing, metadata, failed) catch |err| {
+    sink.emit(conn, timing, metadata, failed, request_headers, response_headers, request_body, response_body) catch |err| {
         log.warn(.http, "internet journey telemetry write", .{ .err = err });
     };
 }
@@ -477,6 +487,21 @@ pub fn emitBrowserStage(self: *Network, stage: []const u8, duration_us: u64, fra
 pub fn emitBrowserScript(self: *Network, duration_us: u64, frame_id: u32, loader_id: u32, url: []const u8, script_kind: []const u8) void {
     const sink = if (self.internet_journey_sink) |*value| value else return;
     sink.emitBrowserScript(duration_us, frame_id, loader_id, url, script_kind) catch |err| log.warn(.http, "browser script telemetry", .{ .err = err });
+}
+pub fn emitJavaScriptError(self: *Network, error_kind: []const u8, message: []const u8, script_url: []const u8, line: u32, column: u32, frame_id: u32, loader_id: u32, stack: ?[]const u8) void {
+    const sink = if (self.internet_journey_sink) |*value| value else return;
+    sink.emitJavaScriptError(error_kind, message, script_url, line, column, frame_id, loader_id, stack) catch |err| log.warn(.http, "javascript error telemetry", .{ .err = err });
+}
+pub fn emitApplicationStorageEntry(self: *Network, storage_type: []const u8, origin: []const u8, key: []const u8, value: ?[]const u8, value_bytes: usize, details: anytype) void {
+    const sink = if (self.internet_journey_sink) |*storage_sink| storage_sink else return;
+    sink.emitApplicationStorageEntry(storage_type, origin, key, value, value_bytes, details) catch |err| log.warn(.http, "application storage telemetry", .{ .err = err });
+}
+
+pub fn emitExecutionCheckpoint(self: *Network, url: []const u8, cookie_count: usize, local_storage_entries: usize, session_storage_entries: usize) void {
+    const sink = if (self.internet_journey_sink) |*value| value else return;
+    sink.emitExecutionCheckpoint(url, cookie_count, local_storage_entries, session_storage_entries) catch |err| {
+        log.warn(.http, "execution checkpoint telemetry", .{ .err = err });
+    };
 }
 
 fn wakeupPoll(self: *Network) void {

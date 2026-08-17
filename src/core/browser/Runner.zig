@@ -32,6 +32,8 @@ frame: *Frame,
 session: *Session,
 http_client: *HttpClient,
 dom_stability: HostIdle.DomStability = .{},
+progress_hook: ?ProgressHook = null,
+last_progress_ms: u64 = 0,
 
 pub const Opts = struct {};
 
@@ -49,6 +51,30 @@ pub const WaitOpts = struct {
     ms: u32,
     until: @import("../../runtime/Config.zig").WaitUntil = .done,
 };
+
+/// A low-frequency hook for consumers that need an intermediate document
+/// snapshot while a wait policy is still running. This deliberately lives on
+/// Runner rather than the telemetry sink: progress snapshots are artifacts,
+/// not one telemetry event per parser/layout tick.
+pub const ProgressHook = struct {
+    context: *anyopaque,
+    callback: *const fn (context: *anyopaque, frame: *Frame) void,
+    interval_ms: u64 = 250,
+};
+
+pub fn setProgressHook(self: *Runner, hook: ?ProgressHook) void {
+    self.progress_hook = hook;
+    self.last_progress_ms = 0;
+}
+
+fn maybeEmitProgress(self: *Runner) void {
+    const hook = self.progress_hook orelse return;
+    const now = @import("../../support/datetime.zig").milliTimestamp(.monotonic);
+    if (self.last_progress_ms != 0 and now -| self.last_progress_ms < hook.interval_ms) return;
+    self.last_progress_ms = now;
+    hook.callback(hook.context, self.frame);
+}
+
 pub fn wait(self: *Runner, opts: WaitOpts) !void {
     _ = try self._wait(false, opts);
 }
@@ -113,6 +139,7 @@ fn _wait(self: *Runner, comptime is_cdp: bool, opts: WaitOpts) !CDPWaitResult {
             }
             return err;
         };
+        self.maybeEmitProgress();
 
         const next_ms = switch (tick_result) {
             .ok => |next_ms| next_ms,
@@ -169,7 +196,9 @@ fn nonCdpTickResult(result: CDPTickResult) TickResult {
 }
 
 pub fn tick(self: *Runner, opts: TickOpts) !TickResult {
-    return nonCdpTickResult(try self._tick(false, opts));
+    const result = nonCdpTickResult(try self._tick(false, opts));
+    self.maybeEmitProgress();
+    return result;
 }
 
 pub const CDPTickResult = union(enum) {
@@ -183,7 +212,9 @@ test "Runner: CDP socket readiness wakes a non-CDP runner" {
     try std.testing.expectEqual(@as(u32, 0), result.ok);
 }
 pub fn tickCDP(self: *Runner, opts: TickOpts) !CDPTickResult {
-    return self._tick(true, opts);
+    const result = try self._tick(true, opts);
+    self.maybeEmitProgress();
+    return result;
 }
 
 fn drainDeferredDocumentParse(self: *Runner, comptime is_cdp: bool) void {
@@ -607,6 +638,22 @@ test "Runner: host termination ends a browser wait" {
 
     var runner = try frame._session.runner(.{});
     try runner.wait(.{ .ms = 60_000, .until = .done });
+}
+
+test "Runner: text navigation completes after the response body" {
+    defer testing.reset();
+    const frame = try testing.test_session.createPage();
+    defer frame._session.removePage();
+
+    try frame.navigate("http://127.0.0.1:9582/xhr/json", .{});
+    var runner = try frame._session.runner(.{});
+    var timer = try std.time.Timer.start();
+    try runner.wait(.{ .ms = 2_000, .until = .domstable });
+
+    // JSON is represented as a synthetic preview document, but it must not
+    // inherit the lifecycle wait used by an HTML document.
+    try testing.expect(timer.read() < 1 * std.time.ns_per_s);
+    try testing.expectEqual(std.meta.activeTag(frame._parse_state), .raw_done);
 }
 
 test "Runner: domstable resets for delayed DOM mutation and ignores recurring background work" {

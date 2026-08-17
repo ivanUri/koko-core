@@ -161,6 +161,16 @@ pub fn build(b: *Build) !void {
         const version_info_run = b.addRunArtifact(exe);
         version_info_run.addArg("version");
         version_info_step.dependOn(&version_info_run.step);
+
+        // Browser runtime benchmark. Passing the emitted binary as a file
+        // input guarantees that the runner cannot accidentally measure a
+        // stale zig-out binary from a different optimization mode.
+        const benchmark_run = b.addSystemCommand(&.{ "node", "bench/runner.mjs", "--koko-bin" });
+        benchmark_run.addFileArg(exe.getEmittedBin());
+        benchmark_run.addArgs(&.{ "--optimize", @tagName(optimize) });
+        if (b.args) |args| benchmark_run.addArgs(args);
+        const benchmark_step = b.step("benchmark", "Run deterministic browser runtime benchmarks");
+        benchmark_step.dependOn(&benchmark_run.step);
     }
 
     {

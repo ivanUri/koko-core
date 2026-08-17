@@ -264,3 +264,20 @@ pub fn fulfillRequest(
         return err;
     };
 }
+
+/// Fulfill a request owned by a non-CDP policy layer. Unlike fulfillRequest,
+/// this path does not adjust the CDP interception counter because the request
+/// was never paused for a protocol client.
+pub fn fulfillDirect(
+    client: *Client,
+    req: Request,
+    status: u16,
+    headers: []const http.Header,
+    body: ?[]const u8,
+) !void {
+    defer client.deinitRequest(req);
+    fulfillInner(req, status, headers, body) catch |err| {
+        req.error_callback(req.ctx, err);
+        return err;
+    };
+}

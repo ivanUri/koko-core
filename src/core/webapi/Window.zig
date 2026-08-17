@@ -633,6 +633,16 @@ pub fn reportUncaughtException(
             });
         }
     }
+    frame._page.session.browser.observeJavaScriptError(
+        "uncaught-exception",
+        error_event._message,
+        error_event._filename,
+        error_event._line_number,
+        error_event._column_number,
+        frame._frame_id,
+        frame._loader_id,
+        null,
+    );
 }
 
 pub fn matchMedia(_: *const Window, query: []const u8, frame: *Frame) !*MediaQueryList {
@@ -1048,6 +1058,12 @@ pub fn notifyPromiseRejection(self: *Window, no_handler: bool, promise: js.Promi
             .target = "window",
             .value = reason,
         });
+    }
+
+    if (no_handler) {
+        const message = if (reason) |value| value.toStringSlice() catch "Unhandled promise rejection" else "Unhandled promise rejection";
+        const stack = promise.local.stackTrace() catch null;
+        frame._page.session.browser.observeJavaScriptError("unhandled-rejection", message, frame.url, 0, 0, frame._frame_id, frame._loader_id, stack);
     }
 
     const event_name, const attribute_callback = blk: {
