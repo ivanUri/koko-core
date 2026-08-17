@@ -29,6 +29,7 @@ const IpFilter = @import("IpFilter.zig");
 const RobotStore = @import("Robots.zig").RobotStore;
 const WebBotAuth = @import("WebBotAuth.zig");
 const InternetJourneySink = @import("InternetJourneySink.zig");
+const ScaleMetrics = @import("../ScaleMetrics.zig");
 
 fn transportTag(transport: http.Connection.Transport) @typeInfo(http.Connection.Transport).@"union".tag_type.? {
     return std.meta.activeTag(transport);
@@ -95,6 +96,7 @@ active_handles: usize = 0,
 /// Optional IP filter for blocking requests to private/internal networks (--block-private-networks).
 ip_filter: ?*IpFilter = null,
 internet_journey_sink: ?InternetJourneySink = null,
+metrics: ?*ScaleMetrics = null,
 
 const TickCallback = struct {
     ctx: *anyopaque,
@@ -445,6 +447,11 @@ pub fn submitRequest(self: *Network, conn: *http.Connection) void {
     const queue_len = self.queued_count;
     self.submission_mutex.unlock();
 
+    if (self.metrics) |metrics| {
+        _ = metrics.network_submissions.fetchAdd(1, .monotonic);
+        ScaleMetrics.recordHighWater(&metrics.network_queue_high_water, queue_len);
+    }
+
     log.debug(.http, "curl state", .{
         .running_handles = -1,
         .available = self.availableCount(),
@@ -475,6 +482,22 @@ pub fn emitInternetJourney(
     };
     sink.emit(conn, timing, metadata, failed, request_headers, response_headers, request_body, response_body) catch |err| {
         log.warn(.http, "internet journey telemetry write", .{ .err = err });
+    };
+}
+
+pub fn emitExecutionReplay(
+    self: *Network,
+    metadata: InternetJourneySink.ResponseMetadata,
+    url: []const u8,
+    status: u16,
+    request_headers: http.Headers,
+    response_headers: []const http.Header,
+    request_body: ?[]const u8,
+    response_body: ?[]const u8,
+) void {
+    const sink = if (self.internet_journey_sink) |*value| value else return;
+    sink.emitReplay(metadata, url, status, request_headers, response_headers, request_body, response_body) catch |err| {
+        log.warn(.http, "execution replay telemetry write", .{ .err = err });
     };
 }
 
@@ -543,6 +566,9 @@ fn drainQueue(self: *Network) void {
             continue;
         };
         self.active_handles += 1;
+        if (self.metrics) |metrics| {
+            ScaleMetrics.recordHighWater(&metrics.network_active_high_water, self.active_handles);
+        }
     }
 }
 
@@ -658,6 +684,7 @@ fn processCompletions(self: *Network, multi: *libcurl.CurlM, running_handles: c_
 
         libcurl.curl_multi_remove_handle(multi, easy) catch {};
         self.active_handles -= 1;
+        if (self.metrics) |metrics| _ = metrics.network_completions.fetchAdd(1, .monotonic);
         self.releaseConnection(conn);
 
         log.debug(.http, "curl state", .{

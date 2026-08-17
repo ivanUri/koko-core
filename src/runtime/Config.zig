@@ -404,14 +404,20 @@ pub fn proxyBearerToken(self: *const Config) ?[:0]const u8 {
 
 pub fn httpMaxConcurrent(self: *const Config) u8 {
     return switch (self.mode) {
-        inline .serve, .fetch, .mcp => |opts| opts.http_max_concurrent orelse 10,
+        // Ten handles were sufficient for single-page fetches but created a
+        // hard queueing cliff once many CDP contexts navigated together. Keep
+        // the value explicit/configurable while making the scale-safe default
+        // large enough for a modest multi-session workload.
+        inline .serve, .fetch, .mcp => |opts| opts.http_max_concurrent orelse 32,
         else => unreachable,
     };
 }
 
 pub fn httpMaxHostOpen(self: *const Config) u8 {
     return switch (self.mode) {
-        inline .serve, .fetch, .mcp => |opts| opts.http_max_host_open orelse 4,
+        // Match the larger transfer pool without opening an unbounded number
+        // of sockets to one origin. Hosts can still opt into a different cap.
+        inline .serve, .fetch, .mcp => |opts| opts.http_max_host_open orelse 16,
         else => unreachable,
     };
 }
@@ -440,6 +446,18 @@ test "browser HTTP total timeout is opt-in" {
 
     config.mode.fetch.http_timeout = 12_345;
     try std.testing.expectEqual(@as(u31, 12_345), config.httpTimeout());
+}
+
+test "browser HTTP scale defaults leave explicit overrides intact" {
+    var config: Config = undefined;
+    config.mode = .{ .serve = .{} };
+    try std.testing.expectEqual(@as(u8, 32), config.httpMaxConcurrent());
+    try std.testing.expectEqual(@as(u8, 16), config.httpMaxHostOpen());
+
+    config.mode.serve.http_max_concurrent = 7;
+    config.mode.serve.http_max_host_open = 3;
+    try std.testing.expectEqual(@as(u8, 7), config.httpMaxConcurrent());
+    try std.testing.expectEqual(@as(u8, 3), config.httpMaxHostOpen());
 }
 
 pub fn httpMaxRedirects(_: *const Config) u8 {
@@ -919,11 +937,11 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\
         \\--http-max-concurrent
         \\                The maximum number of concurrent HTTP requests.
-        \\                Defaults to 10.
+        \\                Defaults to 32.
         \\
         \\--http-max-host-open
         \\                The maximum number of open connection to a given host:port.
-        \\                Defaults to 4.
+        \\                Defaults to 16.
         \\
         \\--http-connect-timeout
         \\                The time, in milliseconds, for establishing an HTTP connection

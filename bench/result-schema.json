@@ -7,7 +7,7 @@
   "properties": {
     "schemaVersion": { "const": 1 },
     "runId": { "type": "string" },
-    "suite": { "enum": ["startup", "navigation", "session-lifecycle", "idle-memory", "real-sites"] },
+    "suite": { "enum": ["startup", "navigation", "session-lifecycle", "idle-memory", "concurrency", "network", "dom-js", "agent", "long-run", "real-sites"] },
     "workload": { "type": "string" },
     "baseline": { "enum": ["koko-cdp", "chromium-cdp", "playwright-chromium"] },
     "iteration": { "type": "integer", "minimum": 1 },

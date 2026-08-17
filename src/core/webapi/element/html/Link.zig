@@ -18,6 +18,7 @@ const HttpClient = @import("../../../browser/HttpClient.zig");
 const LoadGuard = @import("../../../browser/LoadGuard.zig");
 const URL = @import("../../../browser/URL.zig");
 const Event = @import("../../Event.zig");
+const CSSStyleSheet = @import("../../css/CSSStyleSheet.zig");
 
 const Node = @import("../../../dom/Node.zig");
 const Element = @import("../../../dom/Element.zig");
@@ -27,6 +28,9 @@ const Link = @This();
 _proto: *HtmlElement,
 _preload_loading: bool = false,
 _preload_url: ?[:0]const u8 = null,
+_stylesheet_loading: bool = false,
+_stylesheet_url: ?[:0]const u8 = null,
+_sheet: ?*CSSStyleSheet = null,
 
 pub fn asElement(self: *Link) *Element {
     return self._proto._proto;
@@ -62,6 +66,9 @@ pub fn getRel(self: *Link) []const u8 {
 
 pub fn setRel(self: *Link, value: []const u8, frame: *Frame) !void {
     try self.asElement().setAttributeSafe(comptime .wrap("rel"), .wrap(value), frame);
+    if (self.asElement().asNode().isConnected()) {
+        try self.linkAddedCallback(frame);
+    }
 }
 
 pub fn getAs(self: *const Link) []const u8 {
@@ -121,8 +128,193 @@ pub fn linkAddedCallback(self: *Link, frame: *Frame) !void {
         return;
     }
 
+    if (std.ascii.eqlIgnoreCase(rel, "stylesheet")) {
+        try self.fetchStylesheet(frame, href);
+        return;
+    }
+
     try frame.queueLoad(self._proto);
 }
+
+fn fetchStylesheet(self: *Link, frame: *Frame, href: []const u8) !void {
+    const scratch = try frame.getArena(.small, "Link.stylesheet");
+    var caller_owns_scratch = true;
+    errdefer if (caller_owns_scratch) frame.releaseArena(scratch);
+
+    const resolved = try URL.resolve(scratch, frame.base(), href, .{ .encoding = frame.charset });
+    const owned_url = try frame.arena.dupeZ(u8, resolved);
+
+    if (self._stylesheet_loading) {
+        if (self._stylesheet_url) |previous| {
+            if (std.mem.eql(u8, previous, owned_url)) {
+                frame.releaseArena(scratch);
+                caller_owns_scratch = false;
+                return;
+            }
+        }
+    } else if (self._stylesheet_url) |previous| {
+        if (std.mem.eql(u8, previous, owned_url) and self._sheet != null) {
+            frame.releaseArena(scratch);
+            caller_owns_scratch = false;
+            return;
+        }
+    }
+
+    self._stylesheet_loading = true;
+    self._stylesheet_url = owned_url;
+    self._sheet = null;
+
+    const session = frame._session;
+    const http_client = &session.browser.http_client;
+    var headers = try http_client.newHeaders();
+    try frame.headersForRequest(&headers, .{
+        .request_url = owned_url,
+        .resource_type = .stylesheet,
+        .include_origin_header = self.getCrossOrigin() != null,
+    });
+
+    const arena = scratch;
+    const load = try arena.create(StylesheetLoad);
+    load.* = .{
+        .link = self,
+        .frame = frame,
+        .arena = arena,
+        .url = owned_url,
+        .guard = LoadGuard.Guard.init(&frame.js.execution),
+    };
+
+    // From this point the callback chain owns the arena, including synchronous
+    // request errors that invoke errorCallback before returning.
+    caller_owns_scratch = false;
+    try http_client.request(.{
+        .ctx = load,
+        .params = .{
+            .url = owned_url,
+            .method = .GET,
+            .frame_id = frame._frame_id,
+            .attribution_frame = frame,
+            .loader_id = frame._loader_id,
+            .headers = headers,
+            .cookie_jar = &session.cookie_jar,
+            .cookie_origin = frame.url,
+            .top_level_cookie_url = frame.topLevelUrl(),
+            .resource_type = .stylesheet,
+            .notification = session.notification,
+        },
+        .header_callback = StylesheetLoad.headerCallback,
+        .data_callback = StylesheetLoad.dataCallback,
+        .done_callback = StylesheetLoad.doneCallback,
+        .error_callback = StylesheetLoad.errorCallback,
+        .shutdown_callback = StylesheetLoad.shutdownCallback,
+    });
+}
+
+const StylesheetLoad = struct {
+    link: *Link,
+    frame: *Frame,
+    arena: std.mem.Allocator,
+    url: [:0]const u8,
+    status: u16 = 0,
+    truncated: bool = false,
+    guard: LoadGuard.Guard,
+    body: std.ArrayList(u8) = .empty,
+
+    const max_css_bytes = 4 * 1024 * 1024;
+
+    fn deliverable(self: *const StylesheetLoad) bool {
+        const frame = self.frame;
+        return self.guard.isDeliverableForRealm(.{
+            .realm_id = frame._frame_id,
+            .epoch = frame._realm_epoch,
+            .document_id = frame._loader_id,
+        }, .{
+            .realm_dead_or_draining = frame._realm_state == .dead or frame._realm_state == .draining,
+            .going_away = frame.isGoingAway(),
+        });
+    }
+
+    fn headerCallback(response: HttpClient.Response) !bool {
+        const self: *StylesheetLoad = @ptrCast(@alignCast(response.ctx));
+        self.status = response.status() orelse 0;
+        return true;
+    }
+
+    fn dataCallback(response: HttpClient.Response, data: []const u8) !void {
+        const self: *StylesheetLoad = @ptrCast(@alignCast(response.ctx));
+        if (self.body.items.len >= max_css_bytes) {
+            self.truncated = true;
+            return;
+        }
+        const remaining = max_css_bytes - self.body.items.len;
+        try self.body.appendSlice(self.arena, data[0..@min(data.len, remaining)]);
+        if (data.len > remaining) self.truncated = true;
+    }
+
+    fn doneCallback(ctx: *anyopaque) !void {
+        const self: *StylesheetLoad = @ptrCast(@alignCast(ctx));
+        defer self.finish();
+        self.link._stylesheet_loading = false;
+        if (!self.deliverable()) return;
+
+        if (self.status < 200 or self.status > 299 or self.truncated) {
+            try self.dispatchError();
+            return;
+        }
+
+        const sheet = CSSStyleSheet.initWithHrefOwner(self.url, self.link.asElement(), self.frame) catch {
+            try self.dispatchError();
+            return;
+        };
+        const sheets = self.frame.document.getStyleSheets(self.frame) catch {
+            try self.dispatchError();
+            return;
+        };
+        sheets.add(sheet, self.frame) catch {
+            try self.dispatchError();
+            return;
+        };
+        sheet.replaceSync(self.body.items, self.frame) catch {
+            try self.dispatchError();
+            return;
+        };
+        self.link._sheet = sheet;
+        try self.frame.queueLoad(self.link._proto);
+    }
+
+    fn errorCallback(ctx: *anyopaque, _: anyerror) void {
+        const self: *StylesheetLoad = @ptrCast(@alignCast(ctx));
+        defer self.finish();
+        self.link._stylesheet_loading = false;
+        if (!self.deliverable()) return;
+        self.dispatchError() catch {};
+    }
+
+    fn shutdownCallback(ctx: *anyopaque) void {
+        const self: *StylesheetLoad = @ptrCast(@alignCast(ctx));
+        self.link._stylesheet_loading = false;
+        self.finish();
+    }
+
+    fn dispatchError(self: *StylesheetLoad) !void {
+        const callback = try self.frame.arena.create(LinkErrorCallback);
+        callback.* = .{
+            .frame = self.frame,
+            .link = self.link,
+            .task_owner = self.frame.js.execution.captureTaskOwner(),
+        };
+        try self.frame.js.scheduler.add(callback, LinkErrorCallback.run, 0, .{
+            .name = "Link.stylesheetError",
+            .low_priority = false,
+        });
+    }
+
+    fn finish(self: *StylesheetLoad) void {
+        if (self.guard.isFinished()) return;
+        self.guard.finished = true;
+        self.body.deinit(self.arena);
+        self.frame.releaseArena(self.arena);
+    }
+};
 
 fn fetchPreloadImage(self: *Link, frame: *Frame, href: []const u8) !void {
     // Same arena ownership rules as Image.load: early-return / err paths must
@@ -345,6 +537,7 @@ pub const JsApi = struct {
     pub const as = bridge.accessor(Link.getAs, Link.setAs, .{});
     pub const rel = bridge.accessor(Link.getRel, Link.setRel, .{});
     pub const href = bridge.accessor(Link.getHref, Link.setHref, .{});
+    pub const sheet = bridge.accessor(Link.getSheet, null, .{ .null_as_undefined = true });
     pub const crossOrigin = bridge.accessor(Link.getCrossOrigin, Link.setCrossOrigin, .{});
     pub const relList = bridge.accessor(_getRelList, null, .{ .null_as_undefined = true });
     pub const sizes = bridge.accessor(_getSizesList, null, .{ .null_as_undefined = true });
@@ -366,6 +559,10 @@ pub const JsApi = struct {
         return element.getSizesList(frame);
     }
 };
+
+pub fn getSheet(self: *Link, _: *Frame) ?*CSSStyleSheet {
+    return self._sheet;
+}
 
 pub const Build = struct {
     pub fn created(node: *Node, frame: *Frame) !void {

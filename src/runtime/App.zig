@@ -21,6 +21,7 @@ const Telemetry = @import("telemetry/telemetry.zig").Telemetry;
 
 const Storage = @import("storage/Storage.zig");
 const Network = @import("network/Network.zig");
+pub const ScaleMetrics = @import("ScaleMetrics.zig");
 pub const ArenaPool = @import("ArenaPool.zig");
 
 const log = @import("../support/log.zig");
@@ -36,6 +37,7 @@ snapshot: Snapshot,
 telemetry: Telemetry,
 allocator: Allocator,
 arena_pool: ArenaPool,
+metrics: ScaleMetrics,
 app_dir_path: ?[]const u8,
 
 pub fn init(allocator: Allocator, config: *const Config) !*App {
@@ -61,8 +63,10 @@ pub fn init(allocator: Allocator, config: *const Config) !*App {
         .app_dir_path = undefined,
         .telemetry = undefined,
         .arena_pool = undefined,
+        .metrics = .{},
     };
     app.network = try Network.init(allocator, app, config);
+    app.network.metrics = &app.metrics;
     errdefer app.network.deinit();
 
     app.app_dir_path = getAndMakeAppDir(allocator);
@@ -71,6 +75,7 @@ pub fn init(allocator: Allocator, config: *const Config) !*App {
     errdefer app.telemetry.deinit(allocator);
 
     app.arena_pool = ArenaPool.init(allocator, .{});
+    app.arena_pool.metrics = &app.metrics;
     errdefer app.arena_pool.deinit();
 
     return app;
@@ -78,6 +83,13 @@ pub fn init(allocator: Allocator, config: *const Config) !*App {
 
 pub fn shutdown(self: *const App) bool {
     return self.network.shutdown.load(.acquire);
+}
+
+/// Returns an immutable snapshot for diagnostics and benchmark adapters. The
+/// counters are intentionally process-local and never participate in runtime
+/// decisions, so reading them cannot change scheduling behavior.
+pub fn scaleMetrics(self: *const App) ScaleMetrics.Snapshot {
+    return self.metrics.snapshot();
 }
 
 pub fn deinit(self: *App) void {

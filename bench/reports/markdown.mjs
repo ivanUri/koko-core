@@ -27,16 +27,58 @@ export function renderMarkdownReport({ runId, environment, summary }) {
   });
   const realSiteRows = includesRealSites
     ? summary.groups.filter((group) => group.suite === "real-sites").map((group) => (
-        `| ${group.workload} | ${group.baseline} | ${formatNumber(metric(group, "durationMs"))} | ${formatNumber(metric(group, "navigationAckMs"))} | ${formatNumber(metric(group, "postAckToDomContentLoadedMs"))} | ${formatNumber(metric(group, "httpStatus"), 0)} | ${formatNumber(metric(group, "htmlChars"), 0)} | ${formatNumber(metric(group, "textChars"), 0)} | ${formatNumber(metric(group, "elementCount"), 0)} | ${formatNumber(metric(group, "responseCount"), 0)} |`
+        `| ${group.workload} | ${group.baseline} | ${formatNumber(metric(group, "durationMs"))} | ${formatNumber(metric(group, "navigationAckMs"))} | ${formatNumber(metric(group, "postAckToDomContentLoadedMs"))} | ${formatNumber(metric(group, "httpStatus"), 0)} | ${formatNumber(metric(group, "htmlChars"), 0)} | ${formatNumber(metric(group, "textChars"), 0)} | ${formatNumber(metric(group, "elementCount"), 0)} | ${formatNumber(metric(group, "responseCountAtReady"), 0)} | ${formatNumber(metric(group, "responseCountAfterSettle"), 0)} |`
       ))
     : [];
   const realSiteSection = realSiteRows.length === 0 ? "" : `
 ## Live-site content signals
 
-| Site | Baseline | DCL ms | Ack ms | Ack → DCL ms | HTTP | HTML chars | Text chars | Elements | Responses at ready |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Site | Baseline | DCL ms | Ack ms | Ack → DCL ms | HTTP | HTML chars | Text chars | Elements | Responses at DCL | Responses after settle |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 ${realSiteRows.join("\n")}
 `;
+  const networkRows = summary.groups
+    .filter((group) => group.suite === "network")
+    .map((group) => (
+      `| ${group.workload} | ${group.baseline} | ${formatNumber(metric(group, "responseCountAtReady"), 0)} | ${formatNumber(metric(group, "responseCountAfterSettle"), 0)} | ${formatNumber(metric(group, "stylesheetCount"), 0)} | ${formatNumber(metric(group, "responseBodyChars"), 0)} | ${formatNumber(metric(group, "redirectCount"), 0)} | ${formatNumber(metric(group, "resourceRequestsObserved"), 0)} | ${formatNumber(metric(group, "cancelledRequests"), 0)} |`
+    ));
+  const networkSection = networkRows.length === 0 ? "" : `
+## Network signals
+
+| Workload | Baseline | Responses at DCL | Responses after settle | Stylesheets | Body chars | Redirects | Resources started | Cancellations observed |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+${networkRows.join("\n")}
+`;
+  const scaleRows = summary.groups
+    .filter((group) => group.metrics?.threadCount || group.metrics?.throughputPagesPerSecond || group.metrics?.rssPerSessionBytes)
+    .map((group) => (
+      `| ${group.suite} | ${group.workload} | ${group.baseline} | ${formatNumber(metric(group, "durationMs", "p95"))} | ${formatNumber(metric(group, "throughputPagesPerSecond"))} | ${formatNumber(mib(metric(group, "rssPerSessionBytes")))} | ${formatNumber(metric(group, "threadCount"), 0)} | ${formatNumber(metric(group, "averageCpuPercent"))} | ${formatNumber(metric(group, "workPerGigabyte"))} | ${formatNumber(metric(group, "workPerCpuSecond"))} |`
+    ));
+  const scaleSection = scaleRows.length === 0 ? "" : `
+## Scale signals
+
+| Suite | Workload | Baseline | p95 ms | pages/s | RSS/session MiB | Threads | CPU % | pages/GB | pages/CPU-s |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+${scaleRows.join("\n")}
+`;
+  const distributionRows = summary.groups.map((group) => (
+    `| ${group.suite} | ${group.workload} | ${group.baseline} | ${formatNumber(metric(group, "durationMs", "min"))} | ${formatNumber(metric(group, "durationMs", "p50"))} | ${formatNumber(metric(group, "durationMs", "p95"))} | ${formatNumber(metric(group, "durationMs", "p99"))} | ${formatNumber(metric(group, "durationMs", "max"))} | ${formatNumber(metric(group, "durationMs", "stddev"))} |`
+  ));
+  const distributionSection = distributionRows.length === 0 ? "" : `
+## Duration distribution
+
+| Suite | Workload | Baseline | min ms | p50 ms | p95 ms | p99 ms | max ms | stddev ms |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+${distributionRows.join("\n")}
+`;
+  const regressionSection = summary.regression ? `
+## Regression gate
+
+- Compared with: \`${summary.regression.against}\`
+- Threshold: ${formatNumber(summary.regression.thresholdPct)}%
+- Mode: \`${summary.regression.mode}\`
+- Violations: ${summary.regression.violations.length}
+` : "";
 
   return `# Koko Browser Runtime Benchmark
 
@@ -52,11 +94,15 @@ Chromium: ${environment.chromium.version ?? "not selected"}
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 ${rows.join("\n")}
 ${realSiteSection}
+${networkSection}
+${scaleSection}
+${distributionSection}
+${regressionSection}
 
 ## Measurement contract
 
 - ${includesRealSites ? "The real-sites lane uses live external pages and is non-deterministic; compare content metrics and success rates alongside latency." : "Inputs are deterministic loopback-only HTML fixtures."} Cache is disabled for measured sessions.
-- Navigation ends at \`DOMContentLoaded\` and validates document state after timing.
+- Navigation latency ends at \`DOMContentLoaded\`; response signals remain subscribed for the configured settle window and are reported separately.
 - Startup measures process launch through the first validated document.
 - Koko session lifecycle includes opening one CDP connection because one Koko connection owns one browser context. Chromium direct CDP creates an isolated browser context on one browser process.
 - Chromium memory is the RSS sum of its full descendant process tree. Koko is measured with the same process-tree algorithm.

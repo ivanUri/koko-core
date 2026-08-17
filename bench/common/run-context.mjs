@@ -19,11 +19,12 @@ function serializeError(error) {
 }
 
 export class RunContext {
-  constructor({ runId, rawPath, options, fixtures, realSites = [] }) {
+  constructor({ runId, rawPath, options, fixtures, fixtureOrigin = null, realSites = [] }) {
     this.runId = runId;
     this.rawPath = rawPath;
     this.options = options;
     this.fixtures = fixtures;
+    this.fixtureOrigin = fixtureOrigin;
     this.realSites = realSites;
     this.records = [];
   }

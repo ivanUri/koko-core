@@ -21,6 +21,19 @@ function readProcessTable() {
   });
 }
 
+function readThreadCount(pid) {
+  const args = process.platform === "darwin"
+    ? ["-M", "-p", String(pid)]
+    : ["-o", "nlwp=", "-p", String(pid)];
+  const result = spawnSync("ps", args, { encoding: "utf8" });
+  if (result.status !== 0) return null;
+  if (process.platform === "darwin") {
+    return result.stdout.split("\n").filter((line) => line.trim().length > 0 && !line.startsWith("USER")).length;
+  }
+  const value = Number(result.stdout.trim());
+  return Number.isFinite(value) ? value : null;
+}
+
 export function processTreeSnapshot(rootPid) {
   const table = readProcessTable();
   const byParent = new Map();
@@ -41,6 +54,7 @@ export function processTreeSnapshot(rootPid) {
   return {
     rootPid,
     processCount: processes.length,
+    threadCount: readThreadCount(rootPid),
     rssBytes: processes.reduce((sum, row) => sum + row.rssKiB * 1024, 0),
     cpuPercent: processes.reduce((sum, row) => sum + row.cpuPercent, 0),
     processes,
@@ -60,7 +74,7 @@ export async function sampleProcessTree(rootPid, { samples = 5, intervalMs = 100
     peakRssBytes: Math.max(...snapshots.map((sample) => sample.rssBytes)),
     averageRssBytes: snapshots.reduce((sum, sample) => sum + sample.rssBytes, 0) / snapshots.length,
     processCount: Math.max(...snapshots.map((sample) => sample.processCount)),
+    threadCount: Math.max(...snapshots.map((sample) => sample.threadCount ?? 0)) || null,
     averageCpuPercent: snapshots.reduce((sum, sample) => sum + sample.cpuPercent, 0) / snapshots.length,
   };
 }
-

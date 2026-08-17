@@ -9,9 +9,15 @@ zig build benchmark -Doptimize=ReleaseFast -- --suite startup --baseline koko-cd
 zig build benchmark -Doptimize=ReleaseFast -- --quick
 zig build benchmark -Doptimize=ReleaseFast -- --baseline all
 zig build benchmark -Doptimize=ReleaseFast -- --suite real-sites
+zig build benchmark -Doptimize=ReleaseFast -- --suite concurrency --density 1,4,8,16,32
+zig build benchmark -Doptimize=ReleaseFast -- --suite long-run --long-run-iterations 1000
+zig build benchmark -Doptimize=ReleaseFast -- --suite concurrency --baseline koko-cdp --density 16,32 --http-max-concurrent 64 --http-max-host-open 32
+zig build benchmark -Doptimize=ReleaseFast -- --suite concurrency --baseline koko-cdp --density 64,128 --cdp-max-connections 128 --http-max-concurrent 128 --http-max-host-open 64
+zig build benchmark -Doptimize=ReleaseFast -- --suite network,dom-js,agent --baseline koko-cdp --warmup 1 --iterations 5
+zig build benchmark -Doptimize=ReleaseFast -- --suite idle-memory --baseline koko-cdp --density 1,10,50,100,250,500,1000 --active-sessions 1
 ```
 
-The default run uses five warmups and 30 measured observations for startup, navigation, and session lifecycle. Idle memory defaults to one warmup and five measured observations at 1, 4, 8, and 16 sessions because each observation launches a clean runtime. Use `--help` for all controls.
+The default run uses five warmups and 30 measured observations for startup, navigation, and session lifecycle. Idle memory defaults to one warmup and five measured observations at 1, 4, 8, and 16 sessions because each observation launches a clean runtime. The concurrency lane navigates all sessions at the same time; the long-run lane reuses one session for repeated navigations and records a final RSS stability observation. Use `--help` for all controls.
 
 The Playwright adapter is deliberately secondary. Install the declared npm dependencies before selecting it:
 
@@ -19,7 +25,30 @@ The Playwright adapter is deliberately secondary. Install the declared npm depen
 npm install
 ```
 
-`real-sites` is an explicitly selected integration lane and is never included in the deterministic default or `--suite all`. Its default catalog is `bench/real-sites.json`; provide another version-controlled JSON array with `--site-file`. It defaults to one warmup and three measured visits per site. Live-site latency must always be interpreted with HTTP status, final URL, DOM/text size, element count, response count, and success rate.
+`--suite all` includes deterministic network, DOM/JS and agent lanes in
+addition to the session and concurrency lanes. The network lane uses only
+loopback fixtures for tiny/large/redirect/delayed/streaming/many-resource and
+cancellation behavior. The DOM/JS lane validates create/mutate, selectors and
+async work. The agent lane models navigate -> inspect -> interact -> extract.
+
+Optional deterministic regression gate:
+
+```sh
+node bench/runner.mjs --suite concurrency,network,dom-js,agent \
+  --baseline koko-cdp --density 1,10,50 --iterations 5 --optimize ReleaseFast \
+  --regression-against bench-results/summary/<previous-run>.json \
+  --regression-threshold-pct 10 --regression-mode fail
+```
+
+The gate compares p95 duration, median RSS and median throughput for matching
+deterministic groups. Real-site groups are never hard-gated.
+
+`--density` accepts arbitrary positive session counts, including
+1/10/50/100/250/500/1000. `--active-sessions 1` turns the idle lane into an
+active-plus-idle isolation test: one session navigates while the remaining
+sessions stay parked.
+
+`real-sites` is an explicitly selected integration lane and is never included in the deterministic default or `--suite all`. Its default catalog is `bench/real-sites.json`; provide another version-controlled JSON array with `--site-file`. It defaults to one warmup and three measured visits per site. The response listener remains active for `--real-settle-ms` (default 1000 ms) after DCL, while DCL latency itself is unchanged. Live-site latency must always be interpreted with HTTP status, final URL, DOM/text size, element count, response counts at DCL and after settle, and success rate.
 
 Results are written to `bench-results/`:
 
@@ -36,4 +65,10 @@ Results are written to `bench-results/`:
 - Navigation measures through `DOMContentLoaded` and validates fixture completion outside the timed interval.
 - Memory is summed over each runtime's complete process tree.
 - Koko creates one browser context per CDP connection by core design. The density suite therefore compares N Koko client connections with N isolated Chromium contexts and reports that contract explicitly.
+- `concurrency` measures simultaneous navigation, not just session allocation. `long-run` measures reuse and retained state; a passing navigation does not by itself prove long-run memory stability.
+- `--http-max-concurrent` and `--http-max-host-open` are Koko-only sweep controls; record them in the environment and compare them separately from Chromium.
+- `--cdp-max-connections` controls the Koko server admission limit for high-density experiments.
+- Deterministic reports include min/p50/p95/p99/max/stddev distributions and
+  optional regression-gate results. Concurrency reports also include
+  pages/GB-RAM and pages/CPU-second efficiency signals.
 - Never publish ratios from different hosts, optimize modes, workloads, or success criteria as an A/B comparison.

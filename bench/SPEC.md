@@ -11,6 +11,16 @@ The canonical comparator is Chromium over raw flattened CDP. Playwright Chromium
 
 Each raw result conforms to `result-schema.json`. Warmup observations are marked, not deleted. Summary latency distributions contain successful measured observations only, while attempts, failures, and success rate always include measured failures. Environment data makes optimization mode and binary identity auditable.
 
-Phase 2 can add JavaScript kernels, DOM operations, extraction throughput, concurrency/throughput curves, cold-versus-warm cache lanes, and compatibility scoring without changing the Phase 1 result envelope.
+Phase 2 includes deterministic concurrent navigation, reused-session long-run,
+network lifecycle, DOM/JavaScript and representative agent-workload lanes.
+The network lane covers tiny/large/redirect/delayed/streaming/resource-burst
+and cancellation fixtures. The DOM/JS lane covers create/mutate, selectors and
+timers/microtasks. The agent lane models navigate -> inspect -> interact ->
+extract. These lanes preserve the Phase 1 result envelope and remain independent
+from Observatory.
 
-The optional `real-sites` lane is deliberately outside Phase 1 scoring. It exercises changing external pages and records content-shape signals so a fast but incomplete document is visible. It must not be merged into deterministic local-fixture aggregates.
+The optional `real-sites` lane is deliberately outside deterministic scoring. It
+exercises changing external pages and records content-shape signals so a fast
+but incomplete document is visible. It must not be merged into local-fixture
+aggregates. Deterministic runs may use `--regression-against` with an explicit
+threshold and `--regression-mode fail` for CI.

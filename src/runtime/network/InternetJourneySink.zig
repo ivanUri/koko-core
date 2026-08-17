@@ -23,6 +23,26 @@ pub const ResponseMetadata = struct {
     content_type: ?[]const u8,
 };
 
+const JourneyStage = struct {
+    id: []const u8,
+    measurement: []const u8 = "not-applicable-replay",
+};
+
+const replay_stages = [_]JourneyStage{
+    .{ .id = "queue" },
+    .{ .id = "cache" },
+    .{ .id = "dns" },
+    .{ .id = "routing" },
+    .{ .id = "proxy" },
+    .{ .id = "tcp" },
+    .{ .id = "tls" },
+    .{ .id = "request" },
+    .{ .id = "redirect" },
+    .{ .id = "server" },
+    .{ .id = "response" },
+    .{ .id = "received", .measurement = "boundary" },
+};
+
 // A browser process may own multiple Network instances. They can share the
 // same observability file, so serialization must live at module/process scope
 // rather than on an individual sink.
@@ -210,10 +230,106 @@ pub fn emit(
     try self.file.writeAll(output.written());
 }
 
+/// Record a response fulfilled locally by the deterministic replay policy.
+/// Replay has no DNS/TCP/TLS timings, so those stages are present for the
+/// stable telemetry schema but explicitly marked as not applicable.
+pub fn emitReplay(
+    self: *Self,
+    metadata: ResponseMetadata,
+    url: []const u8,
+    status: u16,
+    request_headers: http.Headers,
+    response_headers: []const http.Header,
+    request_body: ?[]const u8,
+    response_body: ?[]const u8,
+) !void {
+    process_mutex.lock();
+    defer process_mutex.unlock();
+
+    var request_header_output: std.Io.Writer.Allocating = .init(self.allocator);
+    defer request_header_output.deinit();
+    var request_header_iterator = request_headers.iterator();
+    try writeSafeHeaders(&request_header_output.writer, &request_header_iterator);
+
+    var response_header_output: std.Io.Writer.Allocating = .init(self.allocator);
+    defer response_header_output.deinit();
+    var response_header_iterator = http.HeaderIterator{ .list = .{ .list = response_headers } };
+    try writeSafeHeaders(&response_header_output.writer, &response_header_iterator);
+
+    const content_type = headerFromList(response_headers, "content-type");
+    const response_value = response_body orelse "";
+    const response_capture = if (self.capture_bodies) captureBody(response_value, null, content_type) else "";
+    const request_capture = if (self.capture_bodies) captureBody(request_body orelse "", null, null) else "";
+    const now = std.time.milliTimestamp();
+
+    var output: std.Io.Writer.Allocating = .init(self.allocator);
+    defer output.deinit();
+    const writer = &output.writer;
+    try writer.writeByte('[');
+    for (replay_stages, 0..) |stage, index| {
+        process_sequence += 1;
+        if (index > 0) try writer.writeByte(',');
+        const event_id = try std.fmt.allocPrint(self.allocator, "{s}:replay-{d}", .{ self.session_id, process_sequence });
+        defer self.allocator.free(event_id);
+        try std.json.Stringify.value(.{
+            .id = event_id,
+            .sessionId = self.session_id,
+            .sequence = process_sequence,
+            .timestamp = now,
+            .duration = @as(f64, 0),
+            .kind = "network",
+            .name = stage.id,
+            .status = "ok",
+            .payload = .{
+                .executionId = self.session_id,
+                .executionStatus = "replaying",
+                .executionCapabilities = self.executionCapabilities(),
+                .journeyStage = stage.id,
+                .url = url,
+                .resourceType = metadata.resource_type,
+                .requestId = metadata.request_id,
+                .frameId = metadata.frame_id,
+                .loaderId = metadata.loader_id,
+                .responseStatus = status,
+                .responseBodyBytes = response_value.len,
+                .uncompressedSizeBytes = response_value.len,
+                .responseMemoryBytes = response_value.len,
+                .responseMemoryState = "fulfilled_from_replay",
+                .connectionReused = false,
+                .usedProxy = false,
+                .cacheDecision = "execution-replay",
+                .httpVersion = "replay",
+                .method = metadata.method,
+                .redirectCount = metadata.redirect_count,
+                .contentType = content_type,
+                .requestHeaders = if (request_header_output.written().len > 0) request_header_output.written() else null,
+                .responseHeaders = if (response_header_output.written().len > 0) response_header_output.written() else null,
+                .requestBody = if (request_capture.len > 0) request_capture else null,
+                .responseBody = if (response_capture.len > 0 and isTextContent(content_type, null)) response_capture else null,
+                .bodyCaptureState = if (!self.capture_bodies) "disabled" else if (isTextContent(content_type, null)) "captured" else "unsupported-content-type",
+                .bodyTruncated = self.capture_bodies and isTextContent(content_type, null) and response_value.len > response_capture.len,
+                .measurement = stage.measurement,
+                .terminalStatus = "ok",
+                .responseSource = "execution-replay",
+            },
+        }, .{ .emit_null_optional_fields = false }, writer);
+    }
+    try writer.writeAll("]\n");
+    try self.file.seekFromEnd(0);
+    try self.file.writeAll(output.written());
+}
+
+fn headerFromList(headers: []const http.Header, name: []const u8) ?[]const u8 {
+    for (headers) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, name)) return header.value;
+    }
+    return null;
+}
+
 fn writeSafeHeaders(writer: *std.Io.Writer, iterator: *http.HeaderIterator) !void {
     while (iterator.next()) |header| {
         if (isSensitiveHeader(header.name)) continue;
-        try writer.print("{s}: {s}\\n", .{ header.name, header.value });
+        try writer.print("{s}: {s}\n", .{ header.name, header.value });
     }
 }
 
@@ -639,6 +755,27 @@ test "InternetJourneySink labels zero durations without inventing a measurement"
     try std.testing.expectEqualStrings("reused", durationMeasurement("tcp", 0, "measured", true));
     try std.testing.expectEqualStrings("boundary", durationMeasurement("received", 0, "boundary", false));
     try std.testing.expectEqualStrings("measured", durationMeasurement("tcp", 1, "measured", true));
+}
+
+test "InternetJourneySink replay stages never claim live network measurements" {
+    try std.testing.expectEqual(@as(usize, 12), replay_stages.len);
+    for (replay_stages[0 .. replay_stages.len - 1]) |stage| {
+        try std.testing.expectEqualStrings("not-applicable-replay", stage.measurement);
+    }
+    try std.testing.expectEqualStrings("received", replay_stages[replay_stages.len - 1].id);
+    try std.testing.expectEqualStrings("boundary", replay_stages[replay_stages.len - 1].measurement);
+}
+
+test "InternetJourneySink serializes headers with real line breaks" {
+    const headers = [_]http.Header{
+        .{ .name = "content-type", .value = "application/json" },
+        .{ .name = "cache-control", .value = "no-store" },
+    };
+    var iterator = http.HeaderIterator{ .list = .{ .list = &headers } };
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try writeSafeHeaders(&output.writer, &iterator);
+    try std.testing.expectEqualStrings("content-type: application/json\ncache-control: no-store\n", output.written());
 }
 
 test "InternetJourneySink maps browser stages to system ownership without site rules" {

@@ -1,3 +1,5 @@
+import { sampleProcessTree } from "../common/process-tree.mjs";
+
 function pageStateExpression() {
   return `(() => {
     const root = document.documentElement;
@@ -16,11 +18,13 @@ export async function runRealSitesSuite(context, factories) {
   process.stdout.write(`\n${suite} (external network; results are not deterministic)\n`);
   const runtimes = new Map();
   const launchErrors = new Map();
+  const launchSnapshots = new Map();
   for (const factory of factories) {
     const runtime = factory.create();
     try {
       await runtime.launch();
       runtimes.set(factory.id, runtime);
+      launchSnapshots.set(factory.id, await sampleProcessTree(runtime.pid, context.options.memorySampling));
     } catch (error) {
       launchErrors.set(factory.id, error);
       await runtime.close().catch(() => {});
@@ -52,12 +56,15 @@ export async function runRealSitesSuite(context, factories) {
           let session = null;
           let details = { requestedUrl: site.url, category: site.category };
           try {
+            const baseline = launchSnapshots.get(factory.id);
             session = await runtimes.get(factory.id).newSession();
             const navigation = await session.navigate(site.url, {
               waitUntil: "domcontentloaded",
               timeoutMs: context.options.realSiteTimeoutMs,
+              settleMs: context.options.realSiteSettleMs,
             });
             const pageState = await session.evaluate(pageStateExpression(), context.options.realSiteTimeoutMs);
+            const loaded = await sampleProcessTree(runtimes.get(factory.id).pid, context.options.memorySampling);
             details = {
               ...details,
               finalUrl: pageState?.finalUrl ?? navigation.responseUrl,
@@ -83,9 +90,19 @@ export async function runRealSitesSuite(context, factories) {
                 postAckToDomContentLoadedMs: navigation.durationMs - navigation.navigationAckMs,
                 httpStatus: navigation.httpStatus ?? 0,
                 responseCount: navigation.responseCount ?? 0,
+                responseCountAtReady: navigation.responseCountAtReady ?? navigation.responseCount ?? 0,
+                responseCountAfterSettle: navigation.responseCountAfterSettle ?? navigation.responseCount ?? 0,
                 htmlChars: pageState.htmlChars,
                 textChars: pageState.textChars,
                 elementCount: pageState.elementCount,
+                baselineRssBytes: baseline?.rssBytes ?? 0,
+                rssBytes: loaded.rssBytes,
+                peakRssBytes: loaded.peakRssBytes,
+                incrementalRssBytes: baseline ? loaded.rssBytes - baseline.rssBytes : 0,
+                rssPerSessionBytes: baseline ? loaded.rssBytes - baseline.rssBytes : 0,
+                processCount: loaded.processCount,
+                threadCount: loaded.threadCount ?? 0,
+                averageCpuPercent: loaded.averageCpuPercent,
               },
             });
           } catch (error) {

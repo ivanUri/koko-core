@@ -67,6 +67,7 @@ pub fn secFetchDest(ctx: RequestContext) []const u8 {
         .script => "script",
         .worker => "worker",
         .image => "image",
+        .stylesheet => "style",
         .fetch, .xhr, .beacon => "empty",
     };
 }
@@ -74,7 +75,7 @@ pub fn secFetchDest(ctx: RequestContext) []const u8 {
 pub fn secFetchMode(resource_type: HttpClient.RequestParams.ResourceType) []const u8 {
     return switch (resource_type) {
         .document => "navigate",
-        .script, .beacon, .image => "no-cors",
+        .script, .beacon, .image, .stylesheet => "no-cors",
         .worker => "same-origin",
         .fetch, .xhr => "cors",
     };

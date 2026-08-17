@@ -40,6 +40,13 @@ pub fn initWithHref(href: []const u8, frame: *Frame) !*CSSStyleSheet {
     });
 }
 
+pub fn initWithHrefOwner(href: []const u8, owner: *Element, frame: *Frame) !*CSSStyleSheet {
+    return frame._factory.create(CSSStyleSheet{
+        ._href = try frame.dupeString(href),
+        ._owner_node = owner,
+    });
+}
+
 pub fn initWithOwner(owner: *Element, frame: *Frame) !*CSSStyleSheet {
     return frame._factory.create(CSSStyleSheet{ ._owner_node = owner });
 }

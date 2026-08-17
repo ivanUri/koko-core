@@ -21,6 +21,17 @@ export async function runIdleMemorySuite(context, factories) {
             sessions.push(await runtime.newSession());
           }
           const createDurationMs = performance.now() - createStarted;
+          const activeCount = Math.min(context.options.activeSessions, sessions.length);
+          const activeStarted = performance.now();
+          if (activeCount > 0) {
+            const activeUrl = context.fixtures.medium;
+            if (!activeUrl) throw new Error("idle active-session workload requires the medium fixture");
+            await Promise.all(sessions.slice(0, activeCount).map((session, sessionIndex) => session.navigate(
+              `${activeUrl}?idleActive=${index}&session=${sessionIndex}`,
+              { waitUntil: "domcontentloaded", timeoutMs: context.options.timeoutMs },
+            )));
+          }
+          const activeDurationMs = activeCount > 0 ? performance.now() - activeStarted : 0;
           if (context.options.idleSettleMs > 0) {
             await new Promise((resolve) => setTimeout(resolve, context.options.idleSettleMs));
           }
@@ -36,12 +47,15 @@ export async function runIdleMemorySuite(context, factories) {
             metrics: {
               durationMs: createDurationMs,
               sessionCount: density,
+              activeSessionCount: activeCount,
+              activeNavigationMs: activeDurationMs,
               baselineRssBytes: baseline.rssBytes,
               rssBytes: loaded.rssBytes,
               peakRssBytes: loaded.peakRssBytes,
               incrementalRssBytes,
               rssPerSessionBytes: incrementalRssBytes / density,
               processCount: loaded.processCount,
+              threadCount: loaded.threadCount,
               averageCpuPercent: loaded.averageCpuPercent,
             },
           });
@@ -55,4 +69,3 @@ export async function runIdleMemorySuite(context, factories) {
     }
   }
 }
-

@@ -18,6 +18,7 @@ const builtin = @import("builtin");
 const log = @import("../support/log.zig");
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
+const ScaleMetrics = @import("ScaleMetrics.zig");
 
 const ArenaPool = @This();
 
@@ -58,6 +59,7 @@ large: Bucket,
 allocator: Allocator,
 mutex: std.Thread.Mutex = .{},
 entry_pool: std.heap.MemoryPool(Entry),
+metrics: ?*ScaleMetrics = null,
 
 _leak_track: if (IS_DEBUG) std.StringHashMapUnmanaged(isize) else void = if (IS_DEBUG) .empty else {},
 
@@ -125,6 +127,8 @@ pub fn acquire(self: *ArenaPool, size_or_bucket: anytype, debug: []const u8) !Al
     self.mutex.lock();
     defer self.mutex.unlock();
 
+    if (self.metrics) |metrics| _ = metrics.arena_acquires.fetchAdd(1, .monotonic);
+
     if (bucket.free_list) |entry| {
         bucket.free_list = entry.next;
         bucket.free_list_len -= 1;
@@ -136,6 +140,7 @@ pub fn acquire(self: *ArenaPool, size_or_bucket: anytype, debug: []const u8) !Al
             }
             gop.value_ptr.* += 1;
         }
+        if (self.metrics) |metrics| _ = metrics.arena_reuses.fetchAdd(1, .monotonic);
         return entry.arena.allocator();
     }
 
@@ -163,6 +168,8 @@ pub fn release(self: *ArenaPool, allocator: Allocator) void {
     const entry: *Entry = @fieldParentPtr("arena", arena);
     const bucket = entry.bucket;
 
+    if (self.metrics) |metrics| _ = metrics.arena_releases.fetchAdd(1, .monotonic);
+
     // Reset the arena before acquiring the lock to minimize lock hold time
     _ = arena.reset(.{ .retain_with_limit = bucket.retain_bytes });
 
@@ -183,6 +190,7 @@ pub fn release(self: *ArenaPool, allocator: Allocator) void {
     }
 
     if (bucket.free_list_len >= bucket.free_list_max) {
+        if (self.metrics) |metrics| _ = metrics.arena_evictions.fetchAdd(1, .monotonic);
         arena.deinit();
         self.entry_pool.destroy(entry);
         return;

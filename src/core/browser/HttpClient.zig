@@ -2093,6 +2093,7 @@ pub const RequestParams = struct {
         fetch,
         beacon,
         image,
+        stylesheet,
 
         // Allowed Values: Document, Stylesheet, Image, Media, Font, Script,
         // TextTrack, XHR, Fetch, Prefetch, EventSource, WebSocket, Manifest,
@@ -2107,6 +2108,7 @@ pub const RequestParams = struct {
                 .fetch => "Fetch",
                 .beacon => "Ping",
                 .image => "Image",
+                .stylesheet => "Stylesheet",
             };
         }
     };
@@ -2507,7 +2509,7 @@ pub const Transfer = struct {
         conn.transport = .{ .http = self };
         conn.origin = switch (req.params.resource_type) {
             .document => .frame_navigation,
-            .fetch, .xhr, .script, .worker, .beacon, .image => .unknown,
+            .fetch, .xhr, .script, .worker, .beacon, .image, .stylesheet => .unknown,
         };
 
         // Per-request timeout override (e.g. XHR timeout)

@@ -9,7 +9,7 @@ export class CdpSession {
     this.closed = false;
   }
 
-  async navigate(url, { waitUntil = "domcontentloaded", timeoutMs = 30_000 } = {}) {
+  async navigate(url, { waitUntil = "domcontentloaded", timeoutMs = 30_000, settleMs = 0 } = {}) {
     const eventName = waitUntil === "load" ? "Page.loadEventFired" : "Page.domContentEventFired";
     let documentResponse = null;
     let responseCount = 0;
@@ -31,10 +31,16 @@ export class CdpSession {
       await this.client.send("Page.navigate", { url }, this.sessionId, timeoutMs);
       const navigationAckMs = performance.now() - started;
       await ready;
-      const durationMs = performance.now() - started;
+      const readyDurationMs = performance.now() - started;
+      const responseCountAtReady = responseCount;
+      if (settleMs > 0) await new Promise((resolve) => setTimeout(resolve, settleMs));
       return {
-        durationMs,
+        durationMs: readyDurationMs,
         navigationAckMs,
+        readyDurationMs,
+        settleMs,
+        responseCountAtReady,
+        responseCountAfterSettle: responseCount,
         httpStatus: documentResponse?.status ?? null,
         responseCount,
         responseUrl: documentResponse?.url ?? null,

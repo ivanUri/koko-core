@@ -32,15 +32,18 @@ export class KokoCdpAdapter {
     const port = await getFreePort();
     this.profileDirectory = await temporaryDirectory("koko-benchmark-");
     const binary = resolve(this.options.kokoBin);
-    const { child, output } = spawnCaptured(binary, [
+    const args = [
       "serve",
       "--host", "127.0.0.1",
       "--port", String(port),
-      "--cdp-max-connections", "64",
+      "--cdp-max-connections", String(this.options.cdpMaxConnections ?? 64),
       "--user-data-dir", this.profileDirectory,
       "--http-cache-dir", `${this.profileDirectory}/cache`,
       "--log-level", "warn",
-    ], { cwd: this.options.projectRoot });
+    ];
+    if (this.options.httpMaxConcurrent != null) args.push("--http-max-concurrent", String(this.options.httpMaxConcurrent));
+    if (this.options.httpMaxHostOpen != null) args.push("--http-max-host-open", String(this.options.httpMaxHostOpen));
+    const { child, output } = spawnCaptured(binary, args, { cwd: this.options.projectRoot });
     this.process = child;
     this.output = output;
     child.once("exit", (code, signal) => {
@@ -79,4 +82,3 @@ export class KokoCdpAdapter {
     this.process = null;
   }
 }
-
