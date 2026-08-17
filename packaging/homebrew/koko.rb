@@ -4,14 +4,14 @@
 
 class Koko < Formula
   desc "AI-first headless browser runtime for automation and agents"
-  homepage "https://kokoio.com"
-  license "AGPL-3.0-only"
+  homepage "https://github.com/ivanUri/koko-core"
   version "1.0.2"
+  license "AGPL-3.0-only"
 
   on_macos do
     on_arm do
-      url "https://github.com/ivanUri/koko/releases/download/v1.0.2/koko-1.0.2-darwin-arm64.tar.gz"
-      sha256 "a24e00dae2db1371f0a4715bd5865979f5bebaa692781c0f28ddb1faff41ded0"
+      url "https://github.com/ivanUri/koko-core/releases/download/v1.0.2/koko-1.0.2-darwin-arm64.tar.gz"
+      sha256 "541ada419b4eef6621ba9402feb433df40927f9ec27daf5d4b61b685daf27220"
     end
   end
 

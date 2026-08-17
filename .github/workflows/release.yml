@@ -7,16 +7,74 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (e.g. 1.0.0)"
+        description: "Release version (e.g. 1.0.3)"
         required: true
-        default: "1.0.0"
+        type: string
 
 permissions:
   contents: write
 
 jobs:
+  build:
+    name: Build ${{ matrix.asset_suffix }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            arch: arm64
+            asset_suffix: darwin-arm64
+          - runner: macos-13
+            arch: x86_64
+            asset_suffix: darwin-x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: meta
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid semantic version: $VERSION" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.15.2
+
+      - name: Build Koko
+        run: zig build -Doptimize=ReleaseFast -Dversion="${{ steps.meta.outputs.version }}"
+
+      - name: Package release asset
+        run: ./scripts/package-release.sh "${{ steps.meta.outputs.version }}" "${{ matrix.arch }}"
+
+      - name: Smoke test packaged binary
+        run: |
+          ./dist/koko-${{ steps.meta.outputs.version }}-darwin-${{ matrix.arch }}/bin/koko version
+          ./dist/koko-${{ steps.meta.outputs.version }}-darwin-${{ matrix.arch }}/bin/koko --help >/dev/null
+
+      - name: Upload release asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: koko-${{ steps.meta.outputs.version }}-darwin-${{ matrix.arch }}
+          path: dist/koko-${{ steps.meta.outputs.version }}-darwin-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+
   release:
     name: Publish GitHub Release
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,26 +87,27 @@ jobs:
           else
             VERSION="${GITHUB_REF_NAME#v}"
           fi
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "asset=koko-${VERSION}-darwin-arm64.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
           NOTES=".github/release-notes/v${VERSION}.md"
           if [ ! -f "$NOTES" ]; then
             NOTES=".github/release-notes/RELEASE.md"
           fi
-          echo "notes=${NOTES}" >> "$GITHUB_OUTPUT"
+          echo "notes=$NOTES" >> "$GITHUB_OUTPUT"
 
-      - name: Download release tarball
-        run: |
-          curl -fsSL \
-            -o "${{ steps.meta.outputs.asset }}" \
-            "https://raw.githubusercontent.com/ivanUri/homebrew-tap/main/bottles/${{ steps.meta.outputs.asset }}"
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: koko-${{ steps.meta.outputs.version }}-darwin-*
+          path: dist
+          merge-multiple: true
 
-      - name: Verify tarball
+      - name: Verify release assets
         run: |
-          ASSET="${{ steps.meta.outputs.asset }}"
-          test -s "$ASSET"
-          sha256sum "$ASSET"
+          set -euo pipefail
+          sha256sum dist/*.tar.gz
+          test -s "dist/koko-${{ steps.meta.outputs.version }}-darwin-arm64.tar.gz"
+          test -s "dist/koko-${{ steps.meta.outputs.version }}-darwin-x86_64.tar.gz"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -56,8 +115,16 @@ jobs:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: Koko ${{ steps.meta.outputs.tag }}
           body_path: ${{ steps.meta.outputs.notes }}
-          files: ${{ steps.meta.outputs.asset }}
+          files: dist/*.tar.gz
           draft: false
           prerelease: false
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+      - name: Trigger Homebrew tap update
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          repository: ivanUri/homebrew-tap
+          event-type: koko-release
+          client-payload: '{"version":"${{ steps.meta.outputs.version }}","tag":"${{ steps.meta.outputs.tag }}"}'

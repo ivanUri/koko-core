@@ -2,7 +2,7 @@
 
 Koko is distributed through a personal Homebrew tap (not homebrew-core yet).
 
-**Repository:** [github.com/ivanUri/koko](https://github.com/ivanUri/koko)
+**Repository:** [github.com/ivanUri/koko-core](https://github.com/ivanUri/koko-core)
 
 ## Install (users)
 
@@ -15,48 +15,26 @@ koko serve --host 127.0.0.1 --port 9222
 
 ## Publish a new release (maintainers)
 
-### 1. Build release tarball(s)
+### Release and tap automation
 
-On each macOS architecture you support:
+The `Release` workflow builds both macOS architectures, packages the binary,
+creates a GitHub Release in `koko-core`, and dispatches a `koko-release` event
+to the Homebrew tap. The tap workflow downloads those release assets, computes
+their SHA256 values, rewrites `Formula/koko.rb`, runs Homebrew checks, and
+commits the formula update.
 
-```bash
-zig build -Doptimize=ReleaseFast
-./scripts/release-macos.sh 1.0.0
-```
-
-Output: `dist/koko-1.0.0-darwin-arm64.tar.gz` (+ SHA256 printed).
-
-Repeat on an Intel Mac for `darwin-x86_64` if you ship both arches.
-
-### 2. Create GitHub Release
+Release a version by updating `build.zig.zon`, then pushing a tag:
 
 ```bash
-gh release create v1.0.0 \
-  dist/koko-1.0.0-darwin-arm64.tar.gz \
-  dist/koko-1.0.0-darwin-x86_64.tar.gz
+git commit -am "Release 1.0.3"
+git tag v1.0.3
+git push origin main --tags
 ```
 
-Or upload tarballs manually at [Releases](https://github.com/ivanUri/koko/releases).
-
-### 3. Update the formula
-
-Copy `packaging/homebrew/koko.rb` into the tap repo
-[github.com/ivanUri/homebrew-tap](https://github.com/ivanUri/homebrew-tap) as `Formula/koko.rb`.
-
-Set:
-
-- `version`
-- `url` (must match release asset URLs)
-- `sha256` for each arch (`shasum -a 256 dist/*.tar.gz`)
-
-```bash
-cd ~/homebrew-tap
-cp /path/to/koko/packaging/homebrew/koko.rb Formula/koko.rb
-# edit sha256 values
-git add Formula/koko.rb
-git commit -m "koko 1.0.0"
-git push
-```
+The `koko-core` repository needs a fine-grained `HOMEBREW_TAP_TOKEN` secret
+with `Contents: Read and write` access to `ivanUri/homebrew-tap`. The token is
+used only for the cross-repository dispatch; no credentials are stored in the
+formula or release assets.
 
 Users upgrade with:
 
@@ -71,8 +49,9 @@ Create **once** on GitHub:
 
 ```
 ivanUri/homebrew-tap
-└── Formula/
-    └── koko.rb
+├── Formula/
+│   └── koko.rb
+└── .github/workflows/update-formula.yml
 ```
 
 Homebrew resolves `brew tap ivanUri/tap` → `github.com/ivanUri/homebrew-tap`.
@@ -83,7 +62,7 @@ Homebrew resolves `brew tap ivanUri/tap` → `github.com/ivanUri/homebrew-tap`.
 |------|---------|
 | `bin/koko` | Browser runtime binary |
 | `lib/libcurl-impersonate*.dylib` | TLS impersonation (bundled) |
-| `share/koko/browser/profiles/` | Antidetect profile JSON |
+| `share/koko/browser/fingerprints/` | Antidetect fingerprint JSON |
 
 The release script rewrites `@rpath` so the binary finds dylibs under `../lib` inside the Homebrew prefix.
 
