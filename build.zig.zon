@@ -1,6 +1,6 @@
 .{
     .name = .koko,
-    .version = "1.0.2",
+    .version = "1.0.3",
     .fingerprint = 0xd5eceda6e71dec75, // Changing this has security and trust implications.
     .minimum_zig_version = "0.15.2",
     .dependencies = .{
