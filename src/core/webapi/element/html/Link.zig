@@ -110,11 +110,9 @@ pub fn linkAddedCallback(self: *Link, frame: *Frame) !void {
         return;
     }
 
-    const loadable_rels = std.StaticStringMap(void).initComptime(.{
-        .{ "stylesheet", {} },
-        .{ "preload", {} },
-    });
-    if (loadable_rels.has(rel) == false) {
+    const is_stylesheet = std.ascii.eqlIgnoreCase(rel, "stylesheet");
+    const is_preload = std.mem.eql(u8, rel, "preload");
+    if (!is_stylesheet and !is_preload) {
         return;
     }
 
@@ -123,12 +121,12 @@ pub fn linkAddedCallback(self: *Link, frame: *Frame) !void {
         return;
     }
 
-    if (std.mem.eql(u8, rel, "preload") and std.ascii.eqlIgnoreCase(self.getAs(), "image")) {
+    if (is_preload and std.ascii.eqlIgnoreCase(self.getAs(), "image")) {
         try self.fetchPreloadImage(frame, href);
         return;
     }
 
-    if (std.ascii.eqlIgnoreCase(rel, "stylesheet")) {
+    if (is_stylesheet) {
         try self.fetchStylesheet(frame, href);
         return;
     }
@@ -269,11 +267,11 @@ const StylesheetLoad = struct {
             try self.dispatchError();
             return;
         };
-        sheets.add(sheet, self.frame) catch {
+        sheet.replaceSync(self.body.items, self.frame) catch {
             try self.dispatchError();
             return;
         };
-        sheet.replaceSync(self.body.items, self.frame) catch {
+        sheets.add(sheet, self.frame) catch {
             try self.dispatchError();
             return;
         };
