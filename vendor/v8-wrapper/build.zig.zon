@@ -5,8 +5,10 @@
     .minimum_zig_version = "0.15.2",
     .dependencies = .{
         .depot_tools = .{
-            .url = "git+https://chromium.googlesource.com/chromium/tools/depot_tools.git#e051c661c3785286de8623547e3a1574b989a428",
-            .hash = "N-V-__8AAHdCrwGbw8G5Szy8gX2h7Y64s6q3BG8rvwY5FsHT",
+            // Use Chromium's immutable archive endpoint instead of Git smart HTTP.
+            // The latter intermittently fails on hosted CI runners with ProtocolError.
+            .url = "https://chromium.googlesource.com/chromium/tools/depot_tools/+archive/e051c661c3785286de8623547e3a1574b989a428.tar.gz",
+            .hash = "N-V-__8AACchcgDPcU7PBK-UOiApUkNgZ8HFv6s3I7oTKBZJ",
         },
     },
     .paths = .{
