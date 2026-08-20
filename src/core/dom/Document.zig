@@ -972,7 +972,13 @@ fn writeInternal(self: *Document, text: []const []const u8, append_newline: bool
     defer frame.releaseArena(arena);
 
     var parser = Parser.init(arena, fragment_node, frame);
-    parser.parseFragment(html);
+    parser.parseFragment(html) catch |err| {
+        // Third-party ad scripts frequently feed malformed markup through
+        // document.write. html5ever reports a parser panic for some of these
+        // fragments; discard that write instead of taking down the browser.
+        log.warn(.dom, "document.write fragment parser error", .{ .err = err });
+        return;
+    };
 
     // Extract children from wrapper HTML element (html5ever wraps fragments)
     // https://github.com/servo/html5ever/issues/583

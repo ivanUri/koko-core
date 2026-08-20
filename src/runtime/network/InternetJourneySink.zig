@@ -416,6 +416,47 @@ pub fn emitBrowserStage(
     try self.file.writeAll(output.written());
 }
 
+/// Emit a browser lifecycle milestone without claiming that the execution has
+/// finished.  Lifecycle events are intentionally separate from render timing:
+/// consumers can show progress while the page continues running background
+/// work (polling, WebSocket callbacks, lazy resources, etc.).
+pub fn emitLifecycle(
+    self: *Self,
+    stage: []const u8,
+    frame_id: u32,
+    loader_id: u32,
+    url: []const u8,
+) !void {
+    process_mutex.lock();
+    defer process_mutex.unlock();
+    process_sequence += 1;
+    var output: std.Io.Writer.Allocating = .init(self.allocator);
+    defer output.deinit();
+    const event_id = try std.fmt.allocPrint(self.allocator, "{s}:lifecycle-{d}", .{ self.session_id, process_sequence });
+    defer self.allocator.free(event_id);
+    try std.json.Stringify.value(.{.{
+        .id = event_id,
+        .sessionId = self.session_id,
+        .sequence = process_sequence,
+        .timestamp = std.time.milliTimestamp(),
+        .duration = @as(f64, 0),
+        .kind = "navigation",
+        .name = stage,
+        .status = "ok",
+        .payload = .{
+            .lifecycleStage = stage,
+            .executionStatus = "recording",
+            .frameId = frame_id,
+            .loaderId = loader_id,
+            .url = url,
+            .source = "koko-core",
+        },
+    }}, .{}, &output.writer);
+    try output.writer.writeByte('\n');
+    try self.file.seekFromEnd(0);
+    try self.file.writeAll(output.written());
+}
+
 pub fn emitBrowserScript(self: *Self, duration_us: u64, frame_id: u32, loader_id: u32, url: []const u8, script_kind: []const u8) !void {
     process_mutex.lock();
     defer process_mutex.unlock();

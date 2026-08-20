@@ -1,0 +1,12 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>
+  <img id="policy-image" src="http://127.0.0.1:9582/lazy-image.png" width="1" height="1">
+</body>
+<script>
+  const image = document.querySelector("#policy-image");
+  window.testing = {
+    assertOk: () => image.complete && image.naturalWidth === 0 && image.naturalHeight === 0,
+    printTimeoutState: () => console.log(`complete=${image.complete}, naturalWidth=${image.naturalWidth}`),
+  };
+</script>

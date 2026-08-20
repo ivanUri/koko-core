@@ -58,6 +58,7 @@ const MouseEvent = @import("../webapi/event/MouseEvent.zig");
 
 const HttpClient = @import("HttpClient.zig");
 const http = @import("../../runtime/network/http.zig");
+const Config = @import("../../runtime/Config.zig");
 const build_config = @import("build_config");
 const FingerprintProfile = @import("../profile/types.zig");
 const HttpProfile = @import("../../runtime/profile/HttpProfile.zig");
@@ -87,6 +88,26 @@ fn assert(ok: bool, comptime msg: []const u8, args: anytype) void {
 pub fn historyStore(self: *Frame) *@import("../webapi/History.zig") {
     if (self.parent == null) return &self._session.history;
     return &self.window._child_history;
+}
+
+/// Resource policy is browser-wide configuration, but resource admission is
+/// owned by the frame that creates the DOM request. Keeping these helpers on
+/// Frame avoids URL/site-specific filtering and lets image lifecycle code
+/// coordinate defer-images with the document's load milestone.
+pub fn resourcePolicy(self: *const Frame) Config.ResourcePolicy {
+    return self._session.browser.app.config.resourcePolicy();
+}
+
+pub fn shouldLoadImages(self: *const Frame) bool {
+    return self.resourcePolicy().allowsImages();
+}
+
+pub fn shouldDeferImages(self: *const Frame) bool {
+    return self.resourcePolicy().defersImages();
+}
+
+pub fn shouldLoadExternalStylesheets(self: *const Frame) bool {
+    return self.resourcePolicy().allowsExternalStylesheets();
 }
 
 pub fn navigationStore(self: *Frame) *@import("../webapi/navigation/Navigation.zig") {
@@ -224,6 +245,11 @@ _sync_iframe_pending: *std.ArrayList(*IFrame) = undefined,
 _sync_iframe_flush_scheduled: bool = false,
 /// HTML parse + static scripts deferred off the document HTTP done_callback (CDP poll).
 _document_parse_scheduled: bool = false,
+/// Images marked `loading="lazy"` are collected while the document is parsed.
+/// Koko has no compositor viewport, so they are activated on a later scheduler
+/// turn after the document's load event instead of being fetched eagerly.
+_deferred_lazy_images: std.ArrayList(*Element.Html.Image) = .{},
+_lazy_images_activation_scheduled: bool = false,
 /// True while `DeferDocumentParseCallback` is on the stack (html5ever walking DOM).
 /// Parser callbacks re-check realm after CDP poll; this flag is for diagnostics
 /// and for call sites that must not assume parse is idle.
@@ -740,6 +766,8 @@ pub fn bumpRealmNavigationEpoch(self: *Frame) void {
     self._realm_state = .initializing;
     self._sync_iframe_flush_scheduled = false;
     self._document_parse_scheduled = false;
+    self._deferred_lazy_images.clearRetainingCapacity();
+    self._lazy_images_activation_scheduled = false;
     self._document_parse_active = false;
     self._cdp_poll_counter = 0;
     self._input_press_hit = null;
@@ -1663,6 +1691,13 @@ fn swapActiveDocument(self: *Frame) !void {
 
 pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !void {
     assert(self._load_state == .waiting, "frame.renavigate", .{});
+    // Advertising libraries sometimes target hidden iframes with a
+    // `javascript:` URL. It is not a network document navigation and should
+    // not enter the URL parser or create a new browsing realm.
+    if (std.ascii.startsWithIgnoreCase(request_url, "javascript:")) {
+        log.debug(.frame, "skip javascript URL navigation", .{ .url = request_url });
+        return;
+    }
     const session = self._session;
     try self.swapActiveDocument();
     session.cookie_jar.beginDocumentNavigation();
@@ -2219,6 +2254,7 @@ pub fn documentIsLoaded(self: *Frame) void {
     self.window._performance.recordDomInteractive();
     self.observeBrowserStage("html-parser", 0, "boundary", "Renderer", "Main");
     self.observeBrowserStage("dom", 0, "boundary", "Renderer", "Main");
+    self.observeLifecycle("domcontentloaded");
 
     // Emit Page.domContentEventFired *before* running page DOMContentLoaded
     // handlers. Ad/GTM listeners regularly V8_Fatal (stack overflow) and would
@@ -2350,7 +2386,78 @@ pub fn runPostParseScriptLifecycle(self: *Frame) void {
     self.scheduleDeferredSyncIframeFlush() catch |err| {
         log.warn(.frame, "defer sync iframe flush", .{ .err = err, .url = self.url });
     };
+    // Parser-created lazy images are now outside the parser stack. Queue their
+    // fallback activation before the document-complete bookkeeping so a page
+    // that has no other pending resources still gets a scheduler turn.
+    self.scheduleDeferredLazyImageActivation() catch |err| {
+        log.warn(.frame, "defer lazy image activation", .{ .err = err, .url = self.url });
+    };
 }
+
+/// Keep a lazy image out of the initial resource burst. The list is owned by
+/// the frame arena, so no separate deallocation is needed during teardown.
+pub fn deferLazyImage(self: *Frame, image: *Element.Html.Image) !void {
+    for (self._deferred_lazy_images.items) |pending| {
+        if (pending == image) return;
+    }
+    try self._deferred_lazy_images.append(self.arena, image);
+    if (self._load_state == .complete) {
+        try self.scheduleDeferredLazyImageActivation();
+    }
+}
+
+/// Schedule lazy resource activation after `load` has been delivered. This is
+/// a headless fallback for the compositor/viewport trigger that Koko does not
+/// have; it preserves the important contract that lazy resources are deferred
+/// and still eventually load.
+pub fn scheduleDeferredLazyImageActivation(self: *Frame) !void {
+    if (self._lazy_images_activation_scheduled) return;
+    if (self._deferred_lazy_images.items.len == 0) return;
+    self._lazy_images_activation_scheduled = true;
+
+    const callback = try self.arena.create(DeferLazyImageActivationCallback);
+    callback.* = .{ .frame = self };
+    try self.js.scheduler.add(callback, DeferLazyImageActivationCallback.run, 0, .{
+        .name = "Frame.activateLazyImages",
+        // This is a lifecycle handoff, not background work: run it on the
+        // next ordinary macrotask turn so the image can settle before the
+        // caller's post-load scheduler drain ends.
+        .low_priority = false,
+    });
+}
+
+fn activateDeferredLazyImages(self: *Frame) void {
+    if (!navDeliverable(self)) return;
+
+    // Swap the queue before starting requests. Completion handlers and script
+    // callbacks may create more lazy images; those belong to a subsequent
+    // activation pass and cannot invalidate this iteration.
+    const pending = self._deferred_lazy_images;
+    self._deferred_lazy_images = .{};
+    for (pending.items) |image| {
+        if (!navDeliverable(self)) return;
+        image.activateDeferredLoad(self) catch |err| {
+            log.warn(.frame, "lazy image activation", .{ .err = err, .url = self.url });
+        };
+    }
+    if (self._deferred_lazy_images.items.len > 0) {
+        self.scheduleDeferredLazyImageActivation() catch |err| {
+            log.warn(.frame, "reschedule lazy image activation", .{ .err = err, .url = self.url });
+        };
+    }
+}
+
+const DeferLazyImageActivationCallback = struct {
+    frame: *Frame,
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *DeferLazyImageActivationCallback = @ptrCast(@alignCast(ctx));
+        self.frame._lazy_images_activation_scheduled = false;
+        if (!navDeliverable(self.frame)) return null;
+        self.frame.activateDeferredLazyImages();
+        return null;
+    }
+};
 
 /// Walk document after HTML parse and fire nodeIsReady for style/link/img
 /// that were intentionally skipped during html5ever (parser-stability).
@@ -2875,6 +2982,13 @@ fn _documentIsComplete(self: *Frame) !void {
         .loader_id = self._loader_id,
         .timestamp = timestamp(.monotonic),
     });
+    self.observeLifecycle("load");
+    // Lazy resources must not block `load`, but they must not remain pending
+    // forever in a headless runtime either. Start them on the next scheduler
+    // turn after the load notification has reached page observers.
+    self.scheduleDeferredLazyImageActivation() catch |err| {
+        log.warn(.frame, "defer lazy image activation", .{ .err = err, .url = self.url });
+    };
     self.observeBrowserStage("frame", 0, "boundary", "Renderer", "Main");
 
     if (self._event_manager.hasDirectListeners(window_target, "pageshow", self.window._on_pageshow)) {
@@ -3995,6 +4109,14 @@ fn observeBrowserStage(self: *Frame, stage: []const u8, duration_us: u64, state:
     self._session.browser.observeBrowserStage(stage, duration_us, self._frame_id, self._loader_id, state, process, thread);
 }
 
+fn observeLifecycle(self: *Frame, stage: []const u8) void {
+    self._session.browser.observeLifecycle(stage, self._frame_id, self._loader_id, self.url);
+}
+
+pub fn observeLifecycleForRunner(self: *Frame, stage: []const u8) void {
+    self.observeLifecycle(stage);
+}
+
 /// Called after a top-level layout getter returns. Recovers from leaked depth
 /// if a prior V8 native callback did not unwind Zig defers cleanly.
 pub fn finishTopLevelLayoutResolve(self: *Frame) void {
@@ -4025,15 +4147,20 @@ pub fn domChanged(self: *Frame) void {
     self._layout_visibility_cache_version = self.version;
     self._style_manager.invalidateLayoutPropertyCache();
 
-    if (self._intersection_check_scheduled) {
-        return;
-    }
+    self.scheduleIntersectionChecks();
+}
+
+/// Queue a viewport checkpoint for IntersectionObserver.  DOM mutation and
+/// scrolling are both observable geometry changes; keeping this in Frame
+/// gives both paths the same stale-realm and coalescing semantics.
+pub fn scheduleIntersectionChecks(self: *Frame) void {
+    if (self._intersection_check_scheduled) return;
 
     self._intersection_check_scheduled = true;
     self._intersection_check_task_owner = self.js.execution.captureTaskOwner();
     self.js.queueIntersectionChecks() catch |err| {
-        // The flag represents an actually queued checkpoint.  If enqueueing
-        // fails, leave the observer eligible for the next DOM/layout change.
+        // The flag represents an actually queued checkpoint. If enqueueing
+        // fails, leave the observer eligible for the next change.
         self._intersection_check_scheduled = false;
         log.err(.frame, "frame.schedIntersectChecks", .{ .err = err, .type = self._type, .url = self.url });
     };
@@ -4228,6 +4355,14 @@ pub fn checkIntersections(self: *Frame) !void {
 
 pub fn hasPendingResourceLoadEvents(self: *const Frame) bool {
     return self._to_load_1.items.len != 0 or self._to_load_2.items.len != 0;
+}
+
+/// Returns true while a parser-collected `loading="lazy"` image still needs
+/// its headless fallback activation task to run. The activation itself is
+/// deliberately deferred until after `load`, but it is still work owned by
+/// the current navigation and therefore must be visible to `wait_until=done`.
+pub fn hasPendingLazyImageActivation(self: *const Frame) bool {
+    return self._deferred_lazy_images.items.len != 0 or self._lazy_images_activation_scheduled;
 }
 
 pub fn queueLoad(self: *Frame, html: *Element.Html) !void {
@@ -4493,6 +4628,7 @@ pub fn notifyNetworkIdle(self: *Frame) void {
         .loader_id = self._loader_id,
         .timestamp = timestamp(.monotonic),
     });
+    self.observeLifecycle("networkidle");
 }
 
 pub fn notifyNetworkAlmostIdle(self: *Frame) void {
@@ -6455,7 +6591,7 @@ pub fn parseHtmlAsChildren(self: *Frame, node: *Node, html: []const u8) !void {
     defer self._parse_mode = previous_parse_mode;
 
     var parser = Parser.init(self.call_arena, node, self);
-    parser.parseFragment(html);
+    try parser.parseFragment(html);
 
     // https://github.com/servo/html5ever/issues/583
     const children = node._children orelse return;
@@ -7337,6 +7473,18 @@ test "WebApi: Integration" {
 
 test "Frame: initial about blank inherits creator origin identity" {
     try testing.htmlRunner("regression/iframe_initial_about_blank.html", .{});
+}
+
+test "Frame: outerHTML excludes CSSOM export snapshot" {
+    try testing.htmlRunner("regression/outer_html_excludes_css_snapshot.html", .{});
+}
+
+test "Frame: lazy images are not fetched eagerly without a viewport" {
+    try testing.htmlRunner("regression/lazy_image_not_eager.html", .{});
+}
+
+test "Frame: WebGL reports unavailable without a headless compositor" {
+    try testing.htmlRunner("regression/webgl_unavailable_headless.html", .{});
 }
 
 test "Frame: appendChild does not checkpoint microtasks inside DOM call" {

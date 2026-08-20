@@ -43,6 +43,9 @@ export class KokoCdpAdapter {
     ];
     if (this.options.httpMaxConcurrent != null) args.push("--http-max-concurrent", String(this.options.httpMaxConcurrent));
     if (this.options.httpMaxHostOpen != null) args.push("--http-max-host-open", String(this.options.httpMaxHostOpen));
+    if (this.options.resourcePolicy && this.options.resourcePolicy !== "full") {
+      args.push("--resource-policy", this.options.resourcePolicy);
+    }
     const { child, output } = spawnCaptured(binary, args, { cwd: this.options.projectRoot });
     this.process = child;
     this.output = output;

@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>
+</body>
+<script>
+const states = [];
+let didScroll = false;
+for (let i = 0; i < 400; i++) {
+  const spacer = document.createElement("div");
+  spacer.style.height = "10px";
+  document.body.appendChild(spacer);
+}
+const sentinel = document.createElement("div");
+sentinel.style.width = "10px";
+sentinel.style.height = "10px";
+document.body.appendChild(sentinel);
+const observer = new IntersectionObserver(entries => {
+  states.push(entries[0].isIntersecting);
+});
+observer.observe(sentinel);
+
+window.testing = {
+  assertOk: () => {
+    if (states.length === 1 && states[0] === false && !didScroll) {
+      didScroll = true;
+      window.scrollTo(0, 1500);
+    }
+    const initialWasOutside = states.length >= 1 && states[0] === false;
+    const scrolledIntoView = states.includes(true);
+    if (initialWasOutside && didScroll && scrolledIntoView) {
+      document.body.id = "pass";
+    }
+    return document.body.id === "pass";
+  },
+  printTimeoutState: () => JSON.stringify({ states, didScroll, y: window.scrollY }),
+};
+</script>

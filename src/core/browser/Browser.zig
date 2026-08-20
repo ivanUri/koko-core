@@ -34,6 +34,9 @@ const Browser = @This();
 pub fn observeBrowserStage(self: *Browser, stage: []const u8, duration_us: u64, frame_id: u32, loader_id: u32, measurement_state: []const u8, process: []const u8, thread: []const u8) void {
     self.app.network.emitBrowserStage(stage, duration_us, frame_id, loader_id, measurement_state, process, thread);
 }
+pub fn observeLifecycle(self: *Browser, stage: []const u8, frame_id: u32, loader_id: u32, url: []const u8) void {
+    self.app.network.emitLifecycle(stage, frame_id, loader_id, url);
+}
 pub fn observeBrowserScript(self: *Browser, duration_us: u64, frame_id: u32, loader_id: u32, url: []const u8, script_kind: []const u8) void {
     self.app.network.emitBrowserScript(duration_us, frame_id, loader_id, url, script_kind);
 }
@@ -191,6 +194,10 @@ fn drainAllRtcEvents(self: *Browser) void {
 
 pub fn hasBackgroundTasks(self: *Browser) bool {
     return self.env.hasBackgroundTasks();
+}
+
+pub fn hasReadyMacrotasks(self: *const Browser) bool {
+    return self.env.hasReadyMacrotasks();
 }
 
 pub fn waitForBackgroundTasks(self: *Browser) void {

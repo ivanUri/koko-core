@@ -30,6 +30,7 @@ const DOMStringMap = @import("../webapi/element/DOMStringMap.zig");
 const CSSStyleProperties = @import("../webapi/css/CSSStyleProperties.zig");
 const ClientRectsIntelligent = @import("../../runtime/profile/ClientRectsIntelligent.zig");
 const TextMetrics = @import("../webapi/canvas/TextMetrics.zig");
+const testing = @import("../../testing/testing.zig");
 
 pub const DOMRect = @import("DOMRect.zig");
 pub const Svg = @import("../webapi/element/Svg.zig");
@@ -469,7 +470,7 @@ pub fn insertAdjacentHTML(
 
 pub fn getOuterHTML(self: *Element, writer: *std.Io.Writer, frame: *Frame) !void {
     const dump = @import("../browser/dump.zig");
-    return dump.deep(self.asNode(), .{ .shadow = .skip }, writer, frame);
+    return dump.deep(self.asNode(), .{ .shadow = .skip, .include_cssom_snapshot = false }, writer, frame);
 }
 
 pub fn setOuterHTML(self: *Element, html: []const u8, frame: *Frame) !void {
@@ -2054,6 +2055,10 @@ fn getPositionedBoundingClientRect(self: *Element, frame: *Frame) DOMRect {
 
     const pos = getPositionOffset(self, frame);
     const origin = offsetParentClientOrigin(self, frame, 0);
+    // Absolute boxes are document-positioned and therefore move with the
+    // viewport scroll; fixed boxes remain pinned to the viewport.
+    const scroll_x = if (layoutPositionKind(self, frame) == .fixed) 0.0 else @as(f64, @floatFromInt(frame.window.getScrollX()));
+    const scroll_y = if (layoutPositionKind(self, frame) == .fixed) 0.0 else @as(f64, @floatFromInt(frame.window.getScrollY()));
 
     if (shadowTreeHost(self.asNode())) |host| {
         const host_rect = host.getBoundingClientRectForVisible(frame);
@@ -2066,8 +2071,8 @@ fn getPositionedBoundingClientRect(self: *Element, frame: *Frame) DOMRect {
     }
 
     return finalizeClientRect(self, frame, .{
-        ._x = origin.x + pos.left,
-        ._y = origin.y + pos.top,
+        ._x = origin.x + pos.left - scroll_x,
+        ._y = origin.y + pos.top - scroll_y,
         ._width = dims.width,
         ._height = dims.height,
     });
@@ -2547,6 +2552,7 @@ pub fn setScrollTop(self: *Element, value: i32, frame: *Frame) !void {
         gop.value_ptr.* = .{};
     }
     gop.value_ptr.y = @intCast(@max(0, value));
+    frame.scheduleIntersectionChecks();
 }
 
 pub fn getScrollLeft(self: *Element, frame: *Frame) u32 {
@@ -2560,16 +2566,72 @@ pub fn setScrollLeft(self: *Element, value: i32, frame: *Frame) !void {
         gop.value_ptr.* = .{};
     }
     gop.value_ptr.x = @intCast(@max(0, value));
+    frame.scheduleIntersectionChecks();
 }
 
 pub fn getScrollHeight(self: *Element, frame: *Frame) f64 {
-    // In our dummy layout engine, content doesn't overflow
-    return self.getClientHeight(frame);
+    if (self.isHiddenForLayout(frame)) return 0.0;
+
+    const height = self.getElementDimensions(frame).height;
+
+    // html/body have synthetic viewport-sized dimensions in this headless
+    // layout model. The html element must still see the body as scrollable
+    // content, while body itself must account for children that exceed its
+    // synthetic minimum height.
+    return @max(height, self.contentOverflowHeight(frame));
 }
 
 pub fn getScrollWidth(self: *Element, frame: *Frame) f64 {
-    // In our dummy layout engine, content doesn't overflow
-    return self.getClientWidth(frame);
+    if (self.isHiddenForLayout(frame)) return 0.0;
+
+    const width = self.getElementDimensions(frame).width;
+    const tag = self.getTag();
+
+    // Keep root containers at their synthetic viewport width. For ordinary
+    // elements, account for visible direct children laid out along one axis;
+    // this mirrors the approximation used for vertical overflow.
+    if (tag == .html or tag == .body) return width;
+    return @max(width, self.contentOverflowWidth(frame));
+}
+
+// The layout resolver already computes a useful intrinsic size for each
+// element, but it intentionally does not expose a full CSS overflow tree.
+// Summing visible direct children gives scrollHeight/scrollWidth the invariant
+// sites rely on: appending content must be observable through the metric.
+// Direct children keep the cost bounded and avoid recursively walking the
+// entire subtree on every read.
+fn contentOverflowHeight(self: *Element, frame: *Frame) f64 {
+    var total: f64 = 0;
+    var child = self.asNode().firstChild();
+    while (child) |node| : (child = node.nextSibling()) {
+        if (node.is(Element)) |el| {
+            if (el.getTag().isMetadata()) continue;
+            if (el.isHiddenForLayout(frame)) continue;
+            // The document element contains body, whose own children may
+            // overflow its synthetic minimum height. Include that nested
+            // extent without calling getScrollHeight recursively (layout
+            // reads can re-enter through parent-size resolution).
+            if (self.getTag() == .html and el.getTag() == .body) {
+                total += @max(el.getElementDimensions(frame).height, el.contentOverflowHeight(frame));
+            } else {
+                total += el.getElementDimensions(frame).height;
+            }
+        }
+    }
+    return total;
+}
+
+fn contentOverflowWidth(self: *Element, frame: *Frame) f64 {
+    var total: f64 = 0;
+    var child = self.asNode().firstChild();
+    while (child) |node| : (child = node.nextSibling()) {
+        if (node.is(Element)) |el| {
+            if (el.getTag().isMetadata()) continue;
+            if (el.isHiddenForLayout(frame)) continue;
+            total += el.getElementDimensions(frame).width;
+        }
+    }
+    return total;
 }
 
 pub fn getOffsetHeight(self: *Element, frame: *Frame) f64 {
@@ -3286,3 +3348,7 @@ pub const Build = struct {
         return false;
     }
 };
+
+test "WebApi: Element scroll dimensions reflect visible content" {
+    try testing.htmlRunner("element/scroll_dimensions.html", .{});
+}

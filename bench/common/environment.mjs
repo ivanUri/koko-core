@@ -19,8 +19,9 @@ function sha256(path) {
   });
 }
 
-export async function collectEnvironment({ projectRoot, kokoBin, chromeBin, optimize, options }) {
+export async function collectEnvironment({ projectRoot, kokoBin, chromeBin, lightpandaBin, optimize, options }) {
   const binaryStat = existsSync(kokoBin) ? await stat(kokoBin) : null;
+  const lightpandaStat = lightpandaBin && existsSync(lightpandaBin) ? await stat(lightpandaBin) : null;
   return {
     schemaVersion: 1,
     capturedAt: new Date().toISOString(),
@@ -49,7 +50,13 @@ export async function collectEnvironment({ projectRoot, kokoBin, chromeBin, opti
       binary: chromeBin,
       version: chromeBin ? command(chromeBin, ["--version"], projectRoot) : null,
     },
+    lightpanda: {
+      binary: lightpandaBin ?? null,
+      version: lightpandaBin ? command(lightpandaBin, ["--version"], projectRoot) : null,
+      binarySizeBytes: lightpandaStat?.size ?? null,
+      binaryModifiedAt: lightpandaStat?.mtime.toISOString() ?? null,
+      binarySha256: lightpandaStat ? await sha256(lightpandaBin) : null,
+    },
     benchmarkOptions: options,
   };
 }
-

@@ -79,13 +79,14 @@ pub fn getContext(self: *OffscreenCanvas, context_type: []const u8, options: ?js
             const ctx = try exec._factory.create(OffscreenCanvasRenderingContext2D{});
             break :blk .{ .@"2d" = ctx };
         }
+        // There is no compositor/GPU in the headless runtime.  Do not expose
+        // a partial WebGL context: callers must receive the standard null
+        // capability signal and choose a CPU/non-WebGL path.
         if (std.mem.eql(u8, context_type, "webgl") or std.mem.eql(u8, context_type, "experimental-webgl")) {
-            const ctx = try exec._factory.create(WebGLRenderingContext{ ._offscreen_canvas = self });
-            break :blk .{ .webgl = ctx };
+            return null;
         }
         if (std.mem.eql(u8, context_type, "webgl2")) {
-            const ctx = try exec._factory.create(WebGL2RenderingContext{ ._offscreen_canvas = self });
-            break :blk .{ .webgl2 = ctx };
+            return null;
         }
         return null;
     };

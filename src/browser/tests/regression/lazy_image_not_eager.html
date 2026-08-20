@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+const image = new Image();
+image.loading = "lazy";
+image.src = "data:not-a-valid-data-url";
+const initialComplete = image.complete;
+if (initialComplete) throw new Error("lazy image was complete before deferred activation");
+
+window.testing = {
+  // The first synchronous read must be pending; a later scheduler turn must
+  // settle the invalid data URL and set complete=true.
+  assertOk: () => image.complete,
+  printTimeoutState: () => console.log(`initialComplete=${initialComplete}, complete=${image.complete}`),
+};
+</script>

@@ -184,6 +184,11 @@ fn run(allocator: Allocator, main_arena: Allocator) !void {
             var fetch_opts = v.FetchOpts{
                 .wait_ms = opts.wait_ms,
                 .wait_until = opts.wait_until orelse .done,
+                .observe_ms = opts.observe_ms,
+                .expand_lazy = opts.expand_lazy,
+                .block_ads = opts.block_ads,
+                .max_scrolls = opts.max_scrolls,
+                .scroll_settle_ms = opts.scroll_settle_ms,
                 .wait_script = opts.wait_script,
                 .wait_selector = opts.wait_selector,
                 .click_selector = opts.click_selector,

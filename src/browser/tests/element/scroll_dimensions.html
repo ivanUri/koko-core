@@ -1,0 +1,49 @@
+<!doctype html>
+<body>pending</body>
+<script>
+window.testing = {
+  attempts: 0,
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+try {
+  const empty = document.createElement("div");
+  document.body.appendChild(empty);
+  const emptyHeight = empty.scrollHeight;
+
+  const panel = document.createElement("div");
+  panel.style.height = "0px";
+  const first = document.createElement("div");
+  first.style.height = "40px";
+  const second = document.createElement("div");
+  second.style.height = "60px";
+  panel.append(first, second);
+  document.body.appendChild(panel);
+
+  const before = panel.scrollHeight;
+  const hidden = document.createElement("div");
+  hidden.style.display = "none";
+  hidden.style.height = "1000px";
+  panel.appendChild(hidden);
+
+  const root = document.documentElement;
+  const result = {
+    emptyMatchesClient: emptyHeight === empty.clientHeight,
+    collapsedPanelHasOverflow: panel.clientHeight === 0 && before >= 100,
+    hiddenDoesNotChangeOverflow: panel.scrollHeight === before,
+    rootSeesBodyContent: root.scrollHeight >= document.body.scrollHeight,
+    appendIncreasesMetric: (() => {
+      const item = document.createElement("div");
+      item.style.height = "25px";
+      panel.appendChild(item);
+      return panel.scrollHeight > before;
+    })(),
+  };
+
+  document.body.textContent = JSON.stringify(result);
+  if (Object.values(result).every(Boolean)) document.body.id = "pass";
+} catch (error) {
+  document.body.textContent = String(error?.stack || error);
+}
+</script>

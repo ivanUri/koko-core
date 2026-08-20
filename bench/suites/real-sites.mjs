@@ -69,6 +69,7 @@ export async function runRealSitesSuite(context, factories) {
               ...details,
               finalUrl: pageState?.finalUrl ?? navigation.responseUrl,
               title: pageState?.title ?? "",
+              cpuMeasurement: loaded.cpuMeasurement,
             };
             if (!pageState || pageState.htmlChars < 100 || pageState.elementCount < 2) {
               throw new Error(`Document validation failed: ${JSON.stringify(pageState)}`);

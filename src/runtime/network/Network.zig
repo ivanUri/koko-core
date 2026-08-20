@@ -507,6 +507,12 @@ pub fn emitBrowserStage(self: *Network, stage: []const u8, duration_us: u64, fra
         log.warn(.http, "browser journey telemetry", .{ .stage = stage, .err = err });
     };
 }
+pub fn emitLifecycle(self: *Network, stage: []const u8, frame_id: u32, loader_id: u32, url: []const u8) void {
+    const sink = if (self.internet_journey_sink) |*value| value else return;
+    sink.emitLifecycle(stage, frame_id, loader_id, url) catch |err| {
+        log.warn(.http, "browser lifecycle telemetry", .{ .stage = stage, .err = err });
+    };
+}
 pub fn emitBrowserScript(self: *Network, duration_us: u64, frame_id: u32, loader_id: u32, url: []const u8, script_kind: []const u8) void {
     const sink = if (self.internet_journey_sink) |*value| value else return;
     sink.emitBrowserScript(duration_us, frame_id, loader_id, url, script_kind) catch |err| log.warn(.http, "browser script telemetry", .{ .err = err });

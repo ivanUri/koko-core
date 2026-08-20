@@ -1190,6 +1190,13 @@ fn anyContextHasReadyTimers(self: *const Env) bool {
     return false;
 }
 
+/// Cheap host-loop hint used by the CDP runner before entering a macrotask
+/// slice. Network completion is still polled first because it can enqueue a
+/// task; this predicate only avoids entering V8 when every context is idle.
+pub fn hasReadyMacrotasks(self: *const Env) bool {
+    return self.anyContextHasReadyTimers();
+}
+
 /// True while inbound CDP must not run (nested V8, navigation commit).
 /// Do not gate on is_evaluating alone — between script bodies in evaluate()
 /// the main thread is idle and must service Runtime.evaluate / navigate ack.

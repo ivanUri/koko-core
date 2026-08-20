@@ -153,8 +153,8 @@ pub fn parseXML(self: *Parser, xml: []const u8) void {
     );
 }
 
-pub fn parseFragment(self: *Parser, html: []const u8) void {
-    h5e.html5ever_parse_fragment(
+pub fn parseFragment(self: *Parser, html: []const u8) !void {
+    const result = h5e.html5ever_parse_fragment(
         html.ptr,
         html.len,
         &self.container,
@@ -174,6 +174,7 @@ pub fn parseFragment(self: *Parser, html: []const u8) void {
         appendBeforeSiblingCallback,
         appendBasedOnParentNodeCallback,
     );
+    if (result != 0) return error.ParserPanic;
 }
 
 pub const Streaming = struct {

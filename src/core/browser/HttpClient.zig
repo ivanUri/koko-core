@@ -724,7 +724,7 @@ pub fn drainTransfersForFrame(self: *Client, frame_id: u32, max_passes: u32) voi
     var pass: u32 = 0;
     while (pass < max_passes and self.hasInFlightTransfersForFrame(frame_id)) : (pass += 1) {
         if (self.performing) return;
-        _ = self.perform(0) catch break;
+        _ = self.perform(0, true) catch break;
     }
 }
 
@@ -903,7 +903,19 @@ pub fn tick(self: *Client, timeout_ms: u32) !PerformStatus {
     processChromeJobs(self);
     try pollNativeWebSockets(self);
     tryStartQueuedTransfers(self);
-    return self.perform(@intCast(timeout_ms));
+    return self.perform(@intCast(timeout_ms), true);
+}
+
+/// Drive one non-blocking I/O turn without adding the scheduler fairness
+/// quantum.  The caller may use this only at a proven scheduler boundary
+/// where no runnable JavaScript is being deferred (for example, the initial
+/// CDP navigation phase).  Normal `tick(0)` deliberately keeps its 1 ms
+/// quantum so a runnable timer/microtask cannot starve network progress.
+pub fn tickImmediate(self: *Client) !PerformStatus {
+    processChromeJobs(self);
+    try pollNativeWebSockets(self);
+    tryStartQueuedTransfers(self);
+    return self.perform(0, false);
 }
 
 pub fn _request(ptr: *anyopaque, _: *Client, req: Request) !void {
@@ -945,6 +957,35 @@ pub fn request(self: *Client, req: Request) !void {
     our_req.params.request_id = self.incrReqId();
     ensureRequestAttribution(&our_req.params, our_req.ctx);
 
+    if (self.network.config.blockAds() and isAdvertisingRequest(our_req.params.url, our_req.params.resource_type)) {
+        log.debug(.http, "blocked advertising resource", .{
+            .url = our_req.params.url,
+            .resource = @tagName(our_req.params.resource_type),
+        });
+        our_req.error_callback(our_req.ctx, error.ResourceBlockedByPolicy);
+        our_req.params.deinit();
+        return;
+    }
+
+    const policy = self.network.config.resourcePolicy();
+    const blocked_by_policy = switch (policy) {
+        .no_images => our_req.params.resource_type == .image,
+        .no_css => our_req.params.resource_type == .stylesheet,
+        .text_only => our_req.params.resource_type == .image or
+            our_req.params.resource_type == .stylesheet,
+        else => false,
+    };
+    if (blocked_by_policy) {
+        // The request never acquires Request.arena, so release only the
+        // caller-provided headers and complete through the normal error path.
+        our_req.error_callback(our_req.ctx, error.ResourceBlockedByPolicy);
+        our_req.params.deinit();
+        // A policy block is a handled resource failure, not a transport/API
+        // failure. Returning the error here would make script/CSS callers
+        // abort document processing after the callback already completed it.
+        return;
+    }
+
     const arena = try self.network.app.arena_pool.acquire(.small, "Request.arena");
     our_req.params.arena = arena;
     // Requests may wait in the connection queue long after the caller's
@@ -966,6 +1007,32 @@ pub fn request(self: *Client, req: Request) !void {
         our_req.error_callback(our_req.ctx, err);
         return err;
     };
+}
+
+fn isAdvertisingRequest(url: []const u8, resource_type: RequestParams.ResourceType) bool {
+    const scheme_end = std.mem.indexOf(u8, url, "://") orelse return false;
+    const host_start = scheme_end + 3;
+    const host_end = std.mem.indexOfScalarPos(u8, url, host_start, '/') orelse url.len;
+    const host = url[host_start..host_end];
+    const known_ad_hosts = [_][]const u8{
+        "doubleclick.net",      "googlesyndication.com", "googletagmanager.com",
+        "google-analytics.com", "analytics.google.com",  "connect.facebook.net",
+        "pubpowerplatform.io",  "admicro.vn",            "geniee.jp",
+        "genieesspv.jp",        "gsspcln.jp",            "yads.c.yimg.jp",
+        "servg1.net",           "continejs.com",         "cloudflareinsights.com",
+    };
+    for (known_ad_hosts) |needle| {
+        if (std.ascii.indexOfIgnoreCase(host, needle) != null) return true;
+    }
+    // Keep path heuristics away from document navigations so a site's own
+    // article URL containing "ads" is never blocked.
+    if (resource_type == .document) return false;
+    const path = url[host_end..];
+    const ad_paths = [_][]const u8{ "/pagead", "/adserver", "/adsbygoogle", "/ads/", "/advert", "/analytics" };
+    for (ad_paths) |needle| {
+        if (std.ascii.indexOfIgnoreCase(path, needle) != null) return true;
+    }
+    return false;
 }
 
 /// Google search document hop via real Chrome network (HTTP/3). Completes on tick().
@@ -1419,7 +1486,7 @@ pub const PerformStatus = enum {
     idle,
 };
 
-fn perform(self: *Client, timeout_ms: c_int) anyerror!PerformStatus {
+fn perform(self: *Client, timeout_ms: c_int, fairness_quantum: bool) anyerror!PerformStatus {
     const running = blk: {
         self.performing = true;
         defer self.performing = false;
@@ -1478,7 +1545,10 @@ fn perform(self: *Client, timeout_ms: c_int) anyerror!PerformStatus {
     // the next macrotask instead (LP runner-tick-signal).
     const should_poll = self.cdp_client != null or active > 0 or self.http_active > 0 or self.native_ws.first != null;
     if (should_poll) {
-        const poll_timeout_ms = networkFairPollTimeout(timeout_ms, self.http_active > 0);
+        const poll_timeout_ms = if (fairness_quantum)
+            networkFairPollTimeout(timeout_ms, self.http_active > 0)
+        else
+            timeout_ms;
         if (self.cdp_client) |cdp_client| {
             var wait_fds = [_]http.WaitFd{.{
                 .fd = cdp_client.socket,
@@ -1621,7 +1691,7 @@ fn processOneMessage(self: *Client, msg: http.Handles.MultiMessage, transfer: *T
             transfer._detached_conn = null;
             transfer._conn = conn; // reattach after successful re-add
 
-            _ = try self.perform(0);
+            _ = try self.perform(0, true);
 
             return false;
         }
@@ -1629,7 +1699,7 @@ fn processOneMessage(self: *Client, msg: http.Handles.MultiMessage, transfer: *T
         // 421 Misdirected Request: retry once on a fresh connection (Fetch spec).
         if (status == 421 and transfer._misdirected_retries == 0) {
             try transfer.handleMisdirectedRetry();
-            _ = try self.perform(0);
+            _ = try self.perform(0, true);
             return false;
         }
     }
@@ -1643,7 +1713,7 @@ fn processOneMessage(self: *Client, msg: http.Handles.MultiMessage, transfer: *T
     if (msg.err) |err| {
         if (err == error.SendError and transfer._transient_retries == 0) {
             try transfer.handleTransientConnectionRetry();
-            _ = try self.perform(0);
+            _ = try self.perform(0, true);
             return false;
         }
     }

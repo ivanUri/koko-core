@@ -25,7 +25,14 @@
   openRequest.onsuccess = () => {
     order.push("success");
     if (order.join(",") !== "upgrade,success") throw new Error("wrong event order");
-    const request = openRequest.result.transaction("records").objectStore("records").get("key");
+    const transaction = openRequest.result.transaction("records", "readonly");
+    if (!transaction || typeof transaction !== "object") throw new Error("transaction was not returned");
+    transaction.oncomplete = () => {
+      if (transaction.mode !== "readonly") throw new Error("transaction mode was not readonly");
+    };
+    const store = transaction.objectStore("records");
+    if (store.transaction !== transaction) throw new Error("object store lost its transaction");
+    const request = store.get("key");
     request.onsuccess = () => {
       if (request.result.value !== 42) throw new Error("structured value did not round-trip");
       document.body.textContent = "indexeddb-pass";

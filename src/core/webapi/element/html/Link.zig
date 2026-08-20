@@ -122,11 +122,13 @@ pub fn linkAddedCallback(self: *Link, frame: *Frame) !void {
     }
 
     if (is_preload and std.ascii.eqlIgnoreCase(self.getAs(), "image")) {
+        if (!frame.shouldLoadImages() or frame.shouldDeferImages()) return;
         try self.fetchPreloadImage(frame, href);
         return;
     }
 
     if (is_stylesheet) {
+        if (!frame.shouldLoadExternalStylesheets()) return;
         try self.fetchStylesheet(frame, href);
         return;
     }

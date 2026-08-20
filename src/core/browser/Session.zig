@@ -834,6 +834,25 @@ fn abortOutgoingSubresources(frame: *Frame, http_client: *@import("HttpClient.zi
     }
 }
 
+/// The browser starts each CDP session with a pristine initial about:blank
+/// document.  A first address-bar navigation can reuse that Page/Frame in
+/// place: there is no document-owned work to cancel and no old page that an
+/// external client can still be interacting with.  Keeping this narrow is
+/// important; once parsing, a child frame, or a script has run, navigation
+/// must use the normal clean-slate teardown path.
+fn canReuseInitialBlank(frame: *const Frame) bool {
+    return frame.parent == null and
+        std.mem.eql(u8, frame.url, "about:blank") and
+        frame._load_state == .waiting and
+        frame._parse_state == .pre and
+        frame._navigated_options == null and
+        frame._queued_navigation == null and
+        frame.child_frames.items.len == 0 and
+        frame.document._frame == frame and
+        frame._realm_state == .active and
+        !frame._script_manager.base.shutdown;
+}
+
 // Real HTTP root navigation: allocate a pending Page, leave the active Page
 // alive, and dispatch the navigation HTTP request against the pending frame.
 // The active Page (and its V8 context) stays addressable across the round-
@@ -855,6 +874,23 @@ pub fn initiateRootNavigation(self: *Session, frame_id: u32, url: [:0]const u8, 
     self.drainDeferredCommit();
     self.discardPendingPage();
 
+    // A fresh CDP session already owns an initial about:blank page. Reusing it
+    // avoids a full Page/V8 teardown + allocation cycle on the first real
+    // navigation while preserving the normal path for every non-pristine page.
+    const clean_slate = opts.reason == .address_bar or opts.reason == .form;
+    if (clean_slate) {
+        if (self._active) |active| {
+            if (active.frame._frame_id == frame_id and canReuseInitialBlank(&active.frame)) {
+                active.frame.cancelOwnedSchedulerWork();
+                active.frame.navigate(url, opts) catch |err| {
+                    log.err(.browser, "initial blank navigation start", .{ .err = err, .url = url });
+                    return err;
+                };
+                return;
+            }
+        }
+    }
+
     // Drop outgoing-document script fetches before the pending page loads.
     // Heavy sites (Google knitsail, Bing) poison the next document parse if
     // their V8 context stays live through dual-page pending until headers
@@ -863,7 +899,6 @@ pub fn initiateRootNavigation(self: *Session, frame_id: u32, url: [:0]const u8, 
     // document transfer, then install the new page as active immediately.
     // Dual-page pending is kept only for in-page script navigations that may
     // still need the old realm during the hop.
-    const clean_slate = opts.reason == .address_bar or opts.reason == .form;
     if (self._active) |active| {
         if (active.frame._frame_id == frame_id) {
             abortOutgoingSubresources(&active.frame, &self.browser.http_client);
@@ -1271,6 +1306,35 @@ test "Session: newer root navigation supersedes and releases pending page" {
         session.currentFrame().?.url,
     );
     try std.testing.expectEqual(@as(usize, 0), session._zombie_pending_pages.items.len);
+}
+
+test "Session: first address-bar navigation reuses pristine initial page" {
+    defer testing.reset();
+    defer if (testing.test_session.currentPage() != null) testing.test_session.removePage();
+
+    const initial_frame = try testing.test_session.createPage();
+    const initial_page = testing.test_session.currentPage().?;
+    const frame_id = initial_frame._frame_id;
+
+    try std.testing.expect(canReuseInitialBlank(initial_frame));
+    try testing.test_session.initiateRootNavigation(
+        frame_id,
+        "http://127.0.0.1:9582/echo_referer",
+        .{ .reason = .address_bar },
+    );
+
+    // The optimization is intentionally observable as stable Page/Frame
+    // identity during the first navigation. It must still complete through
+    // the ordinary HTTP lifecycle and publish the final document.
+    try std.testing.expect(testing.test_session.currentPage().? == initial_page);
+    try std.testing.expect(testing.test_session.currentFrame().? == initial_frame);
+
+    var browser_runner = try testing.test_session.runner(.{});
+    try browser_runner.wait(.{ .ms = 2000, .until = .load });
+    try std.testing.expectEqualStrings(
+        "http://127.0.0.1:9582/echo_referer",
+        testing.test_session.currentFrame().?.url,
+    );
 }
 
 test "Session: navigation after redirected stream has one terminal owner" {

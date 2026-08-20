@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+<head>
+  <script>
+    window.testing = {
+      attempts: 0,
+      assertOk() {
+        if (document.body?.id === "pass") return true;
+        if (++this.attempts > 5) throw new Error(`state=${document.body?.id} text=${document.body?.textContent}`);
+        return false;
+      },
+      printTimeoutState: () => console.log(document.body?.textContent || ""),
+    };
+  </script>
+  <style>.fixture { color: rgb(12, 34, 56); }</style>
+</head>
+<body>
+  <main class="fixture" id="fixture">outerHTML regression</main>
+  <script>
+    try {
+      const html = document.documentElement.outerHTML;
+      const head = document.head.outerHTML;
+      const marker = "data-koko-" + "cssom-snapshot";
+      const ok = !html.includes(marker) &&
+        !head.includes(marker) &&
+        html.includes("outerHTML regression");
+      document.body.textContent = ok ? "pass" : JSON.stringify({
+        htmlLength: html.length,
+        headLength: head.length,
+        htmlHasSnapshot: html.includes(marker),
+        headHasSnapshot: head.includes(marker),
+        textPresent: html.includes("outerHTML regression"),
+      });
+      document.body.id = ok ? "pass" : "failed";
+    } catch (error) {
+      document.body.textContent = String(error);
+      document.body.id = "error";
+    }
+  </script>
+</body>
+</html>

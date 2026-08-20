@@ -42,6 +42,13 @@ test "storage modules" {
 pub const FetchOpts = struct {
     wait_ms: u32 = 0,
     wait_until: Config.WaitUntil = .done,
+    /// Keep pumping the page after the requested lifecycle milestone so
+    /// Observatory can show a live document while background work continues.
+    observe_ms: u32 = 0,
+    expand_lazy: bool = false,
+    block_ads: bool = false,
+    max_scrolls: u32 = 80,
+    scroll_settle_ms: u32 = 250,
     wait_script: ?[:0]const u8 = null,
     wait_selector: ?[:0]const u8 = null,
     click_selector: ?[:0]const u8 = null,
@@ -107,6 +114,19 @@ pub fn fetch(_: *App, browser: *Browser, url: [:0]const u8, opts: FetchOpts) !vo
     }
     log.debug(.app, "fetch wait start", .{ .url = url, .wait_ms = opts.wait_ms, .wait_until = opts.wait_until });
     try runner.wait(.{ .ms = opts.wait_ms, .until = opts.wait_until });
+    if (opts.observe_ms > 0) {
+        log.debug(.app, "fetch background observe start", .{ .url = url, .observe_ms = opts.observe_ms });
+        try runner.pumpFor(opts.observe_ms);
+        log.debug(.app, "fetch background observe done", .{ .url = url });
+    }
+    if (opts.expand_lazy) {
+        log.debug(.app, "fetch expand lazy start", .{ .url = url, .max_scrolls = opts.max_scrolls, .settle_ms = opts.scroll_settle_ms });
+        try runner.expandLazy(.{
+            .max_scrolls = opts.max_scrolls,
+            .settle_ms = opts.scroll_settle_ms,
+        });
+        log.debug(.app, "fetch expand lazy done", .{ .url = url });
+    }
     const active_frame = session.currentFrame() orelse return error.SessionNotAvailable;
     log.debug(.app, "fetch wait done", .{ .url = url, .frame_url = active_frame.url });
     if (opts.wait_selector) |selector| {

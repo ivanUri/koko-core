@@ -426,10 +426,14 @@ pub fn disposeBrowserContext(self: *CDP, browser_context_id: []const u8) bool {
     bc.deinit();
     self.browser_context = null;
     // BrowserContext teardown uses browser_context_arena allocations (id strings,
-    // session_id, captured bodies). Reset so createBrowserContext can run again on
-    // this CDP connection without leaving the server wedged.
+    // session_id, captured-response metadata). Reset so createBrowserContext can
+    // run again on this CDP connection without leaving the server wedged.
     _ = self.browser_context_arena.reset(.retain_capacity);
-    _ = self.frame_arena.reset(.retain_capacity);
+    // Response bodies are captured in frame_arena while Network is enabled so
+    // Network.getResponseBody can serve them. Do not retain their peak capacity
+    // across browser contexts: a large site would otherwise permanently pin
+    // every body buffer in the long-lived CDP connection.
+    _ = self.frame_arena.reset(.{ .retain_with_limit = 1024 * 512 });
     return true;
 }
 

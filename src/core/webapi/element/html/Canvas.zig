@@ -123,14 +123,18 @@ pub fn getContext(self: *Canvas, context_type: []const u8, options: ?js.Value, f
             break :blk .{ .@"2d" = ctx };
         }
 
+        // Koko is a headless runtime without a compositor/GPU backing store.
+        // Returning a partial WebGL object is observably worse than returning
+        // null: libraries such as Three.js enter their renderer path, hit a
+        // missing method, and retry initialization indefinitely.  null is the
+        // browser contract for an unavailable context and lets applications
+        // select their non-WebGL fallback without creating a CPU loop.
         if (std.mem.eql(u8, context_type, "webgl") or std.mem.eql(u8, context_type, "experimental-webgl")) {
-            const ctx = try frame._factory.create(WebGLRenderingContext{ ._canvas = self });
-            break :blk .{ .webgl = ctx };
+            return null;
         }
 
         if (std.mem.eql(u8, context_type, "webgl2")) {
-            const ctx = try frame._factory.create(WebGL2RenderingContext{ ._canvas = self });
-            break :blk .{ .webgl2 = ctx };
+            return null;
         }
         return null;
     };

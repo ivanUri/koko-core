@@ -62,6 +62,8 @@ function parseArgs(argv) {
     longRunIterations: 100,
     httpMaxConcurrent: null,
     httpMaxHostOpen: null,
+    resourcePolicy: "full",
+    lightpandaEnableExternalStylesheets: false,
     cdpMaxConnections: 64,
     timeoutMs: 30_000,
     idleSettleMs: 250,
@@ -74,6 +76,7 @@ function parseArgs(argv) {
     output: "bench-results",
     kokoBin: "zig-out/bin/koko",
     chromeBin: null,
+    lightpandaBin: null,
     optimize: "unknown",
     allowNonRelease: false,
     allowFailures: false,
@@ -102,6 +105,8 @@ function parseArgs(argv) {
     else if (argument === "--long-run-iterations") options.longRunIterations = positiveInteger(next(), argument, 1);
     else if (argument === "--http-max-concurrent") options.httpMaxConcurrent = positiveInteger(next(), argument, 1);
     else if (argument === "--http-max-host-open") options.httpMaxHostOpen = positiveInteger(next(), argument, 1);
+    else if (argument === "--resource-policy") options.resourcePolicy = next();
+    else if (argument === "--lightpanda-enable-external-stylesheets") options.lightpandaEnableExternalStylesheets = true;
     else if (argument === "--cdp-max-connections") options.cdpMaxConnections = positiveInteger(next(), argument, 1);
     else if (argument === "--real-warmup") options.realSiteWarmup = positiveInteger(next(), argument);
     else if (argument === "--real-iterations") options.realSiteIterations = positiveInteger(next(), argument, 1);
@@ -115,6 +120,7 @@ function parseArgs(argv) {
     else if (argument === "--output") options.output = next();
     else if (argument === "--koko-bin") options.kokoBin = next();
     else if (argument === "--chrome-bin") options.chromeBin = next();
+    else if (argument === "--lightpanda-bin") options.lightpandaBin = next();
     else if (argument === "--optimize") options.optimize = next();
     else if (argument === "--allow-non-release") options.allowNonRelease = true;
     else if (argument === "--allow-failures") options.allowFailures = true;
@@ -149,17 +155,19 @@ function printHelp() {
     `  node bench/runner.mjs [options]\n\n` +
     `Options:\n` +
     `  --suite <all|startup,navigation,session-lifecycle,idle-memory,concurrency,network,dom-js,agent,long-run,real-sites>\n` +
-    `  --baseline <koko-cdp,chromium-cdp,playwright-chromium|all>\n` +
+    `  --baseline <koko-cdp,chromium-cdp,lightpanda-cdp,playwright-chromium|all>\n` +
     `  --warmup <n> --iterations <n>\n` +
     `  --memory-warmup <n> --memory-iterations <n> --density <1,10,50,100,250,500,1000>\n` +
     `  --active-sessions <n> (idle-memory: navigate this many sessions)\n` +
     `  --concurrency-warmup <n> --concurrency-iterations <n>\n` +
     `  --long-run-warmup <n> --long-run-iterations <n>\n` +
     `  --http-max-concurrent <n> --http-max-host-open <n> (Koko)\n` +
+    `  --resource-policy <full|no-images|no-css|text-only|defer-images> (Koko)\n` +
+    `  --lightpanda-enable-external-stylesheets (Lightpanda)\n` +
     `  --cdp-max-connections <n> (Koko)\n` +
     `  --site-file <json> --real-warmup <n> --real-iterations <n> --real-settle-ms <ms>\n` +
     `  --real-timeout-ms <ms>\n` +
-    `  --koko-bin <path> --chrome-bin <path> --output <directory>\n` +
+    `  --koko-bin <path> --chrome-bin <path> --lightpanda-bin <path> --output <directory>\n` +
     `  --timeout-ms <ms> --idle-settle-ms <ms>\n` +
     `  --regression-against <summary.json> --regression-threshold-pct <n> --regression-mode <warn|fail>\n` +
     `  --quick --allow-non-release --allow-failures\n`);
@@ -176,11 +184,20 @@ function validateOptions(options) {
     throw new Error(`Refusing comparative benchmark with optimize=${options.optimize}; use zig build benchmark -Doptimize=ReleaseFast`);
   }
   options.kokoBin = resolve(projectRoot, options.kokoBin);
+  const resourcePolicies = new Set(["full", "no-images", "no-css", "text-only", "defer-images"]);
+  if (!resourcePolicies.has(options.resourcePolicy)) {
+    throw new Error(`--resource-policy must be one of ${[...resourcePolicies].join(", ")}`);
+  }
   if (options.baselines.includes("koko-cdp") && !existsSync(options.kokoBin)) {
     throw new Error(`Koko binary not found: ${options.kokoBin}`);
   }
-  if (options.baselines.some((baseline) => baseline !== "koko-cdp")) {
+  if (options.baselines.includes("chromium-cdp") || options.baselines.includes("playwright-chromium")) {
     options.chromeBin = detectChrome(options.chromeBin);
+  }
+  if (options.baselines.includes("lightpanda-cdp")) {
+    if (!options.lightpandaBin) throw new Error("--lightpanda-bin is required for lightpanda-cdp");
+    options.lightpandaBin = resolve(projectRoot, options.lightpandaBin);
+    if (!existsSync(options.lightpandaBin)) throw new Error(`Lightpanda binary not found: ${options.lightpandaBin}`);
   }
   options.output = resolve(projectRoot, options.output);
   options.realSiteFile = resolve(projectRoot, options.realSiteFile);
@@ -234,9 +251,12 @@ async function main() {
     projectRoot,
     kokoBin: options.kokoBin,
     chromeBin: options.chromeBin,
+    lightpandaBin: options.lightpandaBin,
     timeoutMs: options.timeoutMs,
     httpMaxConcurrent: options.httpMaxConcurrent,
     httpMaxHostOpen: options.httpMaxHostOpen,
+    resourcePolicy: options.resourcePolicy,
+    lightpandaEnableExternalStylesheets: options.lightpandaEnableExternalStylesheets,
     cdpMaxConnections: options.cdpMaxConnections,
   };
   const factories = createAdapterFactories(options.baselines, adapterOptions);
@@ -244,6 +264,7 @@ async function main() {
     projectRoot,
     kokoBin: options.kokoBin,
     chromeBin: options.chromeBin,
+    lightpandaBin: options.lightpandaBin,
     optimize: options.optimize,
     options: {
       suites: options.suites,
@@ -260,6 +281,8 @@ async function main() {
       longRunIterations: options.longRunIterations,
       httpMaxConcurrent: options.httpMaxConcurrent,
       httpMaxHostOpen: options.httpMaxHostOpen,
+      resourcePolicy: options.resourcePolicy,
+      lightpandaEnableExternalStylesheets: options.lightpandaEnableExternalStylesheets,
       cdpMaxConnections: options.cdpMaxConnections,
       regressionAgainst: options.regressionAgainst,
       regressionThresholdPct: options.regressionThresholdPct,

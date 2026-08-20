@@ -24,6 +24,10 @@ _load_generation: u64 = 0,
 _natural_width: u32 = 0,
 _natural_height: u32 = 0,
 
+fn hasLazyLoading(value: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(std.mem.trim(u8, value, " \t\r\n"), "lazy");
+}
+
 pub fn constructor(w_: ?u32, h_: ?u32, frame: *Frame) !*Image {
     const node = try frame.createElementNS(.html, "img", null);
     const el = node.as(Element);
@@ -321,6 +325,39 @@ pub fn imageAddedCallback(self: *Image, frame: *Frame) !void {
         return;
     }
 
+    const element = self.asElement();
+    if (!frame.shouldLoadImages()) {
+        // A resource policy block is intentional, so expose a completed
+        // failed image to script instead of leaving complete=false forever.
+        // No network transfer or error event is synthesized here; callers
+        // that need the bytes can explicitly fetch the URL themselves.
+        self._loading = false;
+        self._complete = true;
+        self._failed = true;
+        self._natural_width = 0;
+        self._natural_height = 0;
+        return;
+    }
+
+    // A headless runtime has no compositor viewport to trigger lazy loading.
+    // Defer the request until the frame's post-load scheduler turn instead of
+    // starting every image during parse. This keeps the initial burst small
+    // while preserving the essential contract that lazy images eventually load.
+    const loading = element.getAttributeSafe(comptime .wrap("loading")) orelse "";
+    if (hasLazyLoading(loading) or frame.shouldDeferImages()) {
+        try frame.deferLazyImage(self);
+        return;
+    }
+    return self.startImageLoad(frame);
+}
+
+/// Called by Frame after the document load event to bypass the lazy gate.
+pub fn activateDeferredLoad(self: *Image, frame: *Frame) !void {
+    return self.startImageLoad(frame);
+}
+
+fn startImageLoad(self: *Image, frame: *Frame) !void {
+    if (frame.isGoingAway()) return;
     const element = self.asElement();
     const src = element.getAttributeSafe(comptime .wrap("src")) orelse return;
     if (src.len == 0) return;
@@ -641,7 +678,7 @@ pub const Build = struct {
     /// React/DOM often set src via setAttribute rather than the IDL setter.
     /// Without this, attributes update but no network load / complete ever runs.
     pub fn attributeChange(element: *Element, name: String, _: String, frame: *Frame) !void {
-        if (!name.eql(comptime .wrap("src"))) return;
+        if (!name.eql(comptime .wrap("src")) and !name.eql(comptime .wrap("loading"))) return;
         const self = element.as(Image);
         return self.imageAddedCallback(frame);
     }
@@ -689,4 +726,11 @@ test "Image: encoded dimensions reject malformed input" {
     try std.testing.expect(encodedImageDimensions("") == null);
     try std.testing.expect(encodedImageDimensions("\x89PNG\r\n\x1a\n") == null);
     try std.testing.expect(encodedImageDimensions("not an image") == null);
+}
+
+test "Image: lazy loading token is parsed case-insensitively" {
+    try std.testing.expect(hasLazyLoading("lazy"));
+    try std.testing.expect(hasLazyLoading(" Lazy \t"));
+    try std.testing.expect(!hasLazyLoading("eager"));
+    try std.testing.expect(!hasLazyLoading(""));
 }

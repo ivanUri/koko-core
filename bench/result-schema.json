@@ -9,7 +9,7 @@
     "runId": { "type": "string" },
     "suite": { "enum": ["startup", "navigation", "session-lifecycle", "idle-memory", "concurrency", "network", "dom-js", "agent", "long-run", "real-sites"] },
     "workload": { "type": "string" },
-    "baseline": { "enum": ["koko-cdp", "chromium-cdp", "playwright-chromium"] },
+    "baseline": { "enum": ["koko-cdp", "chromium-cdp", "lightpanda-cdp", "playwright-chromium"] },
     "iteration": { "type": "integer", "minimum": 1 },
     "warmup": { "type": "boolean" },
     "startedAt": { "type": "string", "format": "date-time" },

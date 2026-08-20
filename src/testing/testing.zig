@@ -543,6 +543,22 @@ test "tests:beforeAll" {
     wg.wait();
 }
 
+test "resource policy: no-images completes without an image transfer" {
+    defer reset();
+    const previous = test_config.mode.serve.resource_policy;
+    defer test_config.mode.serve.resource_policy = previous;
+    test_config.mode.serve.resource_policy = .no_images;
+    try htmlRunner("regression/resource_policy_no_images.html", .{});
+}
+
+test "resource policy: no-css skips external stylesheet transfer" {
+    defer reset();
+    const previous = test_config.mode.serve.resource_policy;
+    defer test_config.mode.serve.resource_policy = previous;
+    test_config.mode.serve.resource_policy = .no_css;
+    try htmlRunner("regression/resource_policy_no_css.html", .{});
+}
+
 test "tests:afterAll" {
     test_app.network.stop();
     if (test_cdp_server_thread) |thread| {
@@ -591,6 +607,31 @@ fn serveCDP(wg: *std.Thread.WaitGroup) !void {
 
 fn testHTTPHandler(req: *std.http.Server.Request) !void {
     const path = req.head.target;
+
+    if (std.mem.eql(u8, path, "/lazy-image.png")) {
+        // Keep the response deterministic but non-zero latency so a
+        // wait_until=done regression test can observe whether lazy activation
+        // actually owns the network request before returning.
+        std.Thread.sleep(50 * std.time.ns_per_ms);
+        const png = [_]u8{
+            0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n',
+            0,    0,   0,   13,  'I',  'H',  'D',  'R',
+            0,    0,   0,   1,   0,    0,    0,    1,
+        };
+        return req.respond(&png, .{
+            .extra_headers = &.{
+                .{ .name = "Content-Type", .value = "image/png" },
+            },
+        });
+    }
+
+    if (std.mem.eql(u8, path, "/policy.css")) {
+        return req.respond("#policy-target { color: rgb(1, 2, 3); }", .{
+            .extra_headers = &.{
+                .{ .name = "Content-Type", .value = "text/css" },
+            },
+        });
+    }
 
     if (std.mem.eql(u8, path, "/static-module-delayed-dependency.js")) {
         // Ensure the entry module reaches V8 instantiation while this import is

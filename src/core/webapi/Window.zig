@@ -971,6 +971,11 @@ pub fn scrollTo(self: *Window, opts: ScrollToOpts, y: ?i32, frame: *Frame) !void
 
     self._scroll_pos.state = .scroll;
 
+    // Scrolling changes every viewport-relative client rect.  Queue the same
+    // coalesced IntersectionObserver checkpoint used by DOM mutations before
+    // delivering the asynchronous scroll event.
+    frame.scheduleIntersectionChecks();
+
     // We dispatch scroll event asynchronously after 10ms. So we can throttle
     // them.
     try frame.js.scheduler.add(

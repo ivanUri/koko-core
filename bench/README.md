@@ -2,6 +2,38 @@
 
 This harness measures Koko as a browser runtime/API service against direct Chromium CDP and, optionally, Playwright Chromium. It uses deterministic loopback fixtures and stores every observation, including warmups, failures, and timeouts.
 
+Lightpanda is an optional protocol-matched baseline. It receives the same
+loopback fixture URL as Koko and Chromium, so navigation and DOM/JS results use
+the same HTML and subresources rather than comparing unrelated live-site
+response counts:
+
+```sh
+zig build benchmark -Doptimize=ReleaseFast -- \
+  --suite navigation,dom-js,network \
+  --baseline koko-cdp,chromium-cdp,lightpanda-cdp \
+  --lightpanda-bin /private/tmp/koko-lightpanda/lightpanda \
+  --warmup 1 --iterations 5 --allow-failures
+```
+
+To compare a text-only resource policy on the same live site, use
+`--resource-policy text-only`. Koko blocks image and stylesheet transfers at
+request admission; the Lightpanda adapter keeps external stylesheets disabled
+and maps image blocking to its `--block-urls` facility:
+
+```sh
+node bench/runner.mjs --suite real-sites \
+  --baseline koko-cdp,lightpanda-cdp \
+  --koko-bin zig-out/bin/koko \
+  --lightpanda-bin /path/to/lightpanda \
+  --resource-policy text-only \
+  --site-file bench/real-github-resource-policy.json \
+  --real-warmup 0 --real-iterations 1 --optimize ReleaseFast
+```
+
+For a separate network-free comparison, serve one frozen exported HTML
+document to every adapter. That isolates parser/DOM/JavaScript cost from
+network scheduling and resource policy.
+
 ## Run
 
 ```sh

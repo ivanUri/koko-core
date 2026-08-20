@@ -24,6 +24,10 @@ const IS_DEBUG = @import("builtin").mode == .Debug;
 pub const Opts = struct {
     with_base: bool = false,
     with_frames: bool = false,
+    // Export snapshots may materialize CSSOM rules into the document head so
+    // standalone HTML keeps runtime-inserted styles. DOM outerHTML must leave
+    // this disabled because it represents the live DOM, not an export.
+    include_cssom_snapshot: bool = true,
     strip: Opts.Strip = .{},
     shadow: Opts.Shadow = .rendered,
 
@@ -117,7 +121,7 @@ fn _deep(node: *Node, opts: Opts, comptime force_slot: bool, writer: *std.Io.Wri
 
             try el.format(writer);
 
-            if (!opts.strip.css and std.mem.eql(u8, el.getTagNameDump(), "head")) {
+            if (opts.include_cssom_snapshot and !opts.strip.css and std.mem.eql(u8, el.getTagNameDump(), "head")) {
                 try dumpDocumentStylesheetSnapshot(writer, frame);
             }
 

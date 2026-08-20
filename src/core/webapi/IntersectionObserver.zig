@@ -35,6 +35,8 @@ pub fn registerTypes() []const type {
 
 const IntersectionObserver = @This();
 
+const max_pending_entries: usize = 4096;
+
 _rc: RC(u8) = .{},
 _arena: Allocator,
 _callback: js.Function.Temp,
@@ -43,7 +45,10 @@ _root: ?*Element = null,
 _root_margin: []const u8 = "0px",
 _threshold: []const f64 = &.{0.0},
 _pending_entries: std.ArrayList(*IntersectionObserverEntry) = .{},
-_previous_states: std.AutoHashMapUnmanaged(*Element, bool) = .{},
+// Store the last intersection ratio, not only a boolean. Threshold arrays
+// must generate callbacks when an element crosses an intermediate ratio while
+// remaining intersecting.
+_previous_states: std.AutoHashMapUnmanaged(*Element, f64) = .{},
 
 // Shared zero DOMRect to avoid repeated allocations for non-intersecting elements
 var zero_rect: DOMRect = .{
@@ -210,16 +215,42 @@ fn calculateIntersection(
             ._height = viewport_height,
         };
 
-    // For a headless browser without real layout, we treat all elements as fully visible.
-    // This avoids fingerprinting issues (massive viewports) and matches the behavior
-    // scripts expect when querying element visibility.
-    // However, elements without a parent cannot intersect (they have no containing block).
+    // IntersectionObserver is a viewport contract, not a DOM-connectivity
+    // signal.  Treating every connected node as fully visible causes sentinel
+    // based infinite lists to fire before the user reaches the sentinel and
+    // makes scrolling unable to activate deferred content.
     const has_parent = target.asNode().parentNode() != null;
-    const is_intersecting = has_parent;
-    const intersection_ratio: f64 = if (has_parent) 1.0 else 0.0;
+    if (!has_parent or target_rect._width <= 0 or target_rect._height <= 0) {
+        return .{
+            .is_intersecting = false,
+            .intersection_ratio = 0.0,
+            .intersection_rect = zero_rect,
+            .bounding_client_rect = target_rect,
+            .root_bounds = root_rect,
+        };
+    }
 
-    // Intersection rect is the same as the target rect if visible, otherwise zero rect
-    const intersection_rect = if (has_parent) target_rect else zero_rect;
+    const margins = parseRootMargin(self._root_margin, root_rect._width, root_rect._height);
+    const root_left = root_rect._x - margins.left;
+    const root_top = root_rect._y - margins.top;
+    const root_right = root_rect._x + root_rect._width + margins.right;
+    const root_bottom = root_rect._y + root_rect._height + margins.bottom;
+    const target_right = target_rect._x + target_rect._width;
+    const target_bottom = target_rect._y + target_rect._height;
+    const left = @max(root_left, target_rect._x);
+    const top = @max(root_top, target_rect._y);
+    const right = @min(root_right, target_right);
+    const bottom = @min(root_bottom, target_bottom);
+    const intersection_width = @max(0.0, right - left);
+    const intersection_height = @max(0.0, bottom - top);
+    const intersection_area = intersection_width * intersection_height;
+    const target_area = target_rect._width * target_rect._height;
+    const is_intersecting = intersection_width > 0 and intersection_height > 0;
+    const intersection_ratio = if (target_area > 0) intersection_area / target_area else 0.0;
+    const intersection_rect = if (is_intersecting)
+        DOMRect{ ._x = left, ._y = top, ._width = intersection_width, ._height = intersection_height }
+    else
+        zero_rect;
 
     return .{
         .is_intersecting = is_intersecting,
@@ -228,6 +259,59 @@ fn calculateIntersection(
         .bounding_client_rect = target_rect,
         .root_bounds = root_rect,
     };
+}
+
+const RootMargins = struct { top: f64, right: f64, bottom: f64, left: f64 };
+const MarginValue = struct { scalar: f64, percent: bool };
+
+fn parseRootMargin(value: []const u8, root_width: f64, root_height: f64) RootMargins {
+    var parsed: [4]MarginValue = .{
+        .{ .scalar = 0.0, .percent = false },
+        .{ .scalar = 0.0, .percent = false },
+        .{ .scalar = 0.0, .percent = false },
+        .{ .scalar = 0.0, .percent = false },
+    };
+    var count: usize = 0;
+    var it = std.mem.tokenizeAny(u8, value, " \t\r\n");
+    while (it.next()) |token| {
+        if (count == 4) break;
+        const is_percent = std.mem.endsWith(u8, token, "%");
+        const is_px = std.mem.endsWith(u8, token, "px");
+        const number = if (is_percent)
+            token[0 .. token.len - 1]
+        else if (is_px)
+            token[0 .. token.len - 2]
+        else
+            token;
+        const scalar = std.fmt.parseFloat(f64, number) catch return .{
+            .top = 0.0,
+            .right = 0.0,
+            .bottom = 0.0,
+            .left = 0.0,
+        };
+        parsed[count] = .{ .scalar = if (is_percent) scalar / 100.0 else scalar, .percent = is_percent };
+        count += 1;
+    }
+    if (count == 0) return .{ .top = 0.0, .right = 0.0, .bottom = 0.0, .left = 0.0 };
+    if (count == 1) {
+        parsed[1] = parsed[0];
+        parsed[2] = parsed[0];
+        parsed[3] = parsed[0];
+    } else if (count == 2) {
+        parsed[2] = parsed[0];
+        parsed[3] = parsed[1];
+    } else if (count == 3) {
+        parsed[3] = parsed[1];
+    }
+
+    // Percentages are relative to the corresponding root dimension.  The
+    // parser stores unitless px values as-is and percentage values as ratios;
+    // this conversion keeps the geometry calculation allocation-free.
+    const top = if (parsed[0].percent) parsed[0].scalar * root_height else parsed[0].scalar;
+    const right = if (parsed[1].percent) parsed[1].scalar * root_width else parsed[1].scalar;
+    const bottom = if (parsed[2].percent) parsed[2].scalar * root_height else parsed[2].scalar;
+    const left = if (parsed[3].percent) parsed[3].scalar * root_width else parsed[3].scalar;
+    return .{ .top = top, .right = right, .bottom = bottom, .left = left };
 }
 
 const IntersectionData = struct {
@@ -249,14 +333,29 @@ fn meetsThreshold(self: *IntersectionObserver, ratio: f64) bool {
 
 fn checkIntersection(self: *IntersectionObserver, target: *Element, frame: *Frame) !void {
     const data = try self.calculateIntersection(target, frame);
-    const was_intersecting_opt = self._previous_states.get(target);
-    const is_now_intersecting = data.is_intersecting and self.meetsThreshold(data.intersection_ratio);
+    const was_ratio_opt = self._previous_states.get(target);
+    const current_ratio = if (data.is_intersecting) data.intersection_ratio else 0.0;
 
-    // Create entry if:
-    // 1. First time observing this target AND it's intersecting
-    // 2. State changed
-    const should_report = (was_intersecting_opt == null and is_now_intersecting) or
-        (was_intersecting_opt != null and was_intersecting_opt.? != is_now_intersecting);
+    // The first observation always queues an entry, including the initial
+    // non-intersecting state. Subsequent entries are emitted only when the
+    // threshold state changes.
+    const crossed_threshold = if (was_ratio_opt) |was_ratio| blk: {
+        var crossed = false;
+        for (self._threshold) |threshold| {
+            if ((was_ratio < threshold and current_ratio >= threshold) or
+                (was_ratio >= threshold and current_ratio < threshold))
+            {
+                crossed = true;
+                break;
+            }
+        }
+        break :blk crossed;
+    } else false;
+    const changed_intersection = if (was_ratio_opt) |was_ratio|
+        ((was_ratio > 0.0) != data.is_intersecting)
+    else
+        true;
+    const should_report = changed_intersection or crossed_threshold;
 
     if (should_report) {
         const arena = try frame.getArena(.tiny, "IntersectionObserverEntry");
@@ -267,18 +366,36 @@ fn checkIntersection(self: *IntersectionObserver, target: *Element, frame: *Fram
             ._arena = arena,
             ._target = target,
             ._time = frame.window._performance.now(),
-            ._is_intersecting = is_now_intersecting,
+            ._is_intersecting = data.is_intersecting,
             ._root_bounds = try frame._factory.create(data.root_bounds),
             ._intersection_rect = try frame._factory.create(data.intersection_rect),
             ._bounding_client_rect = try frame._factory.create(data.bounding_client_rect),
             ._intersection_ratio = data.intersection_ratio,
         };
-        try self._pending_entries.append(self._arena, entry);
+        // A DOM mutation and a scroll checkpoint can both observe the same
+        // target before the delivery microtask runs. Keep only the newest
+        // entry for each target; retaining every intermediate geometry state
+        // lets ad-heavy pages grow the queue until the tiny arena is exhausted.
+        var replaced = false;
+        for (self._pending_entries.items, 0..) |pending, index| {
+            if (pending._target != target) continue;
+            pending.deinit(frame._page);
+            self._pending_entries.items[index] = entry;
+            replaced = true;
+            break;
+        }
+        if (!replaced) {
+            if (self._pending_entries.items.len >= max_pending_entries) {
+                const oldest = self._pending_entries.orderedRemove(0);
+                oldest.deinit(frame._page);
+            }
+            try self._pending_entries.append(self._arena, entry);
+        }
     }
 
     // Always update the previous state, even if we didn't report
     // This ensures we can detect state changes on subsequent checks
-    try self._previous_states.put(self._arena, target, is_now_intersecting);
+    try self._previous_states.put(self._arena, target, current_ratio);
 }
 
 pub fn checkIntersections(self: *IntersectionObserver, frame: *Frame) !void {
@@ -406,4 +523,8 @@ pub const JsApi = struct {
 const testing = @import("../../testing/testing.zig");
 test "WebApi: IntersectionObserver" {
     try testing.htmlRunner("intersection_observer", .{});
+}
+
+test "WebApi: IntersectionObserver scroll checkpoint" {
+    try testing.htmlRunner("regression/intersection_observer_scroll.html", .{});
 }

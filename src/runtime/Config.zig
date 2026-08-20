@@ -50,6 +50,45 @@ pub const CDP_TCP_USER_TIMEOUT_MS: c_int = 10_000;
 
 const Config = @This();
 
+/// Controls optional document subresources. The policy is applied before a
+/// network transfer is admitted, while image deferral is coordinated by the
+/// owning Frame so DOM lifecycle and image completion remain coherent.
+pub const ResourcePolicy = enum {
+    full,
+    no_images,
+    no_css,
+    text_only,
+    defer_images,
+
+    pub fn allowsImages(self: ResourcePolicy) bool {
+        return self != .no_images and self != .text_only;
+    }
+
+    pub fn allowsExternalStylesheets(self: ResourcePolicy) bool {
+        return self != .no_css and self != .text_only;
+    }
+
+    pub fn defersImages(self: ResourcePolicy) bool {
+        return self == .defer_images;
+    }
+};
+
+fn resourcePolicyValidator(_: Allocator, args: *std.process.ArgIterator) !?ResourcePolicy {
+    const raw = args.next() orelse {
+        log.fatal(.app, "missing argument value", .{ .arg = "--resource-policy" });
+        return error.MissingArgument;
+    };
+
+    if (std.ascii.eqlIgnoreCase(raw, "full")) return .full;
+    if (std.ascii.eqlIgnoreCase(raw, "no-images") or std.ascii.eqlIgnoreCase(raw, "no_images")) return .no_images;
+    if (std.ascii.eqlIgnoreCase(raw, "no-css") or std.ascii.eqlIgnoreCase(raw, "no_css")) return .no_css;
+    if (std.ascii.eqlIgnoreCase(raw, "text-only") or std.ascii.eqlIgnoreCase(raw, "text_only")) return .text_only;
+    if (std.ascii.eqlIgnoreCase(raw, "defer-images") or std.ascii.eqlIgnoreCase(raw, "defer_images")) return .defer_images;
+
+    log.fatal(.app, "invalid option choice", .{ .arg = "--resource-policy", .value = raw });
+    return error.InvalidArgument;
+}
+
 fn logFilterScopesValidator(allocator: Allocator, args: *std.process.ArgIterator, list: *std.ArrayList(log.Scope)) !void {
     const str = args.next() orelse return error.InvalidOption;
 
@@ -98,6 +137,7 @@ const CommonOptions = .{
     .{ .name = "http_timeout", .type = ?u31 },
     .{ .name = "http_connect_timeout", .type = ?u31 },
     .{ .name = "http_max_response_size", .type = ?usize },
+    .{ .name = "resource_policy", .type = ?ResourcePolicy, .validator = resourcePolicyValidator },
     .{ .name = "ws_max_concurrent", .type = ?u8 },
     .{ .name = "insecure_disable_tls_host_verification", .type = bool },
     .{ .name = "log_level", .type = ?log.Level, .validator = logLevelValidator },
@@ -186,6 +226,11 @@ const Commands = cli.Builder(.{
             .{ .name = "strip_mode", .type = dump.Opts.Strip, .default = dump.Opts.Strip{} },
             .{ .name = "wait_ms", .type = u32, .default = 5_000 },
             .{ .name = "wait_until", .type = ?WaitUntil },
+            .{ .name = "observe_ms", .type = u32, .default = 0 },
+            .{ .name = "expand_lazy", .type = bool },
+            .{ .name = "block_ads", .type = bool },
+            .{ .name = "max_scrolls", .type = u32, .default = 80 },
+            .{ .name = "scroll_settle_ms", .type = u32, .default = 250 },
             .{
                 .name = "wait_script",
                 .type = ?[:0]const u8,
@@ -469,6 +514,32 @@ pub fn httpMaxResponseSize(self: *const Config) ?usize {
         inline .serve, .fetch, .mcp => |opts| opts.http_max_response_size,
         else => unreachable,
     };
+}
+
+pub fn resourcePolicy(self: *const Config) ResourcePolicy {
+    return switch (self.mode) {
+        inline .serve, .fetch, .mcp => |opts| opts.resource_policy orelse .full,
+        else => .full,
+    };
+}
+
+/// Skip known third-party advertising and analytics resources during a
+/// controlled fetch. Normal browser/serve sessions keep original behavior.
+pub fn blockAds(self: *const Config) bool {
+    return switch (self.mode) {
+        .fetch => |opts| opts.block_ads,
+        else => false,
+    };
+}
+
+test "resource policy resource classes" {
+    try std.testing.expect(ResourcePolicy.full.allowsImages());
+    try std.testing.expect(ResourcePolicy.full.allowsExternalStylesheets());
+    try std.testing.expect(!ResourcePolicy.no_images.allowsImages());
+    try std.testing.expect(!ResourcePolicy.no_css.allowsExternalStylesheets());
+    try std.testing.expect(!ResourcePolicy.text_only.allowsImages());
+    try std.testing.expect(!ResourcePolicy.text_only.allowsExternalStylesheets());
+    try std.testing.expect(ResourcePolicy.defer_images.defersImages());
 }
 
 pub fn wsMaxConcurrent(self: *const Config) u8 {
@@ -958,6 +1029,11 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\                (e.g. XHR, fetch, script loading, ...).
         \\                Defaults to no limit.
         \\
+        \\--resource-policy
+        \\                Resource loading policy: full, no-images, no-css,
+        \\                text-only, or defer-images. Applies to image and
+        \\                external stylesheet subresources. Defaults to full.
+        \\
         \\--ws-max-concurrent
         \\                The maximum number of concurrent WebSocket connections.
         \\                Defaults to 8.
@@ -1096,6 +1172,21 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\                networkidle, domstable, done.
         \\                Defaults to 'done'. If --wait-selector, --wait-script or
         \\                --wait-script-file are specified, defaults to none.
+        \\
+        \\--observe-ms    Continue servicing the page after the wait milestone for
+        \\                this bounded background-observation window. This is useful
+        \\                for live previews and lazy resources; it does not change
+        \\                the lifecycle milestone used for the initial snapshot.
+        \\
+        \\--expand-lazy   Scroll the page in bounded viewport-sized steps and
+        \\                service timers, IntersectionObserver callbacks and
+        \\                network work between steps. Disabled by default.
+        \\--max-scrolls   Maximum expansion steps. Defaults to 80.
+        \\--scroll-settle-ms
+        \\                Milliseconds to service the page after each step.
+        \\                Defaults to 250.
+        \\--block-ads     Skip known third-party advertising and analytics
+        \\                requests during this fetch. Disabled by default.
         \\
         \\--wait-selector Wait for an element matching the CSS selector to appear.
         \\                Checked after --wait-until condition is met.

@@ -425,6 +425,17 @@ pub const IDBObjectStore = struct {
         return self._data.name;
     }
 
+    /// The transaction that owns this object store.
+    ///
+    /// IndexedDB exposes this as a read-only property on every
+    /// IDBObjectStore.  In particular, callers commonly use it to attach
+    /// `oncomplete`/`onerror` handlers after issuing a request.  Keeping the
+    /// native transaction pointer on the store is also what preserves object
+    /// identity (`store.transaction === transaction`) across the JS bridge.
+    pub fn getTransaction(self: *const IDBObjectStore) ?*IDBTransaction {
+        return self._transaction;
+    }
+
     fn request(self: *IDBObjectStore) !*IDBRequest {
         return self._frame._factory.eventTarget(IDBRequest{
             ._proto = undefined,
@@ -525,6 +536,7 @@ pub const IDBObjectStore = struct {
             pub var class_id: bridge.ClassId = undefined;
         };
         pub const name = bridge.accessor(IDBObjectStore.getName, null, .{});
+        pub const transaction = bridge.accessor(IDBObjectStore.getTransaction, null, .{});
         pub const put = bridge.function(IDBObjectStore.put, .{});
         pub const add = bridge.function(IDBObjectStore.add, .{});
         pub const get = bridge.function(IDBObjectStore.get, .{});

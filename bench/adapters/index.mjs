@@ -2,9 +2,10 @@ import { existsSync } from "node:fs";
 import { delimiter } from "node:path";
 import { ChromiumCdpAdapter } from "./chromium-cdp.mjs";
 import { KokoCdpAdapter } from "./koko-cdp.mjs";
+import { LightpandaCdpAdapter } from "./lightpanda-cdp.mjs";
 import { PlaywrightAdapter } from "./playwright.mjs";
 
-const adapterTypes = [KokoCdpAdapter, ChromiumCdpAdapter, PlaywrightAdapter];
+const adapterTypes = [KokoCdpAdapter, ChromiumCdpAdapter, LightpandaCdpAdapter, PlaywrightAdapter];
 
 function executableOnPath(name) {
   for (const directory of (process.env.PATH ?? "").split(delimiter)) {
@@ -44,4 +45,3 @@ export function createAdapterFactories(ids, options) {
 }
 
 export const allAdapterIds = adapterTypes.map((Adapter) => Adapter.id);
-

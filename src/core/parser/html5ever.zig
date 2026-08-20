@@ -77,7 +77,7 @@ pub extern "c" fn html5ever_parse_fragment(
     reparentChildrenCallback: *const fn (ctx: *anyopaque, node_ref: *anyopaque, new_parent_ref: *anyopaque) callconv(.c) void,
     appendBeforeSiblingCallback: *const fn (ctx: *anyopaque, sibling_ref: *anyopaque, NodeOrText) callconv(.c) void,
     appendBasedOnParentNodeCallback: *const fn (ctx: *anyopaque, element_ref: *anyopaque, prev_element_ref: *anyopaque, NodeOrText) callconv(.c) void,
-) void;
+) c_int;
 
 pub extern "c" fn html5ever_attribute_iterator_next(ctx: *anyopaque) Nullable(Attribute);
 pub extern "c" fn html5ever_attribute_iterator_count(ctx: *anyopaque) usize;

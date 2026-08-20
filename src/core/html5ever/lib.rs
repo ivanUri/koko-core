@@ -468,9 +468,9 @@ pub extern "C" fn html5ever_parse_fragment(
     reparent_children_callback: ReparentChildrenCallback,
     append_before_sibling_callback: AppendBeforeSiblingCallback,
     append_based_on_parent_node_callback: AppendBasedOnParentNodeCallback,
-) -> () {
+) -> i32 {
     if html.is_null() || len == 0 {
-        return ();
+        return 0;
     }
 
     let arena = typed_arena::Arena::new();
@@ -497,15 +497,19 @@ pub extern "C" fn html5ever_parse_fragment(
     };
 
     let bytes = unsafe { std::slice::from_raw_parts(html, len) };
-    parse_fragment(
-        sink,
-        Default::default(),
-        QualName::new(None, ns!(html), LocalName::from("body")),
-        vec![], // attributes
-        false,  // context_element_allows_scripting
-    )
-    .from_utf8()
-    .one(bytes);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        parse_fragment(
+            sink,
+            Default::default(),
+            QualName::new(None, ns!(html), LocalName::from("body")),
+            vec![], // attributes
+            false,  // context_element_allows_scripting
+        )
+        .from_utf8()
+        .one(bytes);
+    }));
+
+    if result.is_ok() { 0 } else { -1 }
 }
 
 #[no_mangle]

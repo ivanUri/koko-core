@@ -32,6 +32,11 @@ frame: *Frame,
 session: *Session,
 http_client: *HttpClient,
 dom_stability: HostIdle.DomStability = .{},
+/// Independent observer used to report milestones even when the caller waits
+/// for a different condition (for example DCL) and keeps the page alive.
+lifecycle_dom_stability: HostIdle.DomStability = .{},
+lifecycle_domstable_frame_identity: usize = 0,
+lifecycle_domstable_loader_id: u32 = 0,
 progress_hook: ?ProgressHook = null,
 last_progress_ms: u64 = 0,
 
@@ -50,6 +55,18 @@ pub fn init(session: *Session, _: Opts) !Runner {
 pub const WaitOpts = struct {
     ms: u32,
     until: @import("../../runtime/Config.zig").WaitUntil = .done,
+};
+
+pub const ExpandLazyOpts = struct {
+    /// Maximum number of viewport-sized scroll steps. This is a safety limit
+    /// for pages that append content forever.
+    max_scrolls: u32 = 80,
+    /// Time to service timers, scroll handlers, DOM mutations and requests
+    /// after each step.
+    settle_ms: u32 = 250,
+    /// Number of unchanged bottom passes required before declaring expansion
+    /// complete.
+    stable_rounds: u8 = 3,
 };
 
 /// A low-frequency hook for consumers that need an intermediate document
@@ -85,6 +102,87 @@ pub const CDPWaitResult = enum {
 };
 pub fn waitCDP(self: *Runner, opts: WaitOpts) !CDPWaitResult {
     return self._wait(true, opts);
+}
+
+/// Keep servicing the page for a bounded observation window after a lifecycle
+/// milestone. This mirrors an interactive browser: the document can be
+/// presented while hydration, lazy resources and background work continue.
+/// A bounded window prevents pages with polling/WebSockets from living forever
+/// in one-shot CLI executions.
+pub fn pumpFor(self: *Runner, ms: u32) !void {
+    if (ms == 0) return;
+    var timer = try std.time.Timer.start();
+    while (true) {
+        if (self.session.browser.isHostTerminationRequested()) return;
+        const elapsed: u32 = @intCast(timer.read() / std.time.ns_per_ms);
+        if (elapsed >= ms) return;
+        const result = self._tick(false, .{ .ms = @min(ms - elapsed, 200), .until = .done }) catch |err| {
+            if (self.session.browser.isHostTerminationRequested()) return;
+            return err;
+        };
+        self.maybeEmitLifecycle();
+        self.maybeEmitProgress();
+        const after_tick_elapsed: u32 = @intCast(timer.read() / std.time.ns_per_ms);
+        if (after_tick_elapsed >= ms) return;
+        const remaining: u32 = ms - after_tick_elapsed;
+        const sleep_ms = switch (result) {
+            .done => @min(remaining, 50),
+            .ok => |next_ms| @min(remaining, next_ms),
+            .cdp_socket => @min(remaining, 5),
+        };
+        if (sleep_ms > 0) std.Thread.sleep(std.time.ns_per_ms * sleep_ms);
+    }
+}
+
+/// Progressively expand viewport-driven lazy content. This models a user
+/// scrolling in bounded increments, allowing scroll listeners, Intersection-
+/// Observer callbacks, timers and network responses to run between steps.
+/// It intentionally lives in Runner rather than dump/export code so all
+/// consumers get the same browser lifecycle semantics.
+pub fn expandLazy(self: *Runner, opts: ExpandLazyOpts) !void {
+    if (opts.max_scrolls == 0) return;
+
+    var stable: u8 = 0;
+    var previous_height: f64 = -1.0;
+    var previous_y: u32 = 0;
+
+    var step_index: u32 = 0;
+    while (step_index < opts.max_scrolls) : (step_index += 1) {
+        const frame = self.session.currentFrame() orelse return;
+        const profile = frame.identityProfile();
+        const viewport_height = @as(f64, @floatFromInt(profile.window.inner_height));
+        const root = frame.document.getDocumentElement() orelse return;
+        const scroll_height = root.getScrollHeight(frame);
+        const max_y = @max(0.0, scroll_height - viewport_height);
+        const current_y = @as(f64, @floatFromInt(frame.window.getScrollY()));
+        const step = @max(viewport_height * 0.8, 1.0);
+        const next_y = @min(max_y, current_y + step);
+
+        frame.window.scrollTo(.{ .x = @intCast(frame.window.getScrollX()) }, @intFromFloat(next_y), frame) catch |err| {
+            log.warn(.browser, "expand lazy scroll failed", .{ .err = err, .step = step_index });
+            return err;
+        };
+        try self.pumpFor(opts.settle_ms);
+
+        const after_frame = self.session.currentFrame() orelse return;
+        const after_root = after_frame.document.getDocumentElement() orelse return;
+        const after_height = after_root.getScrollHeight(after_frame);
+        const after_y = after_frame.window.getScrollY();
+        const at_bottom = @as(f64, @floatFromInt(after_y)) + viewport_height >= after_height - 1.0;
+
+        // A pass is stable only when the page was already at its bottom and
+        // neither the scroll position nor document extent changed. New lazy
+        // content resets the counter and receives more scroll/pump passes.
+        if (at_bottom and after_height <= previous_height and after_y == previous_y) {
+            stable +|= 1;
+        } else {
+            stable = 0;
+        }
+        previous_height = after_height;
+        previous_y = after_y;
+
+        if (stable >= opts.stable_rounds) return;
+    }
 }
 
 fn _wait(self: *Runner, comptime is_cdp: bool, opts: WaitOpts) !CDPWaitResult {
@@ -139,6 +237,7 @@ fn _wait(self: *Runner, comptime is_cdp: bool, opts: WaitOpts) !CDPWaitResult {
             }
             return err;
         };
+        self.maybeEmitLifecycle();
         self.maybeEmitProgress();
 
         const next_ms = switch (tick_result) {
@@ -172,6 +271,17 @@ fn _wait(self: *Runner, comptime is_cdp: bool, opts: WaitOpts) !CDPWaitResult {
             std.Thread.sleep(std.time.ns_per_ms * next_ms);
         }
     }
+}
+
+fn maybeEmitLifecycle(self: *Runner) void {
+    const frame = self.session.pendingOrCurrentFrame() orelse return;
+    const now = @import("../../support/datetime.zig").milliTimestamp(.monotonic);
+    if (!self.lifecycle_dom_stability.observe(frame, now)) return;
+    const identity = @intFromPtr(frame);
+    if (self.lifecycle_domstable_frame_identity == identity and self.lifecycle_domstable_loader_id == frame._loader_id) return;
+    self.lifecycle_domstable_frame_identity = identity;
+    self.lifecycle_domstable_loader_id = frame._loader_id;
+    frame.observeLifecycleForRunner("domstable");
 }
 
 pub const TickOpts = struct {
@@ -294,13 +404,22 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
 
             if (comptime is_cdp) {
                 self.drainDeferredDocumentParse(is_cdp);
-                const early = try http_client.tick(0);
+                // At this point the document has not reached a runnable
+                // realm yet. Avoid paying the normal 1 ms fairness quantum
+                // on the first I/O turn; later turns use tick() so scripts
+                // and timers retain starvation protection.
+                const early = try http_client.tickImmediate();
                 if (early == .cdp_socket) return .cdp_socket;
                 // scheduleDeferredFrameNavigated queues the CDP Page.navigate ack at
                 // header time. Waiting for http_active==0 delayed the response by
                 // the full document body transfer (ebay.com ~400KB).
                 var slices: u8 = 0;
                 while (slices < 8) : (slices += 1) {
+                    // Network completion above may enqueue parser/script work,
+                    // but a static document often has nothing runnable here.
+                    // Avoid entering Env.runOneMacrotaskRound when all realms
+                    // are idle; the next HttpClient tick still owns I/O.
+                    if (!self.session.browser.hasReadyMacrotasks()) break;
                     if (!try self.session.browser.runMacrotasksCdpSlice()) break;
                 }
                 frame._script_manager.base.pumpDocumentLifecycle(frame);
@@ -363,6 +482,7 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
                 while (slices < 64) : (slices += 1) {
                     const early = try http_client.tick(0);
                     if (early == .cdp_socket) return .cdp_socket;
+                    if (!browser.hasReadyMacrotasks()) break;
                     if (!try browser.runMacrotasksCdpSlice()) break;
                 }
             } else {
@@ -413,7 +533,14 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
             const network_idle = HostIdle.isNetworkIdle(http_client);
             const ms_to_next_macrotask = browser.msToNextMacrotask();
             const script_pending = live_frame._script_manager.base.hasPendingJsWork();
-            const is_done = HostIdle.isFullyIdle(http_client, live_frame, browser);
+            // Lazy images intentionally do not block `load`, but their
+            // activation task is still part of the navigation's eventual
+            // `done` state. Without this edge, a page can be reported done
+            // in the small window after load dispatch and before the queued
+            // fallback activation starts the image request.
+            const lazy_image_activation_pending = live_frame.hasPendingLazyImageActivation();
+            const is_done = !lazy_image_activation_pending and
+                HostIdle.isFullyIdle(http_client, live_frame, browser);
             const immediate_host_work =
                 js_mod.EventLoop.hasReadyWork(&live_frame.js.execution) or
                 (ms_to_next_macrotask != null and ms_to_next_macrotask.? == 0);
@@ -638,6 +765,23 @@ test "Runner: host termination ends a browser wait" {
 
     var runner = try frame._session.runner(.{});
     try runner.wait(.{ .ms = 60_000, .until = .done });
+}
+
+test "Runner: done waits for deferred lazy image activation" {
+    defer testing.reset();
+    const frame = try testing.pageTest("regression/lazy_image_done_wait.html", .{ .wait_until_done = false });
+    defer frame._session.removePage();
+
+    var runner = try frame._session.runner(.{});
+    try runner.wait(.{ .ms = 2_000, .until = .done });
+
+    // Assert immediately after wait() returns. Do not use waitForScript here:
+    // that helper intentionally keeps ticking after a page is otherwise idle,
+    // which would hide an early `done` result.
+    try testing.expect(try evaluateWaitScript(
+        frame,
+        "document.querySelector('#lazy').complete && document.querySelector('#lazy').naturalWidth === 1",
+    ));
 }
 
 test "Runner: text navigation completes after the response body" {

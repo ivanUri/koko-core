@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<canvas id="canvas"></canvas>
+<script>
+  const canvas = document.getElementById("canvas");
+  const webgl = canvas.getContext("webgl");
+  const webgl2 = canvas.getContext("webgl2");
+  const canvas2d = document.createElement("canvas").getContext("2d");
+  const offscreenWebgl = typeof OffscreenCanvas === "function"
+    ? new OffscreenCanvas(1, 1).getContext("webgl")
+    : null;
+
+  window.testing = {
+    assertOk: () => webgl === null && webgl2 === null && offscreenWebgl === null && canvas2d !== null,
+    printTimeoutState: () => console.log(`webgl=${webgl}, webgl2=${webgl2}, offscreenWebgl=${offscreenWebgl}, canvas2d=${canvas2d !== null}`),
+  };
+</script>
