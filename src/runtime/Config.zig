@@ -228,7 +228,6 @@ const Commands = cli.Builder(.{
             .{ .name = "wait_until", .type = ?WaitUntil },
             .{ .name = "observe_ms", .type = u32, .default = 0 },
             .{ .name = "expand_lazy", .type = bool },
-            .{ .name = "block_ads", .type = bool },
             .{ .name = "max_scrolls", .type = u32, .default = 80 },
             .{ .name = "scroll_settle_ms", .type = u32, .default = 250 },
             .{
@@ -520,15 +519,6 @@ pub fn resourcePolicy(self: *const Config) ResourcePolicy {
     return switch (self.mode) {
         inline .serve, .fetch, .mcp => |opts| opts.resource_policy orelse .full,
         else => .full,
-    };
-}
-
-/// Skip known third-party advertising and analytics resources during a
-/// controlled fetch. Normal browser/serve sessions keep original behavior.
-pub fn blockAds(self: *const Config) bool {
-    return switch (self.mode) {
-        .fetch => |opts| opts.block_ads,
-        else => false,
     };
 }
 
@@ -1185,8 +1175,6 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\--scroll-settle-ms
         \\                Milliseconds to service the page after each step.
         \\                Defaults to 250.
-        \\--block-ads     Skip known third-party advertising and analytics
-        \\                requests during this fetch. Disabled by default.
         \\
         \\--wait-selector Wait for an element matching the CSS selector to appear.
         \\                Checked after --wait-until condition is met.

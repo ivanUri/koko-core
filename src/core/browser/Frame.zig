@@ -1691,13 +1691,6 @@ fn swapActiveDocument(self: *Frame) !void {
 
 pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !void {
     assert(self._load_state == .waiting, "frame.renavigate", .{});
-    // Advertising libraries sometimes target hidden iframes with a
-    // `javascript:` URL. It is not a network document navigation and should
-    // not enter the URL parser or create a new browsing realm.
-    if (std.ascii.startsWithIgnoreCase(request_url, "javascript:")) {
-        log.debug(.frame, "skip javascript URL navigation", .{ .url = request_url });
-        return;
-    }
     const session = self._session;
     try self.swapActiveDocument();
     session.cookie_jar.beginDocumentNavigation();

@@ -186,7 +186,6 @@ fn run(allocator: Allocator, main_arena: Allocator) !void {
                 .wait_until = opts.wait_until orelse .done,
                 .observe_ms = opts.observe_ms,
                 .expand_lazy = opts.expand_lazy,
-                .block_ads = opts.block_ads,
                 .max_scrolls = opts.max_scrolls,
                 .scroll_settle_ms = opts.scroll_settle_ms,
                 .wait_script = opts.wait_script,

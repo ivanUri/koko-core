@@ -46,7 +46,6 @@ pub const FetchOpts = struct {
     /// Observatory can show a live document while background work continues.
     observe_ms: u32 = 0,
     expand_lazy: bool = false,
-    block_ads: bool = false,
     max_scrolls: u32 = 80,
     scroll_settle_ms: u32 = 250,
     wait_script: ?[:0]const u8 = null,

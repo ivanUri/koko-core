@@ -957,16 +957,6 @@ pub fn request(self: *Client, req: Request) !void {
     our_req.params.request_id = self.incrReqId();
     ensureRequestAttribution(&our_req.params, our_req.ctx);
 
-    if (self.network.config.blockAds() and isAdvertisingRequest(our_req.params.url, our_req.params.resource_type)) {
-        log.debug(.http, "blocked advertising resource", .{
-            .url = our_req.params.url,
-            .resource = @tagName(our_req.params.resource_type),
-        });
-        our_req.error_callback(our_req.ctx, error.ResourceBlockedByPolicy);
-        our_req.params.deinit();
-        return;
-    }
-
     const policy = self.network.config.resourcePolicy();
     const blocked_by_policy = switch (policy) {
         .no_images => our_req.params.resource_type == .image,
@@ -1007,32 +997,6 @@ pub fn request(self: *Client, req: Request) !void {
         our_req.error_callback(our_req.ctx, err);
         return err;
     };
-}
-
-fn isAdvertisingRequest(url: []const u8, resource_type: RequestParams.ResourceType) bool {
-    const scheme_end = std.mem.indexOf(u8, url, "://") orelse return false;
-    const host_start = scheme_end + 3;
-    const host_end = std.mem.indexOfScalarPos(u8, url, host_start, '/') orelse url.len;
-    const host = url[host_start..host_end];
-    const known_ad_hosts = [_][]const u8{
-        "doubleclick.net",      "googlesyndication.com", "googletagmanager.com",
-        "google-analytics.com", "analytics.google.com",  "connect.facebook.net",
-        "pubpowerplatform.io",  "admicro.vn",            "geniee.jp",
-        "genieesspv.jp",        "gsspcln.jp",            "yads.c.yimg.jp",
-        "servg1.net",           "continejs.com",         "cloudflareinsights.com",
-    };
-    for (known_ad_hosts) |needle| {
-        if (std.ascii.indexOfIgnoreCase(host, needle) != null) return true;
-    }
-    // Keep path heuristics away from document navigations so a site's own
-    // article URL containing "ads" is never blocked.
-    if (resource_type == .document) return false;
-    const path = url[host_end..];
-    const ad_paths = [_][]const u8{ "/pagead", "/adserver", "/adsbygoogle", "/ads/", "/advert", "/analytics" };
-    for (ad_paths) |needle| {
-        if (std.ascii.indexOfIgnoreCase(path, needle) != null) return true;
-    }
-    return false;
 }
 
 /// Google search document hop via real Chrome network (HTTP/3). Completes on tick().
