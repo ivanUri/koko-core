@@ -1419,7 +1419,7 @@ fn resolveT(comptime T: type, value: *T) Resolved {
                     // can re-enter while getOrPut is active (CreepJS audio path).
                     var global = identity_finalizer.js_global;
                     v8.v8__Global__Reset(&global);
-                    page.queueIdentityRemoval(resolved_ptr_id);
+                    page.queueIdentityRemoval(identity_finalizer.identity, resolved_ptr_id);
 
                     const finalizer_ptr_id = identity_finalizer.finalizer_ptr_id;
                     const fc = page.finalizer_callbacks.get(finalizer_ptr_id) orelse return;

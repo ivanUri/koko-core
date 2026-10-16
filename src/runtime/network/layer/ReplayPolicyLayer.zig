@@ -88,6 +88,7 @@ fn request(ptr: *anyopaque, client: *Client, req: Request) anyerror!void {
             .request_id = req.params.request_id,
             .frame_id = req.params.frame_id,
             .loader_id = req.params.loader_id,
+            .topLevelNavigation = req.params.is_top_level_navigation,
             .redirect_count = 0,
             .content_type = headerValue(rule.headers, "content-type"),
         }, req.params.url, rule.status, req.params.headers, headers, req.params.body, rule.body);

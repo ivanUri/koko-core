@@ -37,6 +37,20 @@ export function renderMarkdownReport({ runId, environment, summary }) {
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 ${realSiteRows.join("\n")}
 `;
+  const policyRows = summary.groups
+    .filter((group) => group.suite === "resource-policy")
+    .map((group) => (
+      `| ${group.baseline} | ${formatNumber(metric(group, "durationMs"))} | ${formatNumber(metric(group, "responseCountAtReady"), 0)} | ${formatNumber(metric(group, "stylesheetStarted"), 0)} | ${formatNumber(metric(group, "imageStarted"), 0)} | ${formatNumber(metric(group, "scriptStarted"), 0)} | ${formatNumber(metric(group, "elementCount"), 0)} | ${formatNumber(metric(group, "textChars"), 0)} | ${formatNumber(metric(group, "scriptRan"), 0)} |`
+    ));
+  const policySection = policyRows.length === 0 ? "" : `
+## Resource policy
+
+Same local document. \`full\` remains the product default. Stylesheet, image, and script columns count transfers started before DOMContentLoaded.
+
+| Policy | DCL ms | Responses at DCL | CSS started | Images started | Scripts started | Elements | Text chars | Script ran |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+${policyRows.join("\n")}
+`;
   const networkRows = summary.groups
     .filter((group) => group.suite === "network")
     .map((group) => (
@@ -94,6 +108,7 @@ Chromium: ${environment.chromium.version ?? "not selected"}
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 ${rows.join("\n")}
 ${realSiteSection}
+${policySection}
 ${networkSection}
 ${scaleSection}
 ${distributionSection}

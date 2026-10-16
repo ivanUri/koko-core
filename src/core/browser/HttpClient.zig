@@ -663,11 +663,77 @@ pub fn hasLiveTransferWithCtx(self: *const Client, ctx: *const anyopaque) bool {
         transferWithCtxInQueue(self.queue, ctx);
 }
 
+/// Stop the transfer whose request ctx is `ctx`. No-op when it already finished.
+/// Used by fetch when its AbortSignal fires before headers arrive.
+pub fn abortTransferWithCtx(self: *Client, ctx: *anyopaque, err: anyerror) void {
+    if (abortMatchingInConnList(self.in_use, ctx, err)) return;
+    if (abortMatchingInConnList(self.ready_queue, ctx, err)) return;
+    if (abortMatchingInQueue(&self.queue, ctx, err)) return;
+    abortMatchingChromeJob(self, ctx, err);
+}
+
+fn requestMatchesCtx(req: *const Request, ctx: *const anyopaque) bool {
+    if (req.ctx == ctx) return true;
+    const owner = req.owner_ctx orelse return false;
+    return owner == ctx;
+}
+
+fn abortMatchingInQueue(q: *std.DoublyLinkedList, ctx: *anyopaque, err: anyerror) bool {
+    var n = q.first;
+    while (n) |node| {
+        const next = node.next;
+        const transfer: *Transfer = @fieldParentPtr("_node", node);
+        if (requestMatchesCtx(&transfer.req, ctx)) {
+            q.remove(node);
+            transfer.abort(err);
+            return true;
+        }
+        n = next;
+    }
+    return false;
+}
+
+fn abortMatchingInConnList(list: std.DoublyLinkedList, ctx: *anyopaque, err: anyerror) bool {
+    var n = list.first;
+    while (n) |node| {
+        const next = node.next;
+        const conn: *http.Connection = @fieldParentPtr("node", node);
+        switch (conn.transport) {
+            .http => |transfer| {
+                if (requestMatchesCtx(&transfer.req, ctx)) {
+                    transfer.abort(err);
+                    return true;
+                }
+            },
+            .websocket, .none => {},
+        }
+        n = next;
+    }
+    return false;
+}
+
+fn abortMatchingChromeJob(self: *Client, ctx: *anyopaque, err: anyerror) void {
+    var n = self.chrome_jobs.first;
+    while (n) |node| {
+        const next = node.next;
+        const job: *ChromeJob = @fieldParentPtr("node", node);
+        if (requestMatchesCtx(&job.req, ctx)) {
+            self.chrome_jobs.remove(node);
+            if (self.http_active > 0) self.http_active -= 1;
+            job.async_job.aborted = true;
+            notifyChromeJobAbort(&job.req, err);
+            job.deinit(self);
+            return;
+        }
+        n = next;
+    }
+}
+
 fn transferWithCtxInQueue(list: std.DoublyLinkedList, ctx: *const anyopaque) bool {
     var n = list.first;
     while (n) |node| : (n = node.next) {
         const transfer: *Transfer = @fieldParentPtr("_node", node);
-        if (transfer.req.ctx == ctx) return true;
+        if (requestMatchesCtx(&transfer.req, ctx)) return true;
     }
     return false;
 }
@@ -678,7 +744,7 @@ fn transferWithCtxInConnList(list: std.DoublyLinkedList, ctx: *const anyopaque) 
         const conn: *http.Connection = @fieldParentPtr("node", node);
         switch (conn.transport) {
             .http => |transfer| {
-                if (transfer.req.ctx == ctx) return true;
+                if (requestMatchesCtx(&transfer.req, ctx)) return true;
             },
             .websocket, .none => {},
         }
@@ -954,6 +1020,7 @@ fn ensureRequestAttribution(params: *RequestParams, ctx: *anyopaque) void {
 pub fn request(self: *Client, req: Request) !void {
     // Assign Request Id.
     var our_req = req;
+    if (our_req.owner_ctx == null) our_req.owner_ctx = our_req.ctx;
     our_req.params.request_id = self.incrReqId();
     ensureRequestAttribution(&our_req.params, our_req.ctx);
 
@@ -1002,6 +1069,7 @@ pub fn request(self: *Client, req: Request) !void {
 /// Google search document hop via real Chrome network (HTTP/3). Completes on tick().
 pub fn requestChromeTransport(self: *Client, req: Request) !void {
     var our_req = req;
+    if (our_req.owner_ctx == null) our_req.owner_ctx = our_req.ctx;
     our_req.params.request_id = self.incrReqId();
     ensureRequestAttribution(&our_req.params, our_req.ctx);
 
@@ -1043,6 +1111,14 @@ const ChromeJob = struct {
     }
 };
 
+fn notifyChromeJobAbort(req: *Request, err: anyerror) void {
+    if (req.shutdown_callback) |cb| {
+        cb(req.ctx);
+    } else {
+        req.error_callback(req.ctx, err);
+    }
+}
+
 fn abortChromeJobs(self: *Client, comptime abort_all: bool, frame_id: u32, opts: AbortOpts) void {
     var n = self.chrome_jobs.first;
     while (n) |node| {
@@ -1053,21 +1129,13 @@ fn abortChromeJobs(self: *Client, comptime abort_all: bool, frame_id: u32, opts:
             self.chrome_jobs.remove(node);
             self.http_active -= 1;
             job.async_job.aborted = true;
-            if (job.req.shutdown_callback) |cb| {
-                cb(job.req.ctx);
-            } else {
-                job.req.error_callback(job.req.ctx, error.Abort);
-            }
+            notifyChromeJobAbort(&job.req, error.Abort);
             job.deinit(self);
         } else if (params.frame_id == frame_id and shouldAbortTransfer(params, opts)) {
             self.chrome_jobs.remove(node);
             self.http_active -= 1;
             job.async_job.aborted = true;
-            if (job.req.shutdown_callback) |cb| {
-                cb(job.req.ctx);
-            } else {
-                job.req.error_callback(job.req.ctx, error.Abort);
-            }
+            notifyChromeJobAbort(&job.req, error.Abort);
             job.deinit(self);
         }
         n = next;
@@ -2163,6 +2231,10 @@ pub const Request = struct {
     params: RequestParams,
     // arbitrary data that can be associated with this request
     ctx: *anyopaque = undefined,
+    /// Caller ctx captured before network layers wrap `ctx`. Cache and
+    /// interception replace `ctx` with their own state; fetch abort matches
+    /// this original pointer so the in-flight transfer can still be stopped.
+    owner_ctx: ?*anyopaque = null,
 
     start_callback: ?StartCallback = null,
     header_callback: HeaderCallback,
@@ -2621,7 +2693,14 @@ pub const Transfer = struct {
             } else {
                 try conn.setGetMode();
             }
-            if (client.network.config.profile.mode == .antidetect) {
+            // Native profiles carry a captured Chrome UA. curl-impersonate's
+            // default UA belongs to its transport target (which may lag the
+            // captured Chrome build), so pin the request UA for both opt-in
+            // browser-backed modes. The embedded `koko` mode keeps its
+            // existing transport behavior unchanged.
+            if (client.network.config.profile.mode == .antidetect or
+                client.network.config.profile.mode == .native)
+            {
                 try conn.setUserAgent(client.getUserAgent());
             }
             if (http.WireHeaderCapture.shouldCapture(req.params.url, req.params.resource_type)) {
@@ -2686,6 +2765,7 @@ pub const Transfer = struct {
             .request_id = self.req.params.request_id,
             .frame_id = self.req.params.frame_id,
             .loader_id = self.req.params.loader_id,
+            .topLevelNavigation = self.req.params.is_top_level_navigation,
             .redirect_count = self._redirect_count,
             .content_type = content_type,
         }, failed, request_headers, &response_headers, self.req.params.body, self._stream_buffer.items);

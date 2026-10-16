@@ -1582,6 +1582,29 @@ test "Selector: Parser.parseNthPattern" {
     }
 }
 
+test "Selector: Parser HTML tag aliases" {
+    defer testing.reset();
+    const arena = testing.arena_allocator;
+
+    const anchors = try Parser.parseList(arena, "a");
+    try testing.expectEqual(Node.Element.Tag.anchor, anchors[0].first.parts[0].tag);
+
+    const anchor_name = try Parser.parseList(arena, "anchor");
+    try testing.expectEqualStrings("anchor", anchor_name[0].first.parts[0].tag_name);
+
+    const quotes = try Parser.parseList(arena, "q");
+    try testing.expectEqual(Node.Element.Tag.quote, quotes[0].first.parts[0].tag);
+
+    const quote_name = try Parser.parseList(arena, "quote");
+    try testing.expectEqualStrings("quote", quote_name[0].first.parts[0].tag_name);
+
+    const dirs = try Parser.parseList(arena, "dir");
+    try testing.expectEqual(Node.Element.Tag.directory, dirs[0].first.parts[0].tag);
+
+    const directory_name = try Parser.parseList(arena, "directory");
+    try testing.expectEqualStrings("directory", directory_name[0].first.parts[0].tag_name);
+}
+
 test "Selector: Parser.attributeValue" {
     defer testing.reset();
     const arena = testing.arena_allocator;

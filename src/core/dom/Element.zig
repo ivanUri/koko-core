@@ -3076,12 +3076,17 @@ pub const Tag = enum {
     video,
     unknown,
 
-    // If the tag is "unknown", we can't use the optimized tag matching, but
-    // need to fallback to the actual tag name
+    // HTML local names, not the Zig enum names. "a"/"q"/"dir" are .anchor,
+    // .quote, and .directory. The enum spellings themselves are not elements,
+    // so they stay on the string path and must not match those tags.
     pub fn parseForMatch(lower: []const u8) ?Tag {
+        if (std.mem.eql(u8, lower, "a")) return .anchor;
+        if (std.mem.eql(u8, lower, "q")) return .quote;
+        if (std.mem.eql(u8, lower, "dir")) return .directory;
+
         const tag = std.meta.stringToEnum(Tag, lower) orelse return null;
         return switch (tag) {
-            .unknown, .custom => null,
+            .unknown, .custom, .anchor, .quote, .directory => null,
             else => tag,
         };
     }
@@ -3351,4 +3356,17 @@ pub const Build = struct {
 
 test "WebApi: Element scroll dimensions reflect visible content" {
     try testing.htmlRunner("element/scroll_dimensions.html", .{});
+}
+
+test "Element: parseForMatch HTML tag aliases" {
+    try testing.expectEqual(Tag.anchor, Tag.parseForMatch("a").?);
+    try testing.expect(Tag.parseForMatch("anchor") == null);
+    try testing.expectEqual(Tag.quote, Tag.parseForMatch("q").?);
+    try testing.expect(Tag.parseForMatch("quote") == null);
+    try testing.expectEqual(Tag.directory, Tag.parseForMatch("dir").?);
+    try testing.expect(Tag.parseForMatch("directory") == null);
+    try testing.expectEqual(Tag.div, Tag.parseForMatch("div").?);
+    try testing.expectEqual(Tag.blockquote, Tag.parseForMatch("blockquote").?);
+    try testing.expect(Tag.parseForMatch("unknown") == null);
+    try testing.expect(Tag.parseForMatch("custom") == null);
 }

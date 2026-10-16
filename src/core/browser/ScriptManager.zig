@@ -107,6 +107,9 @@ pub fn addFromElement(self: *ScriptManager, comptime from_parser: bool, script_e
     if (element.getAttributeSafe(comptime .wrap("nomodule")) != null) {
         // these scripts should only be loaded if we don't support modules
         // but since we do support modules, we can just skip them.
+        // `_executed` means the element has been prepared, so the head scan
+        // does not keep retrying a script that will not run.
+        script_element._executed = true;
         return;
     }
 
@@ -129,8 +132,10 @@ pub fn addFromElement(self: *ScriptManager, comptime from_parser: bool, script_e
         }
 
         // "type" could be anything, but only the above are ones we need to process.
-        // Common other ones are application/json, application/ld+json, text/template
-
+        // Common other ones are application/json, application/ld+json, text/template.
+        // Mark the element prepared so a data block in `<head>` does not pin
+        // the script scan.
+        script_element._executed = true;
         return;
     };
 

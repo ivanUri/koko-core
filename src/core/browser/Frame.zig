@@ -38,6 +38,7 @@ const CData = @import("../webapi/CData.zig");
 const Element = @import("../dom/Element.zig");
 const HtmlElement = @import("../webapi/element/Html.zig");
 const Window = @import("../webapi/Window.zig");
+const HTMLDocument = @import("../webapi/HTMLDocument.zig");
 const Location = @import("../webapi/Location.zig");
 const Document = @import("../dom/Document.zig");
 const ShadowRoot = @import("../webapi/ShadowRoot.zig");
@@ -255,6 +256,16 @@ _lazy_images_activation_scheduled: bool = false,
 /// Parser callbacks re-check realm after CDP poll; this flag is for diagnostics
 /// and for call sites that must not assume parse is idle.
 _document_parse_active: bool = false,
+/// Last `<head>` node whose parser scripts are already prepared. The next
+/// scan resumes after this node. A script still waiting for attributes stays
+/// at the cursor so it is retried without walking the settled prefix again.
+_head_activation_cursor: ?*Node = null,
+/// First head script that could not be prepared yet. Parser callbacks after
+/// this point must not rescan the head until this script becomes runnable.
+/// The pointer is valid for the document arena and is cleared on replacement.
+_head_activation_blocker: ?*Element.Html.Script = null,
+/// Re-entrant parser callbacks are already inside the head scan.
+_head_activation_active: bool = false,
 /// Throttle inbound CDP socket polls during long sync parse / script eval.
 _cdp_poll_counter: u16 = 0,
 /// Heap capacity for text nodes grown by the HTML parser (`appendParserAdjacentText`).
@@ -1695,6 +1706,9 @@ fn swapActiveDocument(self: *Frame) !void {
     self.document = new_doc;
     self.window._document = new_doc;
     new_doc._frame = self;
+    self._head_activation_cursor = null;
+    self._head_activation_blocker = null;
+    self._head_activation_active = false;
 }
 
 pub fn navigate(self: *Frame, request_url: [:0]const u8, opts: NavigateOpts) !void {
@@ -2488,8 +2502,21 @@ fn activateDeferredParserResources(self: *Frame) void {
     var tw = @import("../dom/TreeWalker.zig").Full.Elements.init(root, .{});
     while (tw.next()) |el| {
         if (!navDeliverable(self)) return;
-        // Scripts/iframes already ran at parser insertion points.
-        if (el.is(Element.Html.Script) != null or el.is(IFrame) != null) continue;
+        // Parser-inserted scripts normally run at their insertion point. Some
+        // documents, however, reach the deferred parser path with a head
+        // script still unstarted (notably pages whose bootstrap chunks live
+        // in <head>). Run only those scripts here; ScriptManager's _executed
+        // guard keeps already-started scripts from running twice.
+        if (el.is(Element.Html.Script)) |script| {
+            if (!script._executed) {
+                self.nodeIsReady(false, el.asNode()) catch |err| {
+                    log.warn(.frame, "post-parse script activate", .{ .err = err, .url = self.url });
+                };
+            }
+            continue;
+        }
+        // Iframes already ran at parser insertion points.
+        if (el.is(IFrame) != null) continue;
         if (el.is(Element.Html.Style) == null and el.is(Element.Html.Link) == null and el.is(Element.Html.Image) == null) {
             continue;
         }
@@ -2824,7 +2851,24 @@ pub fn settleIframePromisesNow(self: *Frame) void {
 const IframeLoadDispatch = enum { same_turn, deferred };
 
 fn dispatchIframeLoadNow(self: *Frame, iframes: []const *IFrame, comptime when: IframeLoadDispatch) !void {
-    for (iframes) |iframe| {
+    const delivery_arena = try self._session.getArena(.tiny, "Frame.iframeLoadDelivery");
+    defer self._session.releaseArena(delivery_arena);
+
+    // Event handlers can reset call_arena and mutate either iframe queue.
+    // Snapshot the batch in an independent arena before entering user code.
+    const batch = try delivery_arena.dupe(*IFrame, iframes);
+    const delivery_owner = self.js.execution.captureTaskOwner();
+
+    // Count before dispatching user code. Completion belongs to the queued
+    // load, not to iframe state after a re-entrant callback returns.
+    var completed: usize = 0;
+    for (batch) |iframe| {
+        if (iframe._window == null) continue;
+        completed += 1;
+    }
+
+    for (batch) |iframe| {
+        if (self.js.execution.isTaskOwnerStale(delivery_owner)) break;
         if (iframe._window == null) continue;
         var invoked_onload = false;
 
@@ -2875,6 +2919,8 @@ fn dispatchIframeLoadNow(self: *Frame, iframes: []const *IFrame, comptime when: 
             log.warn(.js, "iframe onload", .{ .err = err, .url = iframe._src });
         };
 
+        if (self.js.execution.isTaskOwnerStale(delivery_owner)) break;
+
         if (comptime when == .same_turn) {
             iframe._sync_load_queued = false;
             if (invoked_onload) iframe._sync_onload_dispatched = true;
@@ -2892,10 +2938,6 @@ fn dispatchIframeLoadNow(self: *Frame, iframes: []const *IFrame, comptime when: 
         self.scheduleDeferredMacrotaskPump(0) catch {};
     }
 
-    var completed: usize = 0;
-    for (iframes) |iframe| {
-        if (iframe._window != null) completed += 1;
-    }
     for (0..completed) |_| {
         self.pendingLoadCompleted();
     }
@@ -3776,6 +3818,97 @@ pub fn isGoingAway(self: *const Frame) bool {
     return parent.isGoingAway();
 }
 
+fn nodeWithin(node: *const Node, root: *const Node) bool {
+    var current = node;
+    while (true) {
+        if (current == root) return true;
+        current = current._parent orelse return false;
+    }
+}
+
+fn nextWithin(current: *Node, root: *Node) ?*Node {
+    if (current.firstChild()) |child| return child;
+    var node = current;
+    while (node != root) {
+        if (node.nextSibling()) |sibling| return sibling;
+        node = node._parent orelse return null;
+    }
+    return null;
+}
+
+fn activatePendingHeadScripts(self: *Frame, before: *Element.Html.Script) void {
+    if (self._head_activation_active) return;
+    const html_doc = self.document.is(HTMLDocument) orelse return;
+    const head = html_doc.getHead() orelse return;
+    const root = head.asNode();
+
+    if (self._head_activation_blocker) |blocker| {
+        if (!nodeWithin(blocker.asNode(), root)) {
+            self._head_activation_blocker = null;
+            self._head_activation_cursor = null;
+        } else if (blocker != before and !blocker._executed) {
+            // Nothing after the blocker can become parser-runnable yet. The
+            // callback that completes the blocker will retry from the cursor.
+            return;
+        } else if (blocker._executed) {
+            self._head_activation_blocker = null;
+        }
+    }
+
+    self._head_activation_active = true;
+    defer self._head_activation_active = false;
+
+    var last_settled: ?*Node = self._head_activation_cursor;
+    if (last_settled) |cursor| {
+        if (!nodeWithin(cursor, root)) last_settled = null;
+    }
+    var blocked = false;
+    var node: ?*Node = if (last_settled) |cursor| nextWithin(cursor, root) else root;
+    while (node) |current| {
+        if (current.is(Element)) |el| {
+            if (el.is(Element.Html.Script)) |pending| {
+                if (pending == before) break;
+                if (!pending._executed) {
+                    self.scriptAddedCallback(true, pending) catch |err| {
+                        log.warn(.frame, "head script activate", .{ .err = err, .url = self.url });
+                    };
+                }
+                if (!pending._executed) {
+                    blocked = true;
+                    self._head_activation_blocker = pending;
+                    break;
+                }
+            }
+        }
+        if (!blocked) last_settled = current;
+        node = nextWithin(current, root);
+    }
+    // A script that runs during this scan can clear or replace the document.
+    // Only keep a cursor that still belongs to the head we walked.
+    const live_doc = self.document.is(HTMLDocument) orelse {
+        self._head_activation_cursor = null;
+        self._head_activation_blocker = null;
+        return;
+    };
+    const live_head = live_doc.getHead() orelse {
+        self._head_activation_cursor = null;
+        self._head_activation_blocker = null;
+        return;
+    };
+    const live_root = live_head.asNode();
+    if (live_root != root) {
+        self._head_activation_cursor = null;
+        self._head_activation_blocker = null;
+        return;
+    }
+    if (!blocked) self._head_activation_blocker = null;
+    if (last_settled) |settled| {
+        self._head_activation_cursor = if (nodeWithin(settled, live_root)) settled else null;
+    } else {
+        self._head_activation_cursor = null;
+    }
+}
+
 pub fn scriptAddedCallback(self: *Frame, comptime from_parser: bool, script: *Element.Html.Script) !void {
     if (self.isGoingAway()) {
         // if we're planning on navigating to another frame, don't run this script
@@ -3787,6 +3920,11 @@ pub fn scriptAddedCallback(self: *Frame, comptime from_parser: bool, script: *El
     }
 
     if (comptime from_parser) {
+        // A parser callback can reach a body script before html5ever has
+        // surfaced the attributes of earlier head scripts. Make those head
+        // scripts run first so webpack-style bootstraps keep document order.
+        self.activatePendingHeadScripts(script);
+
         // parser-inserted scripts have force-async set to false, but only if
         // they have src or non-empty content
         // html5ever populates the DOM attribute directly; `_src` is primarily
@@ -3818,6 +3956,8 @@ fn clearDocumentChildren(self: *Frame) void {
         self.removeNode(doc_node, child, .{ .will_be_reconnected = false });
     }
     self.document._ready_state = .loading;
+    self._head_activation_cursor = null;
+    self._head_activation_blocker = null;
 }
 
 fn loadIframeSrcdoc(self: *Frame, iframe: *IFrame, srcdoc: []const u8) !void {
@@ -7640,6 +7780,10 @@ test "Frame: removing iframe aborts child fetch and XHR callback chains" {
     try testing.htmlRunner("regression/iframe_detach_aborts_fetch_xhr.html", .{});
 }
 
+test "Frame: removing iframe tears down a pending fetch stream" {
+    try testing.htmlRunner("regression/iframe_detach_pending_fetch_stream.html", .{});
+}
+
 test "Frame: fetch and XHR callbacks may schedule navigation without reentrant teardown" {
     try testing.htmlRunner("regression/network_callback_schedules_iframe_navigation.html", .{});
 }
@@ -7658,6 +7802,50 @@ test "Frame: custom-element callbacks may mutate their insertion safely" {
 
 test "Frame: worker and MessagePort tasks cannot enter a replaced iframe realm" {
     try testing.htmlRunner("regression/iframe_worker_port_stale_realm.html", .{});
+}
+
+test "Frame: iframe and its worker share the parent navigator persona" {
+    try testing.htmlRunner("regression/iframe_worker_navigator_consistency.html", .{});
+}
+
+test "Frame: iframe name reflects attribute and script-assigned window name" {
+    try testing.htmlRunner("regression/iframe_name_reflection.html", .{});
+}
+
+test "Frame: iframe srcdoc reflects and exposes child markup" {
+    try testing.htmlRunner("regression/iframe_srcdoc_reflection.html", .{});
+}
+
+test "Frame: sandboxed iframe exposes an opaque origin" {
+    try testing.htmlRunner("regression/iframe_sandbox_opaque_origin.html", .{});
+}
+
+test "Frame: sandbox allow-same-origin preserves child DOM access" {
+    try testing.htmlRunner("regression/iframe_sandbox_same_origin.html", .{});
+}
+
+test "Frame: srcdoc iframe has an about:srcdoc location" {
+    try testing.htmlRunner("regression/iframe_srcdoc_location.html", .{});
+}
+
+test "Frame: multiple iframe children preserve insertion order" {
+    try testing.htmlRunner("regression/iframe_multiple_children_order.html", .{});
+}
+
+test "Frame: iframe child DOM remains isolated from its parent" {
+    try testing.htmlRunner("regression/iframe_child_dom_isolation.html", .{});
+}
+
+test "Frame: iframe postMessage delivers to a matching target origin" {
+    try testing.htmlRunner("regression/iframe_target_origin_filter.html", .{});
+}
+
+test "Frame: iframe receives complete postMessage event metadata" {
+    try testing.htmlRunner("regression/iframe_child_message_event.html", .{});
+}
+
+test "Frame: iframe publishes a ready child document" {
+    try testing.htmlRunner("regression/iframe_load_event_once.html", .{});
 }
 
 test "Frame: slotchange delivery stops after callback detaches its realm" {
@@ -7750,6 +7938,10 @@ test "Frame: ReadableStream closes only after queued chunks drain" {
 
 test "Frame: fetch resolves on headers and streams body chunks" {
     try testing.htmlRunner("regression/fetch_resolves_on_headers_streaming.html", .{});
+}
+
+test "Frame: scrollIntoViewIfNeeded keeps an offscreen element in the viewport" {
+    try testing.htmlRunner("regression/scroll_into_view_if_needed.html", .{});
 }
 
 test "Frame: DOM wrappers preserve object identity across traversal" {

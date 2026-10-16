@@ -45,10 +45,15 @@ extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, override: c_int) c_i
 
 pub const Mode = enum {
     koko,
+    /// A profile captured from a real browser and replayed without any
+    /// antidetect-only surface overrides. Native profiles are opt-in so the
+    /// existing `chrome-current` antidetect benchmark remains unchanged.
+    native,
     antidetect,
 
     pub fn parse(raw: []const u8) ?Mode {
         if (std.mem.eql(u8, raw, "koko")) return .koko;
+        if (std.mem.eql(u8, raw, "native")) return .native;
         if (std.mem.eql(u8, raw, "antidetect")) return .antidetect;
         return null;
     }
@@ -1313,6 +1318,11 @@ test "ProfileStore: load koko profile" {
     try testing.expect(profile.persona.network.brands.len >= 1);
 }
 
+test "ProfileStore: native mode parses as a non-antidetect profile" {
+    try testing.expectEqual(Mode.native, Mode.parse("native").?);
+    try testing.expect(Mode.native != .antidetect);
+}
+
 test "ProfileStore: load chrome antidetect profile" {
     var paths = try testPaths(std.testing.allocator, "huynew");
     defer paths.deinit();
@@ -1320,6 +1330,29 @@ test "ProfileStore: load chrome antidetect profile" {
     defer profile.deinit();
     try testing.expectEqual(Mode.antidetect, profile.mode);
     try testing.expect(std.mem.indexOf(u8, profile.persona.network.user_agent, "Chrome") != null);
+}
+
+test "ProfileStore: load native Chrome profile" {
+    var paths = try testPaths(std.testing.allocator, "chrome-macos-native");
+    defer paths.deinit();
+    var profile = try resolve(&paths);
+    defer profile.deinit();
+    try testing.expectEqual(Mode.native, profile.mode);
+    try testing.expectEqual(BrowserFamily.chrome, profile.persona.family);
+    // Chrome 151 uses the shipped chrome150 logical transport target until a
+    // dedicated curl-impersonate profile is available.
+    try testing.expectEqual(TransportProfile.Target.chrome150, profile.persona.network.transport_target);
+    try testing.expect(std.mem.indexOf(u8, profile.persona.network.user_agent, "Chrome/151") != null);
+    try testing.expectEqualStrings("MacIntel", profile.persona.identity.navigator_platform);
+    try testing.expectEqualStrings("Asia/Saigon", profile.persona.identity.timezone);
+}
+
+test "ProfileStore: chrome-current remains antidetect" {
+    var paths = try testPaths(std.testing.allocator, "chrome-current");
+    defer paths.deinit();
+    var profile = try resolve(&paths);
+    defer profile.deinit();
+    try testing.expectEqual(Mode.antidetect, profile.mode);
 }
 
 test "ProfileStore: load captured Chrome profile with transport" {

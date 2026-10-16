@@ -46,7 +46,7 @@ pub fn main(init: std.process.Init) !void {
     const gpa = if (builtin.mode == .Debug) gpa_instance.allocator() else std.heap.c_allocator;
 
     defer if (builtin.mode == .Debug) {
-        if (gpa_instance.detectLeaks()) std.posix.exit(1);
+        if (gpa_instance.detectLeaks() != 0) std.process.exit(1);
     };
 
     // arena for main-specific allocations

@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = { assertOk: () => document.body.id === "pass", printTimeoutState: () => console.log(document.body.textContent) };
+
+const iframe = document.createElement("iframe");
+iframe.srcdoc = "<!doctype html><body>location</body>";
+document.body.appendChild(iframe);
+
+const href = iframe.contentWindow.location.href;
+const result = {
+  hrefIsSrcdoc: href === "about:srcdoc",
+  childDocumentMatchesLocation: iframe.contentWindow.document === iframe.contentDocument,
+  childLocationIsNotParent: iframe.contentWindow.location !== window.location,
+};
+if (Object.values(result).every(Boolean)) {
+  document.body.id = "pass";
+  document.body.textContent = "pass";
+} else {
+  document.body.textContent = JSON.stringify({ result, href });
+}
+</script>

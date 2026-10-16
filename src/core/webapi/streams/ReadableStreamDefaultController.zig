@@ -64,14 +64,26 @@ pub fn addPendingRead(self: *ReadableStreamDefaultController) !js.Promise {
 }
 
 pub fn enqueue(self: *ReadableStreamDefaultController, chunk: Chunk) !void {
+    return self.enqueueInternal(chunk, false);
+}
+
+/// Enqueue a chunk whose backing storage is already owned by the execution
+/// arena. Network producers use this path after allocating their chunk there;
+/// copying it into the controller queue again only increases peak memory and
+/// does not improve lifetime safety.
+pub fn enqueueOwned(self: *ReadableStreamDefaultController, chunk: Chunk) !void {
+    return self.enqueueInternal(chunk, true);
+}
+
+fn enqueueInternal(self: *ReadableStreamDefaultController, chunk: Chunk, owned: bool) !void {
     if (self._stream._state != .readable or self._stream._close_requested) {
         return error.StreamNotReadable;
     }
 
     const exec = self._execution;
     if (self._pending_reads.items.len == 0) {
-        const chunk_copy = try chunk.dupe(self._arena);
-        return self._queue.append(self._arena, chunk_copy);
+        const queued_chunk = if (owned) chunk else try chunk.dupe(self._arena);
+        return self._queue.append(self._arena, queued_chunk);
     }
 
     // I know, this is ouch! But we expect to have very few (if any)

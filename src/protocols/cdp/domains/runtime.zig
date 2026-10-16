@@ -16,6 +16,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const CDP = @import("../CDP.zig");
+const io = @import("../../../support/io.zig");
 
 pub fn processMessage(cmd: *CDP.Command) !void {
     const action = std.meta.stringToEnum(enum {
@@ -80,10 +81,12 @@ fn logInspector(cmd: *CDP.Command, action: anytype) !void {
     const id = cmd.input.id orelse return error.RequiredId;
     const name = try std.fmt.allocPrint(cmd.arena, "id_{d}.js", .{id});
 
-    var dir = try std.fs.cwd().makeOpenPath(".zig-cache/tmp", .{});
-    defer dir.close();
+    const process_io = io.get();
+    try std.Io.Dir.cwd().createDirPath(process_io, ".zig-cache/tmp");
+    var dir = try std.Io.Dir.cwd().openDir(process_io, ".zig-cache/tmp", .{});
+    defer dir.close(process_io);
 
-    const f = try dir.createFile(name, .{});
-    defer f.close();
-    try f.writeAll(script);
+    const f = try dir.createFile(process_io, name, .{});
+    defer f.close(process_io);
+    try f.writeStreamingAll(process_io, script);
 }

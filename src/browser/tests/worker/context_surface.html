@@ -1,0 +1,91 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+const parentNavigator = snapshotNavigator(navigator);
+const workerUrl = URL.createObjectURL(new Blob([
+  `
+    onmessage = function () {
+      const n = navigator;
+      postMessage({
+        selfIsGlobal: self === globalThis,
+        windowIsUndefined: typeof window === "undefined",
+        documentIsUndefined: typeof document === "undefined",
+        navigator: {
+          userAgent: n.userAgent,
+          language: n.language,
+          languages: Array.from(n.languages),
+          platform: n.platform,
+          hardwareConcurrency: n.hardwareConcurrency,
+          deviceMemory: n.deviceMemory,
+          onLine: n.onLine,
+        },
+        location: {
+          protocol: location.protocol,
+          pathname: location.pathname,
+        },
+      });
+    };
+  `
+], { type: "text/javascript" }));
+
+const worker = new Worker(workerUrl);
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+worker.onerror = (event) => fail(`worker error: ${event.message || "unknown"}`);
+worker.onmessage = (event) => {
+  const value = event.data;
+  const result = {
+    selfIsGlobal: value.selfIsGlobal === true,
+    windowIsUndefined: value.windowIsUndefined === true,
+    documentIsUndefined: value.documentIsUndefined === true,
+    navigatorMatchesParent: sameNavigator(parentNavigator, value.navigator),
+    locationIsExposed: typeof value.location?.protocol === "string" &&
+      typeof value.location?.pathname === "string",
+  };
+
+  if (Object.values(result).every(Boolean)) {
+    worker.terminate();
+    URL.revokeObjectURL(workerUrl);
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+  } else {
+    fail(JSON.stringify({ result, value, parentNavigator }));
+  }
+};
+
+worker.postMessage("check");
+
+function snapshotNavigator(n) {
+  return {
+    userAgent: n.userAgent,
+    language: n.language,
+    languages: Array.from(n.languages),
+    platform: n.platform,
+    hardwareConcurrency: n.hardwareConcurrency,
+    deviceMemory: n.deviceMemory,
+    onLine: n.onLine,
+  };
+}
+
+function sameNavigator(a, b) {
+  return a && b &&
+    a.userAgent === b.userAgent &&
+    a.language === b.language &&
+    a.languages.join(",") === b.languages.join(",") &&
+    a.platform === b.platform &&
+    a.hardwareConcurrency === b.hardwareConcurrency &&
+    a.deviceMemory === b.deviceMemory &&
+    a.onLine === b.onLine;
+}
+
+function fail(message) {
+  worker.terminate();
+  URL.revokeObjectURL(workerUrl);
+  document.body.id = "fail";
+  document.body.textContent = message;
+}
+</script>

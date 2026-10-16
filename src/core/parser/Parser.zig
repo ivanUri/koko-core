@@ -378,6 +378,16 @@ fn _addAttrsIfMissingCallback(self: *Parser, node: *Node, attributes: h5e.Attrib
             frame.iframeAddedCallback(iframe) catch |err| {
                 log.err(.frame, "iframe addAttrs", .{ .err = err, .url = frame.url });
             };
+        } else if (node.is(Element.Html.Script)) |script| {
+            // html5ever may deliver a parser-inserted element's attributes
+            // after its pop/nodeComplete callback. For external scripts in
+            // <head>, nodeComplete therefore sees no `src` and leaves the
+            // script unstarted. Start it as soon as the attributes are
+            // available so parser order is preserved; ScriptManager's
+            // `_executed` guard makes this safe for scripts already started.
+            if (!script._executed) {
+                try frame.scriptAddedCallback(true, script);
+            }
         }
     }
 }

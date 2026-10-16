@@ -42,6 +42,11 @@ const IS_DEBUG = builtin.mode == .Debug;
 // For now, Session still holds a single Page.
 const Page = @This();
 
+const PendingIdentityRemoval = struct {
+    identity: *js.Identity,
+    resolved_ptr_id: usize,
+};
+
 const TerminalOwner = struct {
     ctx: *anyopaque,
     release: *const fn (*anyopaque, *Page) void,
@@ -71,7 +76,7 @@ identity: js.Identity = .{},
 
 // Zig ptr ids queued by V8 weak callbacks. identity_map is not mutated inside
 // weak callbacks (re-entrant GC during getOrPut would corrupt the table).
-pending_identity_removals: std.ArrayList(usize) = .empty,
+pending_identity_removals: std.ArrayList(PendingIdentityRemoval) = .empty,
 
 // Finalizer callbacks for Zig instances exposed to v8 in this Page. Keyed by
 // Zig instance ptr. The backing FinalizerCallback.Identity structs come from
@@ -168,15 +173,18 @@ pub fn init(self: *Page, session: *Session, frame_id: u32) !void {
     try Frame.init(&self.frame, frame_id, self, null);
 }
 
-pub fn queueIdentityRemoval(self: *Page, resolved_ptr_id: usize) void {
-    self.pending_identity_removals.append(self.identity_arena, resolved_ptr_id) catch {};
+pub fn queueIdentityRemoval(self: *Page, identity: *js.Identity, resolved_ptr_id: usize) void {
+    self.pending_identity_removals.append(self.identity_arena, .{
+        .identity = identity,
+        .resolved_ptr_id = resolved_ptr_id,
+    }) catch {};
 }
 
 pub fn flushPendingIdentityRemovals(self: *Page) void {
     if (self.pending_identity_removals.items.len == 0) return;
-    for (self.pending_identity_removals.items) |ptr_id| {
+    for (self.pending_identity_removals.items) |removal| {
         // Global was already reset in the V8 weak callback; drop the stale entry.
-        _ = self.identity.identity_map.remove(ptr_id);
+        _ = removal.identity.identity_map.remove(removal.resolved_ptr_id);
     }
     self.pending_identity_removals.clearRetainingCapacity();
 }
@@ -187,6 +195,18 @@ pub fn flushPendingIdentityRemovals(self: *Page) void {
 /// destroyContext: their weak callbacks own and free the nodes once `done` is
 /// set, so leaving one in the FinalizerCallback chain creates a dangling link.
 pub fn shutdownIdentity(self: *Page, identity: *js.Identity) void {
+    // Weak callbacks may have queued removals for this secondary identity.
+    // Remove those records before its arena is released; otherwise the page
+    // would retain a pointer into a destroyed WorkerGlobalScope identity.
+    var i: usize = 0;
+    while (i < self.pending_identity_removals.items.len) {
+        if (self.pending_identity_removals.items[i].identity == identity) {
+            _ = self.pending_identity_removals.swapRemove(i);
+        } else {
+            i += 1;
+        }
+    }
+
     var fc_it = self.finalizer_callbacks.valueIterator();
     while (fc_it.next()) |fc_ptr| {
         retireFinalizerIdentityNodes(fc_ptr.*, identity);

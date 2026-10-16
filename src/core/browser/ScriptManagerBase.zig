@@ -880,12 +880,18 @@ fn hasPendingEvaluateWork(self: *const ScriptManagerBase) bool {
 /// deferred). Runner `.done` / network-idle must not resolve while SPA chunks
 /// evaluate; Koko can have a gap if only evaluate_pending is set).
 pub fn hasPendingJsWork(self: *const ScriptManagerBase) bool {
+    return self.hasRunnableJsWork() or self.hasIncompleteLifecycleScripts();
+}
+
+/// Bytes are already here or a callback is queued. Incomplete downloads are
+/// not included: those have no V8 work until the transfer finishes, and the
+/// runner must sleep on the HTTP poll instead of spinning.
+pub fn hasRunnableJsWork(self: *const ScriptManagerBase) bool {
     return self.evaluate_pending or
         self.deferred_evaluate_queued or
         self.pending_element_callbacks != 0 or
         self.is_evaluating or
-        self.hasPendingEvaluateWork() or
-        self.hasIncompleteLifecycleScripts();
+        self.hasPendingEvaluateWork();
 }
 
 /// True when it is safe to run Script.eval (V8 central stack).
@@ -1747,9 +1753,12 @@ pub const Script = struct {
             .@"inline" => |c| c.len,
             .remote => 0,
         };
-        // Watchdog only for runaway V8 (infinite loops). Short enough that
-        // TerminateExecution fires before pure-JS recursion climbs into
-        // V8_Fatal on a depleted C stack (stripe Next chunks). Not a DCL timer.
+        // Watchdog only for runaway V8 (infinite loops). The deadline follows
+        // the script class. Source length is not a yield signal: a large
+        // classic script that never returns is the same stall as a small one.
+        // Short enough that TerminateExecution fires before pure-JS recursion
+        // climbs into V8_Fatal on a depleted C stack (stripe Next chunks).
+        // Not a DCL timer.
         const watchdog_ms: u64 = if (fe.kind == .module) 8_000 else if (lifecycle_eval and remote_classic) 3_000 else if (lifecycle_eval and fe.kind == .javascript) 2_500 else if (fe.mode == .async and cacheable) 4_000 else if (cacheable) 8_000 else if (!lifecycle_eval and inline_len > 96 * 1024) 5_000 else 0;
         var watchdog: ScriptEvalWatchdog = .{};
         if (watchdog_ms > 0) {

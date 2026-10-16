@@ -29,6 +29,10 @@ function stylesheetHtml() {
   return `<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/fixture.css"></head><body><main id="fixture">stylesheet fixture</main></body></html>`;
 }
 
+function mixedPolicyHtml() {
+  return `<!doctype html><html><head><meta charset="utf-8"><title>mixed policy</title><link rel="stylesheet" href="/mixed.css"></head><body><main id="fixture">policy text marker</main><img src="/mixed.png" alt="pixel"><script src="/mixed.js"></script></body></html>`;
+}
+
 function streamChunks() {
   return [
     "<!doctype html><html><head><meta charset=\"utf-8\"><title>Koko stream</title></head><body>",
@@ -99,6 +103,34 @@ export async function startFixtureServer(host = "127.0.0.1") {
       const body = "#fixture { color: rgb(12, 34, 56); } @media screen { body { margin: 0; } }";
       response.writeHead(200, { "content-type": "text/css; charset=utf-8", "cache-control": "no-store", "content-length": Buffer.byteLength(body) });
       response.end(body);
+      return;
+    }
+    if (pathname === "/mixed.html") {
+      const body = mixedPolicyHtml();
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-length": Buffer.byteLength(body) });
+      response.end(body);
+      return;
+    }
+    if (pathname === "/mixed.js") {
+      const body = "document.documentElement.dataset.mixedScript = 'ran';";
+      response.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "content-length": Buffer.byteLength(body) });
+      response.end(body);
+      return;
+    }
+    if (pathname === "/mixed.css") {
+      const body = "#fixture { color: rgb(1, 2, 3); }";
+      setTimeout(() => {
+        response.writeHead(200, { "content-type": "text/css; charset=utf-8", "cache-control": "no-store", "content-length": Buffer.byteLength(body) });
+        response.end(body);
+      }, 40);
+      return;
+    }
+    if (pathname === "/mixed.png") {
+      const body = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+      setTimeout(() => {
+        response.writeHead(200, { "content-type": "image/png", "cache-control": "no-store", "content-length": body.length });
+        response.end(body);
+      }, 40);
       return;
     }
     const body = pathname === "/large.html" ? large : pathname === "/resource-burst.html"

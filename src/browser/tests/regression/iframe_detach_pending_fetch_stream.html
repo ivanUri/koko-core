@@ -1,0 +1,47 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+const events = [];
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(JSON.stringify({events, body: document.body.textContent})),
+};
+
+addEventListener("message", event => {
+  events.push(event.data);
+  if (event.data === "stream-first-chunk") {
+    streamFrame.remove();
+  }
+});
+
+const streamFrame = document.createElement("iframe");
+streamFrame.srcdoc = `<!doctype html><script>
+  fetch("/fetch-stream-hold")
+    .then(async response => {
+      const reader = response.body.getReader();
+      const first = await reader.read();
+      if (first.done || first.value == null) {
+        throw new Error("first stream chunk was not delivered");
+      }
+      parent.postMessage("stream-first-chunk", "*");
+      await reader.read();
+      parent.postMessage("stream-second-chunk", "*");
+    })
+    .then(() => parent.postMessage("stream-complete", "*"))
+    .catch(error => parent.postMessage("stream-error:" + error.name, "*"));
+<\/script>`;
+document.body.appendChild(streamFrame);
+
+setTimeout(() => {
+  const detached = !streamFrame.isConnected && streamFrame.contentWindow === null;
+  const noDetachedDelivery = events.length === 1 && events[0] === "stream-first-chunk";
+  if (detached && noDetachedDelivery) {
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+  } else {
+    document.body.id = "fail";
+    document.body.textContent = JSON.stringify({detached, noDetachedDelivery, events});
+  }
+}, 250);
+</script>

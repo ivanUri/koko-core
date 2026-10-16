@@ -37,6 +37,8 @@ _event_order: u32 = 0,
 _dependent: bool = false,
 _sources: std.ArrayList(*AbortSignal) = .empty,
 _dependents: std.ArrayList(*AbortSignal) = .empty,
+_algorithms: std.ArrayList(AbortAlgorithm) = .empty,
+_algorithms_allocator: ?std.mem.Allocator = null,
 
 pub fn init(exec: *const Execution) !*AbortSignal {
     const order = next_event_order;
@@ -81,10 +83,57 @@ pub fn asEventTarget(self: *AbortSignal) *EventTarget {
     return self._proto;
 }
 
+pub const AbortAlgorithm = struct {
+    ctx: *anyopaque,
+    run: *const fn (ctx: *anyopaque) void,
+};
+
 pub fn abort(self: *AbortSignal, reason_: ?Reason, exec: *const Execution) !void {
     if (self._aborted) return;
     const reason = try resolveAbortReason(reason_, exec);
     try self.abortWithReason(reason, exec);
+}
+
+/// Fetch registers one of these so an in-flight transfer stops on the next
+/// host turn instead of waiting for the response headers. The list grows with
+/// the number of in-flight operations. A failed registration is returned to
+/// the caller; nothing is dropped.
+pub fn addAbortAlgorithm(self: *AbortSignal, algo: AbortAlgorithm, allocator: std.mem.Allocator) !void {
+    if (self._aborted) {
+        algo.run(algo.ctx);
+        return;
+    }
+    if (self._algorithms_allocator == null) self._algorithms_allocator = allocator;
+    try self._algorithms.append(allocator, algo);
+}
+
+pub fn removeAbortAlgorithm(self: *AbortSignal, ctx: *anyopaque) void {
+    var index: usize = 0;
+    while (index < self._algorithms.items.len) {
+        if (self._algorithms.items[index].ctx == ctx) {
+            _ = self._algorithms.swapRemove(index);
+            continue;
+        }
+        index += 1;
+    }
+}
+
+fn runAbortAlgorithms(self: *AbortSignal) void {
+    const allocator = self._algorithms_allocator orelse return;
+    // Own a snapshot before running. clearRetainingCapacity poisons the
+    // backing store, and a callback may remove or register another algorithm.
+    const pending = self._algorithms.toOwnedSlice(allocator) catch {
+        var index: usize = 0;
+        while (index < self._algorithms.items.len) {
+            const algo = self._algorithms.items[index];
+            index += 1;
+            algo.run(algo.ctx);
+        }
+        self._algorithms.clearRetainingCapacity();
+        return;
+    };
+    defer allocator.free(pending);
+    for (pending) |algo| algo.run(algo.ctx);
 }
 
 fn resolveAbortReason(reason_: ?Reason, exec: *const Execution) !Reason {
@@ -168,6 +217,12 @@ fn abortWithReason(self: *AbortSignal, reason: Reason, exec: *const Execution) !
         }
     };
     std.mem.sort(*AbortSignal, fire_list.items, {}, SortCtx.lessThan);
+
+    // Algorithms run before the abort event so fetch can reject and drop the
+    // curl handle while this signal is still alive.
+    for (fire_list.items) |signal| {
+        signal.runAbortAlgorithms();
+    }
 
     const base = eventManagerBase(exec);
     // Nested abort (e.g. testharness cleanup aborting during onabort) must defer
@@ -446,3 +501,42 @@ pub const JsApi = struct {
     pub const timeout = bridge.function(AbortSignal.createTimeout, .{ .static = true });
     pub const any = bridge.function(AbortSignal.createAny, .{ .static = true });
 };
+
+test "AbortSignal runs every registered algorithm" {
+    const Probe = struct {
+        var runs: [6]u8 = .{ 0, 0, 0, 0, 0, 0 };
+
+        fn run(ctx: *anyopaque) void {
+            const index: *usize = @ptrCast(@alignCast(ctx));
+            runs[index.*] += 1;
+        }
+    };
+    Probe.runs = .{ 0, 0, 0, 0, 0, 0 };
+
+    var signal = AbortSignal{
+        ._proto = undefined,
+        ._event_order = 0,
+    };
+    defer signal._algorithms.deinit(std.testing.allocator);
+
+    var indexes = [_]usize{ 0, 1, 2, 3, 4, 5 };
+    for (&indexes) |*index| {
+        try signal.addAbortAlgorithm(.{ .ctx = index, .run = Probe.run }, std.testing.allocator);
+    }
+    try std.testing.expectEqual(@as(usize, 6), signal._algorithms.items.len);
+
+    signal.removeAbortAlgorithm(&indexes[4]);
+    try std.testing.expectEqual(@as(usize, 5), signal._algorithms.items.len);
+
+    signal.runAbortAlgorithms();
+    try std.testing.expectEqual(@as(usize, 0), signal._algorithms.items.len);
+    try std.testing.expectEqual(@as(u8, 1), Probe.runs[0]);
+    try std.testing.expectEqual(@as(u8, 1), Probe.runs[5]);
+    try std.testing.expectEqual(@as(u8, 0), Probe.runs[4]);
+
+    signal._aborted = true;
+    var late: usize = 1;
+    try signal.addAbortAlgorithm(.{ .ctx = &late, .run = Probe.run }, std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), signal._algorithms.items.len);
+    try std.testing.expectEqual(@as(u8, 2), Probe.runs[1]);
+}

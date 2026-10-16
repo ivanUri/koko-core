@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>
+  <p id="content">article</p>
+  <img id="slow" alt="" src="/slow-image.png">
+  <script>
+    window.marks = { dcl: false, load: false };
+    document.addEventListener("DOMContentLoaded", () => {
+      window.marks.dcl = true;
+    });
+    window.addEventListener("load", () => {
+      window.marks.load = true;
+    });
+  </script>
+</body>

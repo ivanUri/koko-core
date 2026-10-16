@@ -183,7 +183,15 @@ pub fn fetch(_: *App, browser: *Browser, url: [:0]const u8, opts: FetchOpts) !vo
         const file = try std.Io.Dir.cwd().createFile(process_io, path, .{ .truncate = true });
         defer file.close(process_io);
         var file_writer = file.writer(process_io, &.{});
-        try dump.root(dump_frame.document, opts.dump, &file_writer.interface, dump_frame);
+        // Observatory's sidecar is a DOM snapshot, comparable to the HTML
+        // exposed by DevTools. Do not inject a synthetic CSSOM stylesheet or
+        // flatten shadow roots into it: those are useful for a standalone
+        // rendered export, but they are not part of document HTML and can
+        // make large SPA pages appear substantially larger than their DOM.
+        var dom_snapshot_opts = opts.dump;
+        dom_snapshot_opts.include_cssom_snapshot = false;
+        dom_snapshot_opts.shadow = .skip;
+        try dump.root(dump_frame.document, dom_snapshot_opts, &file_writer.interface, dump_frame);
         try file_writer.interface.flush();
     }
 

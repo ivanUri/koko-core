@@ -10,12 +10,19 @@
  * blocking the other slots.
  */
 
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { promisify } from "node:util";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createRawCdpSession } from "../bench/adapters/cdp-session.mjs";
+import { connectCdp, waitForJson } from "../bench/common/cdp.mjs";
+import { getFreePort } from "../bench/common/process.mjs";
+
+const execFileAsync = promisify(execFile);
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(SCRIPT_DIR, "..");
@@ -49,6 +56,7 @@ export function parseArgs(argv) {
     waitMs: 5_000,
     dump: "html",
     keepProfiles: false,
+    reuseSession: false,
     binaryArgs: [],
     extraArgs: [],
   };
@@ -56,6 +64,7 @@ export function parseArgs(argv) {
     const arg = argv[index];
     if (arg === "--help") return { help: true };
     if (arg === "--keep-profiles") { options.keepProfiles = true; continue; }
+    if (arg === "--reuse-session") { options.reuseSession = true; continue; }
     if (arg === "--") { options.extraArgs.push(...argv.slice(index + 1)); break; }
     const value = argv[++index];
     if (value === undefined || value.startsWith("--")) throw new PoolError(`${arg} requires a value`);
@@ -134,8 +143,139 @@ export async function runWorkerJob({ binary, url, index, slot, options, profileR
   });
 }
 
+async function processRssKb(pid) {
+  try {
+    const { stdout } = await execFileAsync("ps", ["-o", "rss=", "-p", String(pid)]);
+    const rss = Number.parseInt(stdout.trim(), 10);
+    return Number.isSafeInteger(rss) ? rss : null;
+  } catch {
+    return null;
+  }
+}
+
+async function withTimeout(promise, timeoutMs) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(Object.assign(new Error("timeout"), { code: "timeout" })), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function startReuseRuntime({ binary, options, profileRoot, slot }) {
+  const port = await getFreePort();
+  const profileDir = path.join(profileRoot, `worker-${slot + 1}`, "session");
+  await fs.mkdir(profileDir, { recursive: true });
+  const args = [
+    "serve",
+    "--host", "127.0.0.1",
+    "--port", String(port),
+    "--user-data-dir", profileDir,
+    "--http-cache-dir", path.join(profileDir, "cache"),
+    "--log-level", "error",
+  ];
+  const child = spawn(binary, [...(options.binaryArgs || []), ...args], {
+    cwd: PROJECT_ROOT,
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let stderr = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-8_192); });
+  const endpoint = `http://127.0.0.1:${port}`;
+  try {
+    const version = await waitForJson(`${endpoint}/json/version`, Math.min(options.timeoutMs, 15_000));
+    const client = await connectCdp(version.webSocketDebuggerUrl, options.timeoutMs);
+    const session = await createRawCdpSession(client, { ownerClient: true });
+    await client.send("Network.setCacheDisabled", { cacheDisabled: true }, session.sessionId);
+    return { child, stderr: () => stderr, session, rssSamples: [] };
+  } catch (error) {
+    await terminateChild(child, options);
+    throw error;
+  }
+}
+
+async function resetReuseSession(session) {
+  await session.evaluate(`(() => {
+    try { localStorage.clear(); } catch (error) {}
+    try { sessionStorage.clear(); } catch (error) {}
+    return true;
+  })()`);
+  await session.client.send("Network.clearBrowserCookies", {}, session.sessionId);
+}
+
+async function runReuseJob({ runtime, url, index, slot, options, outputDir }) {
+  const startedAt = Date.now();
+  const output = path.join(outputDir, outputName(url, index));
+  const waitUntil = options.waitUntil === "domcontentloaded" ? "domcontentloaded" : "load";
+  await withTimeout(runtime.session.navigate(url, { waitUntil, timeoutMs: options.timeoutMs }), options.timeoutMs);
+  const probe = await withTimeout(runtime.session.evaluate(`({
+    cookie: document.cookie,
+    storage: (() => { try { return localStorage.getItem("leak") || ""; } catch (error) { return ""; } })(),
+  })`), options.timeoutMs);
+  if (options.dump === "html") {
+    const html = await withTimeout(
+      runtime.session.evaluate("document.documentElement ? document.documentElement.outerHTML : ''"),
+      options.timeoutMs,
+    );
+    await fs.writeFile(output, html ?? "");
+  }
+  await withTimeout(resetReuseSession(runtime.session), options.timeoutMs);
+  const rssKb = await processRssKb(runtime.child.pid);
+  if (rssKb != null) runtime.rssSamples.push(rssKb);
+  return {
+    index, slot, url, output, ok: true, reason: "ok", mode: "reuse-session",
+    elapsedMs: Date.now() - startedAt, cookie: probe?.cookie ?? "", storage: probe?.storage ?? "", rssKb,
+  };
+}
+
+async function runReuseSlot({ binary, urls, results, nextIndex, slot, options, profileRoot, outputDir }) {
+  let runtime = null;
+  const closeRuntime = async () => {
+    if (!runtime) return;
+    const current = runtime;
+    runtime = null;
+    await current.session.close().catch(() => {});
+    await terminateChild(current.child, options);
+  };
+  try {
+    while (true) {
+      const index = nextIndex();
+      if (index >= urls.length) return;
+      if (!runtime || runtime.child.exitCode !== null) {
+        try {
+          runtime = await startReuseRuntime({ binary, options, profileRoot, slot });
+        } catch (error) {
+          results[index] = {
+            index, slot, url: urls[index], ok: false, reason: "spawn-error", mode: "reuse-session",
+            error: error.message, elapsedMs: 0,
+          };
+          continue;
+        }
+      }
+      try {
+        results[index] = await runReuseJob({
+          runtime, url: urls[index], index, slot, options, outputDir,
+        });
+      } catch (error) {
+        const timedOut = error.code === "timeout";
+        results[index] = {
+          index, slot, url: urls[index], ok: false,
+          reason: timedOut ? "timeout" : "exit", mode: "reuse-session",
+          error: error.message, stderr: runtime.stderr(), elapsedMs: 0,
+        };
+        await closeRuntime();
+      }
+    }
+  } finally {
+    await closeRuntime();
+  }
+}
+
 export async function runPool(urls, input = {}) {
-  const options = { concurrency: 1, queueLimit: 2, timeoutMs: 60_000, terminateGraceMs: 2_000, killGraceMs: 2_000, binary: path.join(PROJECT_ROOT, "zig-out", "bin", "koko"), binaryArgs: [], profileRoot: null, outputDir: null, waitUntil: "done", waitMs: 5_000, dump: "html", keepProfiles: false, extraArgs: [], ...input };
+  const options = { concurrency: 1, queueLimit: 2, timeoutMs: 60_000, terminateGraceMs: 2_000, killGraceMs: 2_000, binary: path.join(PROJECT_ROOT, "zig-out", "bin", "koko"), binaryArgs: [], profileRoot: null, outputDir: null, waitUntil: "done", waitMs: 5_000, dump: "html", keepProfiles: false, reuseSession: false, extraArgs: [], ...input };
   if (!Number.isSafeInteger(options.concurrency) || options.concurrency <= 0) throw new PoolError("concurrency must be positive");
   if (!Number.isSafeInteger(options.queueLimit) || options.queueLimit <= 0) throw new PoolError("queueLimit must be positive");
   // Workers pull directly from the input cursor. This is a bounded queue in
@@ -150,6 +290,19 @@ export async function runPool(urls, input = {}) {
   const results = new Array(urls.length);
   let next = 0;
   async function worker(slot) {
+    if (options.reuseSession) {
+      await runReuseSlot({
+        binary: options.binary,
+        urls,
+        results,
+        nextIndex: () => next++,
+        slot,
+        options,
+        profileRoot: root,
+        outputDir,
+      });
+      return;
+    }
     while (true) {
       const index = next++;
       if (index >= urls.length) return;
@@ -176,7 +329,8 @@ export function usage() {
     `  --wait-ms N              Koko wait budget (default: 5000)\n` +
     `  --dump FORMAT            Koko dump format (default: html)\n` +
     `  --keep-profiles          Keep temporary worker directories\n` +
-    `  -- [Koko fetch args]     Extra fetch args\n`;
+    `  --reuse-session          Opt-in: one koko serve process per slot, navigate in-session\n` +
+    `  -- [Koko fetch args]     Extra fetch args (one-shot mode only)\n`;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

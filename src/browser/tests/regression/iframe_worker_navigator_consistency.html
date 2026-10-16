@@ -1,0 +1,126 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+const parentNavigator = snapshotNavigator(navigator);
+const frame = document.createElement("iframe");
+
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+addEventListener("message", (event) => {
+  if (event.data?.kind === "error") {
+    fail(event.data.message);
+    return;
+  }
+  if (event.data?.kind !== "worker-result") return;
+
+  const child = event.data.child;
+  const worker = event.data.worker;
+  const result = {
+    messageSourceIsFrame: event.source === frame.contentWindow,
+    childWindowIsSelf: child.windowIsSelf === true,
+    childParentIsTopWindow: child.parentIsTopWindow === true,
+    childNavigatorMatchesParent: sameNavigator(parentNavigator, child.navigator),
+    workerNavigatorMatchesParent: sameNavigator(parentNavigator, worker.navigator),
+    workerNavigatorMatchesChild: sameNavigator(child.navigator, worker.navigator),
+  };
+
+  if (Object.values(result).every(Boolean)) {
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+  } else {
+    fail(JSON.stringify({ result, child, worker, parentNavigator }));
+  }
+});
+
+frame.srcdoc = `
+  <!doctype html>
+  <script>
+    function snapshotNavigator(n) {
+      return {
+        userAgent: n.userAgent,
+        language: n.language,
+        languages: Array.from(n.languages),
+        platform: n.platform,
+        hardwareConcurrency: n.hardwareConcurrency,
+        deviceMemory: n.deviceMemory,
+        onLine: n.onLine,
+      };
+    }
+
+    const workerSource = \`
+      onmessage = function () {
+        postMessage({
+          navigator: snapshotNavigator(navigator),
+        });
+      };
+
+      function snapshotNavigator(n) {
+        return {
+          userAgent: n.userAgent,
+          language: n.language,
+          languages: Array.from(n.languages),
+          platform: n.platform,
+          hardwareConcurrency: n.hardwareConcurrency,
+          deviceMemory: n.deviceMemory,
+          onLine: n.onLine,
+        };
+      }
+    \`;
+
+    const worker = new Worker(URL.createObjectURL(
+      new Blob([workerSource], { type: "text/javascript" })
+    ));
+    worker.onerror = (event) => parent.postMessage({
+      kind: "error",
+      message: "iframe worker error: " + (event.message || "unknown"),
+    }, "*");
+    worker.onmessage = (event) => {
+      parent.postMessage({
+        kind: "worker-result",
+        child: {
+          windowIsSelf: window === self,
+          parentIsTopWindow: parent === top,
+          navigator: snapshotNavigator(navigator),
+        },
+        worker: event.data,
+      }, "*");
+      worker.terminate();
+    };
+    worker.postMessage("check");
+  <\/script>
+`;
+document.body.appendChild(frame);
+
+function snapshotNavigator(n) {
+  return {
+    userAgent: n.userAgent,
+    language: n.language,
+    languages: Array.from(n.languages),
+    platform: n.platform,
+    hardwareConcurrency: n.hardwareConcurrency,
+    deviceMemory: n.deviceMemory,
+    onLine: n.onLine,
+  };
+}
+
+function sameNavigator(a, b) {
+  return a && b &&
+    a.userAgent === b.userAgent &&
+    a.language === b.language &&
+    a.languages.join(",") === b.languages.join(",") &&
+    a.platform === b.platform &&
+    a.hardwareConcurrency === b.hardwareConcurrency &&
+    a.deviceMemory === b.deviceMemory &&
+    a.onLine === b.onLine;
+}
+
+function fail(message) {
+  frame.remove();
+  document.body.id = "fail";
+  document.body.textContent = message;
+}
+</script>

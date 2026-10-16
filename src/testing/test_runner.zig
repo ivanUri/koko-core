@@ -172,7 +172,7 @@ const Runner = struct {
                     }
                     Printer.status(.fail, BORDER ++ "\n", .{});
                     if (@errorReturnTrace()) |trace| {
-                        std.debug.dumpStackTrace(trace.*);
+                        std.debug.dumpErrorReturnTrace(trace);
                     }
                     if (self.env.fail_first) {
                         break;

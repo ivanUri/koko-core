@@ -1,0 +1,48 @@
+<!doctype html>
+<meta charset="utf-8">
+<body></body>
+<script>
+const spacers = [];
+for (let i = 0; i < 400; i++) {
+  const spacer = document.createElement("div");
+  spacer.style.height = "10px";
+  document.body.appendChild(spacer);
+  spacers.push(spacer);
+}
+
+const target = document.createElement("div");
+target.style.height = "10px";
+target.textContent = "target";
+document.body.appendChild(target);
+
+let failure = null;
+window.testing = {
+  assertOk: () => {
+    try {
+      window.scrollTo(0, 0);
+      const before = target.getBoundingClientRect();
+      if (before.top >= 0 && before.bottom <= window.innerHeight) {
+        throw new Error("test target unexpectedly started in the viewport");
+      }
+
+      target.scrollIntoViewIfNeeded(false);
+      const after = target.getBoundingClientRect();
+      if (after.top < 0 || after.bottom > window.innerHeight) {
+        throw new Error("target was not scrolled into the viewport");
+      }
+      if (window.scrollY === 0) {
+        throw new Error("scrollIntoViewIfNeeded did not update scroll position");
+      }
+      document.body.id = "pass";
+      document.body.textContent = "pass";
+      return true;
+    } catch (error) {
+      failure = error;
+      document.body.id = "fail";
+      document.body.textContent = String(error && error.stack || error);
+      return false;
+    }
+  },
+  printTimeoutState: () => console.log(String(failure || document.body.textContent)),
+};
+</script>

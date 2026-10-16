@@ -32,11 +32,7 @@ const DefineOptions = struct {
 };
 
 fn parseExtendsTag(extends_name: []const u8) ?Element.Tag {
-    if (std.meta.stringToEnum(Element.Tag, extends_name)) |tag| return tag;
-    if (std.mem.eql(u8, extends_name, "a")) return .anchor;
-    if (std.mem.eql(u8, extends_name, "q")) return .quote;
-    if (std.mem.eql(u8, extends_name, "dir")) return .directory;
-    return null;
+    return Element.Tag.parseForMatch(extends_name);
 }
 
 pub fn define(self: *CustomElementRegistry, name: []const u8, constructor: js.Function, options_: ?DefineOptions, frame: *Frame) !void {
@@ -299,6 +295,9 @@ test "CustomElementRegistry: parse extends tag aliases" {
     try std.testing.expectEqual(Element.Tag.anchor, parseExtendsTag("a").?);
     try std.testing.expectEqual(Element.Tag.quote, parseExtendsTag("q").?);
     try std.testing.expectEqual(Element.Tag.directory, parseExtendsTag("dir").?);
+    try std.testing.expect(parseExtendsTag("anchor") == null);
+    try std.testing.expect(parseExtendsTag("quote") == null);
+    try std.testing.expect(parseExtendsTag("directory") == null);
     try std.testing.expect(parseExtendsTag("does-not-exist") == null);
 }
 

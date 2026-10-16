@@ -11,10 +11,12 @@
  *        --remote-debugging-port=9222 --no-first-run --user-data-dir=/tmp/chrome-probe
  *
  *   2. Chạy script:
- *      node scripts/capture-fingerprint.js [profile-id] [cdp-url]
+ *      node scripts/capture-fingerprint.js [profile-id] [cdp-url] [capture-url] [mode]
  *
  *      Ví dụ:
  *      node scripts/capture-fingerprint.js chrome-windows-11 http://127.0.0.1:9222
+ *      node scripts/capture-fingerprint.js chrome-macos-native \
+ *        http://127.0.0.1:9222 https://demo.fingerprint.com/playground native
  *
  *   3. Output sẽ nằm trong:
  *      browser/fingerprints/{profile-id}/fingerprint.json
@@ -34,10 +36,29 @@ const http = require("node:http");
 const PROFILE_ID = process.argv[2] || "chrome-probe";
 const CDP_HTTP   = (process.argv[3] || "http://127.0.0.1:9222").replace(/\/+$/, "");
 const CAPTURE_URL = process.argv[4] || "https://tls.peet.ws/";
+const PROFILE_MODE = process.argv[5] || "antidetect";
 const KOKO_ROOT = path.resolve(__dirname, "..");
 const FINAL_DIR  = path.join(KOKO_ROOT, "browser", "fingerprints", PROFILE_ID);
 const OUT_DIR    = `${FINAL_DIR}.staging-${process.pid}`;
 const ASSETS_DIR = path.join(OUT_DIR, "assets");
+
+if (PROFILE_MODE !== "antidetect" && PROFILE_MODE !== "native") {
+  throw new Error(`Unsupported capture mode: ${PROFILE_MODE} (expected antidetect or native)`);
+}
+
+// Keep the captured browser version in the identity surfaces, but map the
+// network transport to a curl-impersonate target that this checkout actually
+// ships. This avoids writing an unusable `chrome151` transport when Chrome has
+// advanced beyond the vendored transport profiles.
+function transportForChromeMajor(major) {
+  if (major >= 150) return "chrome150";
+  if (major >= 147) return "chrome146";
+  if (major >= 144) return "chrome145";
+  if (major >= 140) return "chrome142";
+  if (major >= 136) return "chrome136";
+  if (major >= 126) return "chrome131";
+  return "chrome120";
+}
 
 // ─── WebSocket — hỗ trợ cả Node built-in (browser API) lẫn gói ws ────────────
 
@@ -759,16 +780,16 @@ async function main() {
   const fp = {
     version: 1,
     id: PROFILE_ID,
-    mode: "antidetect",
+    mode: PROFILE_MODE,
     capturedAt: new Date().toISOString(),
     capturedFrom: target.url,
 
-    // Transport — fill in manually based on UA
+    // Transport — derive from the captured UA and the targets shipped here.
     transport: {
       impersonate: (() => {
         const ua = results.navigator?.userAgent || "";
         const chrome = ua.match(/Chrome\/(\d+)/);
-        if (chrome) return `chrome${chrome[1]}`;
+        if (chrome) return transportForChromeMajor(Number(chrome[1]));
         const ff = ua.match(/Firefox\/(\d+)/);
         if (ff) return `firefox${ff[1]}`;
         if (ua.includes("Safari") && !ua.includes("Chrome")) return "safari260";

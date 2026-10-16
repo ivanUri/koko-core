@@ -1,0 +1,52 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+const workerUrl = URL.createObjectURL(new Blob([
+  `postMessage({ kind: "boot", value: 42 });`,
+], { type: "text/javascript" }));
+const worker = new Worker(workerUrl);
+let received = 0;
+
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+// Let the worker finish its initial script before installing the parent
+// handler. The message must remain queued until the handler is registered.
+setTimeout(() => {
+  worker.onmessage = (event) => {
+    received += 1;
+    if (received > 1) {
+      fail(`message delivered more than once: ${received}`);
+      return;
+    }
+
+    if (event.data?.kind !== "boot" || event.data.value !== 42) {
+      fail(`unexpected message: ${JSON.stringify(event.data)}`);
+      return;
+    }
+
+    setTimeout(() => {
+      if (received !== 1) {
+        fail(`message count changed after delivery: ${received}`);
+        return;
+      }
+      worker.terminate();
+      URL.revokeObjectURL(workerUrl);
+      document.body.id = "pass";
+      document.body.textContent = "pass";
+    }, 20);
+  };
+}, 0);
+
+worker.onerror = (event) => fail(`worker error: ${event.message || "unknown"}`);
+
+function fail(message) {
+  worker.terminate();
+  URL.revokeObjectURL(workerUrl);
+  document.body.id = "fail";
+  document.body.textContent = message;
+}
+</script>

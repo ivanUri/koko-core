@@ -1,0 +1,45 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+const iframe = document.createElement("iframe");
+iframe.srcdoc = `
+  <!doctype html>
+  <script>
+    let accepted = 0;
+    addEventListener("message", (event) => {
+      if (event.data !== "right-origin") return;
+      accepted += 1;
+      parent.postMessage({ kind: "accepted", count: accepted }, "*");
+    });
+    parent.postMessage({ kind: "ready" }, "*");
+  <\/script>
+`;
+
+addEventListener("message", (event) => {
+  if (event.source !== iframe.contentWindow) return;
+  if (event.data?.kind === "ready") {
+    iframe.contentWindow.postMessage("right-origin", location.origin);
+    return;
+  }
+  if (event.data?.kind !== "accepted") return;
+
+  const result = {
+    acceptedExactlyOnce: event.data.count === 1,
+    sourceIsChild: event.source === iframe.contentWindow,
+  };
+  if (Object.values(result).every(Boolean)) {
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+  } else {
+    document.body.textContent = JSON.stringify(result);
+  }
+});
+
+document.body.appendChild(iframe);
+</script>

@@ -1,0 +1,49 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = { assertOk: () => document.body.id === "pass", printTimeoutState: () => console.log(document.body.textContent) };
+
+const iframe = document.createElement("iframe");
+iframe.srcdoc = `
+  <!doctype html>
+  <script>
+    addEventListener("message", (event) => {
+      try {
+        const valid = event.data === "ping" &&
+          event.source !== null &&
+          typeof event.origin === "string" &&
+          Array.isArray(event.ports);
+        parent.postMessage({ kind: "child-check", valid }, "*");
+      } catch (error) {
+        parent.postMessage({ kind: "child-error", message: String(error) }, "*");
+      }
+    });
+    parent.postMessage({ kind: "ready" }, "*");
+  <\/script>
+`;
+
+addEventListener("message", (event) => {
+  if (event.data?.kind === "ready") {
+    iframe.contentWindow.postMessage("ping", location.origin);
+    return;
+  }
+  if (event.data?.kind === "child-error") {
+    document.body.textContent = event.data.message;
+    return;
+  }
+  if (event.data?.kind !== "child-check") return;
+
+  if (event.data.valid && event.source === iframe.contentWindow) {
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+  } else {
+    document.body.textContent = JSON.stringify({
+      event: event.data,
+      sourceIsFrame: event.source === iframe.contentWindow,
+    });
+  }
+});
+
+document.body.appendChild(iframe);
+</script>

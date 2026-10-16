@@ -615,6 +615,31 @@ fn serveCDP(wg: *WaitGroup) !void {
 fn testHTTPHandler(req: *std.http.Server.Request) !void {
     const path = req.head.target;
 
+    if (std.mem.eql(u8, path, "/forbidden.js")) {
+        return req.respond("window.scriptRan = true;", .{
+            .status = .forbidden,
+            .extra_headers = &.{
+                .{ .name = "Content-Type", .value = "text/javascript" },
+            },
+        });
+    }
+
+    if (std.mem.eql(u8, path, "/slow-image.png")) {
+        // Longer than DOMContentLoaded and the domstable quiet interval, so
+        // those waits can be told apart from a wait that follows the image.
+        Timer.sleepNanoseconds(1000 * std.time.ns_per_ms);
+        const png = [_]u8{
+            0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n',
+            0,    0,   0,   13,  'I',  'H',  'D',  'R',
+            0,    0,   0,   1,   0,    0,    0,    1,
+        };
+        return req.respond(&png, .{
+            .extra_headers = &.{
+                .{ .name = "Content-Type", .value = "image/png" },
+            },
+        });
+    }
+
     if (std.mem.eql(u8, path, "/lazy-image.png")) {
         // Keep the response deterministic but non-zero latency so a
         // wait_until=done regression test can observe whether lazy activation

@@ -359,6 +359,13 @@ test "PolicyRegistry: koko mode skips antidetect-only policy" {
     try testing.expect(registry.matchNavigation(.koko, &google_search_policy, url) == null);
 }
 
+test "PolicyRegistry: native mode skips antidetect-only policy" {
+    var registry = try PolicyRegistry.init(testing.allocator);
+    defer registry.deinit();
+    const url = "https://www.google.com/search?q=koko";
+    try testing.expect(registry.matchNavigation(.native, &google_search_policy, url) == null);
+}
+
 test "PolicyRegistry: antidetect without profile opt-in skips policy" {
     var registry = try PolicyRegistry.init(testing.allocator);
     defer registry.deinit();

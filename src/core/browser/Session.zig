@@ -288,9 +288,13 @@ pub fn emitApplicationStorageSnapshot(self: *Session, frame: *Frame) void {
     const max_entries = 1_000;
     var emitted: usize = 0;
     var cookie_count: usize = 0;
+    var cookie_value_bytes: usize = 0;
     var local_storage_count: usize = 0;
+    var local_storage_bytes: usize = 0;
     var session_storage_count: usize = 0;
+    var session_storage_bytes: usize = 0;
     var indexed_db_count: usize = 0;
+    var indexed_db_records: usize = 0;
 
     const maybe_inspected_origin = BrowserURL.getOrigin(self.arena, frame.url) catch return;
     const inspected_origin = maybe_inspected_origin orelse return;
@@ -299,6 +303,7 @@ pub fn emitApplicationStorageSnapshot(self: *Session, frame: *Frame) void {
     for (self.cookie_jar.cookies.items) |*cookie| {
         if (!cookieMatchesHost(cookie.domain, inspected_host)) continue;
         cookie_count += 1;
+        cookie_value_bytes += cookie.value.len;
         if (emitted < max_entries) {
             self.browser.observeApplicationStorageEntry("cookies", cookie.domain, cookie.name, cookie.value, cookie.value.len, .{
                 .domain = cookie.domain,
@@ -321,6 +326,7 @@ pub fn emitApplicationStorageSnapshot(self: *Session, frame: *Frame) void {
         var local = origin_entry.value_ptr.*.local._data.iterator();
         while (local.next()) |entry| {
             local_storage_count += 1;
+            local_storage_bytes += entry.value_ptr.*.len;
             if (emitted < max_entries) {
                 self.browser.observeApplicationStorageEntry("local-storage", origin, entry.key_ptr.*, entry.value_ptr.*, entry.value_ptr.*.len, .{});
                 emitted += 1;
@@ -329,6 +335,7 @@ pub fn emitApplicationStorageSnapshot(self: *Session, frame: *Frame) void {
         var session = origin_entry.value_ptr.*.session._data.iterator();
         while (session.next()) |entry| {
             session_storage_count += 1;
+            session_storage_bytes += entry.value_ptr.*.len;
             if (emitted < max_entries) {
                 self.browser.observeApplicationStorageEntry("session-storage", origin, entry.key_ptr.*, entry.value_ptr.*, entry.value_ptr.*.len, .{});
                 emitted += 1;
@@ -341,6 +348,7 @@ pub fn emitApplicationStorageSnapshot(self: *Session, frame: *Frame) void {
     frame.window.getIndexedDB().appendSnapshot(&indexed_databases, self.arena) catch return;
     for (indexed_databases.items) |database| {
         indexed_db_count += 1;
+        indexed_db_records += database.record_count;
         if (emitted < max_entries) {
             self.browser.observeApplicationStorageEntry("indexed-db", inspected_origin, database.name, null, 0, .{
                 .version = database.version,
@@ -355,11 +363,16 @@ pub fn emitApplicationStorageSnapshot(self: *Session, frame: *Frame) void {
     self.browser.observeApplicationStorageEntry("snapshot", inspected_origin, "snapshot", null, 0, .{
         .state = "complete",
         .cookies = cookie_count,
+        .cookieValueBytes = cookie_value_bytes,
         .localStorage = local_storage_count,
+        .localStorageBytes = local_storage_bytes,
         .sessionStorage = session_storage_count,
+        .sessionStorageBytes = session_storage_bytes,
         .indexedDb = indexed_db_count,
+        .indexedDbRecords = indexed_db_records,
         .emittedEntries = emitted,
-        .truncated = emitted >= max_entries,
+        .totalEntries = cookie_count + local_storage_count + session_storage_count + indexed_db_count,
+        .truncated = cookie_count + local_storage_count + session_storage_count + indexed_db_count > max_entries,
     });
 }
 

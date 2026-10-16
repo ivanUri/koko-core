@@ -19,6 +19,7 @@ import { runNavigationSuite } from "./suites/navigation.mjs";
 import { runRealSitesSuite } from "./suites/real-sites.mjs";
 import { runSessionLifecycleSuite } from "./suites/session-lifecycle.mjs";
 import { runStartupSuite } from "./suites/startup.mjs";
+import { runResourcePolicySuite } from "./suites/resource-policy.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const deterministicSuites = ["startup", "navigation", "session-lifecycle", "idle-memory"];
@@ -34,6 +35,7 @@ const suiteRunners = new Map([
   ["agent", runAgentSuite],
   ["long-run", runLongRunSuite],
   ["real-sites", runRealSitesSuite],
+  ["resource-policy", runResourcePolicySuite],
 ]);
 
 function values(value) {
@@ -154,7 +156,7 @@ function printHelp() {
   process.stdout.write(`Koko Browser Runtime Benchmark\n\n` +
     `  node bench/runner.mjs [options]\n\n` +
     `Options:\n` +
-    `  --suite <all|startup,navigation,session-lifecycle,idle-memory,concurrency,network,dom-js,agent,long-run,real-sites>\n` +
+    `  --suite <all|startup,navigation,session-lifecycle,idle-memory,concurrency,network,dom-js,agent,long-run,real-sites,resource-policy>\n` +
     `  --baseline <koko-cdp,chromium-cdp,lightpanda-cdp,playwright-chromium|all>\n` +
     `  --warmup <n> --iterations <n>\n` +
     `  --memory-warmup <n> --memory-iterations <n> --density <1,10,50,100,250,500,1000>\n` +
@@ -236,17 +238,8 @@ async function main() {
   const runId = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
   const rawPath = resolve(options.output, "raw", `${runId}.jsonl`);
   await mkdir(options.output, { recursive: true });
-  const needsFixtures = options.suites.some((suite) => ["startup", "navigation", "concurrency", "network", "dom-js", "agent", "long-run"].includes(suite)) || (options.activeSessions > 0 && options.suites.includes("idle-memory"));
+  const needsFixtures = options.suites.some((suite) => ["startup", "navigation", "concurrency", "network", "dom-js", "agent", "long-run", "resource-policy"].includes(suite)) || (options.activeSessions > 0 && options.suites.includes("idle-memory"));
   const fixtureServer = needsFixtures ? await startFixtureServer() : null;
-  const context = new RunContext({
-    runId,
-    rawPath,
-    options,
-    fixtures: fixtureServer?.urls ?? {},
-    fixtureOrigin: fixtureServer?.origin ?? null,
-    realSites,
-  });
-  await context.initialize();
   const adapterOptions = {
     projectRoot,
     kokoBin: options.kokoBin,
@@ -259,6 +252,16 @@ async function main() {
     lightpandaEnableExternalStylesheets: options.lightpandaEnableExternalStylesheets,
     cdpMaxConnections: options.cdpMaxConnections,
   };
+  const context = new RunContext({
+    runId,
+    rawPath,
+    options,
+    fixtures: fixtureServer?.urls ?? {},
+    fixtureOrigin: fixtureServer?.origin ?? null,
+    realSites,
+    adapterOptions,
+  });
+  await context.initialize();
   const factories = createAdapterFactories(options.baselines, adapterOptions);
   const environment = await collectEnvironment({
     projectRoot,

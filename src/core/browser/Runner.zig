@@ -597,7 +597,7 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
             const total_http_activity = HostIdle.totalHttpActivity(http_client);
             const network_idle = HostIdle.isNetworkIdle(http_client);
             const ms_to_next_macrotask = browser.msToNextMacrotask();
-            const script_pending = live_frame._script_manager.base.hasPendingJsWork();
+            const script_pending = live_frame._script_manager.base.hasRunnableJsWork();
             // Lazy images intentionally do not block `load`, but their
             // activation task is still part of the navigation's eventual
             // `done` state. Without this edge, a page can be reported done
@@ -611,13 +611,6 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
                 (ms_to_next_macrotask != null and ms_to_next_macrotask.? == 0);
 
             live_frame.checkIdleNotifications(total_http_activity);
-
-            // `_we_` have nothing to run, but v8 is working on background tasks.
-            // Wait for them (non-CDP only — CDP messages can arrive any time).
-            if ((comptime is_cdp) == false and network_idle and browser.hasBackgroundTasks()) {
-                browser.waitForBackgroundTasks();
-                return .{ .ok = 0 };
-            }
 
             const met = switch (opts.until) {
                 .done => is_done,
@@ -634,6 +627,13 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
             // idle (`is_done`) there is nothing left to wait on — resolve rather
             const allow_fully_idle_shortcut = opts.until != .domstable;
             if ((met and !immediate_host_work) or (is_done and allow_fully_idle_shortcut)) {
+                // `done` is full idle, so V8 background tasks are part of the
+                // milestone. DOMContentLoaded and load return without draining:
+                // waiting on those tasks held one-shot fetches until the budget.
+                if ((comptime is_cdp) == false and opts.until == .done and browser.hasBackgroundTasks()) {
+                    browser.waitForBackgroundTasks();
+                    return .{ .ok = 0 };
+                }
                 if (comptime is_cdp) {
                     // CDP event loop keeps ticking for commands; only leave when
                     // the explicit wait condition is met (not is_done alone for
@@ -642,6 +642,13 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
                 } else {
                     return .done;
                 }
+            }
+
+            // The wait is not met yet. Drain V8 background work once the
+            // network is quiet, then recheck on the next tick.
+            if ((comptime is_cdp) == false and network_idle and browser.hasBackgroundTasks()) {
+                browser.waitForBackgroundTasks();
+                return .{ .ok = 0 };
             }
 
             // Keep ticking: network, scripts, or macrotasks still in flight (or CDP).
@@ -881,6 +888,134 @@ test "Runner: domstable resets for delayed DOM mutation and ignores recurring ba
     try testing.expect(elapsed_ms < 1500);
     const content = try frame.document.querySelector(comptime .wrap("#content"), frame) orelse return error.MissingStableContent;
     try testing.expectEqualStrings("settled", try content.asNode().getTextContentAlloc(testing.arena_allocator));
+}
+
+fn millisSince(timer: anytype) u64 {
+    return timer.read() / std.time.ns_per_ms;
+}
+
+fn elementText(frame: *Frame, comptime selector: []const u8) ![]const u8 {
+    const element = try frame.document.querySelector(comptime .wrap(selector), frame) orelse return error.MissingNode;
+    return element.asNode().getTextContentAlloc(testing.arena_allocator);
+}
+
+test "Runner: wait milestone domcontentloaded returns while a timer is scheduled" {
+    defer testing.reset();
+    const frame = try testing.pageTest("runner/wait_timer.html", .{ .wait_until_done = false });
+    defer frame._session.removePage();
+
+    var runner = try frame._session.runner(.{});
+    const timer = try Timer.start();
+    try runner.wait(.{ .ms = 2_000, .until = .domcontentloaded });
+
+    // A recurring timer is not part of parsing. Waiting for it here would
+    // turn every crawl into the full budget.
+    try testing.expect(millisSince(timer) < 500);
+    try testing.expectEqualStrings("article", try elementText(frame, "#content"));
+}
+
+test "Runner: wait milestone domstable ignores a recurring timer" {
+    defer testing.reset();
+    const frame = try testing.pageTest("runner/wait_timer.html", .{ .wait_until_done = false });
+    defer frame._session.removePage();
+
+    var runner = try frame._session.runner(.{});
+    const timer = try Timer.start();
+    try runner.wait(.{ .ms = 2_000, .until = .domstable });
+    const elapsed_ms = millisSince(timer);
+
+    // Load plus the quiet DOM interval, while the interval callback is alive.
+    try testing.expect(elapsed_ms >= HostIdle.dom_stable_ms);
+    try testing.expect(elapsed_ms < 1_500);
+    try testing.expect(try evaluateWaitScript(frame, "window.backgroundTicks > 0"));
+    try testing.expectEqualStrings("article", try elementText(frame, "#content"));
+}
+
+test "Runner: wait milestone done stays open while a timer is scheduled" {
+    defer testing.reset();
+    const frame = try testing.pageTest("runner/wait_timer.html", .{ .wait_until_done = false });
+    defer frame._session.removePage();
+
+    var runner = try frame._session.runner(.{});
+    const timer = try Timer.start();
+    try runner.wait(.{ .ms = 800, .until = .done });
+
+    // isFullyIdle is false for the life of the interval, so this wait uses
+    // the budget and still returns. Returning at DOMContentLoaded would be
+    // the crawl regression.
+    try testing.expect(millisSince(timer) >= 700);
+    try testing.expect(try evaluateWaitScript(frame, "window.backgroundTicks > 0"));
+    try testing.expectEqualStrings("article", try elementText(frame, "#content"));
+}
+
+test "Runner: wait milestone repeated DOM writes keep domstable open" {
+    defer testing.reset();
+    const frame = try testing.pageTest("runner/wait_dom_churn.html", .{ .wait_until_done = false });
+    defer frame._session.removePage();
+
+    var runner = try frame._session.runner(.{});
+    const timer = try Timer.start();
+    try runner.wait(.{ .ms = 1_000, .until = .domstable });
+
+    // Each text change restarts the 500ms quiet interval, so the wait cannot
+    // succeed before this budget.
+    try testing.expect(millisSince(timer) >= 900);
+    try testing.expect(!std.mem.eql(u8, try elementText(frame, "#content"), "0"));
+}
+
+test "Runner: wait milestone a slow image does not hold parse or domstable" {
+    defer testing.reset();
+    const frame = try testing.pageTest("runner/wait_slow_image.html", .{ .wait_until_done = false });
+    defer frame._session.removePage();
+
+    var runner = try frame._session.runner(.{});
+    var timer = try Timer.start();
+    try runner.wait(.{ .ms = 2_000, .until = .domcontentloaded });
+
+    // The fixture holds /slow-image.png for 1s. DOMContentLoaded is a parse
+    // milestone, so it must return while that transfer is still open.
+    try testing.expect(millisSince(timer) < 700);
+    try testing.expectEqualStrings("article", try elementText(frame, "#content"));
+    try testing.expect(try evaluateWaitScript(frame, "window.marks.dcl === true"));
+    try testing.expect(try evaluateWaitScript(frame, "document.querySelector('#slow') !== null && document.querySelector('#slow').complete === false"));
+
+    timer = try Timer.start();
+    try runner.wait(.{ .ms = 2_000, .until = .domstable });
+    const stable_ms = millisSince(timer);
+    // domstable follows the loaded document's generation. An in-flight image
+    // is not an input until it changes the DOM, so this must settle on the
+    // quiet interval instead of waiting out the image.
+    try testing.expect(stable_ms >= HostIdle.dom_stable_ms);
+    try testing.expect(stable_ms < 900);
+    try testing.expect(try evaluateWaitScript(frame, "document.querySelector('#slow').complete === false"));
+
+    timer = try Timer.start();
+    try runner.wait(.{ .ms = 3_000, .until = .done });
+    // done still owns the open transfer. Returning here at the domstable
+    // boundary would leave the decoded image out of the snapshot.
+    try testing.expect(millisSince(timer) >= 200);
+    try testing.expect(try evaluateWaitScript(frame, "document.querySelector('#slow').complete === true && document.querySelector('#slow').naturalWidth === 1"));
+}
+
+test "Runner: wait milestone a refused script does not pin the document" {
+    defer testing.reset();
+    const frame = try testing.pageTest("runner/wait_forbidden_script.html", .{ .wait_until_done = false });
+    defer frame._session.removePage();
+
+    var runner = try frame._session.runner(.{});
+    var timer = try Timer.start();
+    try runner.wait(.{ .ms = 2_000, .until = .domcontentloaded });
+
+    try testing.expect(millisSince(timer) < 1_000);
+    try testing.expectEqualStrings("article", try elementText(frame, "#before"));
+    try testing.expectEqualStrings("continued", try elementText(frame, "#after"));
+    try testing.expect(try evaluateWaitScript(frame, "window.scriptRan !== true"));
+
+    timer = try Timer.start();
+    try runner.wait(.{ .ms = 2_500, .until = .domstable });
+    const elapsed_ms = millisSince(timer);
+    try testing.expect(elapsed_ms >= HostIdle.dom_stable_ms);
+    try testing.expect(elapsed_ms < 2_000);
 }
 
 test "Runner: adaptive lazy idle resets on document extent changes" {

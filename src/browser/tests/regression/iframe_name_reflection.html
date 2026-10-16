@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+window.testing = { assertOk: () => document.body.id === "pass", printTimeoutState: () => console.log(document.body.textContent) };
+
+const iframe = document.createElement("iframe");
+iframe.setAttribute("name", "initial-frame-name");
+document.body.appendChild(iframe);
+
+try {
+  const initial = iframe.contentWindow.name === "initial-frame-name";
+  iframe.contentWindow.name = "script-assigned-name";
+  const result = {
+    attributeName: iframe.name === "initial-frame-name",
+    initialWindowName: initial,
+    assignedWindowName: iframe.contentWindow.name === "script-assigned-name",
+    parentWindowUnaffected: window.name !== "script-assigned-name",
+  };
+  if (Object.values(result).every(Boolean)) {
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+  } else {
+    document.body.textContent = JSON.stringify(result);
+  }
+} catch (error) {
+  document.body.textContent = String(error?.stack || error);
+}
+</script>

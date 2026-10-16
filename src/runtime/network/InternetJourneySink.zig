@@ -22,6 +22,10 @@ pub const ResponseMetadata = struct {
     request_id: u32,
     frame_id: u32,
     loader_id: u32,
+    /// Set from the request that owns this transfer. Iframe and subresource
+    /// transfers stay false so consumers can identify the top-level navigation
+    /// without guessing from event order.
+    topLevelNavigation: bool = false,
     redirect_count: u32,
     content_type: ?[]const u8,
 };
@@ -29,6 +33,8 @@ pub const ResponseMetadata = struct {
 const JourneyStage = struct {
     id: []const u8,
     measurement: []const u8 = "not-applicable-replay",
+    /// The transfer body belongs to one stage. Other stages reference it.
+    carries_body: bool = false,
 };
 
 const replay_stages = [_]JourneyStage{
@@ -42,9 +48,51 @@ const replay_stages = [_]JourneyStage{
     .{ .id = "request" },
     .{ .id = "redirect" },
     .{ .id = "server" },
-    .{ .id = "response" },
+    .{ .id = "response", .carries_body = true },
     .{ .id = "received", .measurement = "boundary" },
 };
+
+fn stageCarriesBody(id: []const u8) bool {
+    for (replay_stages) |stage| {
+        if (stage.carries_body and std.mem.eql(u8, stage.id, id)) return true;
+    }
+    return false;
+}
+
+fn bodyOwnerStage() ?[]const u8 {
+    var owner: ?[]const u8 = null;
+    for (replay_stages) |stage| {
+        if (!stage.carries_body) continue;
+        if (owner != null) return null;
+        owner = stage.id;
+    }
+    return owner;
+}
+
+const BodyRef = struct {
+    requestId: u32,
+    journeyStage: []const u8,
+};
+
+fn transferBodyRef(carries_body: bool, has_body: bool, request_id: u32, owner: ?[]const u8) ?BodyRef {
+    if (carries_body or !has_body) return null;
+    const stage = owner orelse return null;
+    return .{ .requestId = request_id, .journeyStage = stage };
+}
+
+fn bodyCaptureState(
+    carries_body: bool,
+    capture_enabled: bool,
+    has_transfer_body: bool,
+    response_is_text: bool,
+    has_response_bytes: bool,
+) []const u8 {
+    if (!capture_enabled) return "disabled";
+    if (!carries_body) return if (has_transfer_body) "referenced" else "not-applicable";
+    if (has_transfer_body) return "captured";
+    if (has_response_bytes and !response_is_text) return "unsupported-content-type";
+    return "unavailable";
+}
 
 // A browser process may own multiple Network instances. They can share the
 // same observability file, so serialization must live at module/process scope
@@ -134,6 +182,9 @@ pub fn emit(
 
     const response_capture = if (self.capture_bodies) captureBody(response_body, content_encoding, metadata.content_type) else "";
     const request_capture = if (self.capture_bodies) captureBody(request_body orelse "", null, null) else "";
+    const response_is_text = isTextContent(metadata.content_type, content_encoding);
+    const has_transfer_body = request_capture.len > 0 or (response_is_text and response_capture.len > 0);
+    const owner_stage = bodyOwnerStage();
 
     const Stage = struct { id: []const u8, duration_us: u64, measurement: []const u8 = "measured" };
     const connection_reused = timing.num_connects == 0 and timing.connection_id >= 0;
@@ -200,6 +251,7 @@ pub fn emit(
                 .requestId = metadata.request_id,
                 .frameId = metadata.frame_id,
                 .loaderId = metadata.loader_id,
+                .topLevelNavigation = metadata.topLevelNavigation,
                 .responseStatus = response_code,
                 .responseBodyBytes = timing.response_body_bytes,
                 .compressedSizeBytes = compressed_size,
@@ -219,9 +271,16 @@ pub fn emit(
                 .contentType = metadata.content_type,
                 .requestHeaders = if (request_header_output.written().len > 0) request_header_output.written() else null,
                 .responseHeaders = if (response_header_output.written().len > 0) response_header_output.written() else null,
-                .requestBody = if (request_capture.len > 0) request_capture else null,
-                .responseBody = if (response_capture.len > 0 and isTextContent(metadata.content_type, content_encoding)) response_capture else null,
-                .bodyCaptureState = if (!self.capture_bodies) "disabled" else if (isTextContent(metadata.content_type, content_encoding)) "captured" else "unsupported-content-type",
+                .requestBody = if (stageCarriesBody(stage.id) and request_capture.len > 0) request_capture else null,
+                .responseBody = if (stageCarriesBody(stage.id) and response_is_text and response_capture.len > 0) response_capture else null,
+                .bodyRef = transferBodyRef(stageCarriesBody(stage.id), has_transfer_body, metadata.request_id, owner_stage),
+                .bodyCaptureState = bodyCaptureState(
+                    stageCarriesBody(stage.id),
+                    self.capture_bodies,
+                    has_transfer_body,
+                    response_is_text,
+                    response_body.len > 0,
+                ),
                 .bodyTruncated = self.capture_bodies and isTextContent(metadata.content_type, content_encoding) and response_body.len > response_capture.len,
                 .cacheControl = cache_control,
                 .server = server,
@@ -269,6 +328,9 @@ pub fn emitReplay(
     const response_value = response_body orelse "";
     const response_capture = if (self.capture_bodies) captureBody(response_value, null, content_type) else "";
     const request_capture = if (self.capture_bodies) captureBody(request_body orelse "", null, null) else "";
+    const response_is_text = isTextContent(content_type, null);
+    const has_transfer_body = request_capture.len > 0 or (response_is_text and response_capture.len > 0);
+    const owner_stage = bodyOwnerStage();
     const now = datetime.milliTimestamp(.clock);
 
     var output: std.Io.Writer.Allocating = .init(self.allocator);
@@ -299,6 +361,7 @@ pub fn emitReplay(
                 .requestId = metadata.request_id,
                 .frameId = metadata.frame_id,
                 .loaderId = metadata.loader_id,
+                .topLevelNavigation = metadata.topLevelNavigation,
                 .responseStatus = status,
                 .responseBodyBytes = response_value.len,
                 .uncompressedSizeBytes = response_value.len,
@@ -313,10 +376,17 @@ pub fn emitReplay(
                 .contentType = content_type,
                 .requestHeaders = if (request_header_output.written().len > 0) request_header_output.written() else null,
                 .responseHeaders = if (response_header_output.written().len > 0) response_header_output.written() else null,
-                .requestBody = if (request_capture.len > 0) request_capture else null,
-                .responseBody = if (response_capture.len > 0 and isTextContent(content_type, null)) response_capture else null,
-                .bodyCaptureState = if (!self.capture_bodies) "disabled" else if (isTextContent(content_type, null)) "captured" else "unsupported-content-type",
-                .bodyTruncated = self.capture_bodies and isTextContent(content_type, null) and response_value.len > response_capture.len,
+                .requestBody = if (stage.carries_body and request_capture.len > 0) request_capture else null,
+                .responseBody = if (stage.carries_body and response_is_text and response_capture.len > 0) response_capture else null,
+                .bodyRef = transferBodyRef(stage.carries_body, has_transfer_body, metadata.request_id, owner_stage),
+                .bodyCaptureState = bodyCaptureState(
+                    stage.carries_body,
+                    self.capture_bodies,
+                    has_transfer_body,
+                    response_is_text,
+                    response_value.len > 0,
+                ),
+                .bodyTruncated = self.capture_bodies and response_is_text and response_value.len > response_capture.len,
                 .measurement = stage.measurement,
                 .terminalStatus = "ok",
                 .responseSource = "execution-replay",
@@ -397,6 +467,7 @@ pub fn emitBrowserStage(
         .payload = .{
             .browserStage = stage,
             .systemStage = systemStageForBrowserStage(stage),
+            .systemMeasurementState = "boundary",
             .frameId = frame_id,
             .loaderId = loader_id,
             .measurementState = measurement_state,
@@ -481,7 +552,7 @@ pub fn emitBrowserScript(self: *Self, duration_us: u64, frame_id: u32, loader_id
         .kind = "render",
         .name = "javascript",
         .status = "ok",
-        .payload = .{ .browserStage = "javascript", .systemStage = "thread-scheduler", .scriptUrl = url, .scriptKind = script_kind, .functionName = "<script>", .callId = event_id, .callKind = "script", .callDepth = @as(u8, 0), .frameId = frame_id, .loaderId = loader_id, .measurementState = "measured", .process = "Renderer", .thread = "Main", .processName = "Renderer", .threadName = "Main", .processId = std.c.getpid(), .threadId = std.Thread.getCurrentId(), .logicalCpuCount = sample.logical_cpu_count, .physicalMemoryBytes = sample.physical_memory_bytes, .residentMemoryBytes = sample.resident_memory_bytes, .cpuPercent = sample.cpu_percent, .cpuCoresUsed = sample.cpu_cores_used, .cpuSampleWindowMs = sample.cpu_sample_window_ms, .cpuSampleState = sample.cpu_sample_state, .contextSwitches = sample.context_switches, .diskReadBytes = sample.disk_read_bytes, .diskWriteBytes = sample.disk_write_bytes, .systemSampleState = sample.state },
+        .payload = .{ .browserStage = "javascript", .systemStage = "thread-scheduler", .systemMeasurementState = "boundary", .scriptUrl = url, .scriptKind = script_kind, .functionName = "<script>", .callId = event_id, .callKind = "script", .callDepth = @as(u8, 0), .frameId = frame_id, .loaderId = loader_id, .measurementState = "measured", .process = "Renderer", .thread = "Main", .processName = "Renderer", .threadName = "Main", .processId = std.c.getpid(), .threadId = std.Thread.getCurrentId(), .logicalCpuCount = sample.logical_cpu_count, .physicalMemoryBytes = sample.physical_memory_bytes, .residentMemoryBytes = sample.resident_memory_bytes, .cpuPercent = sample.cpu_percent, .cpuCoresUsed = sample.cpu_cores_used, .cpuSampleWindowMs = sample.cpu_sample_window_ms, .cpuSampleState = sample.cpu_sample_state, .contextSwitches = sample.context_switches, .diskReadBytes = sample.disk_read_bytes, .diskWriteBytes = sample.disk_write_bytes, .systemSampleState = sample.state },
     }}, .{}, &output.writer);
     try output.writer.writeByte('\n');
     try self.append(output.written());
@@ -798,6 +869,33 @@ test "InternetJourneySink labels zero durations without inventing a measurement"
     try std.testing.expectEqualStrings("reused", durationMeasurement("tcp", 0, "measured", true));
     try std.testing.expectEqualStrings("boundary", durationMeasurement("received", 0, "boundary", false));
     try std.testing.expectEqualStrings("measured", durationMeasurement("tcp", 1, "measured", true));
+}
+
+test "InternetJourneySink gives the transfer body to one stage" {
+    var owners: usize = 0;
+    var owner_id: []const u8 = "";
+    for (replay_stages) |stage| {
+        if (!stage.carries_body) continue;
+        owners += 1;
+        owner_id = stage.id;
+    }
+    try std.testing.expectEqual(@as(usize, 1), owners);
+    try std.testing.expect(stageCarriesBody(owner_id));
+    try std.testing.expect(bodyOwnerStage() != null);
+    try std.testing.expectEqualStrings(owner_id, bodyOwnerStage().?);
+    try std.testing.expect(transferBodyRef(true, true, 7, bodyOwnerStage()) == null);
+    const reference = transferBodyRef(false, true, 7, bodyOwnerStage()).?;
+    try std.testing.expectEqual(@as(u32, 7), reference.requestId);
+    try std.testing.expectEqualStrings(owner_id, reference.journeyStage);
+    try std.testing.expect(transferBodyRef(false, false, 7, bodyOwnerStage()) == null);
+}
+
+test "InternetJourneySink body state follows stage ownership" {
+    try std.testing.expectEqualStrings("captured", bodyCaptureState(true, true, true, true, true));
+    try std.testing.expectEqualStrings("referenced", bodyCaptureState(false, true, true, true, true));
+    try std.testing.expectEqualStrings("not-applicable", bodyCaptureState(false, true, false, true, false));
+    try std.testing.expectEqualStrings("unsupported-content-type", bodyCaptureState(true, true, false, false, true));
+    try std.testing.expectEqualStrings("disabled", bodyCaptureState(true, false, true, true, true));
 }
 
 test "InternetJourneySink replay stages never claim live network measurements" {

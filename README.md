@@ -150,6 +150,30 @@ See `koko-sdk/README.md` for launch profiles, semantic tree, NodeHandle, and CLI
 
 Fingerprint probes live under `scripts/`. TLS notes: `docs/tls-impersonate.md`.
 
+### Native macOS Chrome profile
+
+`chrome-macos-native` is an opt-in profile captured from the real Chrome
+installation on the current Apple Silicon host. It replays captured identity
+surfaces without antidetect-only overrides; the existing `chrome-current`
+profile remains unchanged.
+
+```bash
+./zig-out/bin/koko fetch --browser-profile chrome-macos-native \
+  https://example.com/
+```
+
+To recapture it through an isolated Chrome CDP session:
+
+```bash
+node scripts/capture-fingerprint.js chrome-macos-native \
+  http://127.0.0.1:9222 https://demo.fingerprint.com/playground native
+```
+
+Use `scripts/audit-fingerprint-signals.js` for a redacted Smart Signals
+summary and `scripts/compare-fingerprint-surfaces.js` for Chrome/Koko surface
+comparison. These tools report compatibility and server observations; they do
+not attempt to bypass third-party anti-fraud controls.
+
 ## Use Cases
 
 Koko is designed for:

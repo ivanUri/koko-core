@@ -1,0 +1,20 @@
+[
+  {
+    "kind": "audioinput",
+    "label": "",
+    "deviceId": "",
+    "groupId": ""
+  },
+  {
+    "kind": "videoinput",
+    "label": "",
+    "deviceId": "",
+    "groupId": ""
+  },
+  {
+    "kind": "audiooutput",
+    "label": "",
+    "deviceId": "",
+    "groupId": ""
+  }
+]

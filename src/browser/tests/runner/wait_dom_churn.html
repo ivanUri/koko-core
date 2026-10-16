@@ -1,0 +1,11 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>
+  <main id="content">0</main>
+  <script>
+    setInterval(() => {
+      const content = document.querySelector("#content");
+      content.textContent = String(Number(content.textContent) + 1);
+    }, 80);
+  </script>
+</body>

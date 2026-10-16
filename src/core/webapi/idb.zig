@@ -227,6 +227,7 @@ pub const IDBDatabase = struct {
     _frame: *Frame,
     _data: *DatabaseData,
     _closed: bool = false,
+    _on_close: ?js.Function.Global = null,
 
     pub fn getName(self: *const IDBDatabase) []const u8 {
         return self._data.name;
@@ -274,6 +275,14 @@ pub const IDBDatabase = struct {
         self._closed = true;
     }
 
+    pub fn getOnClose(self: *const IDBDatabase) ?js.Function.Global {
+        return self._on_close;
+    }
+
+    pub fn setOnClose(self: *IDBDatabase, cb: ?js.Function.Global) void {
+        self._on_close = cb;
+    }
+
     pub const JsApi = struct {
         pub const bridge = js.Bridge(IDBDatabase);
         pub const Meta = struct {
@@ -288,6 +297,7 @@ pub const IDBDatabase = struct {
         pub const deleteObjectStore = bridge.function(IDBDatabase.deleteObjectStore, .{});
         pub const transaction = bridge.function(IDBDatabase.transaction, .{});
         pub const close = bridge.function(IDBDatabase.close, .{});
+        pub const onclose = bridge.accessor(IDBDatabase.getOnClose, IDBDatabase.setOnClose, .{});
     };
 };
 
@@ -491,9 +501,100 @@ pub const IDBObjectStore = struct {
         return request_;
     }
 
-    pub fn count(self: *IDBObjectStore, frame: *Frame) !*IDBRequest {
+    fn queryKey(self: *IDBObjectStore, query: ?js.Value) !?[]const u8 {
+        const value = query orelse return null;
+        if (value.isNullOrUndefined()) return null;
+        return try self.keyString(value);
+    }
+
+    pub fn count(self: *IDBObjectStore, query: ?js.Value, frame: *Frame) !*IDBRequest {
+        const key = try self.queryKey(query);
         const request_ = try self.request();
-        try self.scheduleSuccess(request_, try frame.js.local.?.zigValueToJs(self._data.records.count(), .{}));
+        // Keys are unique in the store, so a key query is a membership test.
+        const total: usize = if (key) |wanted| @intFromBool(self._data.records.contains(wanted)) else self._data.records.count();
+        try self.scheduleSuccess(request_, try frame.js.local.?.zigValueToJs(total, .{}));
+        return request_;
+    }
+
+    pub fn getAllKeys(self: *IDBObjectStore, query: ?js.Value, limit: ?u32) !*IDBRequest {
+        const key = try self.queryKey(query);
+        return self.scheduleRead(try self.request(), key, limit, true);
+    }
+
+    pub fn getAll(self: *IDBObjectStore, query: ?js.Value, limit: ?u32) !*IDBRequest {
+        const key = try self.queryKey(query);
+        return self.scheduleRead(try self.request(), key, limit, false);
+    }
+
+    const ReadAll = struct {
+        request: *IDBRequest,
+        store: *StoreData,
+        transaction: ?*IDBTransaction,
+        query: ?[]const u8,
+        limit: ?u32,
+        keys_only: bool,
+
+        fn run(ptr: *anyopaque) anyerror!?u32 {
+            const self: *ReadAll = @ptrCast(@alignCast(ptr));
+            errdefer if (self.transaction) |transaction| transaction.requestFinished() catch {};
+            var scope: js.Local.Scope = undefined;
+            self.request._frame.js.localScope(&scope);
+            defer scope.deinit();
+            try self.request.succeed(try self.fill(&scope.local));
+            if (self.transaction) |transaction| try transaction.requestFinished();
+            return null;
+        }
+
+        /// Build the result when the request runs, then let `succeed` clone it
+        /// once. The calling script does not walk or copy the store.
+        fn fill(self: *const ReadAll, local: *const js.Local) !js.Value {
+            const max = self.limit orelse std.math.maxInt(u32);
+            if (max == 0) return local.newArray(0).toValue();
+            if (self.query) |key| {
+                if (self.store.records.get(key)) |record| {
+                    const array = local.newArray(1);
+                    const source = if (self.keys_only) record.key else record.value;
+                    _ = try array.set(0, source.local(local), .{});
+                    return array.toValue();
+                }
+                return local.newArray(0).toValue();
+            }
+
+            var matched: u32 = 0;
+            var records = self.store.records.iterator();
+            while (records.next()) |_| {
+                matched += 1;
+                if (matched == max) break;
+            }
+            const array = local.newArray(matched);
+            var index: u32 = 0;
+            records = self.store.records.iterator();
+            while (index < matched) : (index += 1) {
+                const entry = records.next() orelse break;
+                const source = if (self.keys_only) entry.value_ptr.key else entry.value_ptr.value;
+                _ = try array.set(index, source.local(local), .{});
+            }
+            return array.toValue();
+        }
+    };
+
+    fn scheduleRead(self: *IDBObjectStore, request_: *IDBRequest, query: ?[]const u8, limit: ?u32, keys_only: bool) !*IDBRequest {
+        if (self._transaction) |transaction| transaction.requestStarted();
+        errdefer if (self._transaction) |transaction| {
+            if (transaction._pending_requests > 0) transaction._pending_requests -= 1;
+        };
+        const callback = try self._frame._factory.create(ReadAll{
+            .request = request_,
+            .store = self._data,
+            .transaction = self._transaction,
+            .query = query,
+            .limit = limit,
+            .keys_only = keys_only,
+        });
+        try self._frame.js.scheduler.add(callback, ReadAll.run, 0, .{
+            .name = "IndexedDB request",
+            .low_priority = false,
+        });
         return request_;
     }
 
@@ -543,6 +644,8 @@ pub const IDBObjectStore = struct {
         pub const delete = bridge.function(IDBObjectStore.delete, .{});
         pub const clear = bridge.function(IDBObjectStore.clear, .{});
         pub const count = bridge.function(IDBObjectStore.count, .{});
+        pub const getAllKeys = bridge.function(IDBObjectStore.getAllKeys, .{});
+        pub const getAll = bridge.function(IDBObjectStore.getAll, .{});
     };
 };
 

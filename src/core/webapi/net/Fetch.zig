@@ -50,6 +50,8 @@ _mode: Request.Mode,
 _integrity: []const u8,
 _method: []const u8,
 _fetch_resolved: bool = false,
+_abort_armed: bool = false,
+_preflight: ?*PreflightCtx = null,
 _stream: ?*ReadableStream = null,
 _pending_chunk_tasks: usize = 0,
 _keepalive: bool = false,
@@ -133,6 +135,8 @@ pub fn init(input: Input, options: ?InitOpts, exec: *const Execution) !js.Promis
         ._keepalive = request._keepalive,
     };
     try response.trackPendingFetch(exec.context.page);
+    try armFetchAbort(fetch);
+    errdefer disarmFetchAbort(fetch);
 
     const session = exec.context.page.session;
     const http_client = &session.browser.http_client;
@@ -328,6 +332,7 @@ fn startCorsPreflight(opts: PreflightStart) !void {
     const acrh = try arena.dupe(u8, acrh_buf.items);
 
     const pctx = try arena.create(PreflightCtx);
+    fetch._preflight = pctx;
     pctx.* = .{
         .fetch = fetch,
         .http_client = opts.http_client,
@@ -468,6 +473,7 @@ fn preflightDoneCallback(ctx: *anyopaque) !void {
 
     const exec = fetch._exec;
     const session = pctx.session;
+    fetch._preflight = null;
     pctx.http_client.request(.{
         .ctx = fetch,
         .params = .{
@@ -506,13 +512,18 @@ fn preflightDoneCallback(ctx: *anyopaque) !void {
 fn preflightErrorCallback(ctx: *anyopaque, err: anyerror) void {
     const pctx: *PreflightCtx = @ptrCast(@alignCast(ctx));
     const fetch = pctx.fetch;
+    fetch._preflight = null;
     releasePreflightMainHeaders(pctx);
     if (fetchJsUnavailable(fetch)) {
         releaseFetchResponse(fetch);
         return;
     }
     log.debug(.http, "cors preflight error", .{ .err = err, .url = fetch._url });
-    rejectFetchNetworkError(fetch) catch {};
+    if (err == error.Abort) {
+        rejectFetchAbort(fetch) catch {};
+    } else {
+        rejectFetchNetworkError(fetch) catch {};
+    }
 }
 
 fn preflightShutdownCallback(ctx: *anyopaque) void {
@@ -815,7 +826,53 @@ fn resolveFetchAfterBody(self: *Fetch) !void {
     ls.toLocal(self._resolver).resolve("fetch done", js_val);
 }
 
+fn armFetchAbort(fetch: *Fetch) !void {
+    if (fetch._abort_armed) return;
+    const signal = fetch._signal orelse return;
+    try signal.addAbortAlgorithm(.{ .ctx = fetch, .run = abortInflightFetch }, fetch._exec.arena);
+    fetch._abort_armed = true;
+}
+
+fn disarmFetchAbort(fetch: *Fetch) void {
+    if (!fetch._abort_armed) return;
+    fetch._abort_armed = false;
+    const signal = fetch._signal orelse return;
+    signal.removeAbortAlgorithm(fetch);
+}
+
+fn abortInflightFetch(ctx: *anyopaque) void {
+    const fetch: *Fetch = @ptrCast(@alignCast(ctx));
+    if (fetch._fetch_resolved) return;
+    const client = &fetch._exec.context.page.session.browser.http_client;
+    if (fetch._preflight) |pctx| {
+        client.abortTransferWithCtx(pctx, error.Abort);
+        return;
+    }
+    client.abortTransferWithCtx(fetch, error.Abort);
+}
+
+fn rejectFetchAbort(self: *Fetch) !void {
+    disarmFetchAbort(self);
+    if (self._fetch_resolved) return;
+    var ls: js.Local.Scope = undefined;
+    if (!self._exec.context.tryLocalScope(&ls)) {
+        if (self._owns_response) {
+            self._owns_response = false;
+            self._response.deinit(self._exec.context.page);
+        }
+        return;
+    }
+    defer ls.deinit();
+    self._fetch_resolved = true;
+    ls.toLocal(self._resolver).reject("fetch aborted", DOMException.init("The operation was aborted.", "AbortError"));
+    if (self._owns_response) {
+        self._owns_response = false;
+        self._response.deinit(self._exec.context.page);
+    }
+}
+
 fn rejectFetchNetworkError(self: *Fetch) !void {
+    disarmFetchAbort(self);
     const exec = self._exec;
     var blocked = exec.isTaskOwnerStale(self._task_owner);
     if (!blocked) {
@@ -944,7 +1001,11 @@ fn httpDataCallback(response: HttpClient.Response, data: []const u8) !void {
     try self._buf.appendSlice(self._response._arena, data);
 
     if (self._stream) |stream| {
-        const copy = try self._response._arena.dupe(u8, data);
+        // The response body remains in response._arena for Response consumers,
+        // while queued stream chunks may outlive Fetch/Response ownership.
+        // Allocate the deferred chunk in the realm arena once and let the
+        // controller retain that storage without another copy.
+        const copy = try self._exec.arena.dupe(u8, data);
         try scheduleDeferredFetchChunk(self, stream, copy);
     }
 }
@@ -969,6 +1030,7 @@ fn httpDoneCallback(ctx: *anyopaque) !void {
 /// Complete a finished fetch transfer into V8. **Task path only** (not curl
 /// done_callback). If still on transfer stack, re-queue.
 fn settleFetchDone(self: *Fetch) !void {
+    disarmFetchAbort(self);
     const exec = self._exec;
 
     // D3: if somehow called mid-transfer, bounce to scheduler.
@@ -1240,6 +1302,7 @@ fn scheduleDeferredFetchChunk(self: *Fetch, stream: *ReadableStream, data: []con
     try exec._scheduler.add(callback, DeferredFetchChunkCallback.run, 0, .{
         .name = "Fetch.chunk",
         .low_priority = false,
+        .finalizer = DeferredFetchChunkCallback.cancelled,
     });
     switch (exec.context.global) {
         .frame => |frame| frame.scheduleDeferredMacrotaskPump(0) catch {},
@@ -1252,18 +1315,32 @@ const DeferredFetchChunkCallback = struct {
     stream: *ReadableStream,
     data: []const u8,
     task_owner: RealmLifecycleKernel.TaskOwner,
+    released: bool = false,
+
+    fn release(self: *DeferredFetchChunkCallback) void {
+        if (self.released) return;
+        self.released = true;
+        if (self.fetch._pending_chunk_tasks > 0) {
+            self.fetch._pending_chunk_tasks -= 1;
+        }
+    }
+
+    fn cancelled(ctx: *anyopaque) void {
+        const self: *DeferredFetchChunkCallback = @ptrCast(@alignCast(ctx));
+        self.release();
+    }
 
     fn run(ctx: *anyopaque) !?u32 {
         const self: *DeferredFetchChunkCallback = @ptrCast(@alignCast(ctx));
         const fetch = self.fetch;
         if (fetch._exec.isTaskOwnerStale(self.task_owner) or fetch._exec.realmState() == .dead) {
-            fetch._pending_chunk_tasks -= 1;
+            self.release();
             return null;
         }
         if (fetchJsUnavailable(fetch)) return 1;
-        defer fetch._pending_chunk_tasks -= 1;
+        defer self.release();
         if (self.stream._state == .readable and !self.stream._close_requested) {
-            try self.stream._controller.enqueue(.{ .uint8array = .{ .values = self.data } });
+            try self.stream._controller.enqueueOwned(.{ .uint8array = .{ .values = self.data } });
         }
         return null;
     }
@@ -1332,6 +1409,7 @@ const DeferredFetchDoneCallback = struct {
 
 fn httpErrorCallback(ctx: *anyopaque, err: anyerror) void {
     const self: *Fetch = @ptrCast(@alignCast(ctx));
+    disarmFetchAbort(self);
 
     log.info(.http, "request error", .{
         .source = "fetch",
@@ -1400,12 +1478,18 @@ fn httpErrorCallback(ctx: *anyopaque, err: anyerror) void {
         return;
     }
 
+    self._fetch_resolved = true;
+    if (err == error.Abort) {
+        ls.toLocal(self._resolver).reject("fetch aborted", DOMException.init("The operation was aborted.", "AbortError"));
+        return;
+    }
     // fetch() must reject with a TypeError on network errors per spec
     ls.toLocal(self._resolver).rejectError("fetch error", .{ .type_error = "fetch error" });
 }
 
 fn httpShutdownCallback(ctx: *anyopaque) void {
     const self: *Fetch = @ptrCast(@alignCast(ctx));
+    disarmFetchAbort(self);
     if (comptime IS_DEBUG) {
         // should always be true when we still own the response
         std.debug.assert(self._owns_response or self._fetch_resolved);

@@ -37,6 +37,22 @@ function firstArrayDifference(left, right) {
   return null;
 }
 
+function identity(definition) {
+  return {
+    userAgent: definition.navigator?.userAgent ?? null,
+    platform: definition.navigator?.platform ?? null,
+    languages: definition.navigator?.languages ?? null,
+    hardwareConcurrency: definition.navigator?.hardwareConcurrency ?? null,
+    deviceMemory: definition.navigator?.deviceMemory ?? null,
+    userAgentData: definition.userAgentData ?? null,
+    timezone: definition.timezone ?? null,
+    locale: definition.locale ?? null,
+    timezoneOffset: definition.timezoneOffset ?? null,
+    screen: definition.screen ?? null,
+    window: definition.window ?? null,
+  };
+}
+
 function compare(chrome, koko) {
   const canvasChrome = chrome.asset("canvas-probe");
   const canvasKoko = koko.asset("canvas-probe");
@@ -80,6 +96,18 @@ function compare(chrome, koko) {
     koko: {
       id: koko.definition.id,
       capturedFrom: koko.definition.capturedFrom,
+    },
+    identity: {
+      exact: equal(identity(chrome.definition), identity(koko.definition)),
+      chrome: identity(chrome.definition),
+      koko: identity(koko.definition),
+      differences: Object.keys(identity(chrome.definition))
+        .filter((key) => !equal(identity(chrome.definition)[key], identity(koko.definition)[key]))
+        .map((key) => ({
+          key,
+          chrome: identity(chrome.definition)[key],
+          koko: identity(koko.definition)[key],
+        })),
     },
     canvas: {
       exact: equal(canvasChrome, canvasKoko),
@@ -168,6 +196,7 @@ function markdown(report) {
     "",
     "| Surface | Result | Evidence |",
     "|---|---:|---|",
+    `| Identity (UA/platform/UAData/timezone/screen/CPU) | ${status(report.identity.exact)} | ${report.identity.differences.length} field differences |`,
     `| Canvas | ${status(report.canvas.exact)} | data URL lengths Chrome ${report.canvas.chromeDataUrlLengths.join(", ")}; Koko ${report.canvas.kokoDataUrlLengths.join(", ")} |`,
     `| Fonts | ${status(report.fonts.exact)} | Chrome ${report.fonts.chromeCount}; Koko ${report.fonts.kokoCount}; shared ${report.fonts.sharedCount} |`,
     `| measureText | ${status(report.measureText.exact)} | ${report.measureText.chromeCount} entries |`,

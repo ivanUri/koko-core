@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+const iframe = document.createElement("iframe");
+let attempts = 0;
+
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(JSON.stringify({ attempts, state: document.body.textContent })),
+};
+
+iframe.srcdoc = "<!doctype html><body>loaded</body>";
+document.body.appendChild(iframe);
+
+function checkReady() {
+  attempts += 1;
+  const childDocument = iframe.contentDocument;
+  const result = {
+    childDocumentExists: childDocument !== null,
+    childBodyExists: childDocument?.body !== null,
+    childBodyText: childDocument?.body?.textContent === "loaded",
+    childReadyState: ["interactive", "complete"].includes(childDocument?.readyState),
+  };
+  if (Object.values(result).every(Boolean)) {
+    document.body.id = "pass";
+    document.body.textContent = "pass";
+  } else if (attempts >= 20) {
+    document.body.textContent = JSON.stringify({ result, attempts });
+  } else {
+    setTimeout(checkReady, 10);
+  }
+}
+
+setTimeout(checkReady, 0);
+</script>

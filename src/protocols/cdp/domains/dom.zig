@@ -386,7 +386,11 @@ fn scrollIntoViewIfNeeded(cmd: *CDP.Command) !void {
     const node = try getNode(cmd.arena, bc, params.nodeId, params.backendNodeId, params.objectId);
 
     switch (node.dom._type) {
-        .element => {},
+        .element => {
+            const frame = bc.session.currentFrame() orelse return error.FrameNotLoaded;
+            const element = node.dom.is(DOMNode.Element) orelse return error.NodeDoesNotHaveGeometry;
+            try element.scrollIntoViewIfNeeded(null, node.dom.ownerFrame(frame));
+        },
         .document => {},
         .cdata => {},
         else => return error.NodeDoesNotHaveGeometry,
@@ -743,4 +747,35 @@ test "cdp.dom: getBoxModel" {
     try testing.expect(model.get("content").?.array.items.len == 8);
     try testing.expect(model.get("width").?.integer > 0);
     try testing.expect(model.get("height").?.integer > 0);
+}
+
+test "cdp.dom: scrollIntoViewIfNeeded scrolls the target element" {
+    var ctx = try testing.context();
+    defer ctx.deinit();
+
+    _ = try ctx.loadBrowserContext(.{ .id = "BID-SCROLL", .url = "cdp/dom_scroll_into_view.html" });
+    const bc = ctx.cdp().browser_context.?;
+    const frame = bc.session.currentFrame().?;
+    try testing.expectEqual(@as(u32, 0), frame.window.getScrollY());
+
+    try ctx.processMessage(.{
+        .id = 3,
+        .method = "DOM.getDocument",
+    });
+    try ctx.processMessage(.{
+        .id = 4,
+        .method = "DOM.querySelector",
+        .params = .{ .nodeId = 1, .selector = "#target" },
+    });
+    try ctx.expectSentEvent("DOM.setChildNodes", null, .{});
+    const query_result = (try ctx.getSentMessageById(4)).?.object.get("result").?.object;
+    const target_node_id = query_result.get("nodeId").?.integer;
+
+    try ctx.processMessage(.{
+        .id = 5,
+        .method = "DOM.scrollIntoViewIfNeeded",
+        .params = .{ .nodeId = target_node_id },
+    });
+    try ctx.expectSentResult(null, .{ .id = 5 });
+    try testing.expect(frame.window.getScrollY() > 0);
 }
