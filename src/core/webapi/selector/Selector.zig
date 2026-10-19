@@ -30,7 +30,8 @@ pub fn parseLeaky(arena: Allocator, input: []const u8) !Parsed {
 }
 
 pub fn querySelector(root: *Node, input: []const u8, frame: *Frame) !?*Node.Element {
-    const parsed = try parseLeaky(frame.call_arena, input);
+    const selectors = try frame.parseSelectorCached(input);
+    const parsed = Parsed{ .selectors = selectors };
     return parsed.query(root, frame);
 }
 
@@ -65,8 +66,7 @@ pub fn matches(el: *Node.Element, input: []const u8, frame: *Frame) !bool {
         return error.SyntaxError;
     }
 
-    const arena = frame.call_arena;
-    const selectors = try Parser.parseList(arena, input);
+    const selectors = try frame.parseSelectorCached(input);
 
     for (selectors) |selector| {
         if (List.matches(el.asNode(), selector, el.asNode(), frame)) {
@@ -83,8 +83,7 @@ pub fn matchesWithScope(el: *Node.Element, input: []const u8, scope: *Node.Eleme
         return error.SyntaxError;
     }
 
-    const arena = frame.call_arena;
-    const selectors = try Parser.parseList(arena, input);
+    const selectors = try frame.parseSelectorCached(input);
 
     for (selectors) |selector| {
         if (List.matches(el.asNode(), selector, scope.asNode(), frame)) {

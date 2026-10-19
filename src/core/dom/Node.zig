@@ -1105,13 +1105,23 @@ pub fn replaceChildren(self: *Node, nodes: []const NodeOrText, frame: *Frame) !v
 
     // Append new children
     const parent_is_connected = self.isConnected();
+    const parent_owner = self.ownerDocument(frame) orelse self.as(Document);
     for (children_to_add.items) |child| {
         var child_connected = false;
         if (child._parent) |previous_parent| {
             child_connected = child.isConnected();
             frame.removeNode(previous_parent, child, .{ .will_be_reconnected = parent_is_connected });
         }
-        try frame.appendNode(self, child, .{ .child_already_connected = child_connected });
+        // Adopt if moving between documents (mirrors appendChild / insertBefore logic).
+        const child_owner = child.ownerDocument(frame);
+        const adopting = child_owner != null and child_owner.? != parent_owner;
+        if (adopting) {
+            try frame.adoptNodeTree(child, child_owner.?, parent_owner);
+        }
+        try frame.appendNode(self, child, .{
+            .child_already_connected = child_connected,
+            .adopting_to_new_document = adopting,
+        });
     }
 }
 

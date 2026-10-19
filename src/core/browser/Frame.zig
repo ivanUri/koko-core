@@ -56,6 +56,9 @@ const SubmitEvent = @import("../webapi/event/SubmitEvent.zig");
 const NavigationKind = @import("../webapi/navigation/root.zig").NavigationKind;
 const KeyboardEvent = @import("../webapi/event/KeyboardEvent.zig");
 const MouseEvent = @import("../webapi/event/MouseEvent.zig");
+const SelectorMod = @import("../webapi/selector/Selector.zig");
+const SelectorParser = @import("../webapi/selector/Parser.zig");
+pub const SelectorList = []const SelectorMod.Selector;
 
 const HttpClient = @import("HttpClient.zig");
 const http = @import("../../runtime/network/http.zig");
@@ -85,6 +88,39 @@ fn assert(ok: bool, comptime msg: []const u8, args: anytype) void {
     if (ok) return;
     log.err(.app, msg, args);
     std.debug.assert(ok);
+}
+
+/// Maximum number of distinct selector strings cached per Frame realm.
+/// When full, the oldest entry is evicted (FIFO) to keep memory bounded.
+const selector_cache_limit = 256;
+
+/// Return a cached parsed selector list for `input`, or parse and cache it.
+/// The resulting AST lives in frame.arena — valid for the realm lifetime.
+/// Selectors longer than 512 bytes are never cached (likely one-shot dynamic).
+pub fn parseSelectorCached(self: *Frame, input: []const u8) !SelectorList {
+    // Skip cache for very long selectors — almost certainly not repeated.
+    if (input.len > 512) {
+        return SelectorParser.parseList(self.arena, input);
+    }
+
+    if (self._selector_cache.get(input)) |cached| {
+        return cached;
+    }
+
+    // Evict oldest entry when at capacity.
+    if (self._selector_cache_keys.items.len >= selector_cache_limit) {
+        const evict_key = self._selector_cache_keys.items[0];
+        _ = self._selector_cache.remove(evict_key);
+        _ = self._selector_cache_keys.orderedRemove(0);
+    }
+
+    // Parse into frame.arena so the AST survives across call_arena resets.
+    const selectors = try SelectorParser.parseList(self.arena, input);
+    // Key must also live in frame.arena.
+    const key = try self.arena.dupe(u8, input);
+    try self._selector_cache.put(self.arena, key, selectors);
+    try self._selector_cache_keys.append(self.arena, key);
+    return selectors;
 }
 
 pub fn historyStore(self: *Frame) *@import("../webapi/History.zig") {
@@ -201,6 +237,12 @@ _manual_slot_assignments: std.AutoHashMapUnmanaged(*Element.Html.Slot, []const *
 _element_scroll_positions: Element.ScrollPositionLookup = .empty,
 _element_namespace_uris: Element.NamespaceUriLookup = .empty,
 _attr_associated_elements: @import("../dom/AttrAssociatedElement.zig").Lookup = .empty,
+/// Bounded cache of parsed CSS selector ASTs keyed on selector text.
+/// Avoids re-parsing the same selector string on every querySelector/matches call.
+/// Capacity is capped at selector_cache_limit; older entries are evicted FIFO.
+/// The parsed AST lives in frame.arena and is valid for the entire realm lifetime.
+_selector_cache: std.StringHashMapUnmanaged(SelectorList) = .{},
+_selector_cache_keys: std.ArrayListUnmanaged([]const u8) = .empty,
 
 /// Lazily-created inline event listeners (or listeners provided as attributes).
 /// Avoids bloating all elements with extra function fields for rare usage.
@@ -4495,6 +4537,18 @@ pub fn unregisterMutationObserver(self: *Frame, observer: *MutationObserver) voi
     self._mutation_observers.remove(&observer.node);
 }
 
+/// Returns true if `observer` is still in the active delivery list.
+/// Used by the snapshot-based deliverMutations loop to skip observers
+/// that were disconnected by a prior callback in the same delivery pass.
+pub fn isMutationObserverRegistered(self: *const Frame, observer: *const MutationObserver) bool {
+    var it: ?*std.DoublyLinkedList.Node = self._mutation_observers.first;
+    while (it) |n| : (it = n.next) {
+        const obs: *MutationObserver = @fieldParentPtr("node", n);
+        if (obs == observer) return true;
+    }
+    return false;
+}
+
 pub fn registerIntersectionObserver(self: *Frame, observer: *IntersectionObserver) !void {
     observer.acquireRef();
     observer._registered_frame = self;
@@ -4704,18 +4758,36 @@ pub fn deliverMutations(self: *Frame) void {
         return;
     }
 
-    var it: ?*std.DoublyLinkedList.Node = self._mutation_observers.first;
-    while (it) |node| {
+    // Snapshot every registered observer and acquire a ref before entering JS.
+    // The previous `const next = node.next` approach only guarded against the
+    // *current* observer being disconnected; if observer A's callback calls
+    // observerB.disconnect(), B's DoublyLinkedList node and backing memory can
+    // be freed while `next` still points to it (UAF). By snapshotting with
+    // acquireRef we guarantee every pointer stays valid for the full delivery
+    // loop regardless of what JS does to the observer list.
+    var snapshot_buf: [256]*MutationObserver = undefined;
+    var snapshot_len: usize = 0;
+    {
+        var snap_it: ?*std.DoublyLinkedList.Node = self._mutation_observers.first;
+        while (snap_it) |n| : (snap_it = n.next) {
+            if (snapshot_len >= snapshot_buf.len) break; // safety cap
+            const obs: *MutationObserver = @fieldParentPtr("node", n);
+            obs.acquireRef();
+            snapshot_buf[snapshot_len] = obs;
+            snapshot_len += 1;
+        }
+    }
+    // Release all refs unconditionally — even when delivery is aborted early.
+    defer for (snapshot_buf[0..snapshot_len]) |obs| obs.releaseRef(self._page);
+
+    for (snapshot_buf[0..snapshot_len]) |observer| {
         if (self._detach_pending or self._realm_state == .dead or
             self.js.execution.isTaskOwnerStale(self._mutation_delivery_task_owner)) break;
-        // The callback can disconnect/destroy this observer or detach its
-        // entire frame. Capture the continuation before entering JavaScript.
-        const next = node.next;
-        const observer: *MutationObserver = @fieldParentPtr("node", node);
+        // Skip observers that were disconnected during a prior callback in this loop.
+        if (!self.isMutationObserverRegistered(observer)) continue;
         observer.deliverRecords(self) catch |err| {
             log.err(.frame, "frame.deliverMutations", .{ .err = err, .type = self._type, .url = self.url });
         };
-        it = next;
     }
 }
 
@@ -6130,6 +6202,8 @@ pub fn appendNode(self: *Frame, parent: *Node, child: *Node, opts: InsertNodeOpt
 pub fn appendAllChildren(self: *Frame, parent: *Node, target: *Node) !void {
     self.domChanged();
     const dest_connected = target.isConnected();
+    // Resolve target owner once; children from a different document need adoption.
+    const target_owner = target.ownerDocument(self) orelse target.as(Document);
 
     // Use firstChild() instead of iterator to handle cases where callbacks
     // (like custom element connectedCallback) modify the parent during iteration.
@@ -6138,13 +6212,24 @@ pub fn appendAllChildren(self: *Frame, parent: *Node, target: *Node) !void {
         // Check if child was connected BEFORE removing it from parent
         const child_was_connected = child.isConnected();
         self.removeNode(parent, child, .{ .will_be_reconnected = dest_connected });
-        try self.appendNode(target, child, .{ .child_already_connected = child_was_connected });
+        // Adopt if the child's document differs from the target document.
+        const child_owner = child.ownerDocument(self);
+        const adopting = child_owner != null and child_owner.? != target_owner;
+        if (adopting) {
+            try self.adoptNodeTree(child, child_owner.?, target_owner);
+        }
+        try self.appendNode(target, child, .{
+            .child_already_connected = child_was_connected,
+            .adopting_to_new_document = adopting,
+        });
     }
 }
 
 pub fn insertAllChildrenBefore(self: *Frame, fragment: *Node, parent: *Node, ref_node: *Node) !void {
     self.domChanged();
     const dest_connected = parent.isConnected();
+    // Resolve parent owner once; fragment children from a different document need adoption.
+    const parent_owner = parent.ownerDocument(self) orelse parent.as(Document);
 
     // Use firstChild() instead of iterator to handle cases where callbacks
     // (like custom element connectedCallback) modify the fragment during iteration.
@@ -6153,23 +6238,24 @@ pub fn insertAllChildrenBefore(self: *Frame, fragment: *Node, parent: *Node, ref
         // Check if child was connected BEFORE removing it from fragment
         const child_was_connected = child.isConnected();
         self.removeNode(fragment, child, .{ .will_be_reconnected = dest_connected });
+        // Adopt if the child's document differs from the target document.
+        const child_owner = child.ownerDocument(self);
+        const adopting = child_owner != null and child_owner.? != parent_owner;
+        if (adopting) {
+            try self.adoptNodeTree(child, child_owner.?, parent_owner);
+        }
+        const node_opts: InsertNodeOpts = .{
+            .child_already_connected = child_was_connected,
+            .adopting_to_new_document = adopting,
+        };
         // A callback fired by a previous iteration's insert (e.g. a custom
         // element's connectedCallback) may have detached ref_node from
         // parent. In that case, fall back to append so the remaining
         // children still land in `parent` in source order.
         if (ref_node._parent == parent) {
-            try self.insertNodeRelative(
-                parent,
-                child,
-                .{ .before = ref_node },
-                .{ .child_already_connected = child_was_connected },
-            );
+            try self.insertNodeRelative(parent, child, .{ .before = ref_node }, node_opts);
         } else {
-            try self.appendNode(
-                parent,
-                child,
-                .{ .child_already_connected = child_was_connected },
-            );
+            try self.appendNode(parent, child, node_opts);
         }
     }
 }

@@ -1085,11 +1085,20 @@ pub fn replaceWith(self: *Element, nodes: []const Node.NodeOrText, frame: *Frame
             frame.removeNode(current_parent, child, .{ .will_be_reconnected = parent_is_connected });
         }
 
+        // Adopt if the child belongs to a different document (e.g. from an iframe's
+        // document). Mirrors the adoption logic in appendChild / insertBefore.
+        const child_owner = child.ownerDocument(frame);
+        const parent_owner = parent.ownerDocument(frame) orelse parent.as(Node.Document);
+        const adopting = child_owner != null and child_owner.? != parent_owner;
+        if (adopting) {
+            try frame.adoptNodeTree(child, child_owner.?, parent_owner);
+        }
+
         try frame.insertNodeRelative(
             parent,
             child,
             .{ .before = ref_node },
-            .{ .child_already_connected = child.isConnected() },
+            .{ .child_already_connected = child.isConnected(), .adopting_to_new_document = adopting },
         );
     }
 

@@ -73,7 +73,7 @@ pub fn main(init: std.process.Init) !void {
     defer notification.deinit();
     defer browser.deinit();
 
-    _ = try browser.newSession(notification);
+    const session = try browser.newSession(notification);
 
     var dir = try std.Io.Dir.cwd().openDir(init.io, "src/browser/tests/legacy/", .{ .iterate = true, .follow_symlinks = false });
     defer dir.close(init.io);
