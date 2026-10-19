@@ -156,7 +156,9 @@ pub fn log(comptime scope: Scope, level: Level, comptime msg: []const u8, data: 
         defer std.Io.unlockStderr(io);
 
         logTo(scope, level, msg, data, &locked_stderr.file_writer.interface) catch |log_err| {
-            std.debug.print("$time={d} $level=fatal $scope={s} $msg=\"log err\" err={s} log_msg=\"{s}\"\n", .{ timestamp(.clock), @errorName(log_err), @tagName(scope), msg });
+            // WriteFailed can occur when formatting JS values (e.g. during V8 stack overflow
+            // on sites like nytimes.com). This is not a fatal condition — downgrade to warn.
+            std.debug.print("$time={d} $level=warn $scope={s} $msg=\"log err\" err={s} log_msg=\"{s}\"\n", .{ timestamp(.clock), @errorName(log_err), @tagName(scope), msg });
         };
     }
 

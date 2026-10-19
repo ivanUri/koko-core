@@ -210,6 +210,16 @@ pub fn upgradeCustomElement(custom: *Custom, definition: *CustomElementDefinitio
     defer ls.deinit();
 
     var caught: js.TryCatch.Caught = undefined;
+
+    // Guard: do not call the constructor when V8 is already on the native stack.
+    // Upgrade can be triggered from DOM mutation observers or parser callbacks while
+    // V8 is still executing (e.g. nyt-betamax during IntersectionObserver delivery).
+    // A recursive constructor entry there hits V8_Fatal before TryCatch intercepts.
+    if (frame.js.env.anyContextOnV8Stack()) {
+        log.warn(.js, "custom element upgrade deferred: V8 on stack", .{ .name = definition.name });
+        return error.CustomElementUpgradeFailed;
+    }
+
     _ = ls.toLocal(definition.constructor).newInstance(&caught) catch |err| {
         log.warn(.js, "custom element upgrade", .{ .name = definition.name, .err = err, .caught = caught });
         return error.CustomElementUpgradeFailed;
