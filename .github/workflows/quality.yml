@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: 0.16.0
       - name: Check formatting
         run: zig fmt --check src build.zig build.zig.zon
 
@@ -51,16 +51,16 @@ jobs:
           submodules: recursive
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: 0.16.0
       - uses: actions/cache@v4
         with:
           path: |
             .koko-cache
             .zig-cache
             ~/Library/Caches/zig
-          key: koko-macos-15-arm64-zig-0.15.2-${{ hashFiles('build.zig', 'build.zig.zon', 'vendor/v8-wrapper/**') }}
+          key: koko-macos-15-arm64-zig-0.16.0-${{ hashFiles('build.zig', 'build.zig.zon', 'vendor/v8-wrapper/**') }}
           restore-keys: |
-            koko-macos-15-arm64-zig-0.15.2-
+            koko-macos-15-arm64-zig-0.16.0-
       - name: Compile check
         run: zig build check
       - name: Run deterministic tests
