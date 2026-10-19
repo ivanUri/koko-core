@@ -44,7 +44,7 @@
         },
         .usrsctp = .{
             .url = "https://github.com/sctplab/usrsctp/archive/refs/heads/master.tar.gz",
-            .hash = "N-V-__8AAH8JWAAnLo1IhGB_xM7Gds4eXGoF64rFChCefjNr",
+            .hash = "N-V-__8AAEcJWAB9yCJ77nhUrvgBRXgNiSncojVvnrocR6BC",
         },
     },
     .paths = .{""},
