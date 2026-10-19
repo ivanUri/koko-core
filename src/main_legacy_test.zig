@@ -3,6 +3,25 @@ const v = @import("koko");
 
 const Allocator = std.mem.Allocator;
 
+// Simple WaitGroup to avoid cross-module file conflicts in Zig 0.16
+const WaitGroup = struct {
+    remaining: std.atomic.Value(usize) = .init(0),
+
+    pub fn startMany(self: *WaitGroup, count: usize) void {
+        _ = self.remaining.fetchAdd(count, .release);
+    }
+
+    pub fn finish(self: *WaitGroup) void {
+        _ = self.remaining.fetchSub(1, .release);
+    }
+
+    pub fn wait(self: *WaitGroup) void {
+        while (self.remaining.load(.acquire) != 0) {
+            std.Io.sleep(v.io.get(), .fromNanoseconds(std.time.ns_per_ms), .awake) catch {};
+        }
+    }
+};
+
 // used in custom panic handler
 var current_test: ?[]const u8 = null;
 
@@ -21,11 +40,11 @@ pub fn main(init: std.process.Init) !void {
         filter = n;
     }
 
-    var http_server = try TestHTTPServer.init();
-    defer http_server.deinit();
+    var http_server = try TestHTTPServer.init(init.io);
+    defer http_server.deinit(init.io);
 
     {
-        var wg: std.Thread.WaitGroup = .{};
+        var wg: WaitGroup = .{};
         wg.startMany(1);
         var thrd = try std.Thread.spawn(.{}, TestHTTPServer.run, .{ &http_server, &wg });
         thrd.detach();
@@ -54,13 +73,13 @@ pub fn main(init: std.process.Init) !void {
     const session = try browser.newSession(notification);
     defer session.deinit();
 
-    var dir = try std.fs.cwd().openDir("src/browser/tests/legacy/", .{ .iterate = true, .no_follow = true });
-    defer dir.close();
+    var dir = try std.Io.Dir.cwd().openDir(init.io, "src/browser/tests/legacy/", .{ .iterate = true, .follow_symlinks = false });
+    defer dir.close(init.io);
 
     var walker = try dir.walk(allocator);
     defer walker.deinit();
 
-    while (try walker.next()) |entry| {
+    while (try walker.next(init.io)) |entry| {
         _ = test_arena.reset(.retain_capacity);
         if (entry.kind != .file) {
             continue;
@@ -114,35 +133,36 @@ pub fn run(allocator: Allocator, file: []const u8, session: *v.Session) !void {
 
 const TestHTTPServer = struct {
     shutdown: bool,
-    dir: std.fs.Dir,
-    listener: ?std.net.Server,
+    dir: std.Io.Dir,
+    listener: ?std.Io.net.Server,
 
-    pub fn init() !TestHTTPServer {
+    pub fn init(io: std.Io) !TestHTTPServer {
         return .{
-            .dir = try std.fs.cwd().openDir("src/browser/tests/legacy/", .{}),
+            .dir = try std.Io.Dir.cwd().openDir(io, "src/browser/tests/legacy/", .{}),
             .shutdown = true,
             .listener = null,
         };
     }
 
-    pub fn deinit(self: *TestHTTPServer) void {
+    pub fn deinit(self: *TestHTTPServer, io: std.Io) void {
         self.shutdown = true;
         if (self.listener) |*listener| {
-            listener.deinit();
+            listener.socket.close(io);
         }
-        self.dir.close();
+        self.dir.close(io);
     }
 
-    pub fn run(self: *TestHTTPServer, wg: *std.Thread.WaitGroup) !void {
-        const address = try std.net.Address.parseIp("127.0.0.1", 9589);
+    pub fn run(self: *TestHTTPServer, wg: *WaitGroup) !void {
+        const address = try std.Io.net.IpAddress.parse("127.0.0.1", 9589);
+        const io = v.io.get();
 
-        self.listener = try address.listen(.{ .reuse_address = true });
+        self.listener = try address.listen(io, .{ .reuse_address = true });
         var listener = &self.listener.?;
 
         wg.finish();
 
         while (true) {
-            const conn = listener.accept() catch |err| {
+            const conn = listener.accept(io) catch |err| {
                 if (self.shutdown) {
                     return;
                 }
@@ -153,14 +173,16 @@ const TestHTTPServer = struct {
         }
     }
 
-    fn handleConnection(self: *TestHTTPServer, conn: std.net.Server.Connection) !void {
-        defer conn.stream.close();
+    fn handleConnection(self: *TestHTTPServer, conn: std.Io.net.Stream) !void {
+        const io = v.io.get();
+        defer conn.close(io);
 
         var req_buf: [2048]u8 = undefined;
-        var conn_reader = conn.stream.reader(&req_buf);
-        var conn_writer = conn.stream.writer(&req_buf);
+        var write_buf: [2048]u8 = undefined;
+        var conn_reader = conn.reader(io, &req_buf);
+        var conn_writer = conn.writer(io, &write_buf);
 
-        var http_server = std.http.Server.init(conn_reader.interface(), &conn_writer.interface);
+        var http_server = std.http.Server.init(&conn_reader.interface, &conn_writer.interface);
 
         while (true) {
             var req = http_server.receiveHead() catch |err| switch (err) {
@@ -181,6 +203,7 @@ const TestHTTPServer = struct {
     }
 
     fn handler(server: *TestHTTPServer, req: *std.http.Server.Request) !void {
+        const io = v.io.get();
         const path = req.head.target;
 
         if (std.mem.eql(u8, path, "/xhr")) {
@@ -200,10 +223,10 @@ const TestHTTPServer = struct {
         }
 
         // strip out leading '/' to make the path relative
-        const file = try server.dir.openFile(path[1..], .{});
-        defer file.close();
+        const file = try server.dir.openFile(io, path[1..], .{});
+        defer file.close(io);
 
-        const stat = try file.stat();
+        const stat = try file.stat(io);
         var send_buffer: [4096]u8 = undefined;
 
         var res = try req.respondStreaming(&send_buffer, .{
@@ -216,20 +239,20 @@ const TestHTTPServer = struct {
         });
 
         var read_buffer: [4096]u8 = undefined;
-        var reader = file.reader(&read_buffer);
+        var reader = file.reader(io, &read_buffer);
         _ = try res.writer.sendFileAll(&reader, .unlimited);
         try res.writer.flush();
         try res.end();
     }
 
-    pub fn sendFile(req: *std.http.Server.Request, file_path: []const u8) !void {
-        var file = std.fs.cwd().openFile(file_path, .{}) catch |err| switch (err) {
+    pub fn sendFile(io: std.Io, req: *std.http.Server.Request, file_path: []const u8) !void {
+        var file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| switch (err) {
             error.FileNotFound => return req.respond("server error", .{ .status = .not_found }),
             else => return err,
         };
-        defer file.close();
+        defer file.close(io);
 
-        const stat = try file.stat();
+        const stat = try file.stat(io);
         var send_buffer: [4096]u8 = undefined;
 
         var res = try req.respondStreaming(&send_buffer, .{
@@ -242,7 +265,7 @@ const TestHTTPServer = struct {
         });
 
         var read_buffer: [4096]u8 = undefined;
-        var reader = file.reader(&read_buffer);
+        var reader = file.reader(io, &read_buffer);
         _ = try res.writer.sendFileAll(&reader, .unlimited);
         try res.writer.flush();
         try res.end();
