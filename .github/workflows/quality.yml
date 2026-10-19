@@ -7,7 +7,7 @@ on:
       - "build.zig"
       - "build.zig.zon"
       - "src/**"
-      - "vendor/v8-wrapper/**"
+      - "vendor/**"
   push:
     branches:
       - main
@@ -16,7 +16,7 @@ on:
       - "build.zig"
       - "build.zig.zon"
       - "src/**"
-      - "vendor/v8-wrapper/**"
+      - "vendor/**"
   workflow_dispatch:
 
 concurrency:
@@ -52,13 +52,15 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      - name: Prepare Zig cache directories
+        run: mkdir -p "$HOME/.cache/zig/tmp" .koko-cache .zig-cache
       - uses: actions/cache@v4
         with:
           path: |
             .koko-cache
             .zig-cache
-            ~/Library/Caches/zig
-          key: koko-macos-15-arm64-zig-0.16.0-${{ hashFiles('build.zig', 'build.zig.zon', 'vendor/v8-wrapper/**') }}
+            ~/.cache/zig
+          key: koko-macos-15-arm64-zig-0.16.0-${{ hashFiles('build.zig', 'build.zig.zon', 'vendor/**') }}
           restore-keys: |
             koko-macos-15-arm64-zig-0.16.0-
       - name: Compile check

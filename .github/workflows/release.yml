@@ -57,6 +57,9 @@ jobs:
         with:
           version: 0.16.0
 
+      - name: Prepare Zig cache directories
+        run: mkdir -p "$HOME/.cache/zig/tmp"
+
       - name: Build Koko
         run: zig build -Doptimize=ReleaseFast -Dversion="${{ steps.meta.outputs.version }}"
 
