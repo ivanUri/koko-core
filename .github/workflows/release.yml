@@ -56,9 +56,10 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+          cache-key: ${{ hashFiles('build.zig', 'build.zig.zon', 'vendor/**') }}
 
       - name: Prepare Zig cache directories
-        run: mkdir -p "$HOME/.cache/zig/tmp"
+        run: mkdir -p .zig-cache/tmp
 
       - name: Build Koko
         run: zig build -Doptimize=ReleaseFast -Dversion="${{ steps.meta.outputs.version }}"

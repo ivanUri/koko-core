@@ -52,17 +52,16 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+          cache-key: ${{ hashFiles('build.zig', 'build.zig.zon', 'vendor/**') }}
       - name: Prepare Zig cache directories
-        run: mkdir -p "$HOME/.cache/zig/tmp" .koko-cache .zig-cache
+        run: mkdir -p .zig-cache/tmp .koko-cache
       - uses: actions/cache@v4
         with:
           path: |
             .koko-cache
-            .zig-cache
-            ~/.cache/zig
-          key: koko-macos-15-arm64-zig-0.16.0-${{ hashFiles('build.zig', 'build.zig.zon', 'vendor/**') }}
+          key: koko-macos-15-arm64-v8-${{ hashFiles('build.zig', 'build.zig.zon', 'vendor/**') }}
           restore-keys: |
-            koko-macos-15-arm64-zig-0.16.0-
+            koko-macos-15-arm64-v8-
       - name: Compile check
         run: zig build check
       - name: Run deterministic tests
