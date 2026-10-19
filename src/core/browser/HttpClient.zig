@@ -1280,6 +1280,8 @@ const SyncContext = struct {
 pub fn syncRequest(self: *Client, allocator: Allocator, params: RequestParams) !SyncResponse {
     var sync_ctx = SyncContext{ .allocator = allocator, .body = .empty };
     errdefer sync_ctx.body.deinit(allocator);
+    const browser_session = params.browser_session;
+    if (comptime IS_DEBUG) std.debug.assert(browser_session != null);
 
     var blocking_params = params;
     blocking_params.blocks_caller = true;
@@ -1294,8 +1296,24 @@ pub fn syncRequest(self: *Client, allocator: Allocator, params: RequestParams) !
     });
 
     while (sync_ctx.completion == .in_progress) {
+        if (browser_session) |session| {
+            if (session.browser.isHostTerminationRequested()) {
+                // `sync_ctx` is stack-owned. Remove the transfer and deliver its
+                // terminal callback before returning, otherwise a later curl
+                // completion would dereference a dead callback context.
+                self.abortTransferWithCtx(&sync_ctx, error.Shutdown);
+                if (sync_ctx.completion == .in_progress) return error.Shutdown;
+                break;
+            }
+        }
+
         const status = try self.tick(200);
         log.debug(.http, "sync request tick", .{ .status = status });
+        // A deadline can arrive while curl is polling. Check again before
+        // pumping scheduler work, which may enter another blocking task.
+        if (browser_session) |session| {
+            if (session.browser.isHostTerminationRequested()) continue;
+        }
         if (self.env) |env| {
             env.pumpSchedulerTasks();
         }
@@ -2139,8 +2157,9 @@ pub const RequestParams = struct {
     resource_type: ResourceType,
     credentials: ?[:0]const u8 = null,
     notification: *Notification,
-    /// Stable session pointer for redirect_policy_refresh when Frame ctx may be freed
-    /// (superseding root navigation discards pending page mid-redirect).
+    /// Stable session pointer for redirect policy and host cancellation when
+    /// Frame ctx may be freed. Required by syncRequest so parser-blocking I/O
+    /// cannot outlive a Browser termination deadline.
     browser_session: ?*Session = null,
     timeout_ms: u32 = 0,
     /// The initiating execution context or document lifecycle cannot progress

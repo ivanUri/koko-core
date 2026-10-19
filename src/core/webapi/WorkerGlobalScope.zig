@@ -970,6 +970,7 @@ fn importScriptBody(self: *WorkerGlobalScope, arena: Allocator, resolved_url: [:
         .top_level_cookie_url = self.url,
         .resource_type = .script,
         .notification = session.notification,
+        .browser_session = session,
     }) catch {
         return error.NetworkError;
     };

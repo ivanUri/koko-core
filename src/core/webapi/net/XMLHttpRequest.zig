@@ -193,11 +193,9 @@ pub fn getOnReadyStateChange(self: *const XMLHttpRequest) ?js.Function.Temp {
 }
 
 pub fn setOnReadyStateChange(self: *XMLHttpRequest, cb_: ?js.Function) !void {
-    if (cb_) |cb| {
-        self._on_ready_state_change = try cb.tempWithThis(self);
-    } else {
-        self._on_ready_state_change = null;
-    }
+    const next = if (cb_) |cb| try cb.tempWithThis(self) else null;
+    if (self._on_ready_state_change) |old| old.release();
+    self._on_ready_state_change = next;
 }
 
 pub fn getWithCredentials(self: *const XMLHttpRequest) bool {

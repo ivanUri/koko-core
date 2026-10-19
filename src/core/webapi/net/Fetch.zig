@@ -1490,6 +1490,12 @@ fn httpErrorCallback(ctx: *anyopaque, err: anyerror) void {
 fn httpShutdownCallback(ctx: *anyopaque) void {
     const self: *Fetch = @ptrCast(@alignCast(ctx));
     disarmFetchAbort(self);
+    // HttpClient owns and frees the Transfer immediately after this callback.
+    // Detach it even after the Response has moved to JS ownership; otherwise
+    // Page finalization later treats the stale pointer as live and aborts the
+    // already-freed transfer a second time.
+    var response = self._response;
+    response._http_response = null;
     if (comptime IS_DEBUG) {
         // should always be true when we still own the response
         std.debug.assert(self._owns_response or self._fetch_resolved);
@@ -1508,8 +1514,6 @@ fn httpShutdownCallback(ctx: *anyopaque) void {
     }
 
     if (self._owns_response) {
-        var response = self._response;
-        response._http_response = null;
         self._owns_response = false;
         response.deinit(self._exec.context.page);
         // Do not access `self` after this point: the Fetch struct was

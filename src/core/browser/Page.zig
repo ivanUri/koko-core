@@ -90,7 +90,21 @@ finalizer_callbacks: std.AutoHashMapUnmanaged(usize, *Session.FinalizerCallback)
 terminal_owners: std.AutoHashMapUnmanaged(usize, TerminalOwner) = .empty,
 
 // Tracked global v8 objects that need to be released when the Page tears down.
-globals: std.ArrayList(v8.Global) = .empty,
+//
+// v8::Global is a C++ persistent-handle object. It must not be stored by value
+// in a growable Zig ArrayList: a capacity growth would relocate it with a
+// bytewise copy, which can corrupt the handle's internal state. Store each
+// owner at a stable arena address and grow only the pointer list.
+globals: std.ArrayList(*v8.Global) = .empty,
+// O(1) liveness registry for copied Global views. The value is the index of
+// the stable owner in `globals`; callbacks resolve through that owner instead
+// of calling Global::Get on a copied view.
+global_handles: std.AutoHashMapUnmanaged(usize, usize) = .empty,
+
+// Function.Temp values cross host-task boundaries (timers, XHR, observers).
+// Keep their owning v8::Global objects at stable addresses and let the public
+// Function.Temp carry only a non-owning key into this registry.
+function_temps: std.AutoHashMapUnmanaged(usize, *v8.Global) = .empty,
 
 // Temporary v8 globals that can be released early. Key is global.data_ptr.
 temps: std.AutoHashMapUnmanaged(usize, v8.Global) = .empty,
@@ -313,10 +327,19 @@ pub fn deinit(self: *Page) void {
     }
 
     {
-        for (self.globals.items) |*global| {
+        for (self.globals.items) |global| {
             v8.v8__Global__Reset(global);
         }
         self.globals = .empty;
+        self.global_handles = .empty;
+    }
+
+    {
+        var it = self.function_temps.valueIterator();
+        while (it.next()) |global_ptr| {
+            v8.v8__Global__Reset(global_ptr.*);
+        }
+        self.function_temps = .empty;
     }
 
     {

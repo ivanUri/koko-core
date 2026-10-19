@@ -120,11 +120,10 @@ terminal_resources: std.ArrayList(TerminalResource) = .empty,
 // context.localScope
 local: ?*const js.Local = null,
 
-// The Local.Scope currently entered by Zig. This is intentionally separate
-// from `local`: callers use `local == null` to decide whether they own the
-// scope lifetime, while dispatch only needs to know whether it can reuse an
-// already-entered context and HandleScope.
-active_scope: ?*const js.Local = null,
+// Number of Zig-owned Local.Scopes currently entered for this context.
+// Scope objects live on caller stacks, so retaining their addresses here is
+// unsafe across re-entrant callbacks; consumers only need nesting state.
+active_scope_depth: usize = 0,
 
 // Internal exception helpers are persistent handles, not globalThis
 // properties. Exposing engine plumbing as __koko* own properties is both a
@@ -373,7 +372,46 @@ fn installOriginSecurityToken(self: *Context, origin: *Origin) void {
 }
 
 pub fn trackGlobal(self: *Context, global: v8.Global) !void {
-    return self.page.globals.append(self.page.frame_arena, global);
+    // Keep the actual v8::Global at a stable address. Storing it by value in
+    // a growable ArrayList lets reallocation byte-copy a non-trivial C++
+    // persistent handle and causes delayed crashes in async callbacks.
+    const owned = try self.page.frame_arena.create(v8.Global);
+    owned.* = global;
+    try self.page.globals.append(self.page.frame_arena, owned);
+    errdefer _ = self.page.globals.pop();
+    try self.page.global_handles.put(
+        self.page.frame_arena,
+        global.data_ptr,
+        self.page.globals.items.len - 1,
+    );
+}
+
+/// Create a Function.Global directly in its stable Page-owned storage. The
+/// returned value is a non-owning key view; only the Page registry may Reset
+/// the actual persistent handle.
+pub fn createFunctionGlobal(self: *Context, handle: *const v8.Function) !v8.Global {
+    const owned = try self.page.frame_arena.create(v8.Global);
+    v8.v8__Global__New(self.isolate.handle, handle, owned);
+    errdefer v8.v8__Global__Reset(owned);
+
+    try self.page.globals.append(self.page.frame_arena, owned);
+    errdefer _ = self.page.globals.pop();
+    try self.page.global_handles.put(
+        self.page.frame_arena,
+        owned.data_ptr,
+        self.page.globals.items.len - 1,
+    );
+    return owned.*;
+}
+
+/// Create a releasable Function.Temp without copying the owning v8::Global.
+/// Function.Temp.release removes this entry and resets it exactly once.
+pub fn createFunctionTemp(self: *Context, handle: *const v8.Function) !v8.Global {
+    const owned = try self.page.frame_arena.create(v8.Global);
+    v8.v8__Global__New(self.isolate.handle, handle, owned);
+    errdefer v8.v8__Global__Reset(owned);
+    try self.page.function_temps.put(self.page.frame_arena, owned.data_ptr, owned);
+    return owned.*;
 }
 
 pub fn trackTemp(self: *Context, global: v8.Global) !void {
@@ -417,6 +455,9 @@ pub const InstalledLocal = struct {
     }
 
     pub fn deinit(self: *InstalledLocal, ctx: *Context) void {
+        if (comptime IS_DEBUG) {
+            std.debug.assert(ctx.local == &self.scope.local);
+        }
         ctx.local = self.prev;
         self.scope.handle_scope.deinit();
     }
@@ -444,14 +485,13 @@ pub fn tryLocalScope(self: *Context, ls: *js.Local.Scope) bool {
         .call_arena = self.call_arena,
     };
 
-    // Publish the scope for the lifetime of the HandleScope. Event dispatch
+    // Publish scope depth for the lifetime of the HandleScope. Event dispatch
     // can be entered from these Zig-owned callbacks (not only from a V8
     // Caller), so the Context needs a separate active-scope marker. This
     // prevents dispatchDirect from creating a nested Local.Scope and running
     // a nested microtask checkpoint while a Worker message callback is active.
     ls.ctx = self;
-    ls.prev_active_scope = self.active_scope;
-    self.active_scope = &ls.local;
+    self.active_scope_depth += 1;
     return true;
 }
 

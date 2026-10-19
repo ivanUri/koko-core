@@ -327,7 +327,7 @@ fn drainUdp(self: *WebRtcThread, now_ms: u64) !void {
                 if (self._sctp) |sctp| {
                     const send_ctx = SctpTransport.SendCtx{
                         .sock = self._ice.fd(),
-                        .peer = @ptrCast(&self._peer_sockaddr),
+                        .peer = self._peer_sockaddr,
                         .peer_len = self._peer_sockaddr_len,
                     };
                     sctp.setCallbackContext(&send_ctx);

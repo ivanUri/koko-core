@@ -317,13 +317,16 @@ fn fetchThread(app: *App, ft: *FetchTerminator, url: [:0]const u8, fetch_opts: v
         log.fatal(.app, "browser init error", .{ .err = err });
         return;
     };
-    defer browser.deinit();
 
     const notification = v.Notification.init(app.allocator) catch |err| {
+        browser.deinit();
         log.fatal(.app, "notification init error", .{ .err = err });
         return;
     };
+    // Session borrows Notification. Register its owner last so Browser (and
+    // therefore Session) is destroyed before the borrowed registry.
     defer notification.deinit();
+    defer browser.deinit();
 
     const session = browser.newSession(notification) catch |err| {
         log.fatal(.app, "session init error", .{ .err = err });

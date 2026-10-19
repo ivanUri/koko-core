@@ -7,6 +7,7 @@ const js = @import("../js/js.zig");
 const Frame = @import("../browser/Frame.zig");
 const EventTarget = @import("EventTarget.zig");
 const Event = @import("Event.zig");
+const RealmLifecycleKernel = @import("../../runtime/RealmLifecycleKernel.zig");
 
 // IndexedDB is request/event based, not Promise based.  The storage backend
 // below is deliberately in-memory for now, but the API objects and their
@@ -117,6 +118,8 @@ pub const IDBOpenDBRequest = struct {
     _on_error: ?js.Function.Global = null,
     _on_upgrade_needed: ?js.Function.Global = null,
     _on_blocked: ?js.Function.Global = null,
+    _task_owner: ?RealmLifecycleKernel.TaskOwner = null,
+    _cancelled: bool = false,
 
     pub fn getResult(self: *const IDBOpenDBRequest) ?*IDBDatabase {
         return self._result;
@@ -157,6 +160,19 @@ pub const IDBOpenDBRequest = struct {
 
     fn run(ptr: *anyopaque) anyerror!?u32 {
         const self: *IDBOpenDBRequest = @ptrCast(@alignCast(ptr));
+        if (self._cancelled) return null;
+
+        // IndexedDB.open is a host task. It must not re-enter a navigated or
+        // detached realm, even if the task was already popped before the
+        // scheduler reset ran.
+        const exec = &self._frame.js.execution;
+        if (self._task_owner) |owner| {
+            if (exec.isTaskOwnerStale(owner) or !exec.canEnterJs(.strict_active)) {
+                self._cancelled = true;
+                return null;
+            }
+        }
+
         const arena = self._frame._page.frame_arena;
         const gop = try self._factory._databases.getOrPut(arena, self._name);
         const created = !gop.found_existing;
@@ -192,6 +208,7 @@ pub const IDBOpenDBRequest = struct {
             try self._frame._event_manager.dispatchDirect(self._proto, event, self._on_upgrade_needed, .{
                 .context = "IDBOpenDBRequest.upgradeneeded",
             });
+            if (self._cancelled or exec.isTaskOwnerStale(self._task_owner.?)) return null;
         }
 
         if (self._transaction) |txn| txn._active = false;
@@ -202,6 +219,11 @@ pub const IDBOpenDBRequest = struct {
             .context = "IDBOpenDBRequest.success",
         });
         return null;
+    }
+
+    fn cancelled(ptr: *anyopaque) void {
+        const self: *IDBOpenDBRequest = @ptrCast(@alignCast(ptr));
+        self._cancelled = true;
     }
 
     pub const JsApi = struct {
@@ -688,7 +710,9 @@ pub const IDBFactory = struct {
         try frame.js.scheduler.add(request, IDBOpenDBRequest.run, 0, .{
             .name = "IndexedDB.open",
             .low_priority = false,
+            .finalizer = IDBOpenDBRequest.cancelled,
         });
+        request._task_owner = frame.js.execution.captureTaskOwner();
         return request;
     }
 

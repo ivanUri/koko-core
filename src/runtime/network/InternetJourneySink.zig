@@ -185,6 +185,9 @@ pub fn emit(
     const response_is_text = isTextContent(metadata.content_type, content_encoding);
     const has_transfer_body = request_capture.len > 0 or (response_is_text and response_capture.len > 0);
     const owner_stage = bodyOwnerStage();
+    // response_body is the buffer libcurl delivered after content decoding.
+    // response_body_bytes stays the wire download size and is not a decoded length.
+    const sizes = observedResponseSize(timing.response_body_bytes, response_body);
 
     const Stage = struct { id: []const u8, duration_us: u64, measurement: []const u8 = "measured" };
     const connection_reused = timing.num_connects == 0 and timing.connection_id >= 0;
@@ -253,11 +256,11 @@ pub fn emit(
                 .loaderId = metadata.loader_id,
                 .topLevelNavigation = metadata.topLevelNavigation,
                 .responseStatus = response_code,
-                .responseBodyBytes = timing.response_body_bytes,
+                .responseBodyBytes = sizes.transferred_bytes,
                 .compressedSizeBytes = compressed_size,
-                .uncompressedSizeBytes = timing.response_body_bytes,
-                .responseMemoryBytes = timing.response_body_bytes,
-                .responseMemoryState = "estimated_from_transfer_size",
+                .uncompressedSizeBytes = sizes.uncompressed_bytes,
+                .responseMemoryBytes = sizes.memory_bytes,
+                .responseMemoryState = sizes.memory_state,
                 .contentEncoding = content_encoding,
                 .primaryIp = timing.primary_ip,
                 .connectionId = timing.connection_id,
@@ -420,6 +423,35 @@ fn isSensitiveHeader(name: []const u8) bool {
         std.ascii.eqlIgnoreCase(name, "x-auth-token") or
         std.ascii.eqlIgnoreCase(name, "x-csrf-token") or
         std.ascii.eqlIgnoreCase(name, "x-xsrf-token");
+}
+
+const ObservedResponseSize = struct {
+    transferred_bytes: u64,
+    uncompressed_bytes: ?u64,
+    memory_bytes: ?u64,
+    memory_state: []const u8,
+};
+
+/// Split the wire download from the decoded buffer the client actually kept.
+/// An empty buffer after a non-zero download was not retained (redirect or
+/// auth body skipped). Copying the wire size into the decoded fields would
+/// report compressed bytes as the body.
+fn observedResponseSize(transferred_bytes: u64, retained_body: []const u8) ObservedResponseSize {
+    if (retained_body.len > 0 or transferred_bytes == 0) {
+        const decoded: u64 = @intCast(retained_body.len);
+        return .{
+            .transferred_bytes = transferred_bytes,
+            .uncompressed_bytes = decoded,
+            .memory_bytes = decoded,
+            .memory_state = "decoded_body",
+        };
+    }
+    return .{
+        .transferred_bytes = transferred_bytes,
+        .uncompressed_bytes = null,
+        .memory_bytes = null,
+        .memory_state = "body_not_retained",
+    };
 }
 
 fn captureBody(body: []const u8, _: ?[]const u8, _: ?[]const u8) []const u8 {
@@ -843,6 +875,27 @@ fn systemStageForBrowserStage(stage: []const u8) []const u8 {
     if (std.mem.eql(u8, stage, "raster") or std.mem.eql(u8, stage, "composite")) return "gpu";
     if (std.mem.eql(u8, stage, "frame") or std.mem.eql(u8, stage, "present")) return "display";
     return "browser-processes";
+}
+
+test "InternetJourneySink decoded size is the retained body, not the wire size" {
+    const decoded = observedResponseSize(334, "x" ** 577);
+    try std.testing.expectEqual(@as(u64, 334), decoded.transferred_bytes);
+    try std.testing.expectEqual(@as(?u64, 577), decoded.uncompressed_bytes);
+    try std.testing.expectEqual(@as(?u64, 577), decoded.memory_bytes);
+    try std.testing.expectEqualStrings("decoded_body", decoded.memory_state);
+
+    const identity = observedResponseSize(5, "hello");
+    try std.testing.expectEqual(@as(?u64, 5), identity.uncompressed_bytes);
+    try std.testing.expectEqualStrings("decoded_body", identity.memory_state);
+
+    const empty = observedResponseSize(0, "");
+    try std.testing.expectEqual(@as(?u64, 0), empty.uncompressed_bytes);
+    try std.testing.expectEqualStrings("decoded_body", empty.memory_state);
+
+    const skipped = observedResponseSize(1_200, "");
+    try std.testing.expectEqual(@as(?u64, null), skipped.uncompressed_bytes);
+    try std.testing.expectEqual(@as(?u64, null), skipped.memory_bytes);
+    try std.testing.expectEqualStrings("body_not_retained", skipped.memory_state);
 }
 
 test "InternetJourneySink stage durations are non-overlapping" {

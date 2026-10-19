@@ -56,6 +56,8 @@ arena: Allocator,
 history: History,
 navigation: Navigation,
 storage_shed: storage.Shed,
+// Borrowed event registry. Its owner must keep it alive until this Session
+// has been closed because deinit emits frame_remove while Page is valid.
 notification: *Notification,
 cookie_jar: storage.Cookie.Jar,
 fingerprint_seed: u64 = 0,

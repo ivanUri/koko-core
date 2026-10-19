@@ -65,13 +65,15 @@ pub fn main(init: std.process.Init) !void {
 
     var browser: v.Browser = undefined;
     try browser.init(app, .{}, null);
+
+    const notification = v.Notification.init(allocator) catch |err| {
+        browser.deinit();
+        return err;
+    };
+    defer notification.deinit();
     defer browser.deinit();
 
-    const notification = try v.Notification.init(allocator);
-    defer notification.deinit();
-
-    const session = try browser.newSession(notification);
-    defer session.deinit();
+    _ = try browser.newSession(notification);
 
     var dir = try std.Io.Dir.cwd().openDir(init.io, "src/browser/tests/legacy/", .{ .iterate = true, .follow_symlinks = false });
     defer dir.close(init.io);

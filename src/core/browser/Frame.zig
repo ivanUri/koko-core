@@ -863,6 +863,13 @@ pub fn runOwnedSchedulerOne(self: *Frame) !bool {
         return false;
     }
     const started = nanoTimestamp(.monotonic);
+    // Every host task gets one explicit Local/HandleScope for its whole
+    // lifetime. Event dispatch must never have to infer scope validity from a
+    // non-null raw Local pointer (that is how late IDB callbacks reached
+    // v8::Global::Get without a live HandleScope).
+    var scope: JS.Local.Scope = undefined;
+    if (!self.js.tryLocalScope(&scope)) return false;
+    defer scope.deinit();
     const ran = try self.js.scheduler.runOne();
     if (ran) self.observeBrowserStage("event-loop", elapsedMicros(started), "measured", "Renderer", "Main");
     return ran;
@@ -876,6 +883,9 @@ pub fn runOwnedScheduler(self: *Frame) !void {
         }
         return;
     }
+    var scope: JS.Local.Scope = undefined;
+    if (!self.js.tryLocalScope(&scope)) return;
+    defer scope.deinit();
     try self.js.scheduler.run();
 }
 

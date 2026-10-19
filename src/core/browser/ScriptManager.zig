@@ -268,6 +268,7 @@ pub fn addFromElement(self: *ScriptManager, comptime from_parser: bool, script_e
                 .top_level_cookie_url = frame.topLevelUrl(),
                 .resource_type = .script,
                 .notification = frame._session.notification,
+                .browser_session = frame._session,
             });
 
             script.source = .{ .remote = response.body };

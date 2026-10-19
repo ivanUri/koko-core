@@ -173,11 +173,10 @@ pub const InterceptContext = struct {
     fn shutdownCallback(ctx: *anyopaque) void {
         const self: *InterceptContext = @ptrCast(@alignCast(ctx));
 
-        log.debug(.http, "intercept shutdown", .{ .url = self.request.params.url });
-        self.request.params.notification.dispatch(.http_request_fail, &.{
-            .request = &self.request,
-            .err = error.Shutdown,
-        });
+        // shutdown_callback is the silent teardown path. Emitting normal
+        // request notifications here can re-enter observers while Browser and
+        // Session ownership is draining, and duplicates the transport's
+        // terminal state. Only forward native cleanup down the callback chain.
         self.forward.forwardShutdown();
     }
 };

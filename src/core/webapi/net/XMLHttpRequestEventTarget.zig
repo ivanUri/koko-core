@@ -72,6 +72,7 @@ pub fn getOnAbort(self: *const XMLHttpRequestEventTarget) ?js.Function.Temp {
 }
 
 pub fn setOnAbort(self: *XMLHttpRequestEventTarget, cb: ?js.Function.Temp) !void {
+    if (self._on_abort) |old| old.release();
     self._on_abort = cb;
 }
 
@@ -80,6 +81,7 @@ pub fn getOnError(self: *const XMLHttpRequestEventTarget) ?js.Function.Temp {
 }
 
 pub fn setOnError(self: *XMLHttpRequestEventTarget, cb: ?js.Function.Temp) !void {
+    if (self._on_error) |old| old.release();
     self._on_error = cb;
 }
 
@@ -88,6 +90,7 @@ pub fn getOnLoad(self: *const XMLHttpRequestEventTarget) ?js.Function.Temp {
 }
 
 pub fn setOnLoad(self: *XMLHttpRequestEventTarget, cb: ?js.Function.Temp) !void {
+    if (self._on_load) |old| old.release();
     self._on_load = cb;
 }
 
@@ -96,6 +99,7 @@ pub fn getOnLoadEnd(self: *const XMLHttpRequestEventTarget) ?js.Function.Temp {
 }
 
 pub fn setOnLoadEnd(self: *XMLHttpRequestEventTarget, cb: ?js.Function.Temp) !void {
+    if (self._on_load_end) |old| old.release();
     self._on_load_end = cb;
 }
 
@@ -104,6 +108,7 @@ pub fn getOnLoadStart(self: *const XMLHttpRequestEventTarget) ?js.Function.Temp 
 }
 
 pub fn setOnLoadStart(self: *XMLHttpRequestEventTarget, cb: ?js.Function.Temp) !void {
+    if (self._on_load_start) |old| old.release();
     self._on_load_start = cb;
 }
 
@@ -112,6 +117,7 @@ pub fn getOnProgress(self: *const XMLHttpRequestEventTarget) ?js.Function.Temp {
 }
 
 pub fn setOnProgress(self: *XMLHttpRequestEventTarget, cb: ?js.Function.Temp) !void {
+    if (self._on_progress) |old| old.release();
     self._on_progress = cb;
 }
 
@@ -120,11 +126,9 @@ pub fn getOnTimeout(self: *const XMLHttpRequestEventTarget) ?js.Function.Temp {
 }
 
 pub fn setOnTimeout(self: *XMLHttpRequestEventTarget, cb_: ?js.Function) !void {
-    if (cb_) |cb| {
-        self._on_timeout = try cb.tempWithThis(self);
-    } else {
-        self._on_timeout = null;
-    }
+    const next = if (cb_) |cb| try cb.tempWithThis(self) else null;
+    if (self._on_timeout) |old| old.release();
+    self._on_timeout = next;
 }
 
 const DispatchType = enum {

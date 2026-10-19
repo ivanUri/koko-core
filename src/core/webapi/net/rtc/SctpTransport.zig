@@ -71,6 +71,11 @@ _dtls: *DtlsTransport,
 _sock: ?*usrsctp.struct_socket,
 _state: State,
 
+// The send callback can be invoked after the call which fed SCTP has
+// returned. Keep the transport routing context in the stable SCTP owner;
+// never retain a pointer to WebRtcThread.drainUdp's stack frame.
+_send_ctx: ?SendCtx = null,
+
 /// Port numbers (same value used for local and remote per convention).
 _local_port: u16,
 _remote_port: u16,
@@ -118,6 +123,7 @@ pub fn init(
         ._dtls = dtls,
         ._sock = null,
         ._state = .new,
+        ._send_ctx = null,
         ._local_port = local_port,
         ._remote_port = remote_port,
         ._self_ptr = self,
@@ -213,6 +219,10 @@ pub fn connect(self: *SctpTransport) !void {
 pub fn close(self: *SctpTransport) void {
     if (self._state == .closed) return;
     self._state = .closed;
+    // sendCb checks the state before touching DTLS or the routing context.
+    // Clear the context before usrsctp shutdown can synchronously emit more
+    // output callbacks.
+    self._send_ctx = null;
     if (self._sock) |sock| {
         _ = usrsctp.usrsctp_shutdown(sock, usrsctp.SHUT_RDWR);
         usrsctp.usrsctp_close(sock);
@@ -362,20 +372,19 @@ export fn sendCb(
     const self: *SctpTransport = @ptrCast(@alignCast(addr orelse return -1));
     const data: [*]const u8 = @ptrCast(buf orelse return -1);
 
-    // Encrypt via DTLS — we need sock + peer from the parent WebRtcThread.
-    // For now, post to DTLS send; the thread passes those through context.
-    // In WebRtcThread.zig, we store a pointer to sock+peer alongside SCTP.
-    if (self._dtls._state == .connected) {
-        // Send via DTLS — requires sock+peer which are stored in WebRtcThread.
-        // The DTLS transport has the write BIO; we'll call it through the
-        // stored context pointer set by WebRtcThread.
-        if (g_send_ctx) |ctx| {
-            self._dtls.send(data[0..length], ctx.sock, ctx.peer, ctx.peer_len) catch |err| {
-                log.warn(.webrtc, "SCTP DTLS send failed", .{ .err = err });
-                return -1;
-            };
-        }
-    }
+    // usrsctp may emit output while an association is being closed. The
+    // lifecycle state is the gate; do not touch DTLS or routing storage after
+    // close has started.
+    // SCTP's association handshake emits packets while the transport is
+    // `.connecting`; only a closed transport must suppress output.
+    if (self._state == .closed) return 0;
+
+    if (self._dtls._state != .connected) return 0;
+    const ctx = self._send_ctx orelse return -1;
+    self._dtls.send(data[0..length], ctx.sock, @ptrCast(&ctx.peer), ctx.peer_len) catch |err| {
+        log.warn(.webrtc, "SCTP DTLS send failed", .{ .err = err });
+        return -1;
+    };
     return 0;
 }
 
@@ -405,21 +414,18 @@ export fn recvCb(
     return 0;
 }
 
-// Global context for callbacks (set by WebRtcThread before usrsctp_conninput).
-// usrsctp callbacks don't support user data via the send/recv callbacks cleanly;
-// we use thread-local context since all calls happen on the WebRTC network thread.
+// Context copied into SctpTransport before entering usrsctp. The callback gets
+// the registered SctpTransport address, so this is per-association state and
+// remains valid for the entire callback lifetime.
 pub const SendCtx = struct {
     sock: posix.socket_t,
-    peer: *const posix.sockaddr,
+    peer: posix.sockaddr.storage,
     peer_len: posix.socklen_t,
 };
 
-var g_send_ctx: ?*const SendCtx = null;
-
 /// Set before calling usrsctp_conninput / usrsctp_sendv.
 pub fn setCallbackContext(self: *SctpTransport, send_ctx: ?*const SendCtx) void {
-    _ = self;
-    g_send_ctx = send_ctx;
+    self._send_ctx = if (send_ctx) |ctx| ctx.* else null;
 }
 
 // ---------------------------------------------------------------------------

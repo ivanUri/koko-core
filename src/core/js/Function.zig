@@ -208,16 +208,18 @@ pub fn temp(self: *const Function) !Temp {
 }
 
 fn _persist(self: *const Function, comptime is_global: bool) !(if (is_global) Global else Temp) {
-    var ctx = self.local.ctx;
-
-    var global: v8.Global = undefined;
-    v8.v8__Global__New(ctx.isolate.handle, self.handle, &global);
+    const ctx = self.local.ctx;
     if (comptime is_global) {
-        try ctx.trackGlobal(global);
-        return .{ .handle = global, .temps = {} };
+        const global = try ctx.createFunctionGlobal(self.handle);
+        return .{ .handle = global, .owner = ctx, .owner_id = ctx.id, .temps = {} };
     }
-    try ctx.trackTemp(global);
-    return .{ .handle = global, .temps = &ctx.page.temps };
+    const global = try ctx.createFunctionTemp(self.handle);
+    return .{
+        .handle = global,
+        .owner = ctx,
+        .owner_id = ctx.id,
+        .temps = &ctx.page.function_temps,
+    };
 }
 
 pub fn tempWithThis(self: *const Function, value: anytype) !Temp {
@@ -241,19 +243,41 @@ const GlobalType = enum(u8) {
 fn G(comptime global_type: GlobalType) type {
     return struct {
         handle: v8.Global,
-        temps: if (global_type == .temp) *std.AutoHashMapUnmanaged(usize, v8.Global) else void,
+        // Persistent handles are realm-owned. Keep the originating Context
+        // with the copy so an old iframe callback cannot be resolved against
+        // a replacement Context on the same Frame.
+        owner: ?*const js.Context = null,
+        owner_id: usize = 0,
+        temps: if (global_type == .temp) *std.AutoHashMapUnmanaged(usize, *v8.Global) else void,
 
         const Self = @This();
 
         pub fn deinit(self: *Self) void {
-            v8.v8__Global__Reset(&self.handle);
+            // Both variants are registry-owned. Temp has explicit early
+            // release; Global is reset during Page teardown.
+            if (comptime global_type == .temp) self.release();
+        }
+
+        pub fn localOrNull(self: *const Self, l: *const js.Local) ?Function {
+            const owner = self.owner orelse return null;
+            if (owner != l.ctx or self.owner_id != l.ctx.id) return null;
+            if (!l.ctx.execution.canEnterJs(.allow_draining)) return null;
+
+            const owned = if (comptime global_type == .global) blk: {
+                const index = l.ctx.page.global_handles.get(self.handle.data_ptr) orelse return null;
+                if (index >= l.ctx.page.globals.items.len) return null;
+                break :blk l.ctx.page.globals.items[index];
+            } else self.temps.get(self.handle.data_ptr) orelse return null;
+
+            const handle = v8.v8__Global__Get(owned, l.isolate.handle) orelse return null;
+            return .{
+                .local = l,
+                .handle = @ptrCast(handle),
+            };
         }
 
         pub fn local(self: *const Self, l: *const js.Local) Function {
-            return .{
-                .local = l,
-                .handle = @ptrCast(v8.v8__Global__Get(&self.handle, l.isolate.handle)),
-            };
+            return self.localOrNull(l) orelse unreachable;
         }
 
         pub fn isEqual(self: *const Self, other: Function) bool {
@@ -262,8 +286,7 @@ fn G(comptime global_type: GlobalType) type {
 
         pub fn release(self: *const Self) void {
             if (self.temps.fetchRemove(self.handle.data_ptr)) |kv| {
-                var g = kv.value;
-                v8.v8__Global__Reset(&g);
+                v8.v8__Global__Reset(kv.value);
             }
         }
     };

@@ -523,11 +523,16 @@ test "tests:beforeAll" {
     errdefer test_app.deinit();
 
     try test_browser.init(test_app, .{}, null);
-    errdefer test_browser.deinit();
 
     // Create notification for testing
-    test_notification = try Notification.init(test_app.allocator);
-    errdefer test_notification.deinit();
+    test_notification = Notification.init(test_app.allocator) catch |err| {
+        test_browser.deinit();
+        return err;
+    };
+    errdefer {
+        test_browser.deinit();
+        test_notification.deinit();
+    }
 
     test_session = try test_browser.newSession(test_notification);
 
@@ -591,8 +596,8 @@ test "tests:afterAll" {
 
     @import("root").v8_peak_memory = test_browser.env.isolate.getHeapStatistics().total_physical_size;
 
-    test_notification.deinit();
     test_browser.deinit();
+    test_notification.deinit();
     test_app.deinit();
     test_config.deinit(@import("root").tracking_allocator);
 }

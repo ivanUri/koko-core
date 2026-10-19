@@ -403,6 +403,12 @@ pub fn dispatchDirect(
         log.debug(.event, "dispatchDirect", .{ .type = event._type_string, .context = opts.context });
     }
 
+    // Direct events are commonly delivered from host tasks (IndexedDB,
+    // timers, network completion). Do not attempt any V8 access once the
+    // owning realm is dead. Draining is allowed for bounded teardown events,
+    // but the context must still be registered and enterable.
+    if (!ctx.execution.canEnterJs(.allow_draining)) return;
+
     event.acquireRef();
     defer _ = event.releaseRef(page);
 
@@ -411,23 +417,21 @@ pub fn dispatchDirect(
         event._dispatch_target = target;
     }
 
-    // Reuse either a V8->Zig Caller scope or a Zig-owned Local.Scope already
-    // entered by the current task. A second localScope/deinit pair trips V8's
-    // context stack, and a nested microtask checkpoint can re-enter handlers
-    // while the outer event is still dispatching.
-    const active_local = ctx.local orelse ctx.active_scope;
-    const nested_in_api = active_local != null;
+    // Borrow a Local only while a V8->Zig Caller is provably active. Both
+    // `ctx.local` is a stack address; only borrow it while a live Caller proves
+    // its lifetime. Outside a live Caller, create a scope in this stack frame.
+    const caller_local = if (ctx.call_depth > 0) ctx.local else null;
+    const nested_in_api = caller_local != null or ctx.active_scope_depth > 0;
     var owned_scope: js.Local.Scope = undefined;
     const local: *const js.Local = blk: {
-        if (active_local) |active| break :blk active;
+        if (caller_local) |active| break :blk active;
         // Page teardown may abort XHR after destroyContext; skip events if dead.
         if (!ctx.tryLocalScope(&owned_scope)) return;
         break :blk &owned_scope.local;
     };
-    defer if (!nested_in_api) {
-        if (!opts.skip_post_dispatch_microtasks) {
+    defer if (caller_local == null) {
+        if (!nested_in_api and !opts.skip_post_dispatch_microtasks)
             local.ctx.env.runMicrotasks(.event_handler);
-        }
         owned_scope.deinit();
     };
 
@@ -511,18 +515,20 @@ fn getFunction(handler: anytype, local: *const js.Local) ?js.Function {
     }
     return switch (T) {
         js.Function => handler,
-        js.Function.Temp => local.toLocal(handler),
+        js.Function.Temp => handler.localOrNull(local),
         js.Function.Global => globalToFunction(handler, local),
         else => @compileError("handler must be null or \\??js.Function(\\.(Temp|Global))?"),
     };
 }
 
 fn globalToFunction(handler: js.Function.Global, local: *const js.Local) ?js.Function {
-    const handle = js.v8.v8__Global__Get(&handler.handle, local.isolate.handle) orelse return null;
-    return .{
-        .local = local,
-        .handle = @ptrCast(handle),
-    };
+    if (!local.ctx.execution.canEnterJs(.allow_draining)) return null;
+    if (handler.owner) |owner| {
+        if (owner != local.ctx) return null;
+        if (handler.owner_id != local.ctx.id) return null;
+        if (!owner.execution.canEnterJs(.allow_draining)) return null;
+    }
+    return handler.localOrNull(local);
 }
 
 /// Remove all listeners registered with the given abort signal.
