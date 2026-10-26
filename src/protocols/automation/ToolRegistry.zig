@@ -9,6 +9,7 @@ pub const Action = enum {
     links,
     extract,
     evaluate,
+    add_init_script,
     semantic_tree,
     node_details,
     interactive_elements,
@@ -54,6 +55,12 @@ pub const Action = enum {
             .evaluate => .{
                 .effect = .external_side_effect,
                 .produces_data = true,
+                .recordable = false,
+                .replayable = false,
+                .secret_fields = &.{"script"},
+            },
+            .add_init_script => .{
+                .effect = .observation,
                 .recordable = false,
                 .replayable = false,
                 .secret_fields = &.{"script"},

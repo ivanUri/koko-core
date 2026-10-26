@@ -283,12 +283,19 @@ test "WebSocket HTTP proxy CONNECT uses decoded Basic credentials" {
 }
 
 fn startTls(self: *WebSocketClient, url: [:0]const u8, hostname: []const u8, tls_verify: bool) !void {
-    _ = try posix.fcntl(self.socket, posix.F.SETFL, self.socket_flags);
+    // TLS handshake/read must be driven as background browser work. Keeping
+    // this socket blocking lets a dev-server HMR endpoint hold the entire
+    // fetch worker in SSL_read forever when it never completes the upgrade.
+    const tls_nonblocking = @as(u32, @bitCast(posix.O{ .NONBLOCK = true }));
+    _ = try posix.fcntl(self.socket, posix.F.SETFL, self.socket_flags | tls_nonblocking);
 
     const tls = try self.allocator.create(TlsIo);
     errdefer self.allocator.destroy(tls);
     tls.* = try TlsIo.init(hostname, self.socket, tls_verify);
-    errdefer tls.deinit();
+    errdefer {
+        if (self.tls == tls) self.tls = null;
+        tls.deinit();
+    }
     try tls.connectBlocking();
 
     const alpn = tls.alpnProtocol();
@@ -314,8 +321,6 @@ fn startTls(self: *WebSocketClient, url: [:0]const u8, hostname: []const u8, tls
         ) catch |err| {
             self.tls = null;
             self.transport = .plain;
-            tls.deinit();
-            self.allocator.destroy(tls);
             if (self.socket != invalid_socket) {
                 posix.close(self.socket);
                 self.socket = invalid_socket;

@@ -1,0 +1,46 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+const events = [];
+const frame = document.createElement("iframe");
+
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(JSON.stringify(events)),
+};
+
+addEventListener("message", ({ data }) => {
+  if (data === "worker-error-armed") {
+    events.push("armed");
+    frame.remove();
+    events.push("detached");
+    setTimeout(finish, 120);
+    return;
+  }
+  events.push(data);
+});
+
+frame.srcdoc = `<!doctype html><script>
+  const source = \`
+    onmessage = () => {
+      setTimeout(() => { throw new Error("late worker failure"); }, 40);
+      postMessage("armed");
+    };
+  \`;
+  const worker = new Worker(URL.createObjectURL(
+    new Blob([source], { type: "text/javascript" })));
+  worker.onerror = () => parent.postMessage("stale-worker-error", "*");
+  worker.onmessage = () => parent.postMessage("worker-error-armed", "*");
+  worker.postMessage("start");
+<\/script>`;
+document.body.appendChild(frame);
+
+function finish() {
+  const passed = events.includes("armed") &&
+    events.includes("detached") &&
+    !events.includes("stale-worker-error");
+  document.body.id = passed ? "pass" : "fail";
+  document.body.textContent = passed ? "pass" : JSON.stringify(events);
+}
+</script>

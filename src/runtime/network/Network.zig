@@ -523,6 +523,10 @@ pub fn emitJavaScriptError(self: *Network, error_kind: []const u8, message: []co
     const sink = if (self.internet_journey_sink) |*value| value else return;
     sink.emitJavaScriptError(error_kind, message, script_url, line, column, frame_id, loader_id, stack) catch |err| log.warn(.http, "javascript error telemetry", .{ .err = err });
 }
+pub fn emitProbeEvent(self: *Network, kind: []const u8, name: []const u8, payload_json: []const u8, frame_id: u32, loader_id: u32, url: []const u8) void {
+    const sink = if (self.internet_journey_sink) |*value| value else return;
+    sink.emitProbeEvent(kind, name, payload_json, frame_id, loader_id, url) catch |err| log.warn(.http, "page probe telemetry", .{ .name = name, .err = err });
+}
 pub fn emitApplicationStorageEntry(self: *Network, storage_type: []const u8, origin: []const u8, key: []const u8, value: ?[]const u8, value_bytes: usize, details: anytype) void {
     const sink = if (self.internet_journey_sink) |*storage_sink| storage_sink else return;
     sink.emitApplicationStorageEntry(storage_type, origin, key, value, value_bytes, details) catch |err| log.warn(.http, "application storage telemetry", .{ .err = err });

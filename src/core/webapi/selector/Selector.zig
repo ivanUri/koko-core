@@ -41,20 +41,22 @@ pub fn querySelectorAll(root: *Node, input: []const u8, frame: *Frame) !*List {
     }
 
     // querySelectorAll results are exposed to JS as NodeList and may outlive
-    // the immediate call; allocate from the page/frame arena so teardown owns
-    // the memory even if GC does not run before process shutdown.
-    const arena = frame.arena;
+    // the immediate call; allocate result memory from the page/frame arena so
+    // teardown owns it even if GC does not run before process shutdown.
+    // The selector AST itself only needs to live during collect() — use
+    // call_arena so it's reclaimed automatically after this task turn.
+    const result_arena = frame.arena;
 
     var nodes: std.AutoArrayHashMapUnmanaged(*Node, void) = .empty;
 
-    const selectors = try Parser.parseList(arena, input);
+    const selectors = try Parser.parseList(frame.call_arena, input);
     for (selectors) |selector| {
-        try List.collect(arena, root, selector, &nodes, frame);
+        try List.collect(result_arena, root, selector, &nodes, frame);
     }
 
-    const list = try arena.create(List);
+    const list = try result_arena.create(List);
     list.* = .{
-        ._arena = arena,
+        ._arena = result_arena,
         ._release_on_deinit = false,
         ._nodes = nodes.keys(),
     };

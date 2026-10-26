@@ -37,7 +37,11 @@ const IntersectionObserver = @This();
 
 const max_pending_entries: usize = 4096;
 
-_rc: RC(u8) = .{},
+// The JavaScript wrapper and the frame registration are the only owners. The
+// constructor itself must not contribute an extra ref, otherwise teardown can
+// leave a freed observer pointer in the frame registry after the weak wrapper
+// is finalized.
+_rc: RC(u8) = .init(0),
 _arena: Allocator,
 // Owning frame registry. This is cleared before the frame releases its
 // registration reference, so a late V8 finalizer cannot leave a stale pointer

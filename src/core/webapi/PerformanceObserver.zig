@@ -144,7 +144,15 @@ pub fn takeRecords(self: *PerformanceObserver, frame: *Frame) ![]*Performance.En
 }
 
 pub fn getSupportedEntryTypes() []const []const u8 {
-    return &.{ "mark", "measure" };
+    return &.{
+        "mark",
+        "measure",
+        "paint",
+        "largest-contentful-paint",
+        "layout-shift",
+        "event",
+        "first-input",
+    };
 }
 
 /// Returns true if observer interested with given entry.
@@ -152,6 +160,11 @@ pub fn interested(
     self: *const PerformanceObserver,
     entry: *const Performance.Entry,
 ) bool {
+    // Event Timing observers receive only entries at or above their requested
+    // duration threshold. first-input is delivered independently of it.
+    if (entry._type == .event and entry._duration < self._duration_threshold) {
+        return false;
+    }
     const flag = @as(u16, 1) << @intCast(@intFromEnum(entry._type));
     return self._interests & flag != 0;
 }

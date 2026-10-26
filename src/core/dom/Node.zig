@@ -1107,19 +1107,20 @@ pub fn replaceChildren(self: *Node, nodes: []const NodeOrText, frame: *Frame) !v
     const parent_is_connected = self.isConnected();
     const parent_owner = self.ownerDocument(frame) orelse self.as(Document);
     for (children_to_add.items) |child| {
-        var child_connected = false;
-        if (child._parent) |previous_parent| {
-            child_connected = child.isConnected();
-            frame.removeNode(previous_parent, child, .{ .will_be_reconnected = parent_is_connected });
-        }
-        // Adopt if moving between documents (mirrors appendChild / insertBefore logic).
+        // Snapshot owner and connected state BEFORE removeNode.
+        // After removeNode the node loses its parent chain; ownerDocument()
+        // would fall back to frame.document, making adoption silently false.
         const child_owner = child.ownerDocument(frame);
+        const child_was_connected = child.isConnected();
         const adopting = child_owner != null and child_owner.? != parent_owner;
+        if (child._parent) |previous_parent| {
+            frame.removeNode(previous_parent, child, .{ .will_be_reconnected = parent_is_connected and !adopting });
+        }
         if (adopting) {
             try frame.adoptNodeTree(child, child_owner.?, parent_owner);
         }
         try frame.appendNode(self, child, .{
-            .child_already_connected = child_connected,
+            .child_already_connected = child_was_connected,
             .adopting_to_new_document = adopting,
         });
     }

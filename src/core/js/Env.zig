@@ -35,6 +35,7 @@ const NativeBuiltinHooks = @import("../../runtime/profile/NativeBuiltinHooks.zig
 
 const v8 = js.v8;
 const log = @import("../../support/log.zig");
+const Timer = @import("../../support/timer.zig");
 const JsApis = bridge.JsApis;
 const Allocator = std.mem.Allocator;
 const IS_DEBUG = builtin.mode == .Debug;
@@ -1182,9 +1183,13 @@ pub fn anyContextOnV8Stack(self: *const Env) bool {
         // call_depth covers active JS callbacks. ctx.local also covers the
         // post-callback portion of a host dispatch: the callback has returned,
         // but its V8 context/HandleScope is still entered while the caller
-        // performs the microtask checkpoint. Starting a macrotask from another
-        // realm in that window re-enters V8 with objects from the wrong context.
-        if (ctx.call_depth > 0 or ctx.local != null) return true;
+        // performs the microtask checkpoint. A Zig-owned Local.Scope is the
+        // same re-entry boundary, but it is tracked separately because it
+        // must not overwrite ctx.local. Starting a macrotask from another
+        // realm in any of those windows re-enters V8 with objects from the
+        // wrong context and can turn a recoverable callback into a native
+        // segmentation fault.
+        if (ctx.call_depth > 0 or ctx.local != null or ctx.active_scope_depth > 0) return true;
     }
     return false;
 }
@@ -1230,7 +1235,13 @@ pub fn pumpMessageLoop(self: *const Env) void {
 
     const isolate = self.isolate.handle;
     const platform = self.platform.handle;
-    while (v8.v8__Platform__PumpMessageLoop(platform, isolate, false)) {}
+    // V8 platform work can continuously enqueue more work (for example a
+    // dev-server HMR/MessagePort chain). Draining it without a turn budget
+    // prevents the browser runner from polling HTTP and lifecycle state. A
+    // later host tick continues from the platform queue, so bounded pumping
+    // preserves progress without allowing one page to monopolize the loop.
+    var turns: u8 = 0;
+    while (turns < 64 and v8.v8__Platform__PumpMessageLoop(platform, isolate, false)) : (turns += 1) {}
 }
 
 pub fn hasBackgroundTasks(self: *const Env) bool {
@@ -1244,9 +1255,20 @@ pub fn waitForBackgroundTasks(self: *Env) void {
 
     const isolate = self.isolate.handle;
     const platform = self.platform.handle;
+    var timer = Timer.start() catch return;
+    const budget_ns = 2 * std.time.ns_per_s;
     while (v8.v8__Isolate__HasPendingBackgroundTasks(isolate)) {
-        _ = v8.v8__Platform__PumpMessageLoop(platform, isolate, true);
+        // Use non-blocking turns so a page-owned task that continually queues
+        // more platform work cannot hold teardown forever. Completed work is
+        // still drained in order; the bounded budget is only a safety valve
+        // for an execution that never reaches quiescence.
+        _ = v8.v8__Platform__PumpMessageLoop(platform, isolate, false);
         self.runMicrotasks(.background_tasks);
+        if (timer.read() >= budget_ns) {
+            log.warn(.js, "background task drain budget reached", .{});
+            break;
+        }
+        Timer.sleepNanoseconds(std.time.ns_per_ms);
     }
 }
 

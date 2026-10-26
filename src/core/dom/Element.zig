@@ -1081,15 +1081,19 @@ pub fn replaceWith(self: *Element, nodes: []const Node.NodeOrText, frame: *Frame
             continue;
         }
 
-        if (child._parent) |current_parent| {
-            frame.removeNode(current_parent, child, .{ .will_be_reconnected = parent_is_connected });
-        }
-
-        // Adopt if the child belongs to a different document (e.g. from an iframe's
-        // document). Mirrors the adoption logic in appendChild / insertBefore.
+        // Snapshot owner and connected state BEFORE any removeNode call.
+        // After removeNode the child has no _parent, so ownerDocument() loses
+        // the root-walk path and falls back to frame.document — making adopting
+        // silently false and skipping adoptedCallback.
         const child_owner = child.ownerDocument(frame);
+        const child_was_connected = child.isConnected();
         const parent_owner = parent.ownerDocument(frame) orelse parent.as(Node.Document);
         const adopting = child_owner != null and child_owner.? != parent_owner;
+
+        if (child._parent) |current_parent| {
+            frame.removeNode(current_parent, child, .{ .will_be_reconnected = parent_is_connected and !adopting });
+        }
+
         if (adopting) {
             try frame.adoptNodeTree(child, child_owner.?, parent_owner);
         }
@@ -1098,7 +1102,7 @@ pub fn replaceWith(self: *Element, nodes: []const Node.NodeOrText, frame: *Frame
             parent,
             child,
             .{ .before = ref_node },
-            .{ .child_already_connected = child.isConnected(), .adopting_to_new_document = adopting },
+            .{ .child_already_connected = child_was_connected, .adopting_to_new_document = adopting },
         );
     }
 
@@ -2710,9 +2714,16 @@ pub fn getClientLeft(_: *Element) f64 {
 // Trade-offs:
 // O(depth × preceding_siblings) — avoids recursive subtree walks that made
 // CreepJS getClientRects (100+ layout reads on a large injected DOM) hang.
-fn precedingSiblingDocumentWeight(node: *Node) f64 {
+//
+// Keep the cheap one-unit fallback for nodes without an explicit block height,
+// but honor explicit heights when they are available.  This is important for
+// scrollIntoView: a 2000px spacer must not collapse to the synthetic 5px tree
+// weight used by the fallback geometry model.
+fn precedingSiblingDocumentWeight(node: *Node, frame: *Frame) f64 {
     if (node.is(Element)) |el| {
-        if (el.asNode().firstChild()) |_| return 1.0;
+        if (layoutDimensionFromProperty(el, frame, "height", .height)) |height| {
+            return @max(1.0, @ceil(height / 5.0));
+        }
     }
     return 1.0;
 }
@@ -2734,7 +2745,7 @@ fn calculateDocumentPosition(node: *Node, frame: *Frame) f64 {
             visited += 1;
             if (visited > limit) break;
             if (s == current) break;
-            position += precedingSiblingDocumentWeight(s);
+            position += precedingSiblingDocumentWeight(s, frame);
             sibling = s.nextSibling();
         }
         position += 1.0;
@@ -2790,6 +2801,27 @@ pub fn clone(self: *Element, deep: bool, frame: *Frame) !*Node {
 
 const ScrollBlockAlign = enum { start, center, end, nearest };
 
+fn effectiveScrollViewport(frame: *Frame) struct { width: f64, height: f64 } {
+    const window_profile = frame.windowProfile();
+    const screen = frame.identityProfile().screen;
+    // A profile can temporarily expose a window larger than its physical
+    // screen while emulation is being applied. Keep geometry operations
+    // conservative in that transient state; for coherent profiles this is
+    // exactly window.innerWidth/innerHeight.
+    const width = if (screen.width > 0)
+        @min(window_profile.inner_width, screen.width)
+    else
+        window_profile.inner_width;
+    const height = if (screen.height > 0)
+        @min(window_profile.inner_height, screen.height)
+    else
+        window_profile.inner_height;
+    return .{
+        .width = @floatFromInt(width),
+        .height = @floatFromInt(height),
+    };
+}
+
 fn scrollBlockFromOpts(opts: ?ScrollIntoViewOpts) ScrollBlockAlign {
     if (opts) |o| switch (o) {
         .align_to_top => |top| return if (top) .start else .end,
@@ -2800,8 +2832,13 @@ fn scrollBlockFromOpts(opts: ?ScrollIntoViewOpts) ScrollBlockAlign {
 
 pub fn scrollIntoViewIfNeeded(self: *Element, center_if_needed: ?bool, frame: *Frame) !void {
     const rect = self.getBoundingClientRect(frame);
-    const vp_h = @as(f64, @floatFromInt(frame.identityProfile().screen.height));
-    const vp_w = @as(f64, @floatFromInt(frame.identityProfile().screen.width));
+    // Visibility is defined against the layout viewport, not the physical
+    // screen profile. Those values can differ under emulation and on desktop
+    // profiles, which previously left an element outside window.innerHeight
+    // after scrollIntoViewIfNeeded completed.
+    const viewport = effectiveScrollViewport(frame);
+    const vp_h = viewport.height;
+    const vp_w = viewport.width;
     if (rect.getTop() >= 0 and rect.getBottom() <= vp_h and
         rect.getLeft() >= 0 and rect.getRight() <= vp_w)
     {
@@ -2824,8 +2861,9 @@ fn scrollIntoViewWithBlock(self: *Element, block: ScrollBlockAlign, frame: *Fram
     const rect = self.getBoundingClientRect(frame);
     const scroll_x = @as(f64, @floatFromInt(frame.window.getScrollX()));
     const scroll_y = @as(f64, @floatFromInt(frame.window.getScrollY()));
-    const vp_h = @as(f64, @floatFromInt(frame.identityProfile().screen.height));
-    const vp_w = @as(f64, @floatFromInt(frame.identityProfile().screen.width));
+    const viewport = effectiveScrollViewport(frame);
+    const vp_h = viewport.height;
+    const vp_w = viewport.width;
 
     var target_y: f64 = scroll_y;
     var target_x: f64 = scroll_x;

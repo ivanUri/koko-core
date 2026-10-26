@@ -168,7 +168,9 @@ const Sink = struct {
             try allocator.dupe(u8, id)
         else
             try formatRunName(allocator);
-        defer if (opts.run_id == null) allocator.free(run_name);
+        // `run_name` is always an owned temporary, including when the caller
+        // supplies a run id. The joined `run_dir` owns its own copy.
+        defer allocator.free(run_name);
 
         const run_dir = try std.fs.path.join(allocator, &.{ opts.base_dir, run_name });
         self.run_dir = run_dir;

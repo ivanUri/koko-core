@@ -53,6 +53,7 @@ pub const FetchOpts = struct {
     max_scrolls: u32 = 80,
     scroll_settle_ms: u32 = 250,
     wait_script: ?[:0]const u8 = null,
+    inject_script: ?[:0]const u8 = null,
     wait_selector: ?[:0]const u8 = null,
     click_selector: ?[:0]const u8 = null,
     click_offset_x: u16 = 28,
@@ -88,6 +89,7 @@ fn writeProgressSnapshot(context: *anyopaque, frame: *Frame) void {
 
 pub fn fetch(_: *App, browser: *Browser, url: [:0]const u8, opts: FetchOpts) !void {
     const session = if (browser.session) |*session| session else return error.SessionNotAvailable;
+    session.injected_script = opts.inject_script;
     log.debug(.app, "fetch create page", .{ .url = url });
     const frame = try session.createPage();
     log.debug(.app, "fetch navigate start", .{ .url = url });

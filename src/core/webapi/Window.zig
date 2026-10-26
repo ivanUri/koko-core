@@ -483,6 +483,14 @@ pub fn fetch(_: *const Window, input: Fetch.Input, options: ?Fetch.InitOpts, exe
     return Fetch.init(input, options, exec);
 }
 
+/// Private host bridge used by the injected Observatory probe. Keeping this
+/// behind a non-standard, namespaced API avoids routing large rrweb records
+/// through console output and lets Core persist them with frame attribution.
+pub fn __kokoProbeEmit(self: *const Window, name: []const u8, payload_json: []const u8, exec: *js.Execution) void {
+    const kind = if (std.mem.startsWith(u8, name, "rrweb")) "dom" else if (std.mem.startsWith(u8, name, "resource")) "network" else if (std.mem.startsWith(u8, name, "web-vital")) "render" else "log";
+    self._frame._session.browser.observeProbeEvent(kind, name, payload_json, exec.frameId(), exec.loaderId(), self._frame.url);
+}
+
 pub fn setTimeout(self: *Window, handler: Timers.LegacyHandler, delay_ms: ?u32, params: []js.Value.Temp, exec: *js.Execution) !u32 {
     const cb = try handler.resolve(exec);
     return self._timers.schedule(exec, cb, delay_ms orelse 0, .{
@@ -1278,6 +1286,7 @@ pub const JsApi = struct {
     pub const onunhandledrejection = bridge.accessor(Window.getOnUnhandledRejection, Window.setOnUnhandledRejection, .{});
     pub const event = bridge.accessor(Window.getEvent, null, .{ .null_as_undefined = true });
     pub const fetch = bridge.function(Window.fetch, .{});
+    pub const __kokoProbeEmit = bridge.function(Window.__kokoProbeEmit, .{});
     pub const queueMicrotask = bridge.function(Window.queueMicrotask, .{});
     pub const setTimeout = bridge.function(Window.setTimeout, .{});
     pub const clearTimeout = bridge.function(Window.clearTimeout, .{});

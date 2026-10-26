@@ -744,17 +744,17 @@ pub fn receiveMessage(
     ports: []const *MessagePort,
     transfer_list: ?[]const JS.Value,
 ) !void {
-    if (self._closed) {
+    if (self._closed or !self.realmSchedulingActive() or self._worker._terminated) {
         return;
     }
     const session = self._session;
 
     const cloned_data: ?JS.Value.Temp = blk: {
         var source_ls: JS.Local.Scope = undefined;
-        self._worker._frame.js.localScope(&source_ls);
+        if (!self._worker._frame.js.tryLocalScope(&source_ls)) break :blk null;
         defer source_ls.deinit();
         var target_ls: JS.Local.Scope = undefined;
-        self.js.localScope(&target_ls);
+        if (!self.js.tryLocalScope(&target_ls)) break :blk null;
         defer target_ls.deinit();
 
         const cloned = data.structuredCloneTo(&target_ls.local, transfer_list) catch break :blk null;

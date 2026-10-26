@@ -806,14 +806,17 @@ fn parseIdentifier(self: *Parser, arena: Allocator, err: ParseError) ParseError!
         i += 1;
     }
 
-    // Fast path: no escapes/nulls found
+    // Fast path: no escapes/nulls found. The parsed selector AST may outlive
+    // the input slice (Frame caches it in its realm arena), so identifier
+    // values must be owned by the parser allocator instead of borrowing the
+    // caller's input buffer.
     if (i == input.len or (i > 0 and input[i] != '\\' and input[i] != 0)) {
         if (i == 0) {
             @branchHint(.cold);
             return err;
         }
         self.input = input[i..];
-        return input[0..i];
+        return try arena.dupe(u8, input[0..i]);
     }
 
     // Slow path: has escapes or nulls
@@ -1159,8 +1162,27 @@ fn parseEscape(input: []const u8, arena: Allocator) !EscapeResult {
 }
 
 const testing = @import("../../../testing/testing.zig");
+
+test "Selector: parsed identifiers own their storage" {
+    var input_arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer input_arena.deinit();
+
+    var selector_arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer selector_arena.deinit();
+
+    const input = try input_arena.allocator().dupe(u8, ".js-flash-template");
+    const selectors = try Parser.parseList(selector_arena.allocator(), input);
+
+    // Simulate the call-arena reset that used to invalidate cached selectors.
+    _ = input_arena.reset(.free_all);
+
+    try testing.expectEqualStrings("js-flash-template", selectors[0].first.parts[0].class);
+}
+
 test "Selector: Parser.ID" {
-    const arena = testing.allocator;
+    var test_arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer test_arena.deinit();
+    const arena = test_arena.allocator();
 
     {
         var parser = Parser{ .input = "#" };
@@ -1277,7 +1299,9 @@ test "Selector: Parser.ID" {
 }
 
 test "Selector: Parser.class" {
-    const arena = testing.allocator;
+    var test_arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer test_arena.deinit();
+    const arena = test_arena.allocator();
 
     {
         var parser = Parser{ .input = "." };

@@ -16,6 +16,12 @@ const Self = @This();
 // telemetry stream into an unbounded memory sink.
 const MAX_CAPTURE_BYTES: usize = 4 * 1024 * 1024;
 
+// rrweb full snapshots are serialized JSON and can be larger than the
+// ordinary telemetry records, especially for server-rendered sites. Keep
+// enough room for a complete snapshot so the Observatory can replay it
+// instead of receiving truncated, invalid JSON.
+const MAX_PROBE_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
+
 pub const ResponseMetadata = struct {
     method: []const u8,
     resource_type: []const u8,
@@ -247,6 +253,12 @@ pub fn emit(
                 .executionId = self.session_id,
                 .executionStatus = "recording",
                 .executionCapabilities = self.executionCapabilities(),
+                .traceContext = .{
+                    .traceId = self.session_id,
+                    .frameId = metadata.frame_id,
+                    .loaderId = metadata.loader_id,
+                    .scope = "document",
+                },
                 .journeyStage = stage.id,
                 .failureStage = failed_stage,
                 .url = url,
@@ -358,6 +370,12 @@ pub fn emitReplay(
                 .executionId = self.session_id,
                 .executionStatus = "replaying",
                 .executionCapabilities = self.executionCapabilities(),
+                .traceContext = .{
+                    .traceId = self.session_id,
+                    .frameId = metadata.frame_id,
+                    .loaderId = metadata.loader_id,
+                    .scope = "document",
+                },
                 .journeyStage = stage.id,
                 .url = url,
                 .resourceType = metadata.resource_type,
@@ -500,6 +518,12 @@ pub fn emitBrowserStage(
             .browserStage = stage,
             .systemStage = systemStageForBrowserStage(stage),
             .systemMeasurementState = "boundary",
+            .traceContext = .{
+                .traceId = self.session_id,
+                .frameId = frame_id,
+                .loaderId = loader_id,
+                .scope = "document",
+            },
             .frameId = frame_id,
             .loaderId = loader_id,
             .measurementState = measurement_state,
@@ -556,6 +580,12 @@ pub fn emitLifecycle(
         .payload = .{
             .lifecycleStage = stage,
             .executionStatus = "recording",
+            .traceContext = .{
+                .traceId = self.session_id,
+                .frameId = frame_id,
+                .loaderId = loader_id,
+                .scope = "document",
+            },
             .frameId = frame_id,
             .loaderId = loader_id,
             .url = url,
@@ -584,7 +614,7 @@ pub fn emitBrowserScript(self: *Self, duration_us: u64, frame_id: u32, loader_id
         .kind = "render",
         .name = "javascript",
         .status = "ok",
-        .payload = .{ .browserStage = "javascript", .systemStage = "thread-scheduler", .systemMeasurementState = "boundary", .scriptUrl = url, .scriptKind = script_kind, .functionName = "<script>", .callId = event_id, .callKind = "script", .callDepth = @as(u8, 0), .frameId = frame_id, .loaderId = loader_id, .measurementState = "measured", .process = "Renderer", .thread = "Main", .processName = "Renderer", .threadName = "Main", .processId = std.c.getpid(), .threadId = std.Thread.getCurrentId(), .logicalCpuCount = sample.logical_cpu_count, .physicalMemoryBytes = sample.physical_memory_bytes, .residentMemoryBytes = sample.resident_memory_bytes, .cpuPercent = sample.cpu_percent, .cpuCoresUsed = sample.cpu_cores_used, .cpuSampleWindowMs = sample.cpu_sample_window_ms, .cpuSampleState = sample.cpu_sample_state, .contextSwitches = sample.context_switches, .diskReadBytes = sample.disk_read_bytes, .diskWriteBytes = sample.disk_write_bytes, .systemSampleState = sample.state },
+        .payload = .{ .browserStage = "javascript", .systemStage = "thread-scheduler", .systemMeasurementState = "boundary", .traceContext = .{ .traceId = self.session_id, .frameId = frame_id, .loaderId = loader_id, .scope = "document" }, .scriptUrl = url, .scriptKind = script_kind, .functionName = "<script>", .callId = event_id, .callKind = "script", .callDepth = @as(u8, 0), .frameId = frame_id, .loaderId = loader_id, .measurementState = "measured", .process = "Renderer", .thread = "Main", .processName = "Renderer", .threadName = "Main", .processId = std.c.getpid(), .threadId = std.Thread.getCurrentId(), .logicalCpuCount = sample.logical_cpu_count, .physicalMemoryBytes = sample.physical_memory_bytes, .residentMemoryBytes = sample.resident_memory_bytes, .cpuPercent = sample.cpu_percent, .cpuCoresUsed = sample.cpu_cores_used, .cpuSampleWindowMs = sample.cpu_sample_window_ms, .cpuSampleState = sample.cpu_sample_state, .contextSwitches = sample.context_switches, .diskReadBytes = sample.disk_read_bytes, .diskWriteBytes = sample.disk_write_bytes, .systemSampleState = sample.state },
     }}, .{}, &output.writer);
     try output.writer.writeByte('\n');
     try self.append(output.written());
@@ -621,6 +651,12 @@ pub fn emitJavaScriptError(
             .errorType = error_kind,
             .message = message,
             .scriptUrl = script_url,
+            .traceContext = .{
+                .traceId = self.session_id,
+                .frameId = frame_id,
+                .loaderId = loader_id,
+                .scope = "document",
+            },
             .line = line,
             .column = column,
             .frameId = frame_id,
@@ -628,6 +664,59 @@ pub fn emitJavaScriptError(
             .source = "page",
             .handled = false,
             .stack = stack,
+        },
+    }, .{ .emit_null_optional_fields = false }, &output.writer);
+    try output.writer.writeByte('\n');
+    try self.append(output.written());
+}
+
+/// Record a page-side instrumentation event emitted by the injected
+/// Observatory probe. The JSON is kept as a string on purpose: this preserves
+/// arbitrary rrweb/OpenTelemetry payloads without coupling the Core schema to
+/// a particular browser instrumentation library.
+pub fn emitProbeEvent(
+    self: *Self,
+    kind: []const u8,
+    name: []const u8,
+    payload_json: []const u8,
+    frame_id: u32,
+    loader_id: u32,
+    url: []const u8,
+) !void {
+    process_mutex.lock();
+    defer process_mutex.unlock();
+    process_sequence += 1;
+    var output: std.Io.Writer.Allocating = .init(self.allocator);
+    defer output.deinit();
+    const event_id = try std.fmt.allocPrint(self.allocator, "{s}:probe-{d}", .{ self.session_id, process_sequence });
+    defer self.allocator.free(event_id);
+    const payload_fits = payload_json.len <= MAX_PROBE_PAYLOAD_BYTES;
+    const bounded_payload = if (payload_fits) payload_json else null;
+    try std.json.Stringify.value(.{
+        .id = event_id,
+        .sessionId = self.session_id,
+        .sequence = process_sequence,
+        .timestamp = datetime.milliTimestamp(.clock),
+        .duration = @as(f64, 0),
+        .kind = kind,
+        .name = name,
+        .status = "ok",
+        .payload = .{
+            .probe = true,
+            .probeName = name,
+            .probePayloadState = if (payload_fits) "captured" else "truncated",
+            .probePayloadBytes = payload_json.len,
+            .probeJson = bounded_payload,
+            .traceContext = .{
+                .traceId = self.session_id,
+                .frameId = frame_id,
+                .loaderId = loader_id,
+                .scope = "document",
+            },
+            .frameId = frame_id,
+            .loaderId = loader_id,
+            .url = url,
+            .source = "page-observatory-probe",
         },
     }, .{ .emit_null_optional_fields = false }, &output.writer);
     try output.writer.writeByte('\n');

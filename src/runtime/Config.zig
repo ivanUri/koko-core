@@ -202,6 +202,17 @@ fn waitScriptFileValidator(allocator: Allocator, args: *cli.ArgIterator) !?[:0]c
     };
 }
 
+fn injectScriptFileValidator(allocator: Allocator, args: *cli.ArgIterator) !?[:0]const u8 {
+    const path = args.next() orelse {
+        log.fatal(.app, "missing argument value", .{ .arg = "--inject-script-file" });
+        return error.InvalidArgument;
+    };
+    return std.Io.Dir.cwd().readFileAllocOptions(runtime_io.get(), path, allocator, .limited(16 * 1024 * 1024), .of(u8), 0) catch |err| {
+        log.fatal(.app, "failed to read file", .{ .arg = "--inject-script-file", .path = path, .err = err });
+        return error.InvalidArgument;
+    };
+}
+
 /// Definition for all the commands and its arguments. See @cli.zig for further.
 const Commands = cli.Builder(.{
     .{
@@ -240,6 +251,13 @@ const Commands = cli.Builder(.{
                 .type = ?[:0]const u8,
                 .variants = .{
                     .{ .name = "wait_script_file", .validator = waitScriptFileValidator },
+                },
+            },
+            .{
+                .name = "inject_script",
+                .type = ?[:0]const u8,
+                .variants = .{
+                    .{ .name = "inject_script_file", .validator = injectScriptFileValidator },
                 },
             },
             .{ .name = "wait_selector", .type = ?[:0]const u8 },
@@ -1220,6 +1238,10 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\
         \\--wait-script-file
         \\                Like --wait-script, but reads the script from a file.
+        \\
+        \\--inject-script-file
+        \\                Injects a JavaScript probe before every document parse.
+        \\                Intended for Observatory instrumentation and replay.
         \\
         \\--click-selector
         \\                After --wait-selector/--wait-until, click inside the

@@ -18,6 +18,8 @@ browser: @import("../../core/browser/Browser.zig"),
 session: *@import("../../core/browser/Session.zig"),
 node_registry: CDPNode.Registry,
 action_journal: ActionJournal,
+/// Script evaluated before every new document in this authorized MCP session.
+init_script: ?[]u8 = null,
 
 writer: *std.Io.Writer,
 mutex: sync.Mutex = .{},
@@ -59,6 +61,7 @@ pub fn deinit(self: *Self) void {
     self.action_journal.deinit();
     self.aw.deinit();
     self.browser.deinit();
+    if (self.init_script) |script| self.allocator.free(script);
     self.notification.deinit();
 
     self.allocator.destroy(self);

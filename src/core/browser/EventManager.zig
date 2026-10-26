@@ -110,6 +110,19 @@ pub fn dispatchOpts(self: *EventManager, target: *EventTarget, event: *Event, co
     event.acquireRef();
     defer _ = event.releaseRef(self.frame._page);
 
+    const performance_start = self.frame.window._performance.now();
+    defer if (event._is_trusted) {
+        const performance_duration = @max(self.frame.window._performance.now() - performance_start, 0.0);
+        self.frame.window._performance.recordEventTiming(
+            event._type_string.str(),
+            performance_start,
+            performance_duration,
+            self.frame,
+        ) catch |err| {
+            log.warn(.event, "performance event timing", .{ .err = err, .type = event._type_string.str() });
+        };
+    };
+
     // Increment event count for Event Timing API
     self.frame.window._performance._event_counts.increment(event._type_string.str());
 

@@ -8,7 +8,7 @@ const EventCounts = @import("EventCounts.zig");
 const Allocator = std.mem.Allocator;
 
 pub fn registerTypes() []const type {
-    return &.{ Performance, Entry, NavigationTimingEntry, Mark, Measure, PerformanceTiming, PerformanceNavigation };
+    return &.{ Performance, Entry, NavigationTimingEntry, Mark, Measure, PerformanceTiming, PerformanceNavigation, PerformanceEventTiming };
 }
 
 const Performance = @This();
@@ -19,6 +19,10 @@ _entries: std.ArrayList(*Entry) = .empty,
 _timing: PerformanceTiming = .{},
 _navigation: PerformanceNavigation = .{},
 _event_counts: EventCounts = .{},
+_first_contentful_paint_recorded: bool = false,
+_largest_contentful_paint_recorded: bool = false,
+_first_input_recorded: bool = false,
+_next_interaction_id: u32 = 1,
 
 /// High-resolution monotonic clock with Chrome-like quantization (~100μs + jitter).
 fn highResTimestamp() u64 {
@@ -45,6 +49,15 @@ pub fn recordNavigationStart(self: *Performance) void {
     self._timing.recordNavigationStart();
     self._monotonic_origin_us = highResTimestamp();
     self.clearEntriesByType("navigation");
+    self.clearEntriesByType("paint");
+    self.clearEntriesByType("largest-contentful-paint");
+    self.clearEntriesByType("layout-shift");
+    self.clearEntriesByType("event");
+    self.clearEntriesByType("first-input");
+    self._first_contentful_paint_recorded = false;
+    self._largest_contentful_paint_recorded = false;
+    self._first_input_recorded = false;
+    self._next_interaction_id = 1;
 }
 
 pub fn clearEntriesByType(self: *Performance, entry_type: []const u8) void {
@@ -75,6 +88,118 @@ pub fn recordDomInteractive(self: *Performance) void {
 
 pub fn recordDocumentComplete(self: *Performance) void {
     self._timing.recordDocumentComplete();
+}
+
+/// Record the first paint milestone exposed by the Performance Timeline.
+/// Koko does not have a compositor thread, so the DOM-interactive boundary is
+/// the earliest reliable point at which parsed content can be observed.
+pub fn recordFirstContentfulPaint(self: *Performance, frame: *Frame) !void {
+    if (self._first_contentful_paint_recorded) return;
+    self._first_contentful_paint_recorded = true;
+    try self.recordTimelineEntry("first-contentful-paint", .paint, self.now(), 0.0, frame);
+}
+
+/// Record the final content milestone after the document's load lifecycle has
+/// completed. This is a lifecycle-backed approximation of LCP for Koko's
+/// non-composited renderer; it is intentionally not emitted before completion.
+pub fn recordLargestContentfulPaint(self: *Performance, frame: *Frame) !void {
+    if (self._largest_contentful_paint_recorded) return;
+    self._largest_contentful_paint_recorded = true;
+    try self.recordTimelineEntry("largest-contentful-paint", .@"largest-contentful-paint", self.now(), 0.0, frame);
+}
+
+/// Record an Event Timing entry for a trusted user interaction. The duration
+/// covers the complete dispatch, including page listeners and default action.
+pub fn recordEventTiming(
+    self: *Performance,
+    event_name: []const u8,
+    start_time: f64,
+    duration: f64,
+    frame: *Frame,
+) !void {
+    if (!isUserInteractionEvent(event_name)) return;
+
+    const interaction_id = self._next_interaction_id;
+    self._next_interaction_id +%= 1;
+    const details = EntryDetails{
+        .interaction_id = interaction_id,
+        .processing_start = start_time,
+        .processing_end = start_time + duration,
+    };
+    try self.recordTimelineEntryWithDetails(event_name, .event, start_time, duration, details, frame);
+
+    if (!self._first_input_recorded) {
+        self._first_input_recorded = true;
+        try self.recordTimelineEntryWithDetails(event_name, .@"first-input", start_time, duration, details, frame);
+    }
+}
+
+fn isUserInteractionEvent(event_name: []const u8) bool {
+    const names = std.StaticStringMap(void).initComptime(.{
+        .{ "click", {} },
+        .{ "dblclick", {} },
+        .{ "keydown", {} },
+        .{ "keyup", {} },
+        .{ "pointerdown", {} },
+        .{ "pointerup", {} },
+        .{ "mousedown", {} },
+        .{ "mouseup", {} },
+        .{ "touchstart", {} },
+        .{ "touchend", {} },
+        .{ "input", {} },
+        .{ "change", {} },
+        .{ "wheel", {} },
+    });
+    return names.has(event_name);
+}
+
+const EntryDetails = struct {
+    value: f64 = 0.0,
+    had_recent_input: bool = false,
+    interaction_id: u32 = 0,
+    processing_start: f64 = 0.0,
+    processing_end: f64 = 0.0,
+    render_time: f64 = 0.0,
+    load_time: f64 = 0.0,
+    size: f64 = 0.0,
+};
+
+fn recordTimelineEntry(
+    self: *Performance,
+    name: []const u8,
+    entry_type: Entry.Type,
+    start_time: f64,
+    duration: f64,
+    frame: *Frame,
+) !void {
+    return self.recordTimelineEntryWithDetails(name, entry_type, start_time, duration, .{}, frame);
+}
+
+fn recordTimelineEntryWithDetails(
+    self: *Performance,
+    name: []const u8,
+    entry_type: Entry.Type,
+    start_time: f64,
+    duration: f64,
+    details: EntryDetails,
+    frame: *Frame,
+) !void {
+    const entry = try frame._factory.create(Entry{
+        ._duration = duration,
+        ._type = entry_type,
+        ._name = try frame.dupeString(name),
+        ._start_time = start_time,
+        ._value = details.value,
+        ._had_recent_input = details.had_recent_input,
+        ._interaction_id = details.interaction_id,
+        ._processing_start = details.processing_start,
+        ._processing_end = details.processing_end,
+        ._render_time = details.render_time,
+        ._load_time = details.load_time,
+        ._size = details.size,
+    });
+    try self._entries.append(frame.arena, entry);
+    try frame.notifyPerformanceObservers(entry);
 }
 
 pub fn now(self: *const Performance) f64 {
@@ -338,11 +463,19 @@ pub const Entry = struct {
     _type: Type,
     _name: []const u8,
     _start_time: f64 = 0.0,
+    _value: f64 = 0.0,
+    _had_recent_input: bool = false,
+    _interaction_id: u32 = 0,
+    _processing_start: f64 = 0.0,
+    _processing_end: f64 = 0.0,
+    _render_time: f64 = 0.0,
+    _load_time: f64 = 0.0,
+    _size: f64 = 0.0,
 
     pub const Type = union(Enum) {
         element,
         event,
-        first_input,
+        @"first-input",
         @"largest-contentful-paint",
         @"layout-shift",
         @"long-animation-frame",
@@ -358,7 +491,7 @@ pub const Entry = struct {
         pub const Enum = enum(u8) {
             element = 1, // Changing this affect PerformanceObserver's behavior.
             event = 2,
-            first_input = 3,
+            @"first-input" = 3,
             @"largest-contentful-paint" = 4,
             @"layout-shift" = 5,
             @"long-animation-frame" = 6,
@@ -394,6 +527,38 @@ pub const Entry = struct {
 
     pub fn getStartTime(self: *const Entry) f64 {
         return self._start_time;
+    }
+
+    pub fn getValue(self: *const Entry) f64 {
+        return self._value;
+    }
+
+    pub fn getHadRecentInput(self: *const Entry) bool {
+        return self._had_recent_input;
+    }
+
+    pub fn getInteractionId(self: *const Entry) u32 {
+        return self._interaction_id;
+    }
+
+    pub fn getProcessingStart(self: *const Entry) f64 {
+        return self._processing_start;
+    }
+
+    pub fn getProcessingEnd(self: *const Entry) f64 {
+        return self._processing_end;
+    }
+
+    pub fn getRenderTime(self: *const Entry) f64 {
+        return self._render_time;
+    }
+
+    pub fn getLoadTime(self: *const Entry) f64 {
+        return self._load_time;
+    }
+
+    pub fn getSize(self: *const Entry) f64 {
+        return self._size;
     }
 
     pub fn getNavigationType(self: *const Entry) ?[]const u8 {
@@ -436,6 +601,14 @@ pub const Entry = struct {
         pub const duration = bridge.accessor(Entry.getDuration, null, .{});
         pub const entryType = bridge.accessor(Entry.getEntryType, null, .{});
         pub const startTime = bridge.accessor(Entry.getStartTime, null, .{});
+        pub const value = bridge.accessor(Entry.getValue, null, .{});
+        pub const hadRecentInput = bridge.accessor(Entry.getHadRecentInput, null, .{});
+        pub const interactionId = bridge.accessor(Entry.getInteractionId, null, .{});
+        pub const processingStart = bridge.accessor(Entry.getProcessingStart, null, .{});
+        pub const processingEnd = bridge.accessor(Entry.getProcessingEnd, null, .{});
+        pub const renderTime = bridge.accessor(Entry.getRenderTime, null, .{});
+        pub const loadTime = bridge.accessor(Entry.getLoadTime, null, .{});
+        pub const size = bridge.accessor(Entry.getSize, null, .{});
         // PerformanceNavigationTiming fields (present when entryType === "navigation").
         pub const @"type" = bridge.accessor(Entry.getNavigationType, null, .{});
         pub const deliveryType = bridge.accessor(Entry.getNavigationDeliveryType, null, .{});
@@ -934,5 +1107,26 @@ pub const PerformanceNavigation = struct {
 
         pub const @"type" = bridge.property(0.0, .{ .template = false, .readonly = true });
         pub const redirectCount = bridge.property(0.0, .{ .template = false, .readonly = true });
+    };
+};
+
+/// Feature-detection surface required by the Event Timing API and web-vitals.
+/// Event entries themselves use PerformanceEntry's shared backing object; this
+/// interface exists so `PerformanceEventTiming.prototype.interactionId` is
+/// observable by libraries before they register an INP observer.
+pub const PerformanceEventTiming = struct {
+    _pad: bool = false,
+
+    pub const JsApi = struct {
+        pub const bridge = js.Bridge(PerformanceEventTiming);
+
+        pub const Meta = struct {
+            pub const name = "PerformanceEventTiming";
+            pub const prototype_chain = bridge.prototypeChain();
+            pub var class_id: bridge.ClassId = undefined;
+            pub const empty_with_no_proto = true;
+        };
+
+        pub const interactionId = bridge.property(0.0, .{ .template = false, .readonly = true });
     };
 };

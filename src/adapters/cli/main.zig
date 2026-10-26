@@ -192,6 +192,7 @@ fn run(allocator: Allocator, main_arena: Allocator, process_args: std.process.Ar
                 .max_scrolls = opts.max_scrolls,
                 .scroll_settle_ms = opts.scroll_settle_ms,
                 .wait_script = opts.wait_script,
+                .inject_script = opts.inject_script,
                 .wait_selector = opts.wait_selector,
                 .click_selector = opts.click_selector,
                 .click_offset_x = opts.click_offset_x,

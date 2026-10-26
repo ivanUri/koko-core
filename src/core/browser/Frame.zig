@@ -98,25 +98,24 @@ const selector_cache_limit = 256;
 /// The resulting AST lives in frame.arena — valid for the realm lifetime.
 /// Selectors longer than 512 bytes are never cached (likely one-shot dynamic).
 pub fn parseSelectorCached(self: *Frame, input: []const u8) !SelectorList {
-    // Skip cache for very long selectors — almost certainly not repeated.
+    // Long selectors are almost certainly one-shot dynamic queries.
+    // Parse into call_arena (ephemeral) — never accumulate in frame.arena.
     if (input.len > 512) {
-        return SelectorParser.parseList(self.arena, input);
+        return SelectorParser.parseList(self.call_arena, input);
     }
 
     if (self._selector_cache.get(input)) |cached| {
         return cached;
     }
 
-    // Evict oldest entry when at capacity.
+    // Cache is full: frame.arena doesn't support per-entry free, so eviction
+    // cannot reclaim memory. Parse into call_arena instead of growing forever.
     if (self._selector_cache_keys.items.len >= selector_cache_limit) {
-        const evict_key = self._selector_cache_keys.items[0];
-        _ = self._selector_cache.remove(evict_key);
-        _ = self._selector_cache_keys.orderedRemove(0);
+        return SelectorParser.parseList(self.call_arena, input);
     }
 
-    // Parse into frame.arena so the AST survives across call_arena resets.
+    // Parse into frame.arena — AST lives for the full realm lifetime.
     const selectors = try SelectorParser.parseList(self.arena, input);
-    // Key must also live in frame.arena.
     const key = try self.arena.dupe(u8, input);
     try self._selector_cache.put(self.arena, key, selectors);
     try self._selector_cache_keys.append(self.arena, key);
@@ -877,6 +876,8 @@ pub fn prepareForOutgoingAbort(self: *Frame) void {
     self.disconnectAllIntersectionObservers();
     self._intersection_delivery_scheduled = false;
     self._intersection_check_scheduled = false;
+    self.disconnectAllMutationObservers();
+    self._mutation_delivery_scheduled = false;
 }
 
 /// True while this realm may run document-owned scheduler tasks / parser work.
@@ -938,6 +939,18 @@ fn disconnectAllIntersectionObservers(self: *Frame) void {
     }
 }
 
+fn disconnectAllMutationObservers(self: *Frame) void {
+    while (self._mutation_observers.first) |node| {
+        const observer: *MutationObserver = @fieldParentPtr("node", node);
+        // Remove the registry owner before releaseRef. MutationObserver.deinit
+        // may run synchronously when the JS weak ref is gone; it must not
+        // mutate this list while the teardown loop still owns node.
+        observer.clearObservingFrame();
+        self._mutation_observers.remove(node);
+        observer.releaseRef(self._page);
+    }
+}
+
 fn enterRealmDead(self: *Frame) void {
     if (self._realm_state != .dead) {
         self._realm_state = .dead;
@@ -964,6 +977,23 @@ pub fn deinit(self: *Frame) void {
     if (self._deinit_done) return;
     self._deinit_done = true;
 
+    // Publish realm invalidation before cancelling workers. A worker callback
+    // may already be running (and therefore no longer be present in either
+    // scheduler queue); it must observe `.draining` before it can attempt any
+    // further entry into this frame's V8 context.
+    self.enterRealmDraining();
+
+    // Detach IntersectionObservers while their arena-backed objects are still
+    // live. A deferred iframe teardown can run after V8 has finalized the JS
+    // wrappers; clearing the registry only later would leave poisoned pointers
+    // for the teardown release loop below.
+    self.disconnectAllIntersectionObservers();
+    self._intersection_delivery_scheduled = false;
+    self._intersection_check_scheduled = false;
+
+    self.disconnectAllMutationObservers();
+    self._mutation_delivery_scheduled = false;
+
     // Worker callbacks are scheduled on this frame's realm.  They must be
     // cancelled before the frame/context is torn down; otherwise a worker
     // message can race deinit and dereference the stale frame from the
@@ -974,7 +1004,6 @@ pub fn deinit(self: *Frame) void {
         frame.deinit();
     }
 
-    self.enterRealmDraining();
     // The frame scheduler also owns MessagePort/SharedWorker delivery tasks.
     // Dedicated workers are removed above, but shared-worker callbacks are not
     // frame-owned objects and can otherwise run after this realm is destroyed.
@@ -1085,8 +1114,9 @@ pub fn deinit(self: *Frame) void {
 
     browser.env.destroyContext(self.js);
 
-    // Must be after context is destroyed. A finalizer can reach into the *Worker
-    // (e.g. Worker.ReceiveMessageCallback) so the worker must still be valid.
+    // Must be after context is destroyed. Terminated Worker wrappers remain
+    // valid host objects while JavaScript can still reference them; only now is
+    // it safe to release their backing arenas.
     for (self.workers.items) |worker| {
         worker.deinit();
     }
@@ -1117,8 +1147,8 @@ pub fn terminateAllWorkers(self: *Frame) void {
     for (self.child_frames.items) |child| {
         child.terminateAllWorkers();
     }
-    while (self.workers.items.len > 0) {
-        self.workers.items[0].destroy();
+    for (self.workers.items) |worker| {
+        worker.destroy();
     }
 }
 
@@ -2339,6 +2369,9 @@ pub fn documentIsLoaded(self: *Frame) void {
     self._load_state = .load;
     self.document._ready_state = .interactive;
     self.window._performance.recordDomInteractive();
+    self.window._performance.recordFirstContentfulPaint(self) catch |err| {
+        log.warn(.frame, "performance FCP", .{ .err = err, .url = self.url });
+    };
     self.observeBrowserStage("html-parser", 0, "boundary", "Renderer", "Main");
     self.observeBrowserStage("dom", 0, "boundary", "Renderer", "Main");
     self.observeLifecycle("domcontentloaded");
@@ -2674,6 +2707,17 @@ const DeferDocumentParseCallback = struct {
 
         const parse_arena = try self.frame.getArena(.medium, "Frame.parse");
         defer self.frame.releaseArena(parse_arena);
+
+        // Install the Observatory probe before parsing author HTML so its
+        // listeners observe the earliest navigation/resource mutations.
+        if (self.frame._session.injected_script) |script| {
+            var scope: JS.Local.Scope = undefined;
+            self.frame.js.localScope(&scope);
+            defer scope.deinit();
+            scope.local.eval(script, "koko-observatory-injected-probe") catch |err| {
+                log.warn(.frame, "injected probe failed", .{ .err = err, .url = self.frame.url });
+            };
+        }
 
         var parser = Parser.init(parse_arena, self.frame.document.asNode(), self.frame);
         log.debug(.frame, "parse html start", .{
@@ -3062,6 +3106,9 @@ pub fn documentIsComplete(self: *Frame) void {
 
     self._load_state = .complete;
     self.window._performance.recordDocumentComplete();
+    self.window._performance.recordLargestContentfulPaint(self) catch |err| {
+        log.warn(.frame, "performance LCP", .{ .err = err, .url = self.url });
+    };
     if (!self.loadedProfile().isFirefox()) {
         const load_end = self.window._performance._timing.load_event_end;
         self.window._chrome.recordDocumentComplete(load_end);
@@ -4537,18 +4584,6 @@ pub fn unregisterMutationObserver(self: *Frame, observer: *MutationObserver) voi
     self._mutation_observers.remove(&observer.node);
 }
 
-/// Returns true if `observer` is still in the active delivery list.
-/// Used by the snapshot-based deliverMutations loop to skip observers
-/// that were disconnected by a prior callback in the same delivery pass.
-pub fn isMutationObserverRegistered(self: *const Frame, observer: *const MutationObserver) bool {
-    var it: ?*std.DoublyLinkedList.Node = self._mutation_observers.first;
-    while (it) |n| : (it = n.next) {
-        const obs: *MutationObserver = @fieldParentPtr("node", n);
-        if (obs == observer) return true;
-    }
-    return false;
-}
-
 pub fn registerIntersectionObserver(self: *Frame, observer: *IntersectionObserver) !void {
     observer.acquireRef();
     observer._registered_frame = self;
@@ -4562,8 +4597,12 @@ pub fn unregisterIntersectionObserver(self: *Frame, observer: *IntersectionObser
     if (observer._registered_frame == self) observer._registered_frame = null;
     for (self._intersection_observers.items, 0..) |obs, i| {
         if (obs == observer) {
-            observer.releaseRef(self._page);
+            // Remove the registry owner before dropping its ref. Releasing the
+            // ref can synchronously run IntersectionObserver.deinit; doing it
+            // first lets deinit mutate this same ArrayList and leaves the
+            // swapRemove below indexing stale storage (or removing twice).
             _ = self._intersection_observers.swapRemove(i);
+            observer.releaseRef(self._page);
             return;
         }
     }
@@ -4761,30 +4800,47 @@ pub fn deliverMutations(self: *Frame) void {
     // Snapshot every registered observer and acquire a ref before entering JS.
     // The previous `const next = node.next` approach only guarded against the
     // *current* observer being disconnected; if observer A's callback calls
-    // observerB.disconnect(), B's DoublyLinkedList node and backing memory can
-    // be freed while `next` still points to it (UAF). By snapshotting with
-    // acquireRef we guarantee every pointer stays valid for the full delivery
-    // loop regardless of what JS does to the observer list.
-    var snapshot_buf: [256]*MutationObserver = undefined;
-    var snapshot_len: usize = 0;
+    // observerB.disconnect(), B's memory can be freed while `next` still
+    // references it (UAF). We snapshot with acquireRef so every pointer stays
+    // valid for the full delivery loop regardless of what JS does.
+    //
+    // Use call_arena — it lives for the duration of this task turn and is reset
+    // automatically; no manual free needed. Never use a fixed stack buffer here:
+    // a page with >256 observers would silently starve the excess ones.
+    // Count observers before allocating the snapshot slice.
+    // std.DoublyLinkedList has no .len field in Zig 0.16.
+    var count: usize = 0;
     {
+        var c_it: ?*std.DoublyLinkedList.Node = self._mutation_observers.first;
+        while (c_it) |n| : (c_it = n.next) count += 1;
+    }
+    const snapshot = self.call_arena.alloc(*MutationObserver, count) catch |err| {
+        // OOM from call_arena is extremely rare; log and reschedule rather than
+        // delivering with a dangling-pointer risk. Pending records are retained
+        // and the next scheduled delivery will retry.
+        log.err(.frame, "frame.deliverMutations OOM", .{ .err = err, .type = self._type, .url = self.url });
+        self._mutation_delivery_scheduled = true;
+        return;
+    };
+    {
+        var snap_len: usize = 0;
         var snap_it: ?*std.DoublyLinkedList.Node = self._mutation_observers.first;
         while (snap_it) |n| : (snap_it = n.next) {
-            if (snapshot_len >= snapshot_buf.len) break; // safety cap
             const obs: *MutationObserver = @fieldParentPtr("node", n);
             obs.acquireRef();
-            snapshot_buf[snapshot_len] = obs;
-            snapshot_len += 1;
+            snapshot[snap_len] = obs;
+            snap_len += 1;
         }
     }
     // Release all refs unconditionally — even when delivery is aborted early.
-    defer for (snapshot_buf[0..snapshot_len]) |obs| obs.releaseRef(self._page);
+    defer for (snapshot) |obs| obs.releaseRef(self._page);
 
-    for (snapshot_buf[0..snapshot_len]) |observer| {
+    for (snapshot) |observer| {
         if (self._detach_pending or self._realm_state == .dead or
             self.js.execution.isTaskOwnerStale(self._mutation_delivery_task_owner)) break;
-        // Skip observers that were disconnected during a prior callback in this loop.
-        if (!self.isMutationObserverRegistered(observer)) continue;
+        // O(1) check: disconnect() sets _frame = null.
+        // Skip observers that were disconnected during a prior callback.
+        if (observer._frame == null) continue;
         observer.deliverRecords(self) catch |err| {
             log.err(.frame, "frame.deliverMutations", .{ .err = err, .type = self._type, .url = self.url });
         };
@@ -6209,12 +6265,13 @@ pub fn appendAllChildren(self: *Frame, parent: *Node, target: *Node) !void {
     // (like custom element connectedCallback) modify the parent during iteration.
     // The iterator captures "next" pointers that can become stale.
     while (parent.firstChild()) |child| {
-        // Check if child was connected BEFORE removing it from parent
-        const child_was_connected = child.isConnected();
-        self.removeNode(parent, child, .{ .will_be_reconnected = dest_connected });
-        // Adopt if the child's document differs from the target document.
+        // Snapshot owner and connected state BEFORE removeNode.
+        // removeNode clears child._parent, so ownerDocument() would lose the
+        // root-walk path afterward and fall back to frame.document.
         const child_owner = child.ownerDocument(self);
+        const child_was_connected = child.isConnected();
         const adopting = child_owner != null and child_owner.? != target_owner;
+        self.removeNode(parent, child, .{ .will_be_reconnected = dest_connected and !adopting });
         if (adopting) {
             try self.adoptNodeTree(child, child_owner.?, target_owner);
         }
@@ -6235,12 +6292,13 @@ pub fn insertAllChildrenBefore(self: *Frame, fragment: *Node, parent: *Node, ref
     // (like custom element connectedCallback) modify the fragment during iteration.
     // The iterator captures "next" pointers that can become stale.
     while (fragment.firstChild()) |child| {
-        // Check if child was connected BEFORE removing it from fragment
-        const child_was_connected = child.isConnected();
-        self.removeNode(fragment, child, .{ .will_be_reconnected = dest_connected });
-        // Adopt if the child's document differs from the target document.
+        // Snapshot owner and connected state BEFORE removeNode.
+        // removeNode clears child._parent, so ownerDocument() would lose the
+        // root-walk path afterward and fall back to frame.document.
         const child_owner = child.ownerDocument(self);
+        const child_was_connected = child.isConnected();
         const adopting = child_owner != null and child_owner.? != parent_owner;
+        self.removeNode(fragment, child, .{ .will_be_reconnected = dest_connected and !adopting });
         if (adopting) {
             try self.adoptNodeTree(child, child_owner.?, parent_owner);
         }
@@ -7898,6 +7956,10 @@ test "Frame: custom-element callbacks may mutate their insertion safely" {
 
 test "Frame: worker and MessagePort tasks cannot enter a replaced iframe realm" {
     try testing.htmlRunner("regression/iframe_worker_port_stale_realm.html", .{});
+}
+
+test "Frame: detached iframe worker cannot report a late error into its dead realm" {
+    try testing.htmlRunner("regression/iframe_worker_error_after_detach.html", .{});
 }
 
 test "Frame: iframe and its worker share the parent navigator persona" {

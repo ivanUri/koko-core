@@ -16,6 +16,7 @@
 
 const std = @import("std");
 const posix = std.posix;
+const Timer = @import("../../support/timer.zig");
 
 const ssl_c = @cImport({
     @cInclude("boringssl_zig_compat.h");
@@ -23,8 +24,14 @@ const ssl_c = @cImport({
 
 const TlsIo = @This();
 
+// WebSocket handshakes are background browser work. They must not hold the
+// fetch worker on a blocking SSL_read when a dev-server endpoint never replies.
+const handshake_timeout_ns: u64 = 5 * std.time.ns_per_s;
+const retry_sleep_ns: u64 = std.time.ns_per_ms;
+
 ctx: *ssl_c.SSL_CTX,
 ssl: *ssl_c.SSL,
+handshake_complete: bool = false,
 
 /// ALPN offering h2 + http/1.1 (Chrome-like) for WPT wss and h2 echo ports.
 const alpn_protos = [_]u8{
@@ -62,19 +69,28 @@ pub fn init(hostname: []const u8, socket: posix.socket_t, verify_peer: bool) !Tl
 }
 
 pub fn deinit(self: *TlsIo) void {
-    _ = ssl_c.SSL_shutdown(self.ssl);
+    // SSL_shutdown is only valid after a completed SSL state machine. A
+    // timed-out HMR handshake can leave BoringSSL's SSL3 state incomplete;
+    // calling shutdown on that object trips an internal null dereference.
+    if (self.handshake_complete) _ = ssl_c.SSL_shutdown(self.ssl);
     ssl_c.SSL_free(self.ssl);
     ssl_c.SSL_CTX_free(self.ctx);
 }
 
 pub fn connectBlocking(self: *TlsIo) !void {
+    var timer = Timer.start() catch return error.TlsHandshakeFailed;
     while (true) {
+        if (timer.read() >= handshake_timeout_ns) return error.TlsHandshakeTimeout;
         const rc = ssl_c.SSL_connect(self.ssl);
-        if (rc == 1) return;
+        if (rc == 1) {
+            self.handshake_complete = true;
+            return;
+        }
         const err = ssl_c.SSL_get_error(self.ssl, rc);
         switch (err) {
             ssl_c.SSL_ERROR_WANT_READ, ssl_c.SSL_ERROR_WANT_WRITE => {
                 if (ssl_c.SSL_pending(self.ssl) > 0) continue;
+                Timer.sleepNanoseconds(retry_sleep_ns);
                 continue;
             },
             ssl_c.SSL_ERROR_SSL => return error.SslProtocolError,
@@ -86,7 +102,9 @@ pub fn connectBlocking(self: *TlsIo) !void {
 /// Blocking read for handshake/bootstrap (e.g. nghttp2 session init). Returns >0 bytes,
 /// 0 on clean EOF, or an error.
 pub fn readBlocking(self: *TlsIo, buf: []u8) !usize {
+    var timer = Timer.start() catch return error.TlsHandshakeFailed;
     while (true) {
+        if (timer.read() >= handshake_timeout_ns) return error.TlsHandshakeTimeout;
         const n = ssl_c.SSL_read(self.ssl, buf.ptr, @intCast(buf.len));
         if (n > 0) return @intCast(n);
         const err = ssl_c.SSL_get_error(self.ssl, n);
@@ -94,6 +112,7 @@ pub fn readBlocking(self: *TlsIo, buf: []u8) !usize {
             ssl_c.SSL_ERROR_ZERO_RETURN => return 0,
             ssl_c.SSL_ERROR_WANT_READ, ssl_c.SSL_ERROR_WANT_WRITE => {
                 if (ssl_c.SSL_pending(self.ssl) > 0) continue;
+                Timer.sleepNanoseconds(retry_sleep_ns);
                 continue;
             },
             ssl_c.SSL_ERROR_SSL => return error.SslProtocolError,
@@ -104,8 +123,10 @@ pub fn readBlocking(self: *TlsIo, buf: []u8) !usize {
 
 /// Blocking write of the full buffer (used during TLS/H2 handshake on a blocking socket).
 pub fn writeBlocking(self: *TlsIo, data: []const u8) !void {
+    var timer = Timer.start() catch return error.TlsHandshakeFailed;
     var pos: usize = 0;
     while (pos < data.len) {
+        if (timer.read() >= handshake_timeout_ns) return error.TlsHandshakeTimeout;
         const n = ssl_c.SSL_write(self.ssl, data[pos..].ptr, @intCast(data.len - pos));
         if (n > 0) {
             pos += @intCast(n);
@@ -115,6 +136,7 @@ pub fn writeBlocking(self: *TlsIo, data: []const u8) !void {
         switch (err) {
             ssl_c.SSL_ERROR_WANT_READ, ssl_c.SSL_ERROR_WANT_WRITE => {
                 if (ssl_c.SSL_pending(self.ssl) > 0) continue;
+                Timer.sleepNanoseconds(retry_sleep_ns);
                 continue;
             },
             ssl_c.SSL_ERROR_SSL => return error.SslProtocolError,

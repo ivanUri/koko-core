@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+const events = [];
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(JSON.stringify(events)),
+};
+
+const source = `onmessage = ({ data }) => postMessage(data);`;
+const worker = new Worker(URL.createObjectURL(
+  new Blob([source], { type: "text/javascript" })));
+
+worker.onmessage = ({ data }) => events.push(data);
+worker.terminate();
+
+// A terminated Worker remains a valid JavaScript host object. postMessage is
+// allowed to be called, but the message must be discarded without entering the
+// destroyed worker global or dereferencing released native storage.
+worker.postMessage("must-not-deliver");
+worker.terminate();
+
+setTimeout(() => {
+  const passed = events.length === 0;
+  document.body.id = passed ? "pass" : "fail";
+  document.body.textContent = passed ? "pass" : JSON.stringify(events);
+}, 40);
+</script>

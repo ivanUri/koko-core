@@ -212,7 +212,15 @@ pub fn processMessage(self: *CDP, msg: []const u8) !void {
     }
     const arena = &self.message_arena;
     defer _ = arena.reset(.{ .retain_with_limit = 1024 * 16 });
-    return self.dispatch(arena.allocator(), .{ .cdp = self }, msg);
+    // A dispose request is acknowledged during dispatch, but the actual
+    // BrowserContext teardown is deferred while command-owned session fields
+    // are still on the stack. `dispatch` has fully unwound by this point, so
+    // this is the first safe point for reclaiming the context before the next
+    // CDP message (and it keeps Target.disposeBrowserContext synchronous from
+    // the protocol client's perspective).
+    const result = self.dispatch(arena.allocator(), .{ .cdp = self }, msg);
+    self.finishDeferredBrowserContextDispose();
+    return result;
 }
 
 // @newhttp
@@ -454,7 +462,16 @@ fn finishDeferredBrowserContextDispose(self: *CDP) void {
         self.deferred_browser_context_dispose = false;
         return;
     };
-    if (bc.session.activeIsEvaluating() or !bc.session.canDisposeContext()) return;
+    if (bc.session.activeIsEvaluating()) return;
+    // Target.disposeBrowserContext owns the page teardown as well as the
+    // BrowserContext object. Do it only after dispatch has unwound, so the
+    // active page can no longer be referenced by the command stack. If a
+    // native transfer still owns the frame, Session.removePage parks it as a
+    // zombie and canDisposeContext() below will wait for that transfer.
+    if (bc.session.currentPage() != null) {
+        bc.session.removePage();
+    }
+    if (!bc.session.canDisposeContext()) return;
     self.finishBrowserContextDispose();
 }
 

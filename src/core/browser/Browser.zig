@@ -44,6 +44,9 @@ pub fn observeBrowserScript(self: *Browser, duration_us: u64, frame_id: u32, loa
 pub fn observeJavaScriptError(self: *Browser, error_kind: []const u8, message: []const u8, script_url: []const u8, line: u32, column: u32, frame_id: u32, loader_id: u32, stack: ?[]const u8) void {
     self.app.network.emitJavaScriptError(error_kind, message, script_url, line, column, frame_id, loader_id, stack);
 }
+pub fn observeProbeEvent(self: *Browser, kind: []const u8, name: []const u8, payload_json: []const u8, frame_id: u32, loader_id: u32, url: []const u8) void {
+    self.app.network.emitProbeEvent(kind, name, payload_json, frame_id, loader_id, url);
+}
 pub fn observeApplicationStorageEntry(self: *Browser, storage_type: []const u8, origin: []const u8, key: []const u8, value: ?[]const u8, value_bytes: usize, details: anytype) void {
     self.app.network.emitApplicationStorageEntry(storage_type, origin, key, value, value_bytes, details);
 }
@@ -158,7 +161,15 @@ pub fn runMacrotasks(self: *Browser) !void {
     // so delay-0 chains (MessageChannel / post-script) progress without site pumps.
     env.runMicrotasks(.macrotask_loop);
 
-    try self.env.runMacrotasks();
+    // A page is allowed to schedule more zero-delay work from every callback
+    // (Next/Turbopack HMR is one real example). Draining the scheduler until it
+    // is empty lets such a page starve network polling and lifecycle checks
+    // forever. Keep one browser turn bounded; the next Runner tick continues
+    // from the same queues and preserves fairness with HTTP/lifecycle work.
+    var slices: u8 = 0;
+    while (slices < 64) : (slices += 1) {
+        if (!try self.env.runOneMacrotaskRound()) break;
+    }
     env.pumpMessageLoop();
 
     // EventLoop.spin for the current frame is applied from Runner after

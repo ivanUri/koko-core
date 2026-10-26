@@ -623,10 +623,19 @@ fn _tick(self: *Runner, comptime is_cdp: bool, opts: TickOpts) !CDPTickResult {
                 ),
             };
 
-            // `met` resolves the wait goal. Otherwise, if the page is fully
-            // idle (`is_done`) there is nothing left to wait on — resolve rather
+            // Lifecycle milestones are boundaries, not host-idle conditions.
+            // In particular, DOMContentLoaded must be observable even when a
+            // page has a long-lived dev HMR socket, recurring timer, or a
+            // MessagePort task queued behind the document. Waiting for
+            // `immediate_host_work` here turns a valid DCL result into a
+            // deadline timeout and prevents callers from receiving the
+            // lifecycle evidence they requested.
+            const milestone_complete = switch (opts.until) {
+                .domcontentloaded => met,
+                else => met and !immediate_host_work,
+            };
             const allow_fully_idle_shortcut = opts.until != .domstable;
-            if ((met and !immediate_host_work) or (is_done and allow_fully_idle_shortcut)) {
+            if (milestone_complete or (is_done and allow_fully_idle_shortcut)) {
                 // `done` is full idle, so V8 background tasks are part of the
                 // milestone. DOMContentLoaded and load return without draining:
                 // waiting on those tasks held one-shot fetches until the budget.

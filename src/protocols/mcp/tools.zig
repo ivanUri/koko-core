@@ -45,6 +45,16 @@ const evaluate_schema = protocol.minify(
     \\}
 );
 
+const add_init_script_schema = protocol.minify(
+    \\{
+    \\  "type": "object",
+    \\  "properties": {
+    \\    "script": { "type": "string", "description": "JavaScript evaluated before every new document in this authorized MCP session." }
+    \\  },
+    \\  "required": ["script"]
+    \\}
+);
+
 pub const tool_list = [_]protocol.Tool{
     .{
         .action = .goto,
@@ -98,6 +108,12 @@ pub const tool_list = [_]protocol.Tool{
         .name = "eval",
         .description = "Alias for evaluate. Evaluate JavaScript in the current page context.",
         .inputSchema = evaluate_schema,
+    },
+    .{
+        .action = .add_init_script,
+        .name = "addInitScript",
+        .description = "Register a bounded JavaScript instrumentation script for the next and subsequent documents in this authorized session.",
+        .inputSchema = add_init_script_schema,
     },
     .{
         .action = .semantic_tree,
@@ -362,6 +378,10 @@ const EvaluateParams = struct {
     waitUntil: ?@import("../../runtime/Config.zig").WaitUntil = null,
 };
 
+const AddInitScriptParams = struct {
+    script: [:0]const u8,
+};
+
 const ToolStreamingText = struct {
     frame: *@import("../../core/browser/Frame.zig"),
     action: enum { markdown, links, semantic_tree },
@@ -461,6 +481,7 @@ pub fn handleCall(server: *Server, arena: std.mem.Allocator, req: protocol.Reque
         .structured_data => try handleStructuredData(server, arena, req.id.?, call_params.arguments),
         .detect_forms => try handleDetectForms(server, arena, req.id.?, call_params.arguments),
         .evaluate => try handleEvaluate(server, arena, req.id.?, call_params.arguments),
+        .add_init_script => try handleAddInitScript(server, arena, req.id.?, call_params.arguments),
         .semantic_tree => try handleSemanticTree(server, arena, req.id.?, call_params.arguments),
         .click => try handleClick(server, arena, req.id.?, call_params.arguments),
         .fill => try handleFill(server, arena, req.id.?, call_params.arguments),
@@ -667,6 +688,17 @@ fn handleEvaluate(server: *Server, arena: std.mem.Allocator, id: std.json.Value,
 
     const content = [_]protocol.TextContent([]const u8){.{ .text = str_result }};
     try server.sendResult(id, protocol.CallToolResult([]const u8){ .content = &content });
+}
+
+fn handleAddInitScript(server: *Server, arena: std.mem.Allocator, id: std.json.Value, arguments: ?std.json.Value) !void {
+    const args = try parseArgs(AddInitScriptParams, arena, arguments, server, id, "addInitScript");
+    const script = server.allocator.dupe(u8, args.script) catch {
+        return server.sendError(id, .InternalError, "Failed to store init script");
+    };
+    if (server.init_script) |previous| server.allocator.free(previous);
+    server.init_script = script;
+    server.session.injected_script = script;
+    try server.sendResult(id, .{ .identifier = "mcp-init-1" });
 }
 
 fn handleClick(server: *Server, arena: std.mem.Allocator, id: std.json.Value, arguments: ?std.json.Value) !void {
@@ -1104,6 +1136,7 @@ fn parseArgs(comptime T: type, arena: std.mem.Allocator, arguments: ?std.json.Va
 
 fn performGoto(server: *Server, url: [:0]const u8, id: std.json.Value, timeout: ?u32, waitUntil: ?@import("../../runtime/Config.zig").WaitUntil) !void {
     const session = server.session;
+    session.injected_script = server.init_script;
     if (session.hasPage()) {
         session.removePage();
     }

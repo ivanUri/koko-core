@@ -62,6 +62,10 @@ notification: *Notification,
 cookie_jar: storage.Cookie.Jar,
 fingerprint_seed: u64 = 0,
 
+/// Optional source injected before every parsed document. Used by the CLI
+/// Observatory integration; CDP callers leave this unset.
+injected_script: ?[]const u8 = null,
+
 /// CDP Emulation overrides for this session (set when attached via BrowserContext).
 emulation: ?*const @import("../../protocols/cdp/EmulationState.zig").State = null,
 
