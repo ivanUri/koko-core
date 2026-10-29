@@ -22,6 +22,7 @@ const Canvas = @import("../element/html/Canvas.zig");
 const CanvasGradient = @import("CanvasGradient.zig");
 const ImageData = @import("../ImageData.zig");
 const TextMetrics = @import("TextMetrics.zig");
+const LineDash = @import("LineDash.zig");
 const FingerprintSeed = @import("../../../runtime/profile/FingerprintSeed.zig");
 const NativeCanvas = @import("../../../runtime/profile/NativeCanvas.zig");
 const CanvasIntelligent = @import("../../../runtime/profile/CanvasIntelligent.zig");
@@ -39,6 +40,8 @@ _fill_style: color.RGBA = color.RGBA.Named.black,
 /// "10px sans-serif". The string is stored in the page arena so it outlives
 /// the call that set it.
 _font: []const u8 = "10px sans-serif",
+_line_dash: []const f64 = &.{},
+_line_dash_offset: f64 = 0.0,
 _arc: ?struct {
     cx: f64,
     cy: f64,
@@ -199,6 +202,22 @@ pub fn transform(_: *CanvasRenderingContext2D, _: f64, _: f64, _: f64, _: f64, _
 pub fn setTransform(_: *CanvasRenderingContext2D, _: f64, _: f64, _: f64, _: f64, _: f64, _: f64) void {}
 pub fn resetTransform(_: *CanvasRenderingContext2D) void {}
 pub fn setStrokeStyle(_: *CanvasRenderingContext2D, _: []const u8) void {}
+
+pub fn getLineDash(self: *const CanvasRenderingContext2D) []const f64 {
+    return self._line_dash;
+}
+
+pub fn setLineDash(self: *CanvasRenderingContext2D, segments: []const f64, frame: *Frame) !void {
+    self._line_dash = try LineDash.normalize(frame.arena, segments);
+}
+
+pub fn getLineDashOffset(self: *const CanvasRenderingContext2D) f64 {
+    return self._line_dash_offset;
+}
+
+pub fn setLineDashOffset(self: *CanvasRenderingContext2D, value: f64) void {
+    self._line_dash_offset = value;
+}
 
 pub fn clearRect(self: *CanvasRenderingContext2D, x: f64, y: f64, w: f64, h: f64, frame: *Frame) !void {
     const buffer = try self._canvas.getOrCreatePixelBuffer(frame);
@@ -510,6 +529,7 @@ pub const JsApi = struct {
     pub const lineCap = bridge.property("butt", .{ .template = false, .readonly = false });
     pub const lineJoin = bridge.property("miter", .{ .template = false, .readonly = false });
     pub const miterLimit = bridge.property(10.0, .{ .template = false, .readonly = false });
+    pub const lineDashOffset = bridge.accessor(CanvasRenderingContext2D.getLineDashOffset, CanvasRenderingContext2D.setLineDashOffset, .{});
     pub const textAlign = bridge.property("start", .{ .template = false, .readonly = false });
     pub const textBaseline = bridge.property("alphabetic", .{ .template = false, .readonly = false });
 
@@ -530,6 +550,8 @@ pub const JsApi = struct {
     pub const fillRect = bridge.function(CanvasRenderingContext2D.fillRect, .{});
     pub const strokeRect = bridge.function(CanvasRenderingContext2D.strokeRect, .{ .noop = true });
     pub const beginPath = bridge.function(CanvasRenderingContext2D.beginPath, .{});
+    pub const getLineDash = bridge.function(CanvasRenderingContext2D.getLineDash, .{});
+    pub const setLineDash = bridge.function(CanvasRenderingContext2D.setLineDash, .{ .dom_exception = true });
     pub const closePath = bridge.function(CanvasRenderingContext2D.closePath, .{ .noop = true });
     pub const moveTo = bridge.function(CanvasRenderingContext2D.moveTo, .{ .noop = true });
     pub const lineTo = bridge.function(CanvasRenderingContext2D.lineTo, .{ .noop = true });

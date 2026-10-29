@@ -26,6 +26,7 @@ const WorkerGlobalScope = @import("WorkerGlobalScope.zig");
 const log = @import("../../support/log.zig");
 const RealmLifecycleKernel = @import("../../runtime/RealmLifecycleKernel.zig");
 const milliTimestamp = @import("../../support/datetime.zig").milliTimestamp;
+const nanoTimestamp = @import("../../support/datetime.zig").nanoTimestamp;
 const Allocator = std.mem.Allocator;
 
 const Timers = @This();
@@ -291,11 +292,15 @@ const ScheduleCallback = struct {
             .animation_frame => {
                 // requestAnimationFrame is window-only; if a worker ever
                 // schedules with this mode it's a programming error.
-                const window = switch (self.exec.context.global) {
-                    .frame => |frame| frame.window,
+                switch (self.exec.context.global) {
+                    .frame => |frame| {
+                        const started = nanoTimestamp(.monotonic);
+                        invokeTimerCallback(&ls.local, self.exec, self.cb, .{frame.window._performance.now()});
+                        const elapsed = nanoTimestamp(.monotonic) - started;
+                        frame.observeAnimationFrame(if (elapsed <= 0) 0 else @intCast(@divTrunc(elapsed, std.time.ns_per_us)));
+                    },
                     .worker => unreachable,
-                };
-                invokeTimerCallback(&ls.local, self.exec, self.cb, .{window._performance.now()});
+                }
             },
             .normal => invokeTimerCallback(&ls.local, self.exec, self.cb, self.params),
         }

@@ -20,6 +20,7 @@ const Frame = @import("../../browser/Frame.zig");
 const CanvasGradient = @import("CanvasGradient.zig");
 const ImageData = @import("../ImageData.zig");
 const TextMetrics = @import("TextMetrics.zig");
+const LineDash = @import("LineDash.zig");
 
 /// This class doesn't implement a `constructor`.
 /// It can be obtained with a call to `OffscreenCanvas#getContext`.
@@ -30,6 +31,8 @@ const OffscreenCanvasRenderingContext2D = @This();
 _fill_style: color.RGBA = color.RGBA.Named.black,
 /// Current font (CSS font shorthand). See CanvasRenderingContext2D._font.
 _font: []const u8 = "10px sans-serif",
+_line_dash: []const f64 = &.{},
+_line_dash_offset: f64 = 0.0,
 
 pub fn getFillStyle(self: *const OffscreenCanvasRenderingContext2D, frame: *Frame) ![]const u8 {
     var w = std.Io.Writer.Allocating.init(frame.call_arena);
@@ -103,6 +106,18 @@ pub fn transform(_: *OffscreenCanvasRenderingContext2D, _: f64, _: f64, _: f64, 
 pub fn setTransform(_: *OffscreenCanvasRenderingContext2D, _: f64, _: f64, _: f64, _: f64, _: f64, _: f64) void {}
 pub fn resetTransform(_: *OffscreenCanvasRenderingContext2D) void {}
 pub fn setStrokeStyle(_: *OffscreenCanvasRenderingContext2D, _: []const u8) void {}
+pub fn getLineDash(self: *const OffscreenCanvasRenderingContext2D) []const f64 {
+    return self._line_dash;
+}
+pub fn setLineDash(self: *OffscreenCanvasRenderingContext2D, segments: []const f64, frame: *Frame) !void {
+    self._line_dash = try LineDash.normalize(frame.arena, segments);
+}
+pub fn getLineDashOffset(self: *const OffscreenCanvasRenderingContext2D) f64 {
+    return self._line_dash_offset;
+}
+pub fn setLineDashOffset(self: *OffscreenCanvasRenderingContext2D, value: f64) void {
+    self._line_dash_offset = value;
+}
 pub fn clearRect(_: *OffscreenCanvasRenderingContext2D, _: f64, _: f64, _: f64, _: f64) void {}
 pub fn fillRect(_: *OffscreenCanvasRenderingContext2D, _: f64, _: f64, _: f64, _: f64) void {}
 pub fn strokeRect(_: *OffscreenCanvasRenderingContext2D, _: f64, _: f64, _: f64, _: f64) void {}
@@ -188,6 +203,7 @@ pub const JsApi = struct {
     pub const lineCap = bridge.property("butt", .{ .template = false, .readonly = false });
     pub const lineJoin = bridge.property("miter", .{ .template = false, .readonly = false });
     pub const miterLimit = bridge.property(10.0, .{ .template = false, .readonly = false });
+    pub const lineDashOffset = bridge.accessor(OffscreenCanvasRenderingContext2D.getLineDashOffset, OffscreenCanvasRenderingContext2D.setLineDashOffset, .{});
     pub const textAlign = bridge.property("start", .{ .template = false, .readonly = false });
     pub const textBaseline = bridge.property("alphabetic", .{ .template = false, .readonly = false });
 
@@ -208,6 +224,8 @@ pub const JsApi = struct {
     pub const fillRect = bridge.function(OffscreenCanvasRenderingContext2D.fillRect, .{ .noop = true });
     pub const strokeRect = bridge.function(OffscreenCanvasRenderingContext2D.strokeRect, .{ .noop = true });
     pub const beginPath = bridge.function(OffscreenCanvasRenderingContext2D.beginPath, .{ .noop = true });
+    pub const getLineDash = bridge.function(OffscreenCanvasRenderingContext2D.getLineDash, .{});
+    pub const setLineDash = bridge.function(OffscreenCanvasRenderingContext2D.setLineDash, .{ .dom_exception = true });
     pub const closePath = bridge.function(OffscreenCanvasRenderingContext2D.closePath, .{ .noop = true });
     pub const moveTo = bridge.function(OffscreenCanvasRenderingContext2D.moveTo, .{ .noop = true });
     pub const lineTo = bridge.function(OffscreenCanvasRenderingContext2D.lineTo, .{ .noop = true });

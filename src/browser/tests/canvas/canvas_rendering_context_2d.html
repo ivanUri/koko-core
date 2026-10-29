@@ -1,0 +1,42 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>pending</body>
+<script>
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  const offscreen = typeof OffscreenCanvas === "function" ? new OffscreenCanvas(1, 1) : null;
+  const offscreenCtx = offscreen?.getContext("2d") ?? null;
+
+  window.testing = {
+    assertOk: () => document.body.id === "canvas-line-dash-pass",
+    printTimeoutState: () => console.log(document.body.textContent),
+  };
+
+  try {
+    ctx.setLineDash([4, 2, 1]);
+    const normalized = JSON.stringify(ctx.getLineDash());
+    ctx.lineDashOffset = 1.5;
+    const htmlCanvasOk = normalized === JSON.stringify([4, 2, 1, 4, 2, 1]) && ctx.lineDashOffset === 1.5;
+
+    let offscreenOk = true;
+    if (offscreenCtx) {
+      offscreenCtx.setLineDash([3, 1]);
+      offscreenCtx.lineDashOffset = 2;
+      offscreenOk = JSON.stringify(offscreenCtx.getLineDash()) === JSON.stringify([3, 1]) && offscreenCtx.lineDashOffset === 2;
+    }
+
+    let rejected = false;
+    try { ctx.setLineDash([-1]); } catch { rejected = true; }
+
+    if (htmlCanvasOk && offscreenOk && rejected) {
+      document.body.id = "canvas-line-dash-pass";
+      document.body.textContent = "canvas-line-dash-pass";
+    } else {
+      document.body.id = "canvas-line-dash-fail";
+      document.body.textContent = "canvas-line-dash-fail";
+    }
+  } catch (error) {
+    document.body.id = "canvas-line-dash-fail";
+    document.body.textContent = String(error);
+  }
+</script>

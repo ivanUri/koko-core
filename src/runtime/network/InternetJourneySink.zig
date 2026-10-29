@@ -960,6 +960,7 @@ fn sysctlU64(name: [*:0]const u8) ?u64 {
 /// execution. This is an ownership boundary, not a synthetic measurement.
 fn systemStageForBrowserStage(stage: []const u8) []const u8 {
     if (std.mem.eql(u8, stage, "javascript") or std.mem.eql(u8, stage, "dom") or std.mem.eql(u8, stage, "event-loop")) return "thread-scheduler";
+    if (std.mem.eql(u8, stage, "animation-frame")) return "thread-scheduler";
     if (std.mem.eql(u8, stage, "paint") or std.mem.eql(u8, stage, "layout") or std.mem.eql(u8, stage, "style")) return "graphics-pipeline";
     if (std.mem.eql(u8, stage, "raster") or std.mem.eql(u8, stage, "composite")) return "gpu";
     if (std.mem.eql(u8, stage, "frame") or std.mem.eql(u8, stage, "present")) return "display";
@@ -1063,6 +1064,7 @@ test "InternetJourneySink serializes headers with real line breaks" {
 
 test "InternetJourneySink maps browser stages to system ownership without site rules" {
     try std.testing.expectEqualStrings("thread-scheduler", systemStageForBrowserStage("javascript"));
+    try std.testing.expectEqualStrings("thread-scheduler", systemStageForBrowserStage("animation-frame"));
     try std.testing.expectEqualStrings("graphics-pipeline", systemStageForBrowserStage("paint"));
     try std.testing.expectEqualStrings("gpu", systemStageForBrowserStage("composite"));
     try std.testing.expectEqualStrings("display", systemStageForBrowserStage("frame"));

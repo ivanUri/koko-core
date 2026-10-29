@@ -3151,7 +3151,11 @@ fn _documentIsComplete(self: *Frame) !void {
     self.scheduleDeferredLazyImageActivation() catch |err| {
         log.warn(.frame, "defer lazy image activation", .{ .err = err, .url = self.url });
     };
-    self.observeBrowserStage("frame", 0, "boundary", "Renderer", "Main");
+    // `load` completes the document lifecycle, but it does not mean that a
+    // compositor produced or displayed a frame. Keep this boundary distinct
+    // from the future `frame`/`present` stages so headless runs cannot claim
+    // GPU or display presentation that they did not observe.
+    self.observeBrowserStage("document-complete", 0, "boundary", "Renderer", "Main");
 
     if (self._event_manager.hasDirectListeners(window_target, "pageshow", self.window._on_pageshow)) {
         const pageshow_event = (try PageTransitionEvent.initTrusted(comptime .wrap("pageshow"), .{}, self)).asEvent();
@@ -4367,6 +4371,14 @@ fn elapsedMicros(started: i128) u64 {
 
 fn observeBrowserStage(self: *Frame, stage: []const u8, duration_us: u64, state: []const u8, process: []const u8, thread: []const u8) void {
     self._session.browser.observeBrowserStage(stage, duration_us, self._frame_id, self._loader_id, state, process, thread);
+}
+
+/// Records the measured JavaScript callback work scheduled at a rendering
+/// opportunity. This is not a compositor or display-present event; Koko's
+/// headless core has no GPU/display backend. Keeping it as a distinct stage
+/// prevents requestAnimationFrame work from being mislabeled as presentation.
+pub fn observeAnimationFrame(self: *Frame, duration_us: u64) void {
+    self.observeBrowserStage("animation-frame", duration_us, "measured", "Renderer", "Main");
 }
 
 fn observeLifecycle(self: *Frame, stage: []const u8) void {
