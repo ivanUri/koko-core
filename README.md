@@ -1,109 +1,58 @@
-# Koko
+<div align="center">
 
-AI-first browser runtime for automation, agents, and programmable web execution.
+# Koko Core
 
-Koko is a lightweight headless browser engine built for AI workflows, browser automation, crawling, testing, and large-scale web interaction without relying on the Chromium monolith.
+### A lightweight browser runtime built for AI agents
 
-Unlike browser stacks designed primarily for human browsing, Koko treats the browser as programmable infrastructure: deterministic, embeddable, multi-session, and automation-native.
+**Zig + V8 · Headless execution · CDP · MCP · Browser automation**
 
-## Why Koko
+[![Sponsor](https://img.shields.io/badge/Sponsor-GitHub%20Sponsors-EA4AAA?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/ivanUri)
+[![SDK](https://img.shields.io/badge/TypeScript-Koko%20SDK-3178C6)](https://github.com/ivanUri/koko-sdk)
+[![Observatory](https://img.shields.io/badge/Explore-Koko%20Observatory-5B5BD6)](https://github.com/ivanUri/koko-observatory)
 
-Modern AI systems increasingly depend on browsers for search, navigation, extraction, task execution, and web-based tool use. Existing automation stacks are usually built on top of large Chromium-based runtimes that are heavy to embed, expensive to scale, and difficult to customize deeply.
+</div>
 
-Koko takes a different approach. It focuses on browser infrastructure for automation and AI from the start:
+---
 
-- Deterministic automation behavior
-- Multi-session browser execution
-- Programmable browser infrastructure
-- Lifecycle correctness
-- Embeddable runtime architecture
-- AI agent integration
+Koko is an **AI-first, programmable headless browser runtime** for agents, crawling, testing, and web automation. Instead of wrapping a full Chromium installation, Koko builds a focused execution stack around **Zig, V8, DOM/Web APIs, networking, and automation protocols**.
 
-## Why Not Chromium?
+> **Project status:** Active development. Koko is not a drop-in replacement for Chromium; web compatibility and supported APIs vary by site. Check current behavior before production use.
 
-Chromium is an excellent desktop browser, but it was not designed as a small, embeddable automation runtime. Most browser automation systems inherit Chromium's full browser stack even when they only need programmable page execution.
+## Why Koko?
 
-That creates real costs for AI agents and automation infrastructure:
+AI-driven workflows often need to navigate pages, execute JavaScript, extract content, and inspect runtime behavior—not render a complete desktop browser. Koko explores a more focused foundation for those workloads:
 
-- Large runtime footprint for every browser instance
-- Higher memory and CPU overhead at scale
-- Complex process, sandbox, profile, and lifecycle behavior
-- Slower cold starts and heavier deployment artifacts
-- Difficult deep customization below the automation API layer
-- Architecture optimized for interactive browsing, not machine-driven execution
+- **Programmable execution:** CLI, server mode, CDP-compatible control, and MCP-oriented integrations.
+- **Runtime ownership:** Explicit browser lifecycle, navigation ordering, execution realms, and teardown.
+- **Agent-friendly extraction:** Structured page data and semantic interfaces through the companion SDK.
+- **Observability:** Instrumentation and telemetry for understanding browser execution.
+- **Performance research:** Reproducible local benchmarks against Chromium, without claiming universal speedups.
 
-Koko is not trying to be a full desktop-browser replacement. It focuses on the subset that automation systems need most: deterministic navigation, DOM and Web API execution, protocol control, lifecycle correctness, and embeddable multi-session runtime behavior.
+## Quick start
 
-The goal is a browser runtime that can be treated like infrastructure: smaller, easier to control, easier to embed, and better suited for AI-native workloads.
+### Build from source
 
-## Core Principles
+The repository currently documents **Zig 0.16.0**, V8, libcurl, and a Rust toolchain for required dependencies. See the build configuration for platform-specific prerequisites.
 
-### AI-First Runtime
+```bash
+git clone https://github.com/ivanUri/koko-core.git
+cd koko-core
+zig build
+```
 
-Koko is built for machine-driven browser execution, including:
+### Start the CDP-compatible server
 
-- AI agents
-- Autonomous browsing
-- Orchestration systems
-- MCP and CDP integrations
-- Browser-native automation workflows
+```bash
+zig build run -- serve --host 127.0.0.1 --port 9222
+```
 
-The browser is treated as programmable runtime infrastructure, not as a desktop application.
+### Fetch a page
 
-### Lightweight Browser Infrastructure
+```bash
+./zig-out/bin/koko fetch https://example.com
+```
 
-Koko avoids the Chromium-scale runtime model and focuses on:
-
-- Lower runtime overhead
-- Simpler embedding
-- Predictable execution
-- Controllable lifecycle management
-- Scalable multi-session automation
-
-### Lifecycle Correctness
-
-Reliable automation depends heavily on browser lifecycle behavior. Koko focuses on correctness around:
-
-- Navigation ordering
-- Realm isolation
-- `WindowProxy` semantics
-- Execution context stability
-- Teardown correctness
-- Deterministic event ordering
-- Microtask scheduling behavior
-
-These details are critical for automation frameworks, AI agents, protocol integrations, browser instrumentation, and anti-flake execution.
-
-### Built for Automation
-
-Koko exposes browser behavior through automation-oriented interfaces:
-
-- CDP-compatible runtime
-- MCP integration support
-- Server mode
-- Embeddable SDK architecture
-- Multi-session runtime model
-- Programmable execution flows
-
-The goal is not only to run a page, but to provide the foundation for browser-native automation systems.
-
-## Features
-
-- Lightweight headless browser engine
-- AI-agent oriented runtime architecture
-- CDP-compatible automation interface
-- MCP integration support
-- Multi-session browser runtime
-- Browser lifecycle instrumentation
-- Deterministic navigation handling
-- Realm-aware execution model
-- Embeddable SDK/runtime architecture
-- Zig-based low-level runtime control
-- Designed for scalable automation infrastructure
-
-## Quick Start
-
-### Install with Homebrew (macOS)
+### macOS / Homebrew
 
 ```bash
 brew tap ivanUri/tap
@@ -111,127 +60,59 @@ brew install koko
 koko serve --host 127.0.0.1 --port 9222
 ```
 
-See [docs/homebrew.md](docs/homebrew.md) for publishing releases to the tap.
+See [Homebrew notes](docs/homebrew.md) for distribution details.
 
-### Build Koko
+## Automate with Koko SDK
 
-```bash
-zig build
-```
-
-### Run the Browser Server
-
-```bash
-zig build run -- serve --host 127.0.0.1 --port 9222
-```
-
-### Connect with Koko SDK (separate repo)
-
-CDP client and agent APIs live in the separate **koko-sdk** submodule (`koko-sdk`), not in this engine repo.
-
-```text
-Desktop/koko/      # this repo — zig build
-Desktop/koko-sdk/  # npm install && npm run build
-```
+The [Koko SDK](https://github.com/ivanUri/koko-sdk) provides a TypeScript client for Koko's CDP endpoint.
 
 ```ts
-import { Browser } from "@koko/sdk";
+import { Browser } from "koko-sdk";
 
 const browser = await Browser.connect("http://127.0.0.1:9222");
 const page = await browser.newPage();
-await page.goto("https://example.com", { waitUntil: "load" });
+
+await page.goto("https://example.com", { waitUntil: "domcontentloaded" });
+console.log(await page.title());
 console.log(await page.content());
+
 await browser.close();
 ```
 
-See `koko-sdk/README.md` for launch profiles, semantic tree, NodeHandle, and CLI `koko-fetch`.
-
-### Fingerprint probes
-
-Fingerprint probes live under `scripts/`. TLS notes: `docs/tls-impersonate.md`.
-
-### Native macOS Chrome profile
-
-`chrome-macos-native` is an opt-in profile captured from the real Chrome
-installation on the current Apple Silicon host. It replays captured identity
-surfaces without antidetect-only overrides; the existing `chrome-current`
-profile remains unchanged.
-
-```bash
-./zig-out/bin/koko fetch --browser-profile chrome-macos-native \
-  https://example.com/
-```
-
-To recapture it through an isolated Chrome CDP session:
-
-```bash
-node scripts/capture-fingerprint.js chrome-macos-native \
-  http://127.0.0.1:9222 https://demo.fingerprint.com/playground native
-```
-
-Use `scripts/audit-fingerprint-signals.js` for a redacted Smart Signals
-summary and `scripts/compare-fingerprint-surfaces.js` for Chrome/Koko surface
-comparison. These tools report compatibility and server observations; they do
-not attempt to bypass third-party anti-fraud controls.
-
-## Use Cases
-
-Koko is designed for:
-
-- AI agents
-- Browser automation
-- Crawling infrastructure
-- Scraping systems
-- Workflow automation
-- Autonomous browsing
-- Browser orchestration
-- Testing platforms
-- Cloud browser runtimes
-- Embedded browser execution
+See the SDK repository for installation, agent APIs, launch profiles, and compatibility caveats.
 
 ## Architecture
 
-Koko separates browser execution into explicit runtime layers:
-
 ```text
-Core Engine -> Runtime -> Protocols -> Adapters -> Public API
+          AI agents / automation clients
+                       |
+                 CDP / MCP / CLI
+                       |
+                 Koko runtime
+          lifecycle · network · storage
+                       |
+             DOM · Web APIs · V8
+                       |
+                  Zig core
 ```
 
-High-level project structure:
+Repository structure:
 
 ```text
 src/
-  core/         # Browser engine, DOM, parser, JS bindings, Web APIs
-  runtime/      # Lifecycle, services, network, storage, telemetry
-  protocols/    # CDP and MCP protocol implementations
-  adapters/     # CLI and server adapters
-  public/       # Stable public API surface
-  support/      # Shared utilities
-  testing/      # Isolated test infrastructure
-
-knowledge/     # Architecture notes and bug write-ups
+  core/        DOM, parsing, JS bindings, Web APIs
+  runtime/     Lifecycle, network, storage, telemetry
+  protocols/   CDP and MCP implementations
+  adapters/    CLI and server entry points
+  public/      Public API surface
+  support/     Shared utilities
+  testing/     Test infrastructure
+knowledge/     Architecture notes and investigations
 ```
 
-WPT runs use an external tree (`~/Desktop/wpt-spa-tests`) — see `knowledge/architecture/wpt-spa-workflow.md`.
+## Performance and reproducibility
 
-This structure keeps engine internals isolated, runtime services explicit, automation protocols modular, public APIs stable, and browser execution embeddable.
-
-## Development Focus
-
-Current development priorities include:
-
-- Browser lifecycle correctness
-- Automation stability
-- Realm and navigation semantics
-- CDP behavior consistency
-- MCP integration
-- Multi-session runtime infrastructure
-- AI-agent integration
-- Scalable browser execution
-
-## Benchmarks
-
-The reproducible Phase 1 harness compares Koko direct CDP with Chromium direct CDP on local deterministic fixtures. Playwright Chromium is available as an optional secondary baseline.
+Koko includes a local benchmark harness comparing direct CDP runs with Chromium on deterministic fixtures. Workloads include startup-to-first-document, navigation to `DOMContentLoaded`, session lifecycle, and idle process-tree memory.
 
 ```bash
 zig build benchmark -Doptimize=ReleaseFast -- --quick
@@ -239,58 +120,39 @@ zig build benchmark -Doptimize=ReleaseFast -- --suite navigation --iterations 30
 zig build benchmark -Doptimize=ReleaseFast -- --baseline all
 ```
 
-It measures startup-to-first-document, navigation to `DOMContentLoaded`, session lifecycle, and whole-process-tree idle memory. Raw observations, environment metadata, summaries, and a Markdown report are written to the gitignored `bench-results/` directory. See [`bench/README.md`](bench/README.md) for the measurement contract and limitations.
+Read [benchmark methodology](bench/README.md) before interpreting results. Performance depends on workload, platform, compatibility requirements, and measurement conditions.
 
-## Performance Direction
+## Current development focus
 
-Koko is optimized toward:
+- Browser lifecycle and navigation correctness
+- Realm isolation and execution-context stability
+- CDP consistency and MCP integration
+- Multi-session execution architecture
+- Web API compatibility and agent-oriented extraction
+- Test coverage, reproducibility, and runtime observability
 
-- Lower runtime overhead
-- Scalable automation workloads
-- Controllable memory behavior
-- Deterministic browser execution
-- Reduced infrastructure cost compared to full Chromium stacks
+## Koko ecosystem
 
-The project prioritizes runtime correctness and controllable browser behavior over desktop-browser feature parity.
+| Project | Role |
+| --- | --- |
+| [Koko Core](https://github.com/ivanUri/koko-core) | Zig + V8 browser runtime and automation infrastructure |
+| [Koko SDK](https://github.com/ivanUri/koko-sdk) | TypeScript automation, extraction, and agent APIs |
+| [Koko Observatory](https://github.com/ivanUri/koko-observatory) | Runtime telemetry, network inspection, and execution visualization |
 
-## Requirements
+## Contributing
 
-- Zig 0.16.0
-- V8
-- libcurl
-- Rust toolchain for required dependencies
-- Node.js for the TypeScript SDK and CLI helpers
+Issues with **minimal reproductions**, compatibility reports, benchmark methodology feedback, and focused pull requests are welcome. Include your OS, Zig version, reproduction steps, and expected/actual behavior.
 
-## Build and Run
+## License and acknowledgements
 
-Build the runtime:
+See [LICENSE](LICENSE) and [LICENSING.md](LICENSING.md). Koko builds on work from the broader open-source browser and JavaScript engine ecosystem.
 
-```bash
-zig build
-```
+---
 
-Run the default target:
+<div align="center">
 
-```bash
-zig build run
-```
+**Building browser infrastructure for the AI era.**
 
-Run the CDP-compatible server:
+[Explore the SDK](https://github.com/ivanUri/koko-sdk) · [Explore Observatory](https://github.com/ivanUri/koko-observatory) · [Sponsor development](https://github.com/sponsors/ivanUri)
 
-```bash
-zig build run -- serve --host 127.0.0.1 --port 9222
-```
-
-## Status
-
-Koko is under active development. The project is currently focused on automation reliability, lifecycle correctness, runtime architecture, and browser execution infrastructure for AI systems.
-
-## Credits
-
-Koko builds upon prior browser-engine and runtime work from the open-source ecosystem. Additional architectural and runtime work is actively developed independently as part of the Koko runtime direction.
-
-## License
-
-See `LICENSE` and `LICENSING.md`.
-
-<!-- push connectivity check 2026-07-22 16:39 -->
+</div>
