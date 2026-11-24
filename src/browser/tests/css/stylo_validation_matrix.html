@@ -1,0 +1,63 @@
+<!doctype html>
+<meta charset="utf-8">
+<style id="stylo-validation-base">
+  :root {
+    --stylo-validation-accent: rgb(18, 28, 38);
+    --stylo-validation-gap: 11px;
+  }
+
+  #selector-root .descendant-shell .descendant-target {
+    color: rgb(11, 21, 31);
+  }
+  #selector-root > .child-target {
+    color: rgb(41, 51, 61);
+  }
+  #selector-root > .sibling-a + .adjacent-target {
+    color: rgb(71, 81, 91);
+  }
+  #selector-root > .sibling-a ~ .general-target {
+    color: rgb(101, 111, 121);
+  }
+
+  #important-target {
+    color: rgb(1, 2, 3);
+  }
+  .important-target {
+    color: rgb(7, 8, 9) !important;
+  }
+
+  #custom-target {
+    color: var(--stylo-validation-accent);
+    margin-top: var(--stylo-validation-gap);
+  }
+
+  #pseudo-target::before {
+    content: "before";
+    display: inline-block;
+    color: rgb(131, 141, 151);
+  }
+  #pseudo-target::after {
+    content: "after";
+    display: block;
+    color: rgb(161, 171, 181);
+  }
+</style>
+<body>
+  <main id="selector-root">
+    <section class="descendant-shell">
+      <div class="descendant-target">descendant</div>
+    </section>
+    <div class="child-target">child</div>
+    <div class="sibling-a">sibling-a</div>
+    <div class="adjacent-target">adjacent</div>
+    <div class="general-target">general</div>
+  </main>
+  <div id="important-target" class="important-target">important</div>
+  <div id="custom-target">custom</div>
+  <div id="pseudo-target">pseudo</div>
+  <div id="dynamic-target">dynamic</div>
+  <div id="inline-target">inline</div>
+</body>
+<script>
+  window.__styloValidationPage = "matrix";
+</script>
