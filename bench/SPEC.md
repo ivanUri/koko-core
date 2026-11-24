@@ -42,3 +42,11 @@ exercises changing external pages and records content-shape signals so a fast
 but incomplete document is visible. It must not be merged into local-fixture
 aggregates. Deterministic runs may use `--regression-against` with an explicit
 threshold and `--regression-mode fail` for CI.
+
+CI should use `bench/regression-gate.mjs` when the benchmark summary is already
+available. This summary-only command compares matching deterministic groups,
+emits `report.json` and `report.md`, and returns `0` for pass, `1` for a fail
+mode regression, or `2` for invalid/inconclusive input. It never launches a
+runtime and excludes `real-sites` from hard-gate decisions. Store its output in
+the CI artifact/temp directory rather than creating benchmark-result
+directories in the repository.

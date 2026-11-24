@@ -104,6 +104,28 @@ available, and median throughput for matching deterministic groups. This
 prevents a scale regression that only appears as virtual-address reservation
 from being hidden by a stable RSS result. Real-site groups are never hard-gated.
 
+For CI, prefer the standalone summary-only gate after the benchmark has
+finished. It does not launch a browser, run a suite, or contact a live site;
+it compares two existing summary files and writes JSON/Markdown artifacts.
+Use a CI temporary directory for `--output` so generated reports are not added
+to the repository:
+
+```sh
+node bench/regression-gate.mjs \
+  --baseline "$CI_BASELINE_SUMMARY" \
+  --current "$CI_CURRENT_SUMMARY" \
+  --output "$RUNNER_TEMP/koko-regression-gate" \
+  --threshold-pct 10 --mode fail
+```
+
+Exit codes are `0` for pass (and warn-mode violations), `1` for a threshold
+violation in fail mode, and `2` for invalid/inconclusive input. The output
+directory contains `report.json` and `report.md`; unmatched current groups are
+inconclusive by default, preventing a typo or incompatible baseline from
+silently passing. `--allow-missing` disables that check when intentionally
+comparing a subset. The `real-sites` suite is always listed as excluded and
+cannot fail this gate.
+
 Use `--koko-label v8-pointer-compression-on` or
 `--koko-label v8-pointer-compression-off` when comparing separately built
 artifacts. The label is stored in `environment.json` and the Markdown report

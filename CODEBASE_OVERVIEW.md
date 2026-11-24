@@ -73,6 +73,7 @@ App
 ├── Network
 ├── Storage and telemetry services
 ├── ArenaPool
+├── process-wide resource controller
 └── configuration and embedded resources
 
 Browser
@@ -245,7 +246,7 @@ Common local commands:
 Use `koko help` or inspect `src/runtime/Config.zig` for the authoritative
 option list. Do not guess option names from old scripts or notes.
 
-Koko currently targets Zig 0.15.2. `build.zig` defaults to stripped binaries,
+Koko currently targets Zig 0.16.0. `build.zig` defaults to stripped binaries,
 including Debug builds, as a workaround for Zig/LLVM debug-type crashes. For a
 diagnostic build, `-Dstrip=false` may provide better stack information, but it
 can re-expose the compiler issue documented in

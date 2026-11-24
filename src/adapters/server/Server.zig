@@ -1,5 +1,3 @@
-const v = @import("koko");
-
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Affero General Public License as
@@ -17,15 +15,18 @@ const v = @import("koko");
 const std = @import("std");
 const sync = @import("../../support/sync.zig");
 
-const App = v.App;
-const build_config = v.build_config;
+const App = @import("../../runtime/App.zig");
+const build_config = @import("build_config");
 const CDP = @import("../../protocols/cdp/CDP.zig");
-const Config = v.Config;
+const Config = @import("../../runtime/Config.zig");
 const CDPClient = @import("../../core/browser/HttpClient.zig").CDPClient;
 const WsConnection = @import("../../runtime/network/WsConnection.zig");
+const ResourceController = @import("../../runtime/ResourceController.zig");
+const ResourceSampler = @import("../../runtime/ResourceSampler.zig");
 
-const log = v.log;
-const net = v.net;
+const log = @import("../../support/log.zig");
+const net = @import("../../support/net.zig");
+const io = @import("../../support/io.zig");
 const posix = @import("../../support/posix.zig");
 const Allocator = std.mem.Allocator;
 const nanoTimestamp = @import("../../support/datetime.zig").nanoTimestamp;
@@ -39,6 +40,7 @@ const HandshakeSnapshot = struct {
 
 app: *App,
 json_version_response: []const u8,
+resource_controller: *ResourceController,
 
 // Thread and admission management
 active_threads: std.atomic.Value(u32) = .init(0),
@@ -87,6 +89,7 @@ pub fn init(app: *App, address: net.Address) !*Server {
 
     self.* = .{
         .app = app,
+        .resource_controller = &app.resource_controller,
         .conns_pool = .empty,
         .json_version_response = json_version_response,
         .coordinator_wakeup_pipe = coordinator_wakeup_pipe,
@@ -144,7 +147,7 @@ pub fn deinit(self: *Server) void {
     self.shutdown();
 
     while (self.active_threads.load(.monotonic) > 0) {
-        std.Io.sleep(v.io.get(), .fromMilliseconds(10), .awake) catch {};
+        std.Io.sleep(io.get(), .fromMilliseconds(10), .awake) catch {};
     }
 
     // The coordinator exits as soon as shutdown is signalled, so pending
@@ -157,6 +160,9 @@ pub fn deinit(self: *Server) void {
         const pending = self.pending.pop();
         self.conns_mutex.unlock();
         const conn = pending orelse break;
+        self.resource_controller.release(.pending_handshake) catch |err| {
+            log.err(.app, "CDP pending resource drain", .{ .err = err });
+        };
         self.destroyTransport(conn);
     }
 
@@ -194,6 +200,17 @@ fn spawnWorker(self: *Server, socket: posix.socket_t) !void {
     // Reserve the handshake slot before reserving a worker. This rejects a
     // handshake flood without needlessly consuming the bounded CDP worker
     // quota. The slot is released as soon as the upgrade attempt completes.
+    self.resource_controller.reserve(.pending_handshake, ResourceSampler.sample(io.get())) catch |err| {
+        return switch (err) {
+            error.MaxPendingHandshakes => error.MaxPendingConnectionsReached,
+            else => err,
+        };
+    };
+    var resource_pending_reserved = true;
+    errdefer if (resource_pending_reserved) {
+        self.resource_controller.release(.pending_handshake) catch {};
+    };
+
     const max_pending = self.app.config.maxPendingConnections();
     var pending = self.pending_handshakes.load(.monotonic);
     while (pending < max_pending) {
@@ -232,6 +249,7 @@ fn spawnWorker(self: *Server, socket: posix.socket_t) !void {
         log.err(.app, "CDP pending registration", .{ .err = err });
         return err;
     };
+    resource_pending_reserved = false;
     cdp_owned = false;
     self.wakeupHandshakeCoordinator();
 }
@@ -315,6 +333,9 @@ fn finishPendingHandshake(self: *Server, cdp: *CDP, upgraded: bool) void {
     self.unregisterHandshake(cdp);
     _ = self.pending_handshakes.fetchSub(1, .monotonic);
     if (!upgraded) {
+        self.resource_controller.release(.pending_handshake) catch |err| {
+            log.err(.app, "CDP pending resource release", .{ .err = err });
+        };
         self.destroyTransport(cdp);
         return;
     }
@@ -322,20 +343,19 @@ fn finishPendingHandshake(self: *Server, cdp: *CDP, upgraded: bool) void {
     // Reserve the real CDP session slot only after the WebSocket upgrade. A
     // pending socket is cheap transport state; an upgraded session owns V8,
     // browser state, and the long-lived CDP worker quota.
-    const max_connections = self.app.config.maxConnections();
-    var active = self.active_connections.load(.monotonic);
-    while (active < max_connections) {
-        active = self.active_connections.cmpxchgWeak(active, active + 1, .monotonic, .monotonic) orelse break;
-    } else {
+    self.resource_controller.promotePendingToActive(ResourceSampler.sample(io.get())) catch |err| {
         log.info(.app, "CDP connection limit reached after handshake", .{
-            .max_connections = max_connections,
+            .err = err,
         });
+        self.resource_controller.release(.pending_handshake) catch {};
         cdp.ws.shutdown();
         self.destroyTransport(cdp);
         return;
-    }
+    };
+    _ = self.active_connections.fetchAdd(1, .monotonic);
 
     if (self.app.shutdown() or self.coordinator_shutdown.load(.acquire)) {
+        self.resource_controller.release(.active_worker) catch {};
         _ = self.active_connections.fetchSub(1, .monotonic);
         self.destroyTransport(cdp);
         return;
@@ -349,6 +369,7 @@ fn finishPendingHandshake(self: *Server, cdp: *CDP, upgraded: bool) void {
     }, handleUpgradedConnection, .{ self, cdp }) catch |err| {
         log.err(.app, "CDP worker handoff", .{ .err = err });
         _ = self.active_threads.fetchSub(1, .monotonic);
+        self.resource_controller.release(.active_worker) catch {};
         _ = self.active_connections.fetchSub(1, .monotonic);
         self.destroyTransport(cdp);
         return;
@@ -366,6 +387,9 @@ fn destroyTransport(self: *Server, cdp: *CDP) void {
 fn handleUpgradedConnection(self: *Server, cdp: *CDP) void {
     defer _ = self.active_threads.fetchSub(1, .monotonic);
     defer _ = self.active_connections.fetchSub(1, .monotonic);
+    defer self.resource_controller.release(.active_worker) catch |err| {
+        log.err(.app, "CDP active resource release", .{ .err = err });
+    };
     const socket = cdp.ws.socket;
     defer posix.close(socket);
     defer self.releaseConn(cdp);
@@ -378,6 +402,8 @@ fn handleUpgradedConnection(self: *Server, cdp: *CDP) void {
         log.err(.app, "CDP browser init", .{ .err = err });
         return;
     };
+    self.resource_controller.updateSample(ResourceSampler.sample(io.get()));
+    defer self.resource_controller.updateSample(ResourceSampler.sample(io.get()));
 
     self.registerConn(cdp) catch |err| {
         // An unregistered active worker is invisible to shutdown() and can

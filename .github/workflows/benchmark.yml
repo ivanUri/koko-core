@@ -1,0 +1,97 @@
+name: Deterministic Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline_summary:
+        description: >-
+          Optional repository-relative summary JSON for regression comparison;
+          leave empty to run the benchmark without a blocking baseline.
+        required: false
+        default: ""
+        type: string
+      regression_threshold_pct:
+        description: Allowed deterministic regression percentage when a baseline is supplied.
+        required: false
+        default: "10"
+        type: string
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deterministic-benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deterministic:
+    name: Deterministic fixture benchmark
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # A scheduled run has no checked-in baseline by default. It remains useful
+    # as an artifact-producing health check without becoming a false gate.
+    continue-on-error: ${{ github.event_name == 'schedule' || inputs.baseline_summary == '' }}
+    env:
+      KOKO_DISABLE_TELEMETRY: "true"
+      BASELINE_SUMMARY: ${{ inputs.baseline_summary || '' }}
+      REGRESSION_THRESHOLD_PCT: ${{ inputs.regression_threshold_pct || '10' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+          cache-key: ${{ hashFiles('build.zig', 'build.zig.zon', 'vendor/**') }}
+
+      - name: Install Node dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Run benchmark unit tests
+        run: npm run benchmark:test
+
+      - name: Run deterministic benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(
+            --suite startup,navigation,session-lifecycle,idle-memory
+            --baseline koko-cdp
+            --warmup 1
+            --iterations 5
+            --memory-warmup 1
+            --memory-iterations 2
+            --density 1,4
+            --output bench-results/ci
+          )
+
+          if [[ -n "$BASELINE_SUMMARY" && -f "$BASELINE_SUMMARY" ]]; then
+            args+=(
+              --regression-against "$BASELINE_SUMMARY"
+              --regression-threshold-pct "$REGRESSION_THRESHOLD_PCT"
+              --regression-mode fail
+            )
+          elif [[ -n "$BASELINE_SUMMARY" ]]; then
+            echo "::error::Requested baseline summary does not exist: $BASELINE_SUMMARY"
+            exit 1
+          else
+            echo "::notice::No readable regression baseline supplied; benchmark is artifact-only and non-blocking."
+          fi
+
+          zig build benchmark -Doptimize=ReleaseFast -- "${args[@]}"
+
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deterministic-benchmark-${{ github.run_id }}
+          path: bench-results/ci
+          if-no-files-found: warn

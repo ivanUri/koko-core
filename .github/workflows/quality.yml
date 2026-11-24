@@ -2,21 +2,9 @@ name: Quality
 
 on:
   pull_request:
-    paths:
-      - ".github/workflows/quality.yml"
-      - "build.zig"
-      - "build.zig.zon"
-      - "src/**"
-      - "vendor/**"
   push:
     branches:
       - main
-    paths:
-      - ".github/workflows/quality.yml"
-      - "build.zig"
-      - "build.zig.zon"
-      - "src/**"
-      - "vendor/**"
   workflow_dispatch:
 
 concurrency:
@@ -66,3 +54,18 @@ jobs:
         run: zig build check
       - name: Run deterministic tests
         run: zig build test
+
+  benchmark-unit-tests:
+    name: Benchmark unit tests (Node 22)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install Node dependencies
+        run: npm ci --ignore-scripts
+      - name: Run benchmark unit tests
+        run: npm run benchmark:test

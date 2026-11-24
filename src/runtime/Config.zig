@@ -236,6 +236,11 @@ const Commands = cli.Builder(.{
             // retain an unbounded site heap.
             .{ .name = "worker_max_pages", .type = u32, .default = 1 },
             .{ .name = "worker_max_rss", .type = u64, .default = 2 * 1024 * 1024 * 1024 },
+            // Process-wide admission budgets. Zero disables a memory budget;
+            // unlike worker_max_rss these are sampled against current process
+            // RSS/VMS and apply before a new CDP worker is admitted.
+            .{ .name = "resource_max_rss", .type = u64, .default = 0 },
+            .{ .name = "resource_max_vms", .type = u64, .default = 0 },
         },
         .shared_options = CommonOptions,
     },
@@ -545,6 +550,20 @@ test "CDP worker recycle defaults are bounded and configurable" {
     config.mode.serve.worker_max_rss = 0;
     try std.testing.expectEqual(@as(u32, 12), config.workerMaxPages());
     try std.testing.expectEqual(@as(u64, 0), config.workerMaxRssBytes());
+}
+
+test "process resource budgets are disabled by default and configurable" {
+    var config: Config = undefined;
+    config.mode = .{ .serve = .{} };
+    try std.testing.expectEqual(@as(u64, 0), config.resourceMaxRssBytes());
+    try std.testing.expectEqual(@as(u64, 0), config.resourceMaxVmsBytes());
+    try std.testing.expectEqual(@as(u64, 16), config.resourceMaxActiveWorkers());
+    try std.testing.expectEqual(@as(u64, 128), config.resourceMaxPendingHandshakes());
+
+    config.mode.serve.resource_max_rss = 1024;
+    config.mode.serve.resource_max_vms = 2048;
+    try std.testing.expectEqual(@as(u64, 1024), config.resourceMaxRssBytes());
+    try std.testing.expectEqual(@as(u64, 2048), config.resourceMaxVmsBytes());
 }
 
 test "CDP thread stack defaults are bounded and configurable" {
@@ -894,6 +913,40 @@ pub fn workerMaxRssBytes(self: *const Config) u64 {
     return switch (self.mode) {
         .serve => |opts| opts.worker_max_rss,
         .mcp => 2 * 1024 * 1024 * 1024,
+        else => unreachable,
+    };
+}
+
+pub fn resourceMaxRssBytes(self: *const Config) u64 {
+    return switch (self.mode) {
+        .serve => |opts| opts.resource_max_rss,
+        .mcp, .fetch => 0,
+        else => unreachable,
+    };
+}
+
+pub fn resourceMaxVmsBytes(self: *const Config) u64 {
+    return switch (self.mode) {
+        .serve => |opts| opts.resource_max_vms,
+        .mcp, .fetch => 0,
+        else => unreachable,
+    };
+}
+
+pub fn resourceMaxActiveWorkers(self: *const Config) u64 {
+    return switch (self.mode) {
+        .serve => |opts| opts.cdp_max_connections,
+        .mcp => 16,
+        .fetch => 0,
+        else => unreachable,
+    };
+}
+
+pub fn resourceMaxPendingHandshakes(self: *const Config) u64 {
+    return switch (self.mode) {
+        .serve => |opts| opts.cdp_max_pending_connections,
+        .mcp => 128,
+        .fetch => 0,
         else => unreachable,
     };
 }
@@ -1340,6 +1393,14 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\                Recycle a CDP worker after RSS high-water growth
         \\                since worker start/recycle reaches these bytes.
         \\                0 disables the policy. Defaults to 2147483648.
+        \\
+        \\--resource-max-rss
+        \\                Process-wide current RSS admission budget in bytes.
+        \\                0 disables the budget. Defaults to disabled.
+        \\
+        \\--resource-max-vms
+        \\                Process-wide current virtual-memory admission budget
+        \\                in bytes. 0 disables the budget. Defaults to disabled.
         \\
         \\--cookie        Path to a JSON file to load cookies from (CLI override; profile seed loads automatically).
         \\                Defaults to no cookie loading.

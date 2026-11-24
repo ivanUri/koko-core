@@ -1,6 +1,9 @@
 {
   "name": "koko",
   "private": true,
+  "engines": {
+    "node": ">=22"
+  },
   "dependencies": {
     "playwright": "^1.60.0",
     "ws": "^8.21.0"

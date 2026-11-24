@@ -112,6 +112,13 @@ are handed off to a full CDP/V8 worker only after upgrade; this keeps high
 pending-socket VMS close to the socket/coordination cost instead of reserving
 one native worker per socket.
 
+Admission also maintains process-wide RSS/VMS samples and counters. Use
+`--resource-max-rss` and `--resource-max-vms` to reject new CDP workers when
+the current process budget is exceeded; both are disabled by default because
+the safe budget depends on the host/container limit. These budgets complement
+the connection-count limits and are evaluated before a pending handshake is
+promoted to a full V8 worker.
+
 The HTTP easy-handle pool is lazy: capacity is reserved at startup, while curl
 handles are created only when transfers arrive. This reduces cold-start and
 idle-server cost; the first request pays handle creation. For high-isolate

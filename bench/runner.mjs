@@ -7,6 +7,7 @@ import { createAdapterFactories, allAdapterIds, detectChrome } from "./adapters/
 import { collectEnvironment } from "./common/environment.mjs";
 import { startFixtureServer } from "./common/fixture-server.mjs";
 import { RunContext } from "./common/run-context.mjs";
+import { evaluateRegression } from "./common/regression.mjs";
 import { summarizeRecords } from "./common/statistics.mjs";
 import { renderMarkdownReport } from "./reports/markdown.mjs";
 import { runIdleMemorySuite } from "./suites/idle-memory.mjs";
@@ -334,7 +335,13 @@ async function main() {
 
   const groups = summarizeRecords(context.records);
   const regression = options.regressionAgainst
-    ? await evaluateRegression(options, groups)
+    ? evaluateRegression({
+      baselineSummary: JSON.parse(await readFile(options.regressionAgainst, "utf8")),
+      currentSummary: { schemaVersion: 1, groups },
+      baselinePath: options.regressionAgainst,
+      thresholdPct: options.regressionThresholdPct,
+      mode: options.regressionMode,
+    })
     : null;
   const summary = { schemaVersion: 1, runId, groups, ...(regression ? { regression } : {}) };
   const summaryPath = resolve(options.output, "summary", `${runId}.json`);
@@ -355,34 +362,6 @@ async function main() {
   if (failures > 0 && !options.allowFailures) {
     throw new Error(`${failures} measured observation(s) failed; see raw JSONL`);
   }
-}
-
-async function evaluateRegression(options, currentGroups) {
-  const previous = JSON.parse(await readFile(options.regressionAgainst, "utf8"));
-  const previousGroups = new Map((previous.groups ?? []).map((group) => [
-    `${group.suite}\u0000${group.workload}\u0000${group.baseline}`, group,
-  ]));
-  const threshold = options.regressionThresholdPct / 100;
-  const violations = [];
-  for (const current of currentGroups) {
-    if (current.suite === "real-sites") continue;
-    const previousGroup = previousGroups.get(`${current.suite}\u0000${current.workload}\u0000${current.baseline}`);
-    if (!previousGroup) continue;
-    const checks = [
-      ["durationMs.p95", current.metrics?.durationMs?.p95, previousGroup.metrics?.durationMs?.p95, "higher-is-worse"],
-      ["appStartupMs.p95", current.metrics?.appStartupMs?.p95, previousGroup.metrics?.appStartupMs?.p95, "higher-is-worse"],
-      ["rssBytes.median", current.metrics?.rssBytes?.median, previousGroup.metrics?.rssBytes?.median, "higher-is-worse"],
-      ["virtualMemoryPerSessionBytes.median", current.metrics?.virtualMemoryPerSessionBytes?.median, previousGroup.metrics?.virtualMemoryPerSessionBytes?.median, "higher-is-worse"],
-      ["throughputPagesPerSecond.median", current.metrics?.throughputPagesPerSecond?.median, previousGroup.metrics?.throughputPagesPerSecond?.median, "lower-is-worse"],
-    ];
-    for (const [metricName, value, baseline, direction] of checks) {
-      if (!Number.isFinite(value) || !Number.isFinite(baseline) || baseline === 0) continue;
-      const change = (value - baseline) / Math.abs(baseline);
-      const regressed = direction === "higher-is-worse" ? change > threshold : change < -threshold;
-      if (regressed) violations.push({ suite: current.suite, workload: current.workload, baseline: current.baseline, metric: metricName, current: value, previous: baseline, changePct: change * 100 });
-    }
-  }
-  return { against: options.regressionAgainst, thresholdPct: options.regressionThresholdPct, mode: options.regressionMode, violations };
 }
 
 main().catch((error) => {

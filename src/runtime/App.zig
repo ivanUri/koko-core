@@ -25,6 +25,7 @@ const Storage = @import("storage/Storage.zig");
 const Network = @import("network/Network.zig");
 pub const ScaleMetrics = @import("ScaleMetrics.zig");
 pub const ArenaPool = @import("ArenaPool.zig");
+pub const ResourceController = @import("ResourceController.zig");
 
 const log = @import("../support/log.zig");
 const Allocator = std.mem.Allocator;
@@ -56,6 +57,7 @@ telemetry: Telemetry,
 allocator: Allocator,
 arena_pool: ArenaPool,
 metrics: ScaleMetrics,
+resource_controller: ResourceController,
 app_dir_path: ?[]const u8,
 startup: StartupMetrics,
 
@@ -91,6 +93,12 @@ pub fn init(allocator: Allocator, config: *const Config) !*App {
         .telemetry = undefined,
         .arena_pool = undefined,
         .metrics = .{},
+        .resource_controller = ResourceController.init(.{
+            .max_active_workers = config.resourceMaxActiveWorkers(),
+            .max_pending_handshakes = config.resourceMaxPendingHandshakes(),
+            .max_rss_bytes = config.resourceMaxRssBytes(),
+            .max_vms_bytes = config.resourceMaxVmsBytes(),
+        }),
         .startup = .{},
     };
 
