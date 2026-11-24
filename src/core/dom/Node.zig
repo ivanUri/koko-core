@@ -46,6 +46,12 @@ _child_link: LinkedList.Node = .{},
 // browsing context performs the mutation.  The tree remains the only DOM
 // representation; this is ownership metadata, not a second tree.
 _owner_document: ?*Document = null,
+// Stable per-frame identity used by the Stylo adapter. This is metadata on
+// the authoritative Zig node, not a second DOM-side table. The frame
+// component changes when a node is adopted into another browsing context, so
+// stale Rust style handles cannot alias a new document node.
+_stylo_frame_id: u32 = 0,
+_stylo_node_id: u32 = 0,
 
 // Lookup for nodes that have a different owner document than frame.document
 pub const OwnerDocumentLookup = std.AutoHashMapUnmanaged(*Node, *Document);

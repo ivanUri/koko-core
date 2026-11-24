@@ -347,6 +347,7 @@ _style_engine_hooks: ?StyleEngineHooks = null,
 _style_engine_document: ?*Document = null,
 _style_engine_generation: u64 = 0,
 _style_engine_active: bool = false,
+_style_node_sequence: u32 = 1,
 _script_manager: ScriptManager,
 
 // List of active live ranges (for mutation updates per DOM spec)
@@ -716,7 +717,7 @@ pub fn invalidateStyleEngine(self: *Frame, kind: StyleEngineInvalidation, node: 
                 .attribute => .attributes,
                 .stylesheet, .adopted_stylesheet => unreachable,
             };
-            _ = self._style_engine.invalidateDom(if (node) |n| @intFromPtr(n) else 0, engine_kind);
+            _ = self._style_engine.invalidateDom(if (node) |n| self.styleNodeId(n) else 0, engine_kind);
         },
     }
     if (self._style_engine_hooks) |hooks| {
@@ -738,6 +739,24 @@ pub fn adoptedStyleSheetsChanged(self: *Frame) void {
 
 pub fn styleEngine(self: *Frame) *StyleEngine {
     return &self._style_engine;
+}
+
+/// Return a stable opaque node identity for the current frame/document.
+///
+/// Stylo receives this identity through the C boundary; it must not use the
+/// Zig pointer value as a persistent node key because pointers are reused
+/// after teardown. The identity is stored on the one authoritative Zig DOM
+/// node and is namespaced by the frame id.
+pub fn styleNodeId(self: *Frame, node: *Node) StyleEngine.NodeId {
+    if (node._stylo_frame_id != self._frame_id or node._stylo_node_id == 0) {
+        var id = self._style_node_sequence;
+        if (id == 0) id = 1;
+        self._style_node_sequence = id +% 1;
+        if (self._style_node_sequence == 0) self._style_node_sequence = 1;
+        node._stylo_frame_id = self._frame_id;
+        node._stylo_node_id = id;
+    }
+    return (@as(StyleEngine.NodeId, self._frame_id) << 32) | node._stylo_node_id;
 }
 
 pub fn realmEpoch(self: *const Frame) RealmLifecycleKernel.Epoch {

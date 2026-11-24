@@ -174,7 +174,7 @@ fn queryStylo(self: *const CSSStyleDeclaration, name: String, style_frame: *Fram
     var output = style_frame.call_arena.alloc(u8, 4096) catch {
         return .{ .status = .out_of_memory };
     };
-    const node_id: StyleEngine.NodeId = @intFromPtr(element);
+    const node_id: StyleEngine.NodeId = style_frame.styleNodeId(element.asNode());
     var result = if (std.mem.startsWith(u8, property, "--"))
         style_frame.styleEngine().customProperty(node_id, property, output)
     else
@@ -207,7 +207,7 @@ fn reportStyloFallback(operation: []const u8, property: []const u8, status: Styl
 
 fn invalidateInlineStyle(self: *const CSSStyleDeclaration, style_frame: *Frame) void {
     const element = self._element orelse return;
-    const status = style_frame.styleEngine().invalidateDom(@intFromPtr(element), .attributes);
+    const status = style_frame.styleEngine().invalidateDom(style_frame.styleNodeId(element.asNode()), .attributes);
     if (status != .ok) {
         log.debug(.not_implemented, "Stylo inline style invalidation", .{ .status = @tagName(status) });
     }
