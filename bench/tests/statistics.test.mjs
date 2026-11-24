@@ -25,3 +25,12 @@ test("summary excludes warmups from statistics and retains measured failures", (
   assert.equal(group.metrics.durationMs.median, 10);
 });
 
+test("summary preserves per-session VMS metrics for scale regression gates", () => {
+  const base = { suite: "idle-memory", workload: "density-16", baseline: "koko-cdp", warmup: false, success: true };
+  const [group] = summarizeRecords([
+    { ...base, metrics: { virtualMemoryPerSessionBytes: 1_000, rssBytes: 500 } },
+    { ...base, metrics: { virtualMemoryPerSessionBytes: 1_200, rssBytes: 550 } },
+  ]);
+  assert.equal(group.metrics.virtualMemoryPerSessionBytes.median, 1_100);
+});
+

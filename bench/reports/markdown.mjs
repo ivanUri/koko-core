@@ -10,6 +10,14 @@ function mib(bytes) {
   return Number.isFinite(bytes) ? bytes / (1024 * 1024) : null;
 }
 
+function startupStageRows(summary) {
+  return summary.groups
+    .filter((group) => group.suite === "startup")
+    .map((group) => (
+      `| ${group.workload} | ${group.baseline} | ${formatNumber(metric(group, "durationMs", "p95"))} | ${formatNumber(metric(group, "processReadyMs", "p50"))} | ${formatNumber(metric(group, "appStartupMs", "p50"))} | ${formatNumber(metric(group, "firstSessionMs", "p50"))} | ${formatNumber(metric(group, "firstSessionConnectMs", "p50"))} | ${formatNumber(metric(group, "firstSessionContextMs", "p50"))} | ${formatNumber(metric(group, "firstSessionTargetMs", "p50"))} | ${formatNumber(metric(group, "firstSessionAttachMs", "p50"))} | ${formatNumber(metric(group, "firstSessionDomainsMs", "p50"))} | ${formatNumber(metric(group, "firstNavigationMs", "p50"))} |`
+    ));
+}
+
 export function renderMarkdownReport({ runId, environment, summary }) {
   const includesRealSites = environment.benchmarkOptions?.suites?.includes("real-sites") ?? false;
   const reference = new Map(
@@ -66,13 +74,13 @@ ${networkRows.join("\n")}
   const scaleRows = summary.groups
     .filter((group) => group.metrics?.threadCount || group.metrics?.throughputPagesPerSecond || group.metrics?.rssPerSessionBytes)
     .map((group) => (
-      `| ${group.suite} | ${group.workload} | ${group.baseline} | ${formatNumber(metric(group, "durationMs", "p95"))} | ${formatNumber(metric(group, "throughputPagesPerSecond"))} | ${formatNumber(mib(metric(group, "rssPerSessionBytes")))} | ${formatNumber(metric(group, "threadCount"), 0)} | ${formatNumber(metric(group, "averageCpuPercent"))} | ${formatNumber(metric(group, "workPerGigabyte"))} | ${formatNumber(metric(group, "workPerCpuSecond"))} |`
+      `| ${group.suite} | ${group.workload} | ${group.baseline} | ${formatNumber(metric(group, "durationMs", "p95"))} | ${formatNumber(metric(group, "throughputPagesPerSecond"))} | ${formatNumber(mib(metric(group, "rssPerSessionBytes")))} | ${formatNumber(mib(metric(group, "virtualMemoryPerSessionBytes")))} | ${formatNumber(metric(group, "threadCount"), 0)} | ${formatNumber(metric(group, "averageCpuPercent"))} | ${formatNumber(metric(group, "workPerGigabyte"))} | ${formatNumber(metric(group, "workPerCpuSecond"))} |`
     ));
   const scaleSection = scaleRows.length === 0 ? "" : `
 ## Scale signals
 
-| Suite | Workload | Baseline | p95 ms | pages/s | RSS/session MiB | Threads | CPU % | pages/GB | pages/CPU-s |
-|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| Suite | Workload | Baseline | p95 ms | pages/s | RSS/session MiB | VMS/session MiB | Threads | CPU % | pages/GB | pages/CPU-s |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
 ${scaleRows.join("\n")}
 `;
   const distributionRows = summary.groups.map((group) => (
@@ -84,6 +92,16 @@ ${scaleRows.join("\n")}
 | Suite | Workload | Baseline | min ms | p50 ms | p95 ms | p99 ms | max ms | stddev ms |
 |---|---|---|---:|---:|---:|---:|---:|---:|
 ${distributionRows.join("\n")}
+`;
+  const startupRows = startupStageRows(summary);
+  const startupSection = startupRows.length === 0 ? "" : `
+## Cold-start attribution
+
+Startup stage medians are shown for attribution; the p95 column remains the end-to-end first-document gate.
+
+| Workload | Baseline | E2E p95 ms | Process ready p50 ms | App init p50 ms | First session p50 ms | Connect p50 ms | Context p50 ms | Target p50 ms | Attach p50 ms | Domains p50 ms | First navigation p50 ms |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+${startupRows.join("\n")}
 `;
   const regressionSection = summary.regression ? `
 ## Regression gate
@@ -100,6 +118,7 @@ Run: \`${runId}\`
 Captured: ${environment.capturedAt}  
 Koko commit: \`${environment.koko.gitCommit ?? "unknown"}\`${environment.koko.gitDirty ? " (dirty worktree)" : ""}  
 Optimize mode: \`${environment.koko.optimize}\`  
+Koko build label: \`${environment.koko.buildLabel ?? "unspecified"}\`
 Chromium: ${environment.chromium.version ?? "not selected"}
 
 ## Results
@@ -112,6 +131,7 @@ ${policySection}
 ${networkSection}
 ${scaleSection}
 ${distributionSection}
+${startupSection}
 ${regressionSection}
 
 ## Measurement contract

@@ -62,7 +62,7 @@ export class CdpSession {
     return response.result?.value;
   }
 
-  async close() {
+  async close({ keepClient = false } = {}) {
     if (this.closed) return;
     this.closed = true;
     try {
@@ -75,7 +75,11 @@ export class CdpSession {
     } catch {
       // Closing the owning socket below is the final cleanup path for Koko.
     }
-    if (this.ownerClient) await this.client.close();
+    if (this.ownerClient && !keepClient) await this.client.close();
+  }
+
+  async closeContextForReuse() {
+    await this.close({ keepClient: true });
   }
 }
 

@@ -18,6 +18,7 @@ const std = @import("std");
 const sync = @import("../../support/sync.zig");
 
 const App = v.App;
+const build_config = v.build_config;
 const CDP = @import("../../protocols/cdp/CDP.zig");
 const Config = v.Config;
 const CDPClient = @import("../../core/browser/HttpClient.zig").CDPClient;
@@ -27,15 +28,38 @@ const log = v.log;
 const net = v.net;
 const posix = @import("../../support/posix.zig");
 const Allocator = std.mem.Allocator;
+const nanoTimestamp = @import("../../support/datetime.zig").nanoTimestamp;
 
 const Server = @This();
+
+const HandshakeSnapshot = struct {
+    cdp: *CDP,
+    deadline_ns: i128,
+};
 
 app: *App,
 json_version_response: []const u8,
 
-// Thread management
+// Thread and admission management
 active_threads: std.atomic.Value(u32) = .init(0),
+// Only upgraded WebSocket sessions consume the configured CDP connection
+// quota. Pending sockets have a separate bounded admission counter below so
+// slow handshakes cannot make the two options behave as the same limit.
+active_connections: std.atomic.Value(u32) = .init(0),
+// Accepted sockets spend their first phase in a multiplexed HTTP upgrade. Keep
+// that phase bounded separately from upgraded CDP workers: a burst of clients
+// that never sends an Upgrade request must not consume the V8/session quota;
+// pending transport state remains bounded by this independent counter.
+pending_handshakes: std.atomic.Value(u32) = .init(0),
 pending: std.ArrayList(*CDP) = .empty,
+
+// A single coordinator multiplexes all transport-only handshakes. It is
+// deliberately separate from Network's HTTP/curl loop: CDP upgrade parsing
+// can send a response, but must never block page/network progress.
+coordinator_shutdown: std.atomic.Value(bool) = .init(false),
+coordinator_wakeup_pipe: [2]posix.fd_t,
+coordinator_pollfds: []posix.pollfd,
+coordinator_snapshots: []HandshakeSnapshot,
 
 conns: std.ArrayList(*CDP) = .empty,
 conns_mutex: sync.Mutex = .{},
@@ -48,35 +72,72 @@ pub fn init(app: *App, address: net.Address) !*Server {
     const self = try app.allocator.create(Server);
     errdefer app.allocator.destroy(self);
 
+    const coordinator_wakeup_pipe = try posix.pipe2(.{ .NONBLOCK = true, .CLOEXEC = true });
+    var coordinator_started = false;
+    errdefer if (!coordinator_started) {
+        posix.close(coordinator_wakeup_pipe[0]);
+        posix.close(coordinator_wakeup_pipe[1]);
+    };
+
+    const coordinator_capacity: usize = @intCast(app.config.maxPendingConnections());
+    const coordinator_pollfds = try app.allocator.alloc(posix.pollfd, coordinator_capacity + 1);
+    errdefer if (!coordinator_started) app.allocator.free(coordinator_pollfds);
+    const coordinator_snapshots = try app.allocator.alloc(HandshakeSnapshot, coordinator_capacity);
+    errdefer if (!coordinator_started) app.allocator.free(coordinator_snapshots);
+
     self.* = .{
         .app = app,
         .conns_pool = .empty,
         .json_version_response = json_version_response,
+        .coordinator_wakeup_pipe = coordinator_wakeup_pipe,
+        .coordinator_pollfds = coordinator_pollfds,
+        .coordinator_snapshots = coordinator_snapshots,
     };
     errdefer self.conns_pool.deinit(app.allocator);
 
     var bound_address = address;
     try self.app.network.bind(&bound_address, self, onAccept);
+
+    _ = self.active_threads.fetchAdd(1, .monotonic);
+    const coordinator = std.Thread.spawn(.{}, runHandshakeCoordinator, .{self}) catch |err| {
+        _ = self.active_threads.fetchSub(1, .monotonic);
+        // bind() installed this Server as the accept callback. If the
+        // coordinator cannot start, stop accepting before the partially
+        // initialized Server is released; otherwise Network may later call
+        // through a dangling ctx pointer.
+        self.app.network.unbind();
+        return err;
+    };
+    coordinator.detach();
+    coordinator_started = true;
+
     log.info(.app, "server running", .{ .address = bound_address });
 
     return self;
 }
 
 pub fn shutdown(self: *Server) void {
+    self.coordinator_shutdown.store(true, .release);
+
     self.conns_mutex.lock();
-    defer self.conns_mutex.unlock();
 
     self.app.network.unbind();
 
     for (self.conns.items) |cdp| {
         cdp.browser.env.terminate();
-        cdp.ws.sendClose();
-        cdp.ws.shutdown();
+        // Do not send through WsConnection from the shutdown thread: the
+        // active worker may concurrently use send_arena and socket flags.
+        // A full shutdown wakes that worker and lets its own defer path clean
+        // up the connection safely.
+        cdp.ws.shutdownPeer();
     }
 
     for (self.pending.items) |conn| {
         conn.ws.shutdown();
     }
+
+    self.conns_mutex.unlock();
+    self.wakeupHandshakeCoordinator();
 }
 
 pub fn deinit(self: *Server) void {
@@ -86,8 +147,25 @@ pub fn deinit(self: *Server) void {
         std.Io.sleep(v.io.get(), .fromMilliseconds(10), .awake) catch {};
     }
 
+    // The coordinator exits as soon as shutdown is signalled, so pending
+    // sockets are not guaranteed to pass through finishPendingHandshake.
+    // Reclaim them after all server threads have stopped; otherwise their
+    // transport arenas, pool entries, and file descriptors would survive
+    // until process exit (and repeated in-process server tests would leak).
+    while (true) {
+        self.conns_mutex.lock();
+        const pending = self.pending.pop();
+        self.conns_mutex.unlock();
+        const conn = pending orelse break;
+        self.destroyTransport(conn);
+    }
+
     self.conns.deinit(self.app.allocator);
     self.pending.deinit(self.app.allocator);
+    self.app.allocator.free(self.coordinator_pollfds);
+    self.app.allocator.free(self.coordinator_snapshots);
+    posix.close(self.coordinator_wakeup_pipe[0]);
+    posix.close(self.coordinator_wakeup_pipe[1]);
     self.conns_pool.deinit(self.app.allocator);
     self.app.allocator.free(self.json_version_response);
     self.app.allocator.destroy(self);
@@ -96,76 +174,218 @@ pub fn deinit(self: *Server) void {
 fn onAccept(ctx: *anyopaque, socket: posix.socket_t) void {
     const self: *Server = @ptrCast(@alignCast(ctx));
     self.spawnWorker(socket) catch |err| {
-        log.err(.app, "CDP spawn", .{ .err = err });
+        switch (err) {
+            // These are normal admission outcomes under load, not runtime
+            // faults. Keep them observable without turning a handshake flood
+            // into an error-log storm.
+            error.MaxPendingConnectionsReached => log.info(.app, "CDP pending limit reached", .{}),
+            error.ShuttingDown => {},
+            else => log.err(.app, "CDP spawn", .{ .err = err }),
+        }
         posix.close(socket);
     };
 }
 
 fn spawnWorker(self: *Server, socket: posix.socket_t) !void {
-    if (self.app.shutdown()) {
+    if (self.app.shutdown() or self.coordinator_shutdown.load(.acquire)) {
         return error.ShuttingDown;
     }
 
-    // Atomically increment active_threads only if below max_connections.
-    // Uses CAS loop to avoid race between checking the limit and incrementing.
-    //
-    // cmpxchgWeak may fail for two reasons:
-    // 1. Another thread changed the value (increment or decrement)
-    // 2. Spurious failure on some architectures (e.g. ARM)
-    //
-    // We use Weak instead of Strong because we need a retry loop anyway:
-    // if CAS fails because a thread finished (counter decreased), we should
-    // retry rather than return an error - there may now be room for a new connection.
-    //
-    // On failure, cmpxchgWeak returns the actual value, which we reuse to avoid
-    // an extra load on the next iteration.
-    const max_connections = self.app.config.maxConnections();
-    var current = self.active_threads.load(.monotonic);
-    while (current < max_connections) {
-        current = self.active_threads.cmpxchgWeak(current, current + 1, .monotonic, .monotonic) orelse break;
+    // Reserve the handshake slot before reserving a worker. This rejects a
+    // handshake flood without needlessly consuming the bounded CDP worker
+    // quota. The slot is released as soon as the upgrade attempt completes.
+    const max_pending = self.app.config.maxPendingConnections();
+    var pending = self.pending_handshakes.load(.monotonic);
+    while (pending < max_pending) {
+        pending = self.pending_handshakes.cmpxchgWeak(pending, pending + 1, .monotonic, .monotonic) orelse break;
     } else {
-        return error.MaxThreadsReached;
+        return error.MaxPendingConnectionsReached;
     }
-    errdefer _ = self.active_threads.fetchSub(1, .monotonic);
+    errdefer _ = self.pending_handshakes.fetchSub(1, .monotonic);
 
-    const thread = try std.Thread.spawn(.{}, handleConnection, .{ self, socket });
+    // Allocate and initialize transport state on the network/acceptor thread.
+    // The coordinator must not touch the general allocator during setup: on Linux the
+    // allocator can create a large per-thread arena, which would turn a
+    // handshake flood into gigabytes of virtual address reservations.
+    const cdp = self.allocConn() catch |err| {
+        log.err(.app, "CDP alloc", .{ .err = err });
+        return err;
+    };
+    var cdp_owned = true;
+    var transport_initialized = false;
+    defer if (cdp_owned) {
+        // initTransport owns cleanup of partially initialized arena state.
+        // Calling CDP.deinit after it fails would access an uninitialized
+        // WsConnection when fcntl/reader allocation failed.
+        if (transport_initialized) cdp.deinit();
+        self.releaseConn(cdp);
+    };
+
+    cdp.initTransport(self.app, socket, self.json_version_response) catch |err| {
+        log.err(.app, "CDP init", .{ .err = err });
+        return err;
+    };
+    transport_initialized = true;
+    cdp.handshake_deadline_ns = nanoTimestamp(.monotonic) +
+        @as(i128, Config.CDP_HANDSHAKE_TIMEOUT_MS) * std.time.ns_per_ms;
+    self.registerHandshake(cdp) catch |err| {
+        log.err(.app, "CDP pending registration", .{ .err = err });
+        return err;
+    };
+    cdp_owned = false;
+    self.wakeupHandshakeCoordinator();
+}
+
+fn runHandshakeCoordinator(self: *Server) void {
+    defer _ = self.active_threads.fetchSub(1, .monotonic);
+
+    var drain_buf: [64]u8 = undefined;
+    while (!self.coordinator_shutdown.load(.acquire)) {
+        var count: usize = 1;
+        self.coordinator_pollfds[0] = .{
+            .fd = self.coordinator_wakeup_pipe[0],
+            .events = posix.POLL.IN,
+            .revents = 0,
+        };
+
+        var timeout_ms: i32 = 1000;
+        const now = nanoTimestamp(.monotonic);
+        self.conns_mutex.lock();
+        for (self.pending.items) |cdp| {
+            if (count > self.coordinator_snapshots.len) break;
+            self.coordinator_snapshots[count - 1] = .{ .cdp = cdp, .deadline_ns = cdp.handshake_deadline_ns };
+            self.coordinator_pollfds[count] = .{
+                .fd = cdp.ws.socket,
+                .events = posix.POLL.IN,
+                .revents = 0,
+            };
+            count += 1;
+            const remaining_ns = cdp.handshake_deadline_ns - now;
+            const remaining_ms: i32 = if (remaining_ns <= 0)
+                0
+            else
+                @intCast(@min(
+                    @as(u64, @intCast(@divTrunc(remaining_ns, std.time.ns_per_ms))),
+                    @as(u64, std.math.maxInt(i32)),
+                ));
+            timeout_ms = @min(timeout_ms, remaining_ms);
+        }
+        self.conns_mutex.unlock();
+
+        _ = posix.poll(self.coordinator_pollfds[0..count], timeout_ms) catch |err| {
+            if (!self.coordinator_shutdown.load(.acquire)) {
+                log.err(.app, "CDP handshake poll", .{ .err = err });
+            }
+            continue;
+        };
+
+        if (self.coordinator_pollfds[0].revents != 0) {
+            while (true) _ = posix.read(self.coordinator_wakeup_pipe[0], &drain_buf) catch break;
+        }
+
+        const now_after_poll = nanoTimestamp(.monotonic);
+        for (self.coordinator_snapshots[0 .. count - 1], 1..) |snapshot, index| {
+            const ready = self.coordinator_pollfds[index].revents != 0;
+            const expired = now_after_poll >= snapshot.deadline_ns;
+            if (!ready and !expired) continue;
+
+            var upgraded = false;
+            if (ready and !expired) {
+                const step = snapshot.cdp.ws.handshakeStep() catch |err| {
+                    log.warn(.app, "CDP handshake", .{ .err = err });
+                    snapshot.cdp.ws.shutdownPeer();
+                    self.finishPendingHandshake(snapshot.cdp, false);
+                    continue;
+                };
+                switch (step) {
+                    .pending => continue,
+                    .upgraded => upgraded = true,
+                    .close => {},
+                }
+            } else {
+                log.info(.app, "CDP handshake timeout", .{ .timeout_ms = Config.CDP_HANDSHAKE_TIMEOUT_MS });
+                snapshot.cdp.ws.shutdownPeer();
+            }
+            self.finishPendingHandshake(snapshot.cdp, upgraded);
+        }
+    }
+}
+
+fn finishPendingHandshake(self: *Server, cdp: *CDP, upgraded: bool) void {
+    self.unregisterHandshake(cdp);
+    _ = self.pending_handshakes.fetchSub(1, .monotonic);
+    if (!upgraded) {
+        self.destroyTransport(cdp);
+        return;
+    }
+
+    // Reserve the real CDP session slot only after the WebSocket upgrade. A
+    // pending socket is cheap transport state; an upgraded session owns V8,
+    // browser state, and the long-lived CDP worker quota.
+    const max_connections = self.app.config.maxConnections();
+    var active = self.active_connections.load(.monotonic);
+    while (active < max_connections) {
+        active = self.active_connections.cmpxchgWeak(active, active + 1, .monotonic, .monotonic) orelse break;
+    } else {
+        log.info(.app, "CDP connection limit reached after handshake", .{
+            .max_connections = max_connections,
+        });
+        cdp.ws.shutdown();
+        self.destroyTransport(cdp);
+        return;
+    }
+
+    if (self.app.shutdown() or self.coordinator_shutdown.load(.acquire)) {
+        _ = self.active_connections.fetchSub(1, .monotonic);
+        self.destroyTransport(cdp);
+        return;
+    }
+
+    // Enter V8/CDP dispatch only on a full-stack worker. Pending sockets never
+    // reserve this worker or its native stack.
+    _ = self.active_threads.fetchAdd(1, .monotonic);
+    const thread = std.Thread.spawn(.{
+        .stack_size = self.app.config.cdpThreadStackBytes(),
+    }, handleUpgradedConnection, .{ self, cdp }) catch |err| {
+        log.err(.app, "CDP worker handoff", .{ .err = err });
+        _ = self.active_threads.fetchSub(1, .monotonic);
+        _ = self.active_connections.fetchSub(1, .monotonic);
+        self.destroyTransport(cdp);
+        return;
+    };
     thread.detach();
 }
 
-fn handleConnection(self: *Server, socket: posix.socket_t) void {
+fn destroyTransport(self: *Server, cdp: *CDP) void {
+    const socket = cdp.ws.socket;
+    cdp.deinit();
+    self.releaseConn(cdp);
+    posix.close(socket);
+}
+
+fn handleUpgradedConnection(self: *Server, cdp: *CDP) void {
     defer _ = self.active_threads.fetchSub(1, .monotonic);
+    defer _ = self.active_connections.fetchSub(1, .monotonic);
+    const socket = cdp.ws.socket;
     defer posix.close(socket);
-
-    // CDP is HUGE (> 512KB) because WsConnection has a large read buffer.
-    // V8 crashes if this is on the stack (likely related to its size).
-    const cdp = self.allocConn() catch |err| {
-        log.err(.app, "CDP alloc", .{ .err = err });
-        return;
-    };
     defer self.releaseConn(cdp);
-
-    cdp.init(self.app, socket, self.json_version_response) catch |err| {
-        log.err(.app, "CDP init", .{ .err = err });
-        return;
-    };
     defer cdp.deinit();
 
-    if (log.enabled(.app, .info)) {
-        const client_address = cdp.ws.getAddress() catch null;
-        log.info(.app, "client connected", .{ .ip = client_address });
-    }
-
-    self.registerHandshake(cdp);
-    const handshake_result = cdp.ws.handshake();
-    self.unregisterHandshake(cdp);
-
-    const upgraded = handshake_result catch |err| {
-        log.err(.app, "CDP handshake", .{ .err = err });
+    // Do not create the V8/browser worker until the WebSocket upgrade has
+    // proved that this is a real CDP client. The coordinator handles only
+    // transport parsing; this worker owns all expensive V8/browser state.
+    cdp.initBrowser() catch |err| {
+        log.err(.app, "CDP browser init", .{ .err = err });
         return;
     };
-    if (!upgraded) return;
 
-    self.registerConn(cdp);
+    self.registerConn(cdp) catch |err| {
+        // An unregistered active worker is invisible to shutdown() and can
+        // make deinit wait forever. Fail the handoff instead of silently
+        // continuing when the connection registry cannot grow.
+        log.err(.app, "CDP connection registration", .{ .err = err });
+        return;
+    };
     defer self.unregisterConn(cdp);
 
     // Check shutdown after registering to avoid missing the stop signal.
@@ -184,11 +404,11 @@ fn handleConnection(self: *Server, socket: posix.socket_t) void {
     }
 }
 
-fn registerHandshake(self: *Server, conn: *CDP) void {
+fn registerHandshake(self: *Server, conn: *CDP) !void {
     self.conns_mutex.lock();
     defer self.conns_mutex.unlock();
 
-    self.pending.append(self.app.allocator, conn) catch {};
+    try self.pending.append(self.app.allocator, conn);
 }
 
 fn unregisterHandshake(self: *Server, conn: *CDP) void {
@@ -203,6 +423,10 @@ fn unregisterHandshake(self: *Server, conn: *CDP) void {
     }
 }
 
+fn wakeupHandshakeCoordinator(self: *Server) void {
+    _ = posix.write(self.coordinator_wakeup_pipe[1], &.{1}) catch {};
+}
+
 fn allocConn(self: *Server) !*CDP {
     self.conns_mutex.lock();
     defer self.conns_mutex.unlock();
@@ -215,10 +439,10 @@ fn releaseConn(self: *Server, conn: *CDP) void {
     self.conns_pool.destroy(conn);
 }
 
-fn registerConn(self: *Server, conn: *CDP) void {
+fn registerConn(self: *Server, conn: *CDP) !void {
     self.conns_mutex.lock();
     defer self.conns_mutex.unlock();
-    self.conns.append(self.app.allocator, conn) catch {};
+    try self.conns.append(self.app.allocator, conn);
 }
 
 fn unregisterConn(self: *Server, conn: *CDP) void {
@@ -250,9 +474,34 @@ fn buildJSONVersionResponse(
         "\"Browser\": \"Koko/1.0\", " ++
         "\"Protocol-Version\": \"1.3\", " ++
         "\"User-Agent\": \"Koko/1.0\", " ++
-        "\"webSocketDebuggerUrl\": \"ws://{s}:{d}/\"" ++
+        "\"webSocketDebuggerUrl\": \"ws://{s}:{d}/\", " ++
+        "\"kokoBuild\": {{\"v8PointerCompression\": {}, \"v8MissingShims\": {}}}, " ++
+        "\"kokoStartup\": {{" ++
+        "\"totalUs\": {d}, " ++
+        "\"platformUs\": {d}, " ++
+        "\"snapshotUs\": {d}, " ++
+        "\"storageUs\": {d}, " ++
+        "\"networkUs\": {d}, " ++
+        "\"appDirUs\": {d}, " ++
+        "\"telemetryUs\": {d}, " ++
+        "\"arenaPoolUs\": {d}" ++
+        "}}" ++
         "}}";
-    const body_len = std.fmt.count(body_format, .{ host, port });
+    const startup = app.startupMetrics();
+    const body_len = std.fmt.count(body_format, .{
+        host,
+        port,
+        build_config.v8_enable_pointer_compression,
+        build_config.v8_missing_shims,
+        startup.total_us,
+        startup.platform_us,
+        startup.snapshot_us,
+        startup.storage_us,
+        startup.network_us,
+        startup.app_dir_us,
+        startup.telemetry_us,
+        startup.arena_pool_us,
+    });
 
     // We send a Connection: Close (and actually close the connection)
     // because chromedp (Go driver) sends a request to /json/version and then
@@ -266,7 +515,21 @@ fn buildJSONVersionResponse(
         "Connection: Close\r\n" ++
         "Content-Type: application/json; charset=UTF-8\r\n\r\n" ++
         body_format;
-    return try std.fmt.allocPrint(app.allocator, response_format, .{ body_len, host, port });
+    return try std.fmt.allocPrint(app.allocator, response_format, .{
+        body_len,
+        host,
+        port,
+        build_config.v8_enable_pointer_compression,
+        build_config.v8_missing_shims,
+        startup.total_us,
+        startup.platform_us,
+        startup.snapshot_us,
+        startup.storage_us,
+        startup.network_us,
+        startup.app_dir_us,
+        startup.telemetry_us,
+        startup.arena_pool_us,
+    });
 }
 
 pub const timestamp = @import("../../support/datetime.zig").timestamp;
@@ -287,6 +550,7 @@ test "server: buildJSONVersionResponse" {
     try testing.expect(std.mem.indexOf(u8, res, "\"Protocol-Version\": \"1.3\"") != null);
     try testing.expect(std.mem.indexOf(u8, res, "\"User-Agent\": \"Koko/") != null);
     try testing.expect(std.mem.indexOf(u8, res, "\"webSocketDebuggerUrl\": \"ws://127.0.0.1:9222/\"") != null);
+    try testing.expect(std.mem.indexOf(u8, res, "\"kokoStartup\": {") != null);
 }
 
 test "Client: http invalid request" {
@@ -508,6 +772,7 @@ test "server: get /json/version" {
         try testing.expect(std.mem.indexOf(u8, res1, "\"Browser\": \"Koko/") != null);
         try testing.expect(std.mem.indexOf(u8, res1, "\"Protocol-Version\": \"1.3\"") != null);
         try testing.expect(std.mem.indexOf(u8, res1, "\"webSocketDebuggerUrl\": \"ws://127.0.0.1:9222/\"") != null);
+        try testing.expect(std.mem.indexOf(u8, res1, "\"kokoBuild\": {") != null);
     }
 
     {

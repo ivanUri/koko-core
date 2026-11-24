@@ -96,6 +96,54 @@ See the SDK repository for installation, agent APIs, launch profiles, and compat
                   Zig core
 ```
 
+### Scale boundaries
+
+Koko currently assigns one CDP connection to one blocking worker and one V8
+isolate/browser worker. This keeps lifecycle and realm ownership simple, but
+the isolate boundary is the dominant virtual-memory cost when many sites run
+in parallel. The server bounds native worker stacks, times out idle handshakes,
+and recycles V8 heap pressure at sequential BrowserContext boundaries.
+
+The server also separates `--cdp-max-connections` (upgraded sessions) from
+`--cdp-max-pending-connections` (sockets still completing the WebSocket
+handshake), so a handshake burst cannot consume the upgraded-session/V8 worker quota.
+Pending sockets are multiplexed by a transport-only handshake coordinator and
+are handed off to a full CDP/V8 worker only after upgrade; this keeps high
+pending-socket VMS close to the socket/coordination cost instead of reserving
+one native worker per socket.
+
+The HTTP easy-handle pool is lazy: capacity is reserved at startup, while curl
+handles are created only when transfers arrive. This reduces cold-start and
+idle-server cost; the first request pays handle creation. For high-isolate
+density, source V8 builds can compare pointer-compression ON/OFF explicitly:
+ON is generally lower RSS and browser-like, while OFF currently reserves less
+virtual address space per Koko worker. Use the deterministic scale and
+heavy-site lanes documented in bench/README.md before selecting a deployment
+profile.
+
+When reusing a prebuilt V8 archive, keep the archive, snapshot, and Koko flag
+on the same profile. For example:
+
+```bash
+# pointer compression ON: lower RSS, higher per-isolate VMS
+zig build -Doptimize=ReleaseFast \
+  -Dprebuilt_v8_path=.koko-cache/v8-on/obj/zig/libc_v8.a \
+  -Dsnapshot_path=.koko-cache/snapshot-v8pc-on.bin \
+  -Dv8_enable_pointer_compression=true
+
+# pointer compression OFF: lower VMS at high site density
+zig build -Doptimize=ReleaseFast \
+  -Dprebuilt_v8_path=.koko-cache/v8-off/obj/zig/libc_v8.a \
+  -Dsnapshot_path=.koko-cache/snapshot-v8pc-off.bin \
+  -Dv8_enable_pointer_compression=false
+```
+
+For archives in a source V8 `out/...` tree, the build checks `args.gn` and
+fails early if the selected pointer-compression profile does not match. Bare
+release archives have no portable profile metadata, so the explicit flag and
+matching snapshot must be supplied by the release pipeline.
+
+
 Repository structure:
 
 ```text

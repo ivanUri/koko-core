@@ -65,6 +65,10 @@ cache: ?Cache,
 cache_disabled: bool = false,
 
 connections: []http.Connection,
+// Easy handles are created on first demand rather than during App.init.
+// This keeps a cold CDP server cheap while preserving the configured maximum
+// concurrent transfers as the backing-array capacity.
+connection_count: usize = 0,
 available: std.DoublyLinkedList = .{},
 conn_mutex: sync.Mutex = .{},
 
@@ -164,12 +168,6 @@ pub fn init(allocator: Allocator, app: *App, config: *const Config) !Network {
     const connections = try allocator.alloc(http.Connection, count);
     errdefer allocator.free(connections);
 
-    var available: std.DoublyLinkedList = .{};
-    for (0..count) |i| {
-        connections[i] = try http.Connection.init(ca_blob, config, ip_filter);
-        available.append(&connections[i].node);
-    }
-
     const web_bot_auth = if (config.webBotAuth()) |wba_cfg|
         try WebBotAuth.fromConfig(allocator, &wba_cfg)
     else
@@ -206,7 +204,6 @@ pub fn init(allocator: Allocator, app: *App, config: *const Config) !Network {
         .pollfds = pollfds,
         .wakeup_pipe = pipe,
 
-        .available = available,
         .connections = connections,
 
         .app = app,
@@ -242,7 +239,7 @@ pub fn deinit(self: *Network) void {
         self.allocator.free(data[0..ca_blob.len]);
     }
 
-    for (self.connections) |*conn| {
+    for (self.connections[0..self.connection_count]) |*conn| {
         conn.deinit();
     }
     self.allocator.free(self.connections);
@@ -724,8 +721,22 @@ pub fn getConnection(self: *Network) ?*http.Connection {
     self.conn_mutex.lock();
     defer self.conn_mutex.unlock();
 
-    const node = self.available.popFirst() orelse return null;
-    return @fieldParentPtr("node", node);
+    if (self.available.popFirst()) |node| {
+        return @fieldParentPtr("node", node);
+    }
+
+    if (self.connection_count >= self.connections.len) return null;
+
+    // The slot is protected by conn_mutex. Do not expose it until curl has
+    // completed all per-handle setup, so a failed init cannot leave a phantom
+    // connection in the pool.
+    const conn = &self.connections[self.connection_count];
+    conn.* = http.Connection.init(self.ca_blob, self.config, self.ip_filter) catch |err| {
+        log.warn(.http, "lazy connection init", .{ .err = err });
+        return null;
+    };
+    self.connection_count += 1;
+    return conn;
 }
 
 fn availableCount(self: *Network) usize {

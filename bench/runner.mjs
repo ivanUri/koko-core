@@ -20,10 +20,12 @@ import { runRealSitesSuite } from "./suites/real-sites.mjs";
 import { runSessionLifecycleSuite } from "./suites/session-lifecycle.mjs";
 import { runStartupSuite } from "./suites/startup.mjs";
 import { runResourcePolicySuite } from "./suites/resource-policy.mjs";
+import { runHeavySiteSuite } from "./suites/heavy-site.mjs";
+import { runContextRecycleSuite } from "./suites/context-recycle.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const deterministicSuites = ["startup", "navigation", "session-lifecycle", "idle-memory"];
-const allSuites = [...deterministicSuites, "concurrency", "network", "dom-js", "agent", "long-run"];
+const allSuites = [...deterministicSuites, "concurrency", "network", "dom-js", "heavy-site", "context-recycle", "agent", "long-run"];
 const suiteRunners = new Map([
   ["startup", runStartupSuite],
   ["navigation", runNavigationSuite],
@@ -32,6 +34,8 @@ const suiteRunners = new Map([
   ["concurrency", runConcurrencySuite],
   ["network", runNetworkSuite],
   ["dom-js", runDomJsSuite],
+  ["heavy-site", runHeavySiteSuite],
+  ["context-recycle", runContextRecycleSuite],
   ["agent", runAgentSuite],
   ["long-run", runLongRunSuite],
   ["real-sites", runRealSitesSuite],
@@ -67,6 +71,8 @@ function parseArgs(argv) {
     resourcePolicy: "full",
     lightpandaEnableExternalStylesheets: false,
     cdpMaxConnections: 64,
+    cdpMaxPendingConnections: 128,
+    cdpThreadStackMb: 4,
     timeoutMs: 30_000,
     idleSettleMs: 250,
     memorySampling: { samples: 5, intervalMs: 100 },
@@ -77,6 +83,7 @@ function parseArgs(argv) {
     realSiteTimeoutMs: 45_000,
     output: "bench-results",
     kokoBin: "zig-out/bin/koko",
+    kokoLabel: null,
     chromeBin: null,
     lightpandaBin: null,
     optimize: "unknown",
@@ -110,6 +117,10 @@ function parseArgs(argv) {
     else if (argument === "--resource-policy") options.resourcePolicy = next();
     else if (argument === "--lightpanda-enable-external-stylesheets") options.lightpandaEnableExternalStylesheets = true;
     else if (argument === "--cdp-max-connections") options.cdpMaxConnections = positiveInteger(next(), argument, 1);
+    else if (argument === "--cdp-max-pending-connections") options.cdpMaxPendingConnections = positiveInteger(next(), argument, 1);
+    else if (argument === "--cdp-thread-stack-mb") options.cdpThreadStackMb = positiveInteger(next(), argument, 1);
+    else if (argument === "--worker-max-pages") options.workerMaxPages = positiveInteger(next(), argument, 0);
+    else if (argument === "--worker-max-rss") options.workerMaxRss = positiveInteger(next(), argument, 0);
     else if (argument === "--real-warmup") options.realSiteWarmup = positiveInteger(next(), argument);
     else if (argument === "--real-iterations") options.realSiteIterations = positiveInteger(next(), argument, 1);
     else if (argument === "--real-settle-ms") options.realSiteSettleMs = positiveInteger(next(), argument);
@@ -121,6 +132,7 @@ function parseArgs(argv) {
     else if (argument === "--idle-settle-ms") options.idleSettleMs = positiveInteger(next(), argument);
     else if (argument === "--output") options.output = next();
     else if (argument === "--koko-bin") options.kokoBin = next();
+    else if (argument === "--koko-label") options.kokoLabel = next();
     else if (argument === "--chrome-bin") options.chromeBin = next();
     else if (argument === "--lightpanda-bin") options.lightpandaBin = next();
     else if (argument === "--optimize") options.optimize = next();
@@ -156,7 +168,7 @@ function printHelp() {
   process.stdout.write(`Koko Browser Runtime Benchmark\n\n` +
     `  node bench/runner.mjs [options]\n\n` +
     `Options:\n` +
-    `  --suite <all|startup,navigation,session-lifecycle,idle-memory,concurrency,network,dom-js,agent,long-run,real-sites,resource-policy>\n` +
+    `  --suite <all|startup,navigation,session-lifecycle,idle-memory,concurrency,network,dom-js,heavy-site,context-recycle,agent,long-run,real-sites,resource-policy>\n` +
     `  --baseline <koko-cdp,chromium-cdp,lightpanda-cdp,playwright-chromium|all>\n` +
     `  --warmup <n> --iterations <n>\n` +
     `  --memory-warmup <n> --memory-iterations <n> --density <1,10,50,100,250,500,1000>\n` +
@@ -167,9 +179,14 @@ function printHelp() {
     `  --resource-policy <full|no-images|no-css|text-only|defer-images> (Koko)\n` +
     `  --lightpanda-enable-external-stylesheets (Lightpanda)\n` +
     `  --cdp-max-connections <n> (Koko)\n` +
+    `  --cdp-max-pending-connections <n> (Koko)\n` +
+    `  --cdp-thread-stack-mb <n> (Koko)\n` +
+    `  --worker-max-pages <n> (Koko)\n` +
+    `  --worker-max-rss <bytes> (Koko)\n` +
     `  --site-file <json> --real-warmup <n> --real-iterations <n> --real-settle-ms <ms>\n` +
     `  --real-timeout-ms <ms>\n` +
     `  --koko-bin <path> --chrome-bin <path> --lightpanda-bin <path> --output <directory>\n` +
+    `  --koko-label <name> (record the exact Koko build/profile under test)\n` +
     `  --timeout-ms <ms> --idle-settle-ms <ms>\n` +
     `  --regression-against <summary.json> --regression-threshold-pct <n> --regression-mode <warn|fail>\n` +
     `  --quick --allow-non-release --allow-failures\n`);
@@ -238,7 +255,7 @@ async function main() {
   const runId = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
   const rawPath = resolve(options.output, "raw", `${runId}.jsonl`);
   await mkdir(options.output, { recursive: true });
-  const needsFixtures = options.suites.some((suite) => ["startup", "navigation", "concurrency", "network", "dom-js", "agent", "long-run", "resource-policy"].includes(suite)) || (options.activeSessions > 0 && options.suites.includes("idle-memory"));
+  const needsFixtures = options.suites.some((suite) => ["startup", "navigation", "concurrency", "network", "dom-js", "heavy-site", "context-recycle", "agent", "long-run", "resource-policy"].includes(suite)) || (options.activeSessions > 0 && options.suites.includes("idle-memory"));
   const fixtureServer = needsFixtures ? await startFixtureServer() : null;
   const adapterOptions = {
     projectRoot,
@@ -251,6 +268,8 @@ async function main() {
     resourcePolicy: options.resourcePolicy,
     lightpandaEnableExternalStylesheets: options.lightpandaEnableExternalStylesheets,
     cdpMaxConnections: options.cdpMaxConnections,
+    cdpMaxPendingConnections: options.cdpMaxPendingConnections,
+    cdpThreadStackMb: options.cdpThreadStackMb,
   };
   const context = new RunContext({
     runId,
@@ -266,6 +285,7 @@ async function main() {
   const environment = await collectEnvironment({
     projectRoot,
     kokoBin: options.kokoBin,
+    kokoLabel: options.kokoLabel,
     chromeBin: options.chromeBin,
     lightpandaBin: options.lightpandaBin,
     optimize: options.optimize,
@@ -287,6 +307,8 @@ async function main() {
       resourcePolicy: options.resourcePolicy,
       lightpandaEnableExternalStylesheets: options.lightpandaEnableExternalStylesheets,
       cdpMaxConnections: options.cdpMaxConnections,
+      cdpMaxPendingConnections: options.cdpMaxPendingConnections,
+      cdpThreadStackMb: options.cdpThreadStackMb,
       regressionAgainst: options.regressionAgainst,
       regressionThresholdPct: options.regressionThresholdPct,
       regressionMode: options.regressionMode,
@@ -348,7 +370,9 @@ async function evaluateRegression(options, currentGroups) {
     if (!previousGroup) continue;
     const checks = [
       ["durationMs.p95", current.metrics?.durationMs?.p95, previousGroup.metrics?.durationMs?.p95, "higher-is-worse"],
+      ["appStartupMs.p95", current.metrics?.appStartupMs?.p95, previousGroup.metrics?.appStartupMs?.p95, "higher-is-worse"],
       ["rssBytes.median", current.metrics?.rssBytes?.median, previousGroup.metrics?.rssBytes?.median, "higher-is-worse"],
+      ["virtualMemoryPerSessionBytes.median", current.metrics?.virtualMemoryPerSessionBytes?.median, previousGroup.metrics?.virtualMemoryPerSessionBytes?.median, "higher-is-worse"],
       ["throughputPagesPerSecond.median", current.metrics?.throughputPagesPerSecond?.median, previousGroup.metrics?.throughputPagesPerSecond?.median, "lower-is-worse"],
     ];
     for (const [metricName, value, baseline, direction] of checks) {

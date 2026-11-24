@@ -53,6 +53,21 @@ pub fn build(b: *Build) !void {
     const enable_tsan = b.option(bool, "tsan", "Enable Thread Sanitizer") orelse false;
     const enable_asan = b.option(bool, "asan", "Enable Address Sanitizer") orelse false;
     const enable_csan = b.option(std.zig.SanitizeC, "csan", "Enable C Sanitizers");
+    const v8_enable_pointer_compression = b.option(
+        bool,
+        "v8_enable_pointer_compression",
+        "Enable V8's per-isolate pointer-compression cage (lower heap pointer size, larger virtual address reservation)",
+    ) orelse true;
+    const v8_missing_shims = b.option(
+        bool,
+        "v8_missing_shims",
+        "Compile Linux compatibility shims for V8 symbols absent from older prebuilt archives",
+    ) orelse (prebuilt_v8_path != null);
+    if (prebuilt_v8_path) |path| {
+        try validatePrebuiltV8Profile(b, path, v8_enable_pointer_compression);
+    }
+    opts.addOption(bool, "v8_enable_pointer_compression", v8_enable_pointer_compression);
+    opts.addOption(bool, "v8_missing_shims", v8_missing_shims);
 
     const koko_module = blk: {
         const mod = b.addModule("koko", .{
@@ -78,7 +93,7 @@ pub fn build(b: *Build) !void {
         // Set default behavior
         b.default_step.dependOn(fmt_step);
 
-        try linkV8(b, mod, enable_asan, enable_tsan, prebuilt_v8_path);
+        try linkV8(b, mod, enable_asan, enable_tsan, v8_enable_pointer_compression, prebuilt_v8_path);
         try linkCurl(b, mod, enable_tsan);
         linkZlibModule(b, mod, enable_tsan);
         try linkHtml5Ever(b, mod);
@@ -95,7 +110,7 @@ pub fn build(b: *Build) !void {
         } else if (target.result.os.tag == .linux) {
 
             // vendor/v8-wrapper binding.cpp. Shims only; macOS / full V8 builds unchanged.
-            if (fileExists(b, "vendor/v8_missing_shims.c")) {
+            if (v8_missing_shims and fileExists(b, "vendor/v8_missing_shims.c")) {
                 mod.addCSourceFile(.{
                     .file = b.path("vendor/v8_missing_shims.c"),
                     .flags = &.{},
@@ -251,6 +266,7 @@ fn linkV8(
     mod: *Build.Module,
     is_asan: bool,
     is_tsan: bool,
+    v8_enable_pointer_compression: bool,
     prebuilt_v8_path: ?[]const u8,
 ) !void {
     const target = mod.resolved_target.?;
@@ -262,6 +278,7 @@ fn linkV8(
         .is_tsan = is_tsan,
         .inspector_subtype = false,
         .v8_enable_sandbox = is_tsan,
+        .v8_enable_pointer_compression = v8_enable_pointer_compression,
         .cache_root = b.pathFromRoot(".koko-cache"),
         .prebuilt_v8_path = prebuilt_v8_path,
     });
@@ -364,6 +381,42 @@ fn fileExists(b: *Build, rel: []const u8) bool {
     const path = b.pathFromRoot(rel);
     b.build_root.handle.access(b.graph.io, path, .{}) catch return false;
     return true;
+}
+
+/// Validate a prebuilt V8 archive against the GN profile that produced it when
+/// the archive is still inside a normal V8 `out/<os>/<profile>/obj/zig` tree.
+///
+/// A bare archive downloaded from a release has no portable metadata, so it is
+/// intentionally not rejected here. The explicit build flag remains the source
+/// of truth in that case, while source-built archives get an early mismatch
+/// error instead of a late, difficult-to-diagnose snapshot/runtime failure.
+fn validatePrebuiltV8Profile(b: *Build, archive_path: []const u8, expected_pointer_compression: bool) !void {
+    var profile_dir = std.fs.path.dirname(archive_path) orelse {
+        std.debug.print("warning: cannot inspect V8 profile for prebuilt archive '{s}'; pass -Dv8_enable_pointer_compression explicitly\n", .{archive_path});
+        return;
+    };
+    profile_dir = std.fs.path.dirname(profile_dir) orelse return;
+    profile_dir = std.fs.path.dirname(profile_dir) orelse return;
+    const args_path = b.fmt("{s}/args.gn", .{profile_dir});
+    const args = std.Io.Dir.cwd().readFileAlloc(b.graph.io, args_path, b.allocator, .limited(64 * 1024)) catch {
+        std.debug.print("warning: no args.gn found beside prebuilt V8 archive '{s}'; pass -Dv8_enable_pointer_compression explicitly and pair the snapshot with the same profile\n", .{archive_path});
+        return;
+    };
+    defer b.allocator.free(args);
+
+    const expected = b.fmt("v8_enable_pointer_compression = {}", .{expected_pointer_compression});
+    if (std.mem.indexOf(u8, args, expected) != null) return;
+
+    const opposite = b.fmt("v8_enable_pointer_compression = {}", .{!expected_pointer_compression});
+    if (std.mem.indexOf(u8, args, opposite) != null) {
+        std.debug.print(
+            "error: prebuilt V8 archive '{s}' was built with {s}, but Koko was configured with {s}; use the matching archive/snapshot or pass the matching -Dv8_enable_pointer_compression value\n",
+            .{ archive_path, opposite, expected },
+        );
+        return error.PrebuiltV8ProfileMismatch;
+    }
+
+    std.debug.print("warning: args.gn beside prebuilt V8 archive '{s}' has no recognizable pointer-compression setting; pass the matching -Dv8_enable_pointer_compression value\n", .{archive_path});
 }
 
 /// True when this host OS has platform-matching curl-impersonate artifacts.

@@ -19,7 +19,7 @@ function sha256(path) {
   });
 }
 
-export async function collectEnvironment({ projectRoot, kokoBin, chromeBin, lightpandaBin, optimize, options }) {
+export async function collectEnvironment({ projectRoot, kokoBin, kokoLabel, chromeBin, lightpandaBin, optimize, options }) {
   const binaryStat = existsSync(kokoBin) ? await stat(kokoBin) : null;
   const lightpandaStat = lightpandaBin && existsSync(lightpandaBin) ? await stat(lightpandaBin) : null;
   return {
@@ -41,6 +41,7 @@ export async function collectEnvironment({ projectRoot, kokoBin, chromeBin, ligh
       gitCommit: command("git", ["rev-parse", "HEAD"], projectRoot),
       gitDirty: Boolean(command("git", ["status", "--porcelain"], projectRoot)),
       optimize,
+      buildLabel: kokoLabel ?? null,
       binary: kokoBin,
       binarySizeBytes: binaryStat?.size ?? null,
       binaryModifiedAt: binaryStat?.mtime.toISOString() ?? null,

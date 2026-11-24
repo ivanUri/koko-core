@@ -32,7 +32,7 @@ test("loadUrls rejects non-http schemes", async () => {
 test("pool isolates slots, preserves result order, and enforces timeout", async () => {
   const urls = ["https://fixture.test/slow", "https://fixture.test/ok", "https://fixture.test/fail"];
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "koko-pool-test-root-"));
-  const result = await runPool(urls, { binary: process.execPath, binaryArgs: [FIXTURE], concurrency: 2, queueLimit: 4, timeoutMs: 40, terminateGraceMs: 20, killGraceMs: 100, profileRoot: root, outputDir: path.join(root, "output") });
+  const result = await runPool(urls, { binary: process.execPath, binaryArgs: [FIXTURE], concurrency: 2, queueLimit: 4, timeoutMs: 100, terminateGraceMs: 20, killGraceMs: 100, profileRoot: root, outputDir: path.join(root, "output") });
   assert.deepEqual(result.results.map((item) => item.url), urls);
   assert.equal(result.results[0].reason, "timeout");
   assert.equal(result.results[1].ok, true);

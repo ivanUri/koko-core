@@ -29,6 +29,7 @@ const GnArgs = struct {
     is_debug: bool,
     symbol_level: u8,
     v8_enable_sandbox: bool,
+    v8_enable_pointer_compression: bool,
 
     fn asString(self: GnArgs, b: *std.Build, target: std.Build.ResolvedTarget) ![]const u8 {
         const tag = target.result.os.tag;
@@ -47,6 +48,7 @@ const GnArgs = struct {
         try args.appendSlice(gpa, b.fmt("is_asan={}\n", .{self.is_asan}));
         try args.appendSlice(gpa, b.fmt("is_tsan={}\n", .{self.is_tsan}));
         try args.appendSlice(gpa, b.fmt("v8_enable_sandbox={}\n", .{self.v8_enable_sandbox}));
+        try args.appendSlice(gpa, b.fmt("v8_enable_pointer_compression={}\n", .{self.v8_enable_pointer_compression}));
 
         switch (tag) {
             .ios => {
@@ -77,6 +79,7 @@ pub fn build(b: *std.Build) !void {
         .is_asan = b.option(bool, "is_asan", "Address sanitizer") orelse false,
         .is_tsan = b.option(bool, "is_tsan", "Thread sanitizer") orelse false,
         .v8_enable_sandbox = b.option(bool, "v8_enable_sandbox", "V8 lightable sandbox") orelse false,
+        .v8_enable_pointer_compression = b.option(bool, "v8_enable_pointer_compression", "V8 pointer compression") orelse true,
     };
 
     var build_opts = b.addOptions();

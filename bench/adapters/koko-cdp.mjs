@@ -37,10 +37,18 @@ export class KokoCdpAdapter {
       "--host", "127.0.0.1",
       "--port", String(port),
       "--cdp-max-connections", String(this.options.cdpMaxConnections ?? 64),
+      "--cdp-max-pending-connections", String(this.options.cdpMaxPendingConnections ?? 128),
+      "--cdp-thread-stack-mb", String(this.options.cdpThreadStackMb ?? 4),
       "--user-data-dir", this.profileDirectory,
       "--http-cache-dir", `${this.profileDirectory}/cache`,
       "--log-level", "warn",
     ];
+    if (this.options.workerMaxPages != null) {
+      args.push("--worker-max-pages", String(this.options.workerMaxPages));
+    }
+    if (this.options.workerMaxRss != null) {
+      args.push("--worker-max-rss", String(this.options.workerMaxRss));
+    }
     if (this.options.httpMaxConcurrent != null) args.push("--http-max-concurrent", String(this.options.httpMaxConcurrent));
     if (this.options.httpMaxHostOpen != null) args.push("--http-max-host-open", String(this.options.httpMaxHostOpen));
     if (this.options.resourcePolicy && this.options.resourcePolicy !== "full") {
@@ -60,7 +68,18 @@ export class KokoCdpAdapter {
     }
     this.endpoint = endpoint;
     this.webSocketDebuggerUrl = this.version.webSocketDebuggerUrl;
-    this.launchMetrics = { processReadyMs: performance.now() - started };
+    const startup = this.version.kokoStartup ?? {};
+    this.launchMetrics = {
+      processReadyMs: performance.now() - started,
+      appStartupMs: Number.isFinite(Number(startup.totalUs)) ? Number(startup.totalUs) / 1_000 : null,
+      appPlatformMs: Number.isFinite(Number(startup.platformUs)) ? Number(startup.platformUs) / 1_000 : null,
+      appSnapshotMs: Number.isFinite(Number(startup.snapshotUs)) ? Number(startup.snapshotUs) / 1_000 : null,
+      appStorageMs: Number.isFinite(Number(startup.storageUs)) ? Number(startup.storageUs) / 1_000 : null,
+      appNetworkMs: Number.isFinite(Number(startup.networkUs)) ? Number(startup.networkUs) / 1_000 : null,
+      appDirMs: Number.isFinite(Number(startup.appDirUs)) ? Number(startup.appDirUs) / 1_000 : null,
+      appTelemetryMs: Number.isFinite(Number(startup.telemetryUs)) ? Number(startup.telemetryUs) / 1_000 : null,
+      appArenaPoolMs: Number.isFinite(Number(startup.arenaPoolUs)) ? Number(startup.arenaPoolUs) / 1_000 : null,
+    };
     return this;
   }
 

@@ -20,6 +20,7 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 
 const log = @import("../../support/log.zig");
 const assert = @import("../../support/assert.zig").assert;
+const nanoTimestamp = @import("../../support/datetime.zig").nanoTimestamp;
 const Config = @import("../Config.zig");
 const CDP_MAX_MESSAGE_SIZE = Config.CDP_MAX_MESSAGE_SIZE;
 
@@ -317,6 +318,10 @@ socket_flags: usize,
 reader: Reader(true),
 send_arena: ArenaAllocator,
 json_version_response: []const u8,
+// HTTP upgrade responses must never make the admission coordinator block on
+// a client that stops reading. Full CDP traffic keeps the existing blocking
+// write fallback after handoff.
+handshake_send_nonblocking: bool = false,
 
 pub fn init(
     self: *WsConnection,
@@ -339,6 +344,7 @@ pub fn init(
         .reader = reader,
         .send_arena = ArenaAllocator.init(allocator),
         .json_version_response = json_version_response,
+        .handshake_send_nonblocking = false,
     };
 }
 
@@ -348,6 +354,8 @@ pub fn deinit(self: *WsConnection) void {
 }
 
 pub fn send(self: *WsConnection, data: []const u8) !void {
+    if (self.handshake_send_nonblocking) return self.sendNonBlocking(data);
+
     var pos: usize = 0;
     var changed_to_blocking: bool = false;
     defer _ = self.send_arena.reset(.{ .retain_with_limit = 1024 * 32 });
@@ -382,6 +390,17 @@ pub fn send(self: *WsConnection, data: []const u8) !void {
         if (written == 0) {
             return error.Closed;
         }
+        pos += written;
+    }
+}
+
+fn sendNonBlocking(self: *WsConnection, data: []const u8) !void {
+    defer _ = self.send_arena.reset(.{ .retain_with_limit = 1024 * 32 });
+
+    var pos: usize = 0;
+    while (pos < data.len) {
+        const written = try posix.write(self.socket, data[pos..]);
+        if (written == 0) return error.BrokenPipe;
         pos += written;
     }
 }
@@ -432,14 +451,32 @@ pub fn sendJSONRaw(
 
 pub const HttpResult = enum { more, upgraded, close };
 
-pub fn handshake(self: *WsConnection) !bool {
-    // Liveness is enforced by TCP keepalive configured in
-    // Server.setTcpKeepalive; a dead peer surfaces as a poll error or
-    // EOF from read(). The poll blocks for ~24 days rather than tracking
-    // an app-level timeout. Capped at i32-max because posix.poll narrows
-    // to c_int.
-    const wait_ms: i32 = std.math.maxInt(i32);
+/// Result of one non-blocking HTTP/WebSocket handshake step. The server-side
+/// admission coordinator uses this to multiplex many pending sockets without
+/// dedicating a native thread to each one.
+pub const HandshakeStep = enum { pending, upgraded, close };
+
+fn handshakePollTimeout(timeout_ms: u32, elapsed_ms: u64) ?i32 {
+    if (elapsed_ms >= timeout_ms) return null;
+    const remaining_ms = @as(u64, timeout_ms) - elapsed_ms;
+    return @intCast(@min(remaining_ms, @as(u64, std.math.maxInt(i32))));
+}
+
+pub fn handshake(self: *WsConnection, timeout_ms: u32) !bool {
+    // TCP keepalive handles dead peers after the upgrade, while this deadline
+    // protects the pre-upgrade admission slot from a live but idle client.
+    const started_ns = nanoTimestamp(.monotonic);
     while (true) {
+        const elapsed_ns = nanoTimestamp(.monotonic) - started_ns;
+        const elapsed_ms: u64 = if (elapsed_ns <= 0)
+            0
+        else
+            @intCast(@divTrunc(elapsed_ns, std.time.ns_per_ms));
+        const wait_ms = handshakePollTimeout(timeout_ms, elapsed_ms) orelse {
+            log.info(.app, "CDP handshake timeout", .{ .timeout_ms = timeout_ms });
+            self.shutdownPeer();
+            return false;
+        };
         var pfds = [_]posix.pollfd{.{
             .fd = self.socket,
             .events = posix.POLL.IN,
@@ -447,26 +484,52 @@ pub fn handshake(self: *WsConnection) !bool {
         }};
         const n = try posix.poll(&pfds, wait_ms);
         if (n == 0) {
-            log.info(.app, "CDP timeout", .{});
+            log.info(.app, "CDP handshake timeout", .{ .timeout_ms = timeout_ms });
+            self.shutdownPeer();
             return false;
         }
-        const read_bytes = self.read() catch |err| {
+        const result = self.handshakeStep() catch |err| {
             log.warn(.app, "CDP read", .{ .err = err });
             self.shutdownPeer();
             return false;
         };
-        if (read_bytes == 0) {
-            log.info(.app, "CDP disconnect", .{});
-            self.shutdownPeer();
-            return false;
-        }
-        const result = self.processHttpRequest() catch return false;
         switch (result) {
-            .more => continue,
+            .pending => continue,
             .upgraded => return true,
             .close => return false,
         }
     }
+}
+
+/// Process one already-ready read event without waiting. A WouldBlock race is
+/// treated as pending because another poll cycle can retry it. The coordinator
+/// owns the deadline and decides when a pending socket should be closed.
+pub fn handshakeStep(self: *WsConnection) !HandshakeStep {
+    self.handshake_send_nonblocking = true;
+    defer self.handshake_send_nonblocking = false;
+
+    const read_bytes = self.read() catch |err| switch (err) {
+        error.WouldBlock => return .pending,
+        else => return err,
+    };
+    if (read_bytes == 0) {
+        self.shutdownPeer();
+        return .close;
+    }
+
+    const result = self.processHttpRequest() catch return .close;
+    return switch (result) {
+        .more => .pending,
+        .upgraded => .upgraded,
+        .close => .close,
+    };
+}
+
+test "CDP handshake timeout remains bounded" {
+    try std.testing.expectEqual(@as(?i32, 10), handshakePollTimeout(10, 0));
+    try std.testing.expectEqual(@as(?i32, 4), handshakePollTimeout(10, 6));
+    try std.testing.expectEqual(@as(?i32, null), handshakePollTimeout(10, 10));
+    try std.testing.expectEqual(@as(?i32, std.math.maxInt(i32)), handshakePollTimeout(std.math.maxInt(u32), 0));
 }
 
 pub fn read(self: *WsConnection) !usize {

@@ -55,6 +55,15 @@ ws: WsConnection,
 
 // The active browser
 browser: Browser,
+// Transport and WebSocket upgrade can complete without creating a V8 isolate.
+// Keep this explicit because Server accepts sockets before it knows whether
+// they are real CDP clients; deinit must also handle a transport-only worker.
+browser_initialized: bool = false,
+
+// Set by the server when transport admission begins. Keeping the deadline on
+// the connection lets a coordinator rebuild its poll set without resetting a
+// slow client's original handshake budget.
+handshake_deadline_ns: i128 = 0,
 
 // when true, any target creation must be attached.
 target_auto_attach: bool = false,
@@ -93,6 +102,20 @@ pub fn init(
     socket: posix.socket_t,
     json_version_response: []const u8,
 ) !void {
+    try self.initTransport(app, socket, json_version_response);
+    errdefer self.ws.deinit();
+    try self.initBrowser();
+}
+
+/// Initialize only the socket/WebSocket transport. Server uses this before
+/// handshake so unauthenticated or stalled sockets do not allocate V8, curl,
+/// BrowserContext arenas, or inspector state.
+pub fn initTransport(
+    self: *CDP,
+    app: *App,
+    socket: posix.socket_t,
+    json_version_response: []const u8,
+) !void {
     const allocator = app.allocator;
 
     self.* = .{
@@ -101,6 +124,7 @@ pub fn init(
         .browser = undefined,
         .allocator = allocator,
         .browser_context = null,
+        .browser_initialized = false,
         .worker_rss_baseline_bytes = processRssHighWaterBytes(),
         .frame_arena = std.heap.ArenaAllocator.init(allocator),
         .message_arena = std.heap.ArenaAllocator.init(allocator),
@@ -108,16 +132,28 @@ pub fn init(
         .browser_context_arena = std.heap.ArenaAllocator.init(allocator),
     };
 
+    errdefer {
+        self.frame_arena.deinit();
+        self.message_arena.deinit();
+        self.notification_arena.deinit();
+        self.browser_context_arena.deinit();
+    }
     try self.ws.init(socket, self.app.allocator, json_version_response);
-    errdefer self.ws.deinit();
+}
 
-    try self.browser.init(app, .{ .env = .{ .with_inspector = true } }, .{
+pub fn initBrowser(self: *CDP) !void {
+    if (self.browser_initialized) return;
+    try self.browser.init(self.app, .{ .env = .{
+        .with_inspector = true,
+        .native_stack_bytes = self.app.config.cdpThreadStackBytes(),
+    } }, .{
         .ctx = self,
-        .socket = socket,
+        .socket = self.ws.socket,
         .blocking_read_start = CDP.blockingReadStart,
         .blocking_read = CDP.blockingRead,
         .blocking_read_end = CDP.blockingReadStop,
     });
+    self.browser_initialized = true;
 }
 
 fn persistSessionState(session: *Session, config: *const @import("../../runtime/Config.zig")) void {
@@ -133,7 +169,10 @@ pub fn deinit(self: *CDP) void {
         persistSessionState(bc.session, self.app.config);
         bc.deinit();
     }
-    self.browser.deinit();
+    if (self.browser_initialized) {
+        self.browser.deinit();
+        self.browser_initialized = false;
+    }
     self.frame_arena.deinit();
     self.message_arena.deinit();
     self.notification_arena.deinit();
@@ -515,17 +554,21 @@ fn workerRecycleNeeded(self: *const CDP) bool {
 fn recycleWorker(self: *CDP) !void {
     if (self.browser_context != null) return error.BrowserContextActive;
 
-    log.info(.app, "recycling CDP worker heap", .{
+    // BrowserContext.deinit has already closed the Session and the deferred
+    // disposal predicate guarantees no page/transport callback still aliases
+    // its state. Reclaiming only through V8 memory-pressure notifications is
+    // insufficient for long sequences of heavy sites: V8 keeps reservations
+    // and allocator arenas attached to the isolate. Recreate Browser/Env at
+    // this safe boundary while keeping the CDP transport and client alive.
+    log.info(.app, "recycling CDP worker isolate", .{
         .pages = self.worker_pages,
         .rss_high_water = processRssHighWaterBytes(),
     });
-
-    // BrowserContext.deinit has already closed the Session and the deferred
-    // disposal predicate guarantees no page/transport callback still aliases
-    // its state. Now it is safe to force V8 to reclaim detached contexts and
-    // backing stores without tearing down the isolate itself.
-    self.browser.env.memoryPressureNotification(.critical);
-    self.browser.env.lowMemoryNotification();
+    if (self.browser_initialized) {
+        self.browser.deinit();
+        self.browser_initialized = false;
+    }
+    try self.initBrowser();
 
     _ = self.frame_arena.reset(.{ .retain_with_limit = 1024 * 512 });
     _ = self.notification_arena.reset(.{ .retain_with_limit = 1024 * 64 });

@@ -1,24 +1,28 @@
 import { spawnSync } from "node:child_process";
 
 function readProcessTable() {
-  const result = spawnSync("ps", ["-axo", "pid=,ppid=,rss=,pcpu=,cputime=,comm="], {
+  const psArgs = process.platform === "linux"
+    ? ["-eo", "pid=,ppid=,rss=,vsz=,pcpu=,cputime=,comm="]
+    : ["-axo", "pid=,ppid=,rss=,vsz=,pcpu=,cputime=,comm="];
+  const result = spawnSync("ps", psArgs, {
     encoding: "utf8",
     maxBuffer: 8 * 1024 * 1024,
   });
-  if (result.status !== 0) {
-    throw new Error(`ps failed: ${result.stderr || `exit ${result.status}`}`);
+  if (result.error || result.status !== 0) {
+    throw new Error(`ps failed: ${result.error?.message ?? (result.stderr || `exit ${result.status}`)}`);
   }
   return result.stdout.split("\n").flatMap((line) => {
-    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s+(\S+)\s+(.+)$/);
+    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s+(\S+)\s+(.+)$/);
     if (!match) return [];
-    const cpuTimeSeconds = parseCpuTime(match[5]);
+    const cpuTimeSeconds = parseCpuTime(match[6]);
     return [{
       pid: Number(match[1]),
       ppid: Number(match[2]),
       rssKiB: Number(match[3]),
-      cpuPercent: Number(match[4]),
+      virtualMemoryKiB: Number(match[4]),
+      cpuPercent: Number(match[5]),
       cpuTimeSeconds,
-      command: match[6],
+      command: match[7],
     }];
   });
 }
@@ -69,6 +73,7 @@ export function processTreeSnapshot(rootPid) {
     processCount: processes.length,
     threadCount: readThreadCount(rootPid),
     rssBytes: processes.reduce((sum, row) => sum + row.rssKiB * 1024, 0),
+    virtualMemoryBytes: processes.reduce((sum, row) => sum + row.virtualMemoryKiB * 1024, 0),
     cpuPercent: processes.reduce((sum, row) => sum + row.cpuPercent, 0),
     cpuTimeSeconds: processes.every((row) => row.cpuTimeSeconds != null)
       ? processes.reduce((sum, row) => sum + row.cpuTimeSeconds, 0)
@@ -105,6 +110,9 @@ export async function sampleProcessTree(rootPid, { samples = 5, intervalMs = 100
     rssBytes: snapshots.at(-1).rssBytes,
     peakRssBytes: Math.max(...snapshots.map((sample) => sample.rssBytes)),
     averageRssBytes: snapshots.reduce((sum, sample) => sum + sample.rssBytes, 0) / snapshots.length,
+    virtualMemoryBytes: snapshots.at(-1).virtualMemoryBytes,
+    peakVirtualMemoryBytes: Math.max(...snapshots.map((sample) => sample.virtualMemoryBytes)),
+    averageVirtualMemoryBytes: snapshots.reduce((sum, sample) => sum + sample.virtualMemoryBytes, 0) / snapshots.length,
     processCount: Math.max(...snapshots.map((sample) => sample.processCount)),
     threadCount: Math.max(...snapshots.map((sample) => sample.threadCount ?? 0)) || null,
     // Prefer interval CPU. `pcpu` is retained as a fallback for platforms

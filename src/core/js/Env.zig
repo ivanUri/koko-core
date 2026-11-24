@@ -145,7 +145,56 @@ macrotask_run_depth: u8 = 0,
 
 pub const InitOpts = struct {
     with_inspector: bool = false,
+    // When an isolate is created on a bounded worker stack, V8's stack limit
+    // must stay inside that native stack. One-shot/main-thread callers leave
+    // this unset and retain the historical stack budget.
+    native_stack_bytes: ?usize = null,
 };
+
+const StackBudget = struct {
+    js_bytes: usize,
+    native_reserve_bytes: usize,
+};
+
+fn stackBudget(native_stack_bytes: ?usize) StackBudget {
+    const default_js_bytes: usize = 16 * 1024 * 1024;
+    const default_native_reserve_bytes: usize = 1024 * 1024;
+    const minimum_stack_bytes: usize = 1024 * 1024;
+    const stack_entry_margin_bytes: usize = 512 * 1024;
+
+    const available = native_stack_bytes orelse return .{
+        .js_bytes = default_js_bytes,
+        .native_reserve_bytes = default_native_reserve_bytes,
+    };
+    const stack_bytes = @max(available, minimum_stack_bytes);
+    const native_reserve_bytes = @min(
+        default_native_reserve_bytes,
+        @max(stack_bytes / 4, minimum_stack_bytes / 2),
+    );
+    const js_bytes = if (stack_bytes > native_reserve_bytes + stack_entry_margin_bytes)
+        stack_bytes - native_reserve_bytes - stack_entry_margin_bytes
+    else
+        0;
+    return .{
+        .js_bytes = js_bytes,
+        .native_reserve_bytes = native_reserve_bytes,
+    };
+}
+
+test "bounded V8 stack budget stays inside the worker stack" {
+    const default_budget = stackBudget(null);
+    try std.testing.expectEqual(@as(usize, 16 * 1024 * 1024), default_budget.js_bytes);
+    try std.testing.expectEqual(@as(usize, 1024 * 1024), default_budget.native_reserve_bytes);
+
+    const worker_budget = stackBudget(4 * 1024 * 1024);
+    try std.testing.expectEqual(@as(usize, 2 * 1024 * 1024 + 512 * 1024), worker_budget.js_bytes);
+    try std.testing.expectEqual(@as(usize, 1024 * 1024), worker_budget.native_reserve_bytes);
+    try std.testing.expect(worker_budget.js_bytes + worker_budget.native_reserve_bytes + 512 * 1024 <= 4 * 1024 * 1024);
+
+    const minimum_budget = stackBudget(0);
+    try std.testing.expectEqual(@as(usize, 0), minimum_budget.js_bytes);
+    try std.testing.expectEqual(@as(usize, 512 * 1024), minimum_budget.native_reserve_bytes);
+}
 
 pub fn init(app: *App, opts: InitOpts) !Env {
     if (comptime IS_DEBUG) {
@@ -172,15 +221,16 @@ pub fn init(app: *App, opts: InitOpts) !Env {
 
     params.external_references = &snapshot.external_references;
 
-    // Tell V8 where the stack ends (grows down). Default JS stack is small and
-    // Next/React deep recursion V8_Fatal's before RangeError. Leave ~1MB for
-    // native frames; give JS ~16MB so uncaught stack overflow becomes exception.
+    // Tell V8 where the stack ends (grows down). The bounded CDP worker budget
+    // is derived from the actual native stack reservation; main-thread callers
+    // retain the larger historical JS budget. Keep the limit away from the
+    // native entry frames and guard page so deep recursion becomes RangeError,
+    // not a native stack fault.
     // stack_limit_ is *u32 — must be 4-byte aligned (ReleaseSafe alignment check).
     var stack_marker: u32 align(16) = 0;
     const sp = @intFromPtr(&stack_marker);
-    const native_reserve: usize = 1024 * 1024;
-    const js_stack: usize = 16 * 1024 * 1024;
-    const limit_addr = (sp -% (js_stack + native_reserve)) & ~@as(usize, @alignOf(u32) - 1);
+    const stack_budget = stackBudget(opts.native_stack_bytes);
+    const limit_addr = (sp -% (stack_budget.js_bytes + stack_budget.native_reserve_bytes)) & ~@as(usize, @alignOf(u32) - 1);
     params.constraints.stack_limit_ = @ptrFromInt(limit_addr);
 
     var isolate = js.Isolate.init(params);

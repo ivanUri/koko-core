@@ -18,6 +18,13 @@ function largeHtml() {
   return `<!doctype html><html><head><meta charset="utf-8"><title>Koko large fixture</title></head><body><main id="fixture" data-checksum="large-v1">${rows}</main></body></html>`;
 }
 
+function heavyHtml() {
+  const rows = Array.from({ length: 12_000 }, (_, index) => (
+    `<article data-index="${index}" data-bucket="${index % 32}"><h2>Heavy row ${index}</h2><p>${(index * 2246822519) >>> 0} deterministic payload for DOM and selector pressure</p></article>`
+  )).join("");
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Koko heavy fixture</title></head><body><main id="fixture" data-checksum="heavy-v1">${rows}</main></body></html>`;
+}
+
 function resourceBurstHtml(origin) {
   const script = Array.from({ length: 24 }, (_, index) =>
     `window.__kokoResourceCount = (window.__kokoResourceCount || 0) + 1; fetch(${JSON.stringify(`${origin}/resource/${index}`)}).catch(() => {});`
@@ -47,6 +54,7 @@ export async function startFixtureServer(host = "127.0.0.1") {
     "/small.html": await readFile(join(fixtureDirectory, "small.html"), "utf8"),
     "/medium.html": (await readFile(join(fixtureDirectory, "medium.html"), "utf8")).replace("{{ROWS}}", mediumRows()),
     "/dynamic.html": await readFile(join(fixtureDirectory, "dynamic.html"), "utf8"),
+    "/heavy.html": heavyHtml(),
   };
   const large = largeHtml();
   const origin = `http://${host}`;

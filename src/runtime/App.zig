@@ -28,8 +28,24 @@ pub const ArenaPool = @import("ArenaPool.zig");
 
 const log = @import("../support/log.zig");
 const Allocator = std.mem.Allocator;
+const nanoTimestamp = @import("../support/datetime.zig").nanoTimestamp;
 
 const App = @This();
+
+/// Process-local startup breakdown. These timings are intentionally passive:
+/// they are captured during initialization but never participate in runtime
+/// scheduling. Adapters and benchmark harnesses can use them to separate
+/// process/App startup from Browser/V8/session costs.
+pub const StartupMetrics = struct {
+    total_us: u64 = 0,
+    platform_us: u64 = 0,
+    snapshot_us: u64 = 0,
+    storage_us: u64 = 0,
+    network_us: u64 = 0,
+    app_dir_us: u64 = 0,
+    telemetry_us: u64 = 0,
+    arena_pool_us: u64 = 0,
+};
 
 network: Network,
 config: *const Config,
@@ -41,16 +57,25 @@ allocator: Allocator,
 arena_pool: ArenaPool,
 metrics: ScaleMetrics,
 app_dir_path: ?[]const u8,
+startup: StartupMetrics,
 
 pub fn init(allocator: Allocator, config: *const Config) !*App {
+    const started_ns = nanoTimestamp(.monotonic);
+
+    const platform_started_ns = nanoTimestamp(.monotonic);
     const platform = try Platform.init();
     errdefer platform.deinit();
+    const platform_us = elapsedUs(platform_started_ns);
 
+    const snapshot_started_ns = nanoTimestamp(.monotonic);
     const snapshot = try Snapshot.load();
     errdefer snapshot.deinit();
+    const snapshot_us = elapsedUs(snapshot_started_ns);
 
+    const storage_started_ns = nanoTimestamp(.monotonic);
     var storage = try Storage.init(allocator, config);
     errdefer storage.deinit(allocator);
+    const storage_us = elapsedUs(storage_started_ns);
 
     const app = try allocator.create(App);
     errdefer allocator.destroy(app);
@@ -66,21 +91,46 @@ pub fn init(allocator: Allocator, config: *const Config) !*App {
         .telemetry = undefined,
         .arena_pool = undefined,
         .metrics = .{},
+        .startup = .{},
     };
+
+    const network_started_ns = nanoTimestamp(.monotonic);
     app.network = try Network.init(allocator, app, config);
     app.network.metrics = &app.metrics;
     errdefer app.network.deinit();
+    const network_us = elapsedUs(network_started_ns);
 
+    const app_dir_started_ns = nanoTimestamp(.monotonic);
     app.app_dir_path = getAndMakeAppDir(allocator);
+    const app_dir_us = elapsedUs(app_dir_started_ns);
 
+    const telemetry_started_ns = nanoTimestamp(.monotonic);
     app.telemetry = try Telemetry.init(app, config.mode);
     errdefer app.telemetry.deinit(allocator);
+    const telemetry_us = elapsedUs(telemetry_started_ns);
 
+    const arena_pool_started_ns = nanoTimestamp(.monotonic);
     app.arena_pool = ArenaPool.init(allocator, .{});
     app.arena_pool.metrics = &app.metrics;
     errdefer app.arena_pool.deinit();
+    const arena_pool_us = elapsedUs(arena_pool_started_ns);
+
+    app.startup = .{
+        .total_us = elapsedUs(started_ns),
+        .platform_us = platform_us,
+        .snapshot_us = snapshot_us,
+        .storage_us = storage_us,
+        .network_us = network_us,
+        .app_dir_us = app_dir_us,
+        .telemetry_us = telemetry_us,
+        .arena_pool_us = arena_pool_us,
+    };
 
     return app;
+}
+
+pub fn startupMetrics(self: *const App) StartupMetrics {
+    return self.startup;
 }
 
 pub fn shutdown(self: *const App) bool {
@@ -138,4 +188,10 @@ fn getAndMakeAppDir(allocator: Allocator) ?[]const u8 {
         },
     };
     return app_dir_path;
+}
+
+fn elapsedUs(started_ns: i128) u64 {
+    const elapsed = nanoTimestamp(.monotonic) - started_ns;
+    if (elapsed <= 0) return 0;
+    return @intCast(@divTrunc(elapsed, std.time.ns_per_us));
 }

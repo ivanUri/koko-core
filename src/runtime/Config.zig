@@ -48,6 +48,10 @@ pub const CDP_KEEPALIVE_CNT: c_int = 3;
 // the gap where keepalive probes do not fire while a send buffer is full of
 // unacked data (LP improve-dead-peer-detection).
 pub const CDP_TCP_USER_TIMEOUT_MS: c_int = 10_000;
+// Bound the pre-WebSocket phase so a client that opens a TCP connection but
+// never sends an HTTP upgrade cannot occupy a CDP worker indefinitely.
+pub const CDP_HANDSHAKE_TIMEOUT_MS: u32 = 10_000;
+pub const CDP_MIN_THREAD_STACK_MB: u32 = 4;
 
 const Config = @This();
 
@@ -224,6 +228,10 @@ const Commands = cli.Builder(.{
             .{ .name = "timeout", .type = ?u31 },
             .{ .name = "cdp_max_connections", .type = u16, .default = 16 },
             .{ .name = "cdp_max_pending_connections", .type = u16, .default = 128 },
+            // Each CDP connection owns one blocking protocol worker today.
+            // Keep its native stack bounded so high-density sessions do not
+            // reserve Zig's 16 MiB default stack per connection.
+            .{ .name = "cdp_thread_stack_mb", .type = u32, .default = 4 },
             // Reclaim a CDP worker's V8 heap before long-lived sessions can
             // retain an unbounded site heap.
             .{ .name = "worker_max_pages", .type = u32, .default = 1 },
@@ -539,6 +547,18 @@ test "CDP worker recycle defaults are bounded and configurable" {
     try std.testing.expectEqual(@as(u64, 0), config.workerMaxRssBytes());
 }
 
+test "CDP thread stack defaults are bounded and configurable" {
+    var config: Config = undefined;
+    config.mode = .{ .serve = .{} };
+    try std.testing.expectEqual(@as(usize, 4 * 1024 * 1024), config.cdpThreadStackBytes());
+
+    config.mode.serve.cdp_thread_stack_mb = 8;
+    try std.testing.expectEqual(@as(usize, 8 * 1024 * 1024), config.cdpThreadStackBytes());
+
+    config.mode.serve.cdp_thread_stack_mb = 0;
+    try std.testing.expectEqual(@as(usize, 4 * 1024 * 1024), config.cdpThreadStackBytes());
+}
+
 pub fn httpMaxRedirects(_: *const Config) u8 {
     return 20;
 }
@@ -849,6 +869,15 @@ pub fn maxPendingConnections(self: *const Config) u31 {
         .mcp => 128,
         else => unreachable,
     };
+}
+
+pub fn cdpThreadStackBytes(self: *const Config) usize {
+    const megabytes = switch (self.mode) {
+        .serve => |opts| opts.cdp_thread_stack_mb,
+        .mcp => 4,
+        else => unreachable,
+    };
+    return @as(usize, @max(megabytes, CDP_MIN_THREAD_STACK_MB)) * 1024 * 1024;
 }
 
 pub fn workerMaxPages(self: *const Config) u32 {
@@ -1296,8 +1325,12 @@ pub fn printUsageAndExit(self: *const Config, success: bool) void {
         \\                Defaults to 16.
         \\
         \\--cdp-max-pending-connections
-        \\                Maximum pending connections in the accept queue.
-        \\                Defaults to 128.
+        \\                Maximum sockets allowed to wait for the WebSocket
+        \\                upgrade before being rejected. Defaults to 128.
+        \\
+        \\--cdp-thread-stack-mb
+        \\                Native stack reservation per CDP worker. Minimum 4 MiB.
+        \\                Defaults to 4.
         \\
         \\--worker-max-pages
         \\                Recycle a CDP worker after this many browser contexts.
