@@ -699,7 +699,8 @@ pub fn getStyleSheets(self: *Document, frame: *Frame) !*StyleSheetList {
     if (self._style_sheets) |sheets| {
         return sheets;
     }
-    const sheets = try StyleSheetList.init(frame);
+    const owner_frame = self._frame orelse frame;
+    const sheets = try StyleSheetList.init(owner_frame);
     self._style_sheets = sheets;
     return sheets;
 }
@@ -719,17 +720,18 @@ pub fn adoptNode(self: *const Document, node: *Node, frame: *Frame) !*Node {
         return error.NotSupported;
     }
 
-    const old_owner = node.ownerDocument(frame);
+    const owner_frame = self._frame orelse frame;
+    const old_owner = node.ownerDocument(owner_frame);
     if (node._parent) |parent| {
-        frame.removeNode(parent, node, .{ .will_be_reconnected = false });
+        parent.ownerFrame(owner_frame).removeNode(parent, node, .{ .will_be_reconnected = false });
     }
 
     if (old_owner) |old| {
         if (old != self) {
-            try frame.adoptNodeTree(node, old, @constCast(self));
+            try owner_frame.adoptNodeTree(node, old, @constCast(self));
         }
     } else {
-        try frame.setNodeOwnerDocument(node, @constCast(self));
+        try owner_frame.setNodeOwnerDocument(node, @constCast(self));
     }
 
     return node;
@@ -746,39 +748,42 @@ pub fn importNode(_: *const Document, node: *Node, deep_: ?bool, frame: *Frame) 
 pub fn append(self: *Document, nodes: []const Node.NodeOrText, frame: *Frame) !void {
     try validateDocumentNodes(self, nodes, false);
 
-    frame.domChanged();
+    const owner_frame = self._frame orelse frame;
+    owner_frame.domChangedForNode(self.asNode());
     const parent = self.asNode();
     const parent_is_connected = parent.isConnected();
 
     for (nodes) |node_or_text| {
-        const child = try node_or_text.toNode(frame);
+        const child = try node_or_text.toNode(owner_frame);
 
         // DocumentFragments are special - append all their children
         if (child.is(Node.DocumentFragment)) |_| {
-            try frame.appendAllChildren(child, parent);
+            try owner_frame.appendAllChildren(child, parent);
             continue;
         }
 
         var child_connected = false;
         if (child._parent) |previous_parent| {
             child_connected = child.isConnected();
-            frame.removeNode(previous_parent, child, .{ .will_be_reconnected = parent_is_connected });
+            const source_frame = previous_parent.ownerFrame(owner_frame);
+            source_frame.removeNode(previous_parent, child, .{ .will_be_reconnected = parent_is_connected });
         }
-        try frame.appendNode(parent, child, .{ .child_already_connected = child_connected });
+        try owner_frame.appendNode(parent, child, .{ .child_already_connected = child_connected });
     }
 }
 
 pub fn prepend(self: *Document, nodes: []const Node.NodeOrText, frame: *Frame) !void {
     try validateDocumentNodes(self, nodes, false);
 
-    frame.domChanged();
+    const owner_frame = self._frame orelse frame;
+    owner_frame.domChangedForNode(self.asNode());
     const parent = self.asNode();
     const parent_is_connected = parent.isConnected();
 
     var i = nodes.len;
     while (i > 0) {
         i -= 1;
-        const child = try nodes[i].toNode(frame);
+        const child = try nodes[i].toNode(owner_frame);
 
         // DocumentFragments are special - need to insert all their children
         if (child.is(Node.DocumentFragment)) |frag| {
@@ -786,11 +791,11 @@ pub fn prepend(self: *Document, nodes: []const Node.NodeOrText, frame: *Frame) !
             var frag_child = frag.asNode().lastChild();
             while (frag_child) |fc| {
                 const prev = fc.previousSibling();
-                frame.removeNode(frag.asNode(), fc, .{ .will_be_reconnected = parent_is_connected });
+                owner_frame.removeNode(frag.asNode(), fc, .{ .will_be_reconnected = parent_is_connected });
                 if (first_child) |before| {
-                    try frame.insertNodeRelative(parent, fc, .{ .before = before }, .{});
+                    try owner_frame.insertNodeRelative(parent, fc, .{ .before = before }, .{});
                 } else {
-                    try frame.appendNode(parent, fc, .{});
+                    try owner_frame.appendNode(parent, fc, .{});
                 }
                 frag_child = prev;
             }
@@ -800,14 +805,15 @@ pub fn prepend(self: *Document, nodes: []const Node.NodeOrText, frame: *Frame) !
         var child_connected = false;
         if (child._parent) |previous_parent| {
             child_connected = child.isConnected();
-            frame.removeNode(previous_parent, child, .{ .will_be_reconnected = parent_is_connected });
+            const source_frame = previous_parent.ownerFrame(owner_frame);
+            source_frame.removeNode(previous_parent, child, .{ .will_be_reconnected = parent_is_connected });
         }
 
         const first_child = parent.firstChild();
         if (first_child) |before| {
-            try frame.insertNodeRelative(parent, child, .{ .before = before }, .{ .child_already_connected = child_connected });
+            try owner_frame.insertNodeRelative(parent, child, .{ .before = before }, .{ .child_already_connected = child_connected });
         } else {
-            try frame.appendNode(parent, child, .{ .child_already_connected = child_connected });
+            try owner_frame.appendNode(parent, child, .{ .child_already_connected = child_connected });
         }
     }
 }
@@ -1182,7 +1188,8 @@ pub fn getAdoptedStyleSheets(self: *Document, frame: *Frame) !js.Object.Global {
     if (self._adopted_style_sheets) |ass| {
         return ass;
     }
-    const js_arr = frame.js.local.?.newArray(0);
+    const owner_frame = self._frame orelse frame;
+    const js_arr = owner_frame.js.local.?.newArray(0);
     const js_obj = js_arr.toObject();
     self._adopted_style_sheets = try js_obj.persist();
     return self._adopted_style_sheets.?;
@@ -1195,6 +1202,7 @@ pub fn hasFocus(_: *Document) bool {
 
 pub fn setAdoptedStyleSheets(self: *Document, sheets: js.Object) !void {
     self._adopted_style_sheets = try sheets.persist();
+    if (self._frame) |frame| frame.adoptedStyleSheetsChanged();
 }
 
 // Validates that nodes can be inserted into a Document, respecting Document constraints:

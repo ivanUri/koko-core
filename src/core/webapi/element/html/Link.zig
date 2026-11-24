@@ -56,7 +56,7 @@ pub fn setHref(self: *Link, value: []const u8, frame: *Frame) !void {
     try element.setAttributeSafe(comptime .wrap("href"), .wrap(value), frame);
 
     if (element.asNode().isConnected()) {
-        try self.linkAddedCallback(frame);
+        try self.linkAddedCallback(element.asNode().ownerFrame(frame));
     }
 }
 
@@ -67,7 +67,7 @@ pub fn getRel(self: *Link) []const u8 {
 pub fn setRel(self: *Link, value: []const u8, frame: *Frame) !void {
     try self.asElement().setAttributeSafe(comptime .wrap("rel"), .wrap(value), frame);
     if (self.asElement().asNode().isConnected()) {
-        try self.linkAddedCallback(frame);
+        try self.linkAddedCallback(self.asNode().ownerFrame(frame));
     }
 }
 
@@ -92,8 +92,9 @@ pub fn setCrossOrigin(self: *Link, value: []const u8, frame: *Frame) !void {
 }
 
 pub fn linkAddedCallback(self: *Link, frame: *Frame) !void {
+    const owner_frame = self.asNode().ownerFrame(frame);
     // if we're planning on navigating to another frame, don't trigger load event.
-    if (frame.isGoingAway()) {
+    if (owner_frame.isGoingAway()) {
         return;
     }
 
@@ -104,9 +105,9 @@ pub fn linkAddedCallback(self: *Link, frame: *Frame) !void {
     if (std.mem.eql(u8, rel, "modulepreload")) {
         const href = element.getAttributeSafe(comptime .wrap("href")) orelse return;
         if (href.len == 0) return;
-        const resolved = try self.asNode().resolveURL(href, frame, .{});
+        const resolved = try self.asNode().resolveURL(href, owner_frame, .{});
         const resolved_z: [:0]const u8 = resolved.ptr[0..resolved.len :0];
-        try frame._script_manager.base.preloadImport(resolved_z, frame.base());
+        try owner_frame._script_manager.base.preloadImport(resolved_z, owner_frame.base());
         return;
     }
 
@@ -122,18 +123,18 @@ pub fn linkAddedCallback(self: *Link, frame: *Frame) !void {
     }
 
     if (is_preload and std.ascii.eqlIgnoreCase(self.getAs(), "image")) {
-        if (!frame.shouldLoadImages() or frame.shouldDeferImages()) return;
-        try self.fetchPreloadImage(frame, href);
+        if (!owner_frame.shouldLoadImages() or owner_frame.shouldDeferImages()) return;
+        try self.fetchPreloadImage(owner_frame, href);
         return;
     }
 
     if (is_stylesheet) {
-        if (!frame.shouldLoadExternalStylesheets()) return;
-        try self.fetchStylesheet(frame, href);
+        if (!owner_frame.shouldLoadExternalStylesheets()) return;
+        try self.fetchStylesheet(owner_frame, href);
         return;
     }
 
-    try frame.queueLoad(self._proto);
+    try owner_frame.queueLoad(self._proto);
 }
 
 fn fetchStylesheet(self: *Link, frame: *Frame, href: []const u8) !void {
@@ -278,6 +279,7 @@ const StylesheetLoad = struct {
             return;
         };
         self.link._sheet = sheet;
+        self.frame.styleSheetChanged(self.link.asNode());
         try self.frame.queueLoad(self.link._proto);
     }
 

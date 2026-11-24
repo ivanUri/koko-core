@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<script src="stylo_fixture.js"></script>
+<body><div id="stylo-target">lifecycle</div></body>
+<script>
+  styloFixture.install(() => {
+    const target = document.querySelector("#stylo-target");
+    const style = document.createElement("style");
+    if (!style || typeof style.remove !== "function") return styloFixture.unsupported("style element lifecycle methods are unavailable");
+    style.textContent = "#stylo-target { letter-spacing: 1px; }";
+    document.head.appendChild(style);
+    const beforeRemoval = styloFixture.readStyle(target, ["letter-spacing"]);
+    if (beforeRemoval.status) return beforeRemoval;
+    style.remove();
+    const afterRemoval = styloFixture.readStyle(target, ["letter-spacing"]);
+    if (afterRemoval.status) return afterRemoval;
+    document.head.appendChild(style);
+    style.textContent = "#stylo-target { letter-spacing: 2px; }";
+    const afterReinsert = styloFixture.readStyle(target, ["letter-spacing"]);
+    if (afterReinsert.status) return afterReinsert;
+    return { status: "pass", observations: { beforeRemoval, afterRemoval, afterReinsert } };
+  });
+</script>

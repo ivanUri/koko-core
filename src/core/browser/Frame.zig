@@ -22,6 +22,7 @@ const Session = @import("Session.zig");
 const EventManager = @import("EventManager.zig");
 const ScriptManager = @import("ScriptManager.zig");
 const StyleManager = @import("StyleManager.zig");
+const StyleEngine = @import("StyleEngine.zig").StyleEngine;
 
 const Parser = @import("../parser/Parser.zig");
 const h5e = @import("../parser/html5ever.zig");
@@ -171,6 +172,28 @@ pub const InputHit = struct {
     client_y: f64,
 };
 
+/// Optional bridge for a document-owned style engine.
+///
+/// The current renderer remains StyleManager-backed.  A Stylo bridge can
+/// register these callbacks without owning or mirroring the DOM: node pointers
+/// are only invalidation subjects and the Zig DOM remains authoritative.
+/// Callbacks are deliberately synchronous and single-threaded.  A missing
+/// bridge is a supported configuration and must not change DOM behavior.
+pub const StyleEngineInvalidation = enum {
+    document,
+    tree,
+    attribute,
+    stylesheet,
+    adopted_stylesheet,
+};
+
+pub const StyleEngineHooks = struct {
+    context: *anyopaque,
+    document_attached: *const fn (*anyopaque, *Document, u64) void,
+    document_detached: *const fn (*anyopaque, *Document, u64) void,
+    invalidate: *const fn (*anyopaque, *Document, ?*Node, StyleEngineInvalidation, u64) void,
+};
+
 // This is the "id" of the frame. It can be re-used from frame-to-frame, e.g.
 // when navigating.
 _frame_id: u32,
@@ -315,6 +338,15 @@ _cdp_poll_counter: u16 = 0,
 _parser_text_cap: std.AutoHashMapUnmanaged(*CData, usize) = .empty,
 
 _style_manager: StyleManager,
+/// Per-frame Stylo owner. The bridge may be unavailable during staged rollout;
+/// the object still owns the generation/lifetime boundary for CSS invalidation.
+_style_engine: StyleEngine,
+/// Optional Stylo-compatible lifecycle boundary.  StyleManager remains the
+/// active fallback when this is null.
+_style_engine_hooks: ?StyleEngineHooks = null,
+_style_engine_document: ?*Document = null,
+_style_engine_generation: u64 = 0,
+_style_engine_active: bool = false,
 _script_manager: ScriptManager,
 
 // List of active live ranges (for mutation updates per DOM spec)
@@ -537,6 +569,7 @@ pub fn init(self: *Frame, frame_id: u32, page: *Page, parent: ?*Frame) !void {
         ._pending_loads = 1, // always 1 for the ScriptManager
         ._type = if (parent == null) .root else .frame,
         ._style_manager = undefined,
+        ._style_engine = undefined,
         ._script_manager = undefined,
         ._event_manager = EventManager.init(arena, self),
     };
@@ -590,6 +623,9 @@ pub fn init(self: *Frame, frame_id: u32, page: *Page, parent: ?*Frame) !void {
     self._style_manager = try StyleManager.init(self);
     errdefer self._style_manager.deinit();
 
+    self._style_engine = StyleEngine.init(.{ .frame_id = frame_id });
+    errdefer self._style_engine.deinit();
+
     const browser = session.browser;
     self._script_manager = ScriptManager.init(browser.allocator, &browser.http_client, self);
     errdefer self._script_manager.deinit();
@@ -604,6 +640,7 @@ pub fn init(self: *Frame, frame_id: u32, page: *Page, parent: ?*Frame) !void {
 
     document._frame = self;
     self._realm_state = .active;
+    self.beginStyleDocumentLifecycle(document);
 
     if (comptime builtin.is_test == false) {
         if (parent == null) {
@@ -617,6 +654,90 @@ pub fn init(self: *Frame, frame_id: u32, page: *Page, parent: ?*Frame) !void {
             }.runIdleTasks, 200, .{ .name = "frame.runIdleTasks", .low_priority = true });
         }
     }
+}
+
+/// Install or replace the optional style-engine bridge.  Replacing a bridge
+/// closes the old document session before publishing the new one, so a bridge
+/// can never retain a stale document generation.
+pub fn setStyleEngineHooks(self: *Frame, hooks: ?StyleEngineHooks) void {
+    if (self._style_engine_active) {
+        self.endStyleDocumentLifecycle();
+    }
+    self._style_engine_hooks = hooks;
+    if (self._realm_state == .active and self.document._frame == self) {
+        self.beginStyleDocumentLifecycle(self.document);
+    }
+}
+
+fn beginStyleDocumentLifecycle(self: *Frame, document: *Document) void {
+    if (self._style_engine_active and self._style_engine_document == document) return;
+    if (self._style_engine_active) self.endStyleDocumentLifecycle();
+
+    self._style_engine_generation +%= 1;
+    self._style_engine_document = document;
+    self._style_engine_active = true;
+
+    // A Frame reuses its StyleManager across navigations.  Mark the new
+    // document dirty before any style read can observe rules from the old one.
+    self._style_manager.sheetModified();
+    _ = self._style_engine.invalidateStylesheets();
+    if (self._style_engine_hooks) |hooks| {
+        hooks.document_attached(hooks.context, document, self._style_engine_generation);
+    }
+}
+
+fn endStyleDocumentLifecycle(self: *Frame) void {
+    const document = self._style_engine_document orelse {
+        self._style_engine_active = false;
+        return;
+    };
+    const generation = self._style_engine_generation;
+    if (self._style_engine_hooks) |hooks| {
+        hooks.document_detached(hooks.context, document, generation);
+    }
+    self._style_engine_document = null;
+    self._style_engine_active = false;
+    self._style_engine_generation +%= 1;
+}
+
+/// Notify the optional engine after the Zig DOM has changed.  The fallback
+/// StyleManager is intentionally kept separate so installing no hook preserves
+/// its existing cache and stylesheet semantics.
+pub fn invalidateStyleEngine(self: *Frame, kind: StyleEngineInvalidation, node: ?*Node) void {
+    if (!self._style_engine_active or self._realm_state != .active) return;
+    const document = self._style_engine_document orelse return;
+    if (document != self.document or document._frame != self) return;
+    switch (kind) {
+        .stylesheet, .adopted_stylesheet => {},
+        else => {
+            const engine_kind: StyleEngine.DomInvalidationKind = switch (kind) {
+                .document => .document,
+                .tree => .subtree,
+                .attribute => .attributes,
+                .stylesheet, .adopted_stylesheet => unreachable,
+            };
+            _ = self._style_engine.invalidateDom(if (node) |n| @intFromPtr(n) else 0, engine_kind);
+        },
+    }
+    if (self._style_engine_hooks) |hooks| {
+        hooks.invalidate(hooks.context, document, node, kind, self._style_engine_generation);
+    }
+}
+
+pub fn styleSheetChanged(self: *Frame, node: ?*Node) void {
+    self._style_manager.sheetModified();
+    _ = self._style_engine.invalidateStylesheets();
+    self.invalidateStyleEngine(.stylesheet, node);
+}
+
+pub fn adoptedStyleSheetsChanged(self: *Frame) void {
+    self._style_manager.sheetModified();
+    _ = self._style_engine.invalidateStylesheets();
+    self.invalidateStyleEngine(.adopted_stylesheet, null);
+}
+
+pub fn styleEngine(self: *Frame) *StyleEngine {
+    return &self._style_engine;
 }
 
 pub fn realmEpoch(self: *const Frame) RealmLifecycleKernel.Epoch {
@@ -859,6 +980,7 @@ fn enterRealmDraining(self: *Frame) void {
 /// - script manager rejects late HTTP script callbacks
 pub fn prepareForOutgoingAbort(self: *Frame) void {
     self.enterRealmDraining();
+    self.endStyleDocumentLifecycle();
     // Break Document → Frame before further teardown so retained JS Document
     // objects cannot open/write into this departing context.
     self.document._frame = null;
@@ -982,6 +1104,8 @@ pub fn deinit(self: *Frame) void {
     // scheduler queue); it must observe `.draining` before it can attempt any
     // further entry into this frame's V8 context.
     self.enterRealmDraining();
+    self.endStyleDocumentLifecycle();
+    self._style_engine.deinit();
 
     // Detach IntersectionObservers while their arena-backed objects are still
     // live. A deferred iframe teardown can run after V8 has finalized the JS
@@ -1784,10 +1908,12 @@ fn swapActiveDocument(self: *Frame) !void {
         ._proto = undefined,
     })).asDocument();
     const old_doc = self.document;
+    self.endStyleDocumentLifecycle();
     old_doc._frame = null;
     self.document = new_doc;
     self.window._document = new_doc;
     new_doc._frame = self;
+    self.beginStyleDocumentLifecycle(new_doc);
     self._head_activation_cursor = null;
     self._head_activation_blocker = null;
     self._head_activation_active = false;
@@ -4409,6 +4535,13 @@ pub fn invalidateElementLayoutCache(self: *Frame) void {
 }
 
 pub fn domChanged(self: *Frame) void {
+    self.domChangedForNode(null);
+}
+
+/// Invalidate derived DOM/style state after the authoritative Zig tree has
+/// changed.  `node` is optional for callers that only have a document-wide
+/// mutation; the optional engine never receives a second DOM representation.
+pub fn domChangedForNode(self: *Frame, node: ?*Node) void {
     // Bulk layout reads (offsetWidth chains) must not invalidate mid-resolve.
     if (self.layoutResolveActive()) return;
     self.version += 1;
@@ -4418,6 +4551,7 @@ pub fn domChanged(self: *Frame) void {
     self._layout_cache_dom_version = self.version;
     self._layout_visibility_cache_version = self.version;
     self._style_manager.invalidateLayoutPropertyCache();
+    self.invalidateStyleEngine(.tree, node);
 
     self.scheduleIntersectionChecks();
 }
@@ -5065,6 +5199,7 @@ pub fn nodeComplete(self: *Frame, node: *Node) !void {
 // Sets the owner document for a node. Only stores entries for nodes whose owner
 // is NOT frame.document to minimize memory overhead.
 pub fn setNodeOwnerDocument(self: *Frame, node: *Node, owner: *Document) !void {
+    node._owner_document = owner;
     if (owner == self.document) {
         // No need to store if it's the main document - remove if present
         _ = self._node_owner_documents.remove(node);
@@ -6213,6 +6348,9 @@ pub fn removeNode(self: *Frame, parent: *Node, child: *Node, opts: RemoveNodeOpt
         _ = self._element_assigned_slots.remove(el);
     }
 
+    if (parent.is(Element.Html.Style) != null) {
+        self.styleSheetChanged(parent);
+    }
     if (self.hasMutationObservers()) {
         const removed = [_]*Node{child};
         self.childListChange(parent, &.{}, &removed, previous_sibling, next_sibling);
@@ -6258,7 +6396,7 @@ pub fn removeNode(self: *Frame, parent: *Node, child: *Node, opts: RemoveNodeOpt
                 }
                 style._sheet = null;
             }
-            self._style_manager.sheetModified();
+            self.styleSheetChanged(style.asNode());
         }
     }
 }
@@ -6268,7 +6406,8 @@ pub fn appendNode(self: *Frame, parent: *Node, child: *Node, opts: InsertNodeOpt
 }
 
 pub fn appendAllChildren(self: *Frame, parent: *Node, target: *Node) !void {
-    self.domChanged();
+    self.domChangedForNode(target);
+    const source_frame = parent.ownerFrame(self);
     const dest_connected = target.isConnected();
     // Resolve target owner once; children from a different document need adoption.
     const target_owner = target.ownerDocument(self) orelse target.as(Document);
@@ -6283,7 +6422,8 @@ pub fn appendAllChildren(self: *Frame, parent: *Node, target: *Node) !void {
         const child_owner = child.ownerDocument(self);
         const child_was_connected = child.isConnected();
         const adopting = child_owner != null and child_owner.? != target_owner;
-        self.removeNode(parent, child, .{ .will_be_reconnected = dest_connected and !adopting });
+        if (source_frame != self) source_frame.domChangedForNode(parent);
+        source_frame.removeNode(parent, child, .{ .will_be_reconnected = dest_connected and !adopting });
         if (adopting) {
             try self.adoptNodeTree(child, child_owner.?, target_owner);
         }
@@ -6295,7 +6435,8 @@ pub fn appendAllChildren(self: *Frame, parent: *Node, target: *Node) !void {
 }
 
 pub fn insertAllChildrenBefore(self: *Frame, fragment: *Node, parent: *Node, ref_node: *Node) !void {
-    self.domChanged();
+    self.domChangedForNode(parent);
+    const source_frame = fragment.ownerFrame(self);
     const dest_connected = parent.isConnected();
     // Resolve parent owner once; fragment children from a different document need adoption.
     const parent_owner = parent.ownerDocument(self) orelse parent.as(Document);
@@ -6310,7 +6451,8 @@ pub fn insertAllChildrenBefore(self: *Frame, fragment: *Node, parent: *Node, ref
         const child_owner = child.ownerDocument(self);
         const child_was_connected = child.isConnected();
         const adopting = child_owner != null and child_owner.? != parent_owner;
-        self.removeNode(fragment, child, .{ .will_be_reconnected = dest_connected and !adopting });
+        if (source_frame != self) source_frame.domChangedForNode(fragment);
+        source_frame.removeNode(fragment, child, .{ .will_be_reconnected = dest_connected and !adopting });
         if (adopting) {
             try self.adoptNodeTree(child, child_owner.?, parent_owner);
         }
@@ -6428,6 +6570,9 @@ pub fn _insertNodeRelative(self: *Frame, comptime from_parser: bool, parent: *No
     // cross-document re-nav (Google knitsail → Bing) walking _parent UAF'd
     // (SIGABRT in isConnected). Document parse always inserts into the live tree.
     if (should_notify) {
+        if (parent.is(Element.Html.Style) != null) {
+            self.styleSheetChanged(parent);
+        }
         const parent_is_connected = parent.isConnected();
         if (comptime from_parser == false) {
             // When the parser adds the node, nodeIsReady is only called when the
@@ -6540,6 +6685,15 @@ pub fn _insertNodeRelative(self: *Frame, comptime from_parser: bool, parent: *No
 }
 
 pub fn attributeChange(self: *Frame, element: *Element, name: String, value: String, old_value: ?String) void {
+    const owner = element.asNode().ownerFrame(self);
+    if (owner != self) {
+        owner.attributeChange(element, name, value, old_value);
+        return;
+    }
+    self.invalidateStyleEngine(.attribute, element.asNode());
+    if (element.is(Element.Html.Style) != null or element.is(Element.Html.Link) != null) {
+        self.styleSheetChanged(element.asNode());
+    }
     _ = Element.Build.call(element, "attributeChange", .{ element, name, value, self }) catch |err| {
         log.err(.bug, "build.attributeChange", .{ .tag = element.getTag(), .name = name, .value = value, .err = err, .type = self._type, .url = self.url });
     };
@@ -6706,6 +6860,15 @@ fn deliverCssAnimationEnds(self: *Frame) void {
 }
 
 pub fn attributeRemove(self: *Frame, element: *Element, name: String, old_value: String) void {
+    const owner = element.asNode().ownerFrame(self);
+    if (owner != self) {
+        owner.attributeRemove(element, name, old_value);
+        return;
+    }
+    self.invalidateStyleEngine(.attribute, element.asNode());
+    if (element.is(Element.Html.Style) != null or element.is(Element.Html.Link) != null) {
+        self.styleSheetChanged(element.asNode());
+    }
     _ = Element.Build.call(element, "attributeRemove", .{ element, name, self }) catch |err| {
         log.err(.bug, "build.attributeRemove", .{ .tag = element.getTag(), .name = name, .err = err, .type = self._type, .url = self.url });
     };
@@ -6844,6 +7007,15 @@ pub fn characterDataChange(
     target: *Node,
     old_value: String,
 ) void {
+    const owner = target.ownerFrame(self);
+    if (owner != self) {
+        owner.characterDataChange(target, old_value);
+        return;
+    }
+    self.domChangedForNode(target);
+    if (target._parent) |parent| {
+        if (parent.is(Element.Html.Style) != null) self.styleSheetChanged(parent);
+    }
     var it: ?*std.DoublyLinkedList.Node = self._mutation_observers.first;
     while (it) |node| : (it = node.next) {
         const observer: *MutationObserver = @fieldParentPtr("node", node);
@@ -6861,6 +7033,15 @@ pub fn childListChange(
     previous_sibling: ?*Node,
     next_sibling: ?*Node,
 ) void {
+    const owner = target.ownerFrame(self);
+    if (owner != self) {
+        owner.childListChange(target, added_nodes, removed_nodes, previous_sibling, next_sibling);
+        return;
+    }
+    self.invalidateStyleEngine(.tree, target);
+    if (target.is(Element.Html.Style) != null) {
+        self.styleSheetChanged(target);
+    }
     // Filter out HTML wrapper element during fragment parsing (html5ever quirk)
     if (self._parse_mode == .fragment and added_nodes.len == 1) {
         if (added_nodes[0].is(Element.Html.Html) != null) {
@@ -7033,7 +7214,7 @@ fn nodeIsReady(self: *Frame, comptime from_parser: bool, node: *Node) !void {
         if (node.is(Element.Html.Script) != null or node.is(IFrame) != null) {
             // fall through
         } else if (node.is(Element.Html.Style) != null) {
-            self._style_manager.sheetModified();
+            self.styleSheetChanged(node);
             return;
         } else {
             return;
@@ -7869,6 +8050,14 @@ test "Frame: iframe Location uses its owning browsing context" {
 
 test "Frame: iframe history and navigation are isolated from parent" {
     try testing.htmlRunner("regression/iframe_history_isolated_from_parent.html", .{});
+}
+
+test "Frame: style engine DOM invalidation follows stylesheet and tree mutations" {
+    try testing.htmlRunner("regression/style_engine_dom_lifecycle.html", .{});
+}
+
+test "Frame: style engine lifecycle survives navigation teardown" {
+    try testing.htmlRunner("regression/style_engine_navigation_teardown.html", .{});
 }
 
 test "Frame: srcdoc History URL rewriting follows about-srcdoc rules" {

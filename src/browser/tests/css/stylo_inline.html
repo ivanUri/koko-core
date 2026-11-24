@@ -1,0 +1,20 @@
+<!doctype html>
+<meta charset="utf-8">
+<script src="stylo_fixture.js"></script>
+<body><div id="stylo-target">inline</div></body>
+<script>
+  styloFixture.install(() => {
+    const target = document.querySelector("#stylo-target");
+    if (!target.style || typeof target.style.setProperty !== "function") {
+      return styloFixture.unsupported("inline CSSStyleDeclaration is unavailable");
+    }
+    target.style.setProperty("color", "rgb(61, 71, 81)");
+    target.style.setProperty("padding-inline-start", "5px");
+    target.style.setProperty("--stylo-inline-token", "13px");
+    const style = styloFixture.readStyle(target, ["color", "padding-inline-start", "--stylo-inline-token"]);
+    return style.status ? style : {
+      status: "pass",
+      observations: { cssText: target.style.cssText, style },
+    };
+  });
+</script>

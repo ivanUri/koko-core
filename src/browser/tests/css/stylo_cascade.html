@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8">
+<script src="stylo_fixture.js"></script>
+<style>
+  .stylo-cascade { color: rgb(10, 20, 30); padding: 1px; }
+  main .stylo-cascade { color: rgb(40, 50, 60); }
+  #stylo-target.stylo-cascade { color: rgb(70, 80, 90); padding: 3px; }
+  .stylo-cascade { border-top-width: 2px; border-top-style: solid; }
+</style>
+<body>
+  <main><div id="stylo-target" class="stylo-cascade">cascade</div></main>
+</body>
+<script>
+  styloFixture.install(() => {
+    const target = document.querySelector("#stylo-target");
+    const observations = styloFixture.readStyle(target, ["color", "padding-top", "border-top-width", "border-top-style"]);
+    return observations.status ? observations : { status: "pass", observations };
+  });
+</script>

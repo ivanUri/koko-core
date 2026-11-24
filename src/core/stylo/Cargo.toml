@@ -1,0 +1,21 @@
+[package]
+name = "koko-stylo"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "koko_stylo"
+path = "lib.rs"
+crate-type = ["staticlib"]
+
+[dependencies]
+# Keep Stylo and its workspace support crates on one exact upstream revision.
+# The package is named `stylo`, while its Rust library target is `style`.
+style = { package = "stylo", git = "https://github.com/servo/stylo.git", rev = "0ab78ce95162eca027c874b505b505ef17a85ac8", default-features = false, features = ["servo"] }
+servo_arc = { git = "https://github.com/servo/stylo.git", rev = "0ab78ce95162eca027c874b505b505ef17a85ac8" }
+url = "2.5"
+
+[profile.release]
+lto = true
+codegen-units = 1

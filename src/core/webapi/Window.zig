@@ -661,6 +661,13 @@ pub fn matchMedia(_: *const Window, query: []const u8, frame: *Frame) !*MediaQue
 }
 
 pub fn getComputedStyle(_: *const Window, element: *Element, pseudo_element: ?[]const u8, frame: *Frame) !*CSSStyleDeclaration {
+    const style_status = frame.styleEngine().prepareForLayout();
+    if (style_status != .ok and style_status != .ready) {
+        log.debug(.not_implemented, "Stylo getComputedStyle status", .{
+            .status = @tagName(style_status),
+        });
+    }
+
     // Chrome always returns a CSSStyleDeclaration for ::before/::after (often
     // empty). Fluent UI on signup.live.com queries these heavily; warning on
     // every call flooded logs and did not change behavior. Fall back to the

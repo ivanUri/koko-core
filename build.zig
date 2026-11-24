@@ -97,6 +97,7 @@ pub fn build(b: *Build) !void {
         try linkCurl(b, mod, enable_tsan);
         linkZlibModule(b, mod, enable_tsan);
         try linkHtml5Ever(b, mod);
+        try linkStylo(b, mod);
         try linkWebRtc(b, mod, enable_tsan);
         try linkNghttp2ForKoko(b, mod, enable_tsan);
         if (target.result.os.tag == .macos) {
@@ -314,6 +315,35 @@ fn linkHtml5Ever(b: *Build, mod: *Build.Module) !void {
     html5ever_step.dependOn(&exec_cargo.step);
 
     const obj = out_dir.path(b, if (is_debug) "debug" else "release").path(b, "liblitefetch_html5ever.a");
+    mod.addObjectFile(obj);
+}
+
+fn linkStylo(b: *Build, mod: *Build.Module) !void {
+    const is_debug = if (mod.optimize.? == .Debug) true else false;
+
+    const exec_cargo = b.addSystemCommand(&.{
+        "cargo",                            "build",
+        "--locked",                         "--profile",
+        if (is_debug) "dev" else "release", "--manifest-path",
+        "src/core/stylo/Cargo.toml",
+    });
+
+    // Track every bridge input so Zig does not reuse an archive after a Rust
+    // ABI or dependency change.
+    for ([_][]const u8{
+        "src/core/stylo/Cargo.toml",
+        "src/core/stylo/Cargo.lock",
+        "src/core/stylo/lib.rs",
+        "src/core/stylo/stylo.h",
+    }) |path| {
+        exec_cargo.addFileInput(b.path(path));
+    }
+
+    const out_dir = exec_cargo.addPrefixedOutputDirectoryArg("--target-dir=", "stylo");
+    const stylo_step = b.step("stylo", "Install the Stylo Rust bridge (requires cargo)");
+    stylo_step.dependOn(&exec_cargo.step);
+
+    const obj = out_dir.path(b, if (is_debug) "debug" else "release").path(b, "libkoko_stylo.a");
     mod.addObjectFile(obj);
 }
 

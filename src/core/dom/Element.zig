@@ -157,6 +157,10 @@ pub fn asConstNode(self: *const Element) *const Node {
     return self._proto;
 }
 
+fn mutationFrame(self: *Element, fallback: *Frame) *Frame {
+    return self.asNode().ownerFrame(fallback);
+}
+
 pub fn attributesEql(self: *const Element, other: *Element) bool {
     if (self._attributes) |attr_list| {
         const other_list = other._attributes orelse return false;
@@ -476,18 +480,19 @@ pub fn getOuterHTML(self: *Element, writer: *std.Io.Writer, frame: *Frame) !void
 pub fn setOuterHTML(self: *Element, html: []const u8, frame: *Frame) !void {
     const node = self.asNode();
     const parent = node._parent orelse return;
+    const owner_frame = node.ownerFrame(frame);
 
-    frame.domChanged();
+    owner_frame.domChangedForNode(node);
     if (html.len > 0) {
-        const fragment = (try Node.DocumentFragment.init(frame)).asNode();
-        try frame.parseHtmlAsChildren(fragment, html);
-        try frame.insertAllChildrenBefore(fragment, parent, node);
+        const fragment = (try Node.DocumentFragment.init(owner_frame)).asNode();
+        try owner_frame.parseHtmlAsChildren(fragment, html);
+        try owner_frame.insertAllChildrenBefore(fragment, parent, node);
     }
 
     // A custom element callback fired during insertAllChildrenBefore may
     // have already detached `node`; only remove it if it's still here.
     if (node._parent == parent) {
-        frame.removeNode(parent, node, .{ .will_be_reconnected = false });
+        owner_frame.removeNode(parent, node, .{ .will_be_reconnected = false });
     }
 }
 
@@ -689,8 +694,9 @@ pub fn attributeIterator(self: *Element) Attribute.InnerIterator {
 }
 
 pub fn getAttribute(self: *const Element, name: String, frame: *Frame) !?String {
+    const owner_frame = self.asConstNode().ownerFrame(frame);
     const attributes = self._attributes orelse return null;
-    return attributes.get(name, frame);
+    return attributes.get(name, owner_frame);
 }
 
 /// For simplicity, the namespace is currently ignored and only the local name is used.
@@ -715,8 +721,9 @@ pub fn getAttributeSafe(self: *const Element, name: String) ?[]const u8 {
 }
 
 pub fn hasAttribute(self: *const Element, name: String, frame: *Frame) !bool {
+    const owner_frame = self.asConstNode().ownerFrame(frame);
     const attributes = self._attributes orelse return false;
-    const value = try attributes.get(name, frame);
+    const value = try attributes.get(name, owner_frame);
     return value != null;
 }
 
@@ -788,14 +795,16 @@ pub fn hasAttributes(self: *const Element) bool {
 }
 
 pub fn getAttributeNode(self: *Element, name: String, frame: *Frame) !?*Attribute {
+    const owner_frame = self.asNode().ownerFrame(frame);
     const attributes = self._attributes orelse return null;
-    return attributes.getAttribute(name, self, frame);
+    return attributes.getAttribute(name, self, owner_frame);
 }
 
 pub fn setAttribute(self: *Element, name: String, value: String, frame: *Frame) !void {
     try Attribute.validateAttributeName(name);
-    const attributes = try self.getOrCreateAttributeList(frame);
-    _ = try attributes.put(name, value, self, frame);
+    const owner_frame = self.mutationFrame(frame);
+    const attributes = try self.getOrCreateAttributeList(owner_frame);
+    _ = try attributes.put(name, value, self, owner_frame);
 }
 
 pub fn setAttributeNS(
@@ -828,17 +837,20 @@ pub fn setAttributeNS(
 }
 
 pub fn setAttributeSafe(self: *Element, name: String, value: String, frame: *Frame) !void {
-    const attributes = try self.getOrCreateAttributeList(frame);
-    _ = try attributes.putSafe(name, value, self, frame);
+    const owner_frame = self.mutationFrame(frame);
+    const attributes = try self.getOrCreateAttributeList(owner_frame);
+    _ = try attributes.putSafe(name, value, self, owner_frame);
 }
 
 pub fn getOrCreateAttributeList(self: *Element, frame: *Frame) !*Attribute.List {
-    return self._attributes orelse return self.createAttributeList(frame);
+    const owner_frame = self.asNode().ownerFrame(frame);
+    return self._attributes orelse return self.createAttributeList(owner_frame);
 }
 
 pub fn createAttributeList(self: *Element, frame: *Frame) !*Attribute.List {
+    const owner_frame = self.asNode().ownerFrame(frame);
     assert(self._attributes == null, "Element.createAttributeList non-null _attributes", .{});
-    const a = try frame.arena.create(Attribute.List);
+    const a = try owner_frame.arena.create(Attribute.List);
     a.* = .{ .normalize = self._namespace == .html };
     self._attributes = a;
     return a;
@@ -894,22 +906,24 @@ pub fn insertAdjacentText(
 }
 
 pub fn setAttributeNode(self: *Element, attr: *Attribute, frame: *Frame) !?*Attribute {
+    const owner_frame = self.mutationFrame(frame);
     if (attr._element) |el| {
         if (el == self) {
             return attr;
         }
         attr._element = null;
-        _ = try el.removeAttributeNode(attr, frame);
+        _ = try el.removeAttributeNode(attr, owner_frame);
     }
 
-    const attributes = try self.getOrCreateAttributeList(frame);
-    return attributes.putAttribute(attr, self, frame);
+    const attributes = try self.getOrCreateAttributeList(owner_frame);
+    return attributes.putAttribute(attr, self, owner_frame);
 }
 
 pub fn removeAttribute(self: *Element, name: String, frame: *Frame) !void {
-    AttrAssociatedElement.onAttributeRemoved(self, name.str(), frame);
+    const owner_frame = self.mutationFrame(frame);
+    AttrAssociatedElement.onAttributeRemoved(self, name.str(), owner_frame);
     const attributes = self._attributes orelse return;
-    return attributes.delete(name, self, frame);
+    return attributes.delete(name, self, owner_frame);
 }
 
 pub fn getAriaActiveDescendantElement(self: *const Element, frame: *Frame) !?*Element {
@@ -960,30 +974,33 @@ pub fn removeAttributeNode(self: *Element, attr: *Attribute, frame: *Frame) !*At
 }
 
 pub fn getAttributeNames(self: *const Element, frame: *Frame) ![][]const u8 {
+    const owner_frame = self.asConstNode().ownerFrame(frame);
     const attributes = self._attributes orelse return &.{};
-    return attributes.getNames(frame);
+    return attributes.getNames(owner_frame);
 }
 
 pub fn getAttributeNamedNodeMap(self: *Element, frame: *Frame) !*Attribute.NamedNodeMap {
-    const gop = try frame._attribute_named_node_map_lookup.getOrPut(frame.arena, @intFromPtr(self));
+    const owner_frame = self.asNode().ownerFrame(frame);
+    const gop = try owner_frame._attribute_named_node_map_lookup.getOrPut(owner_frame.arena, @intFromPtr(self));
     if (!gop.found_existing) {
-        const attributes = try self.getOrCreateAttributeList(frame);
-        const named_node_map = try frame._factory.create(Attribute.NamedNodeMap{ ._list = attributes, ._element = self });
+        const attributes = try self.getOrCreateAttributeList(owner_frame);
+        const named_node_map = try owner_frame._factory.create(Attribute.NamedNodeMap{ ._list = attributes, ._element = self });
         gop.value_ptr.* = named_node_map;
     }
     return gop.value_ptr.*;
 }
 
 pub fn getOrCreateStyle(self: *Element, frame: *Frame) !*CSSStyleProperties {
-    const gop = try frame._element_styles.getOrPut(frame.arena, self);
+    const owner_frame = self.asNode().ownerFrame(frame);
+    const gop = try owner_frame._element_styles.getOrPut(owner_frame.arena, self);
     if (!gop.found_existing) {
-        gop.value_ptr.* = try CSSStyleProperties.init(self, false, frame);
+        gop.value_ptr.* = try CSSStyleProperties.init(self, false, owner_frame);
     }
     return gop.value_ptr.*;
 }
 
 fn getStyle(self: *Element, frame: *Frame) ?*CSSStyleProperties {
-    return frame._element_styles.get(self);
+    return self.asNode().ownerFrame(frame)._element_styles.get(self);
 }
 
 pub fn getClassList(self: *Element, frame: *Frame) !*collections.DOMTokenList {
@@ -1061,7 +1078,8 @@ pub fn replaceChildren(self: *Element, nodes: []const Node.NodeOrText, frame: *F
 }
 
 pub fn replaceWith(self: *Element, nodes: []const Node.NodeOrText, frame: *Frame) !void {
-    frame.domChanged();
+    const owner_frame = self.mutationFrame(frame);
+    owner_frame.domChangedForNode(self.asNode());
 
     const ref_node = self.asNode();
     const parent = ref_node._parent orelse return;
@@ -1073,7 +1091,7 @@ pub fn replaceWith(self: *Element, nodes: []const Node.NodeOrText, frame: *Frame
     var rm_ref_node = true;
 
     for (nodes) |node_or_text| {
-        const child = try node_or_text.toNode(frame);
+        const child = try node_or_text.toNode(owner_frame);
 
         // If a child is the ref node. We keep it at its own current position.
         if (child == ref_node) {
@@ -1085,20 +1103,21 @@ pub fn replaceWith(self: *Element, nodes: []const Node.NodeOrText, frame: *Frame
         // After removeNode the child has no _parent, so ownerDocument() loses
         // the root-walk path and falls back to frame.document — making adopting
         // silently false and skipping adoptedCallback.
-        const child_owner = child.ownerDocument(frame);
+        const child_owner = child.ownerDocument(owner_frame);
         const child_was_connected = child.isConnected();
-        const parent_owner = parent.ownerDocument(frame) orelse parent.as(Node.Document);
+        const parent_owner = parent.ownerDocument(owner_frame) orelse parent.as(Node.Document);
         const adopting = child_owner != null and child_owner.? != parent_owner;
 
         if (child._parent) |current_parent| {
-            frame.removeNode(current_parent, child, .{ .will_be_reconnected = parent_is_connected and !adopting });
+            const source_frame = current_parent.ownerFrame(owner_frame);
+            source_frame.removeNode(current_parent, child, .{ .will_be_reconnected = parent_is_connected and !adopting });
         }
 
         if (adopting) {
-            try frame.adoptNodeTree(child, child_owner.?, parent_owner);
+            try owner_frame.adoptNodeTree(child, child_owner.?, parent_owner);
         }
 
-        try frame.insertNodeRelative(
+        try owner_frame.insertNodeRelative(
             parent,
             child,
             .{ .before = ref_node },
@@ -1114,10 +1133,11 @@ pub fn replaceWith(self: *Element, nodes: []const Node.NodeOrText, frame: *Frame
 }
 
 pub fn remove(self: *Element, frame: *Frame) void {
-    frame.domChanged();
+    const owner_frame = self.mutationFrame(frame);
+    owner_frame.domChangedForNode(self.asNode());
     const node = self.asNode();
     const parent = node._parent orelse return;
-    frame.removeNode(parent, node, .{ .will_be_reconnected = false });
+    owner_frame.removeNode(parent, node, .{ .will_be_reconnected = false });
 }
 
 pub fn focus(self: *Element, frame: *Frame) !void {

@@ -72,8 +72,28 @@ pub fn getDisabled(self: *const CSSStyleSheet) bool {
     return self._disabled;
 }
 
-pub fn setDisabled(self: *CSSStyleSheet, disabled: bool) void {
+fn reportStyleSheetEngineStatus(operation: []const u8, frame: *Frame) void {
+    const status = frame.styleEngine().status();
+    if (status != .ok and status != .ready) {
+        log.debug(.not_implemented, "Stylo CSS stylesheet status", .{
+            .operation = operation,
+            .status = @tagName(status),
+        });
+    }
+}
+
+fn notifyStyleSheetMutation(self: *const CSSStyleSheet, operation: []const u8, frame: *Frame) void {
+    const owner_frame = ownerFrameFor(self, frame);
+    // Frame.styleSheetChanged keeps the legacy cache coherent and forwards the
+    // invalidation through the per-frame StyleEngine owner.
+    owner_frame.styleSheetChanged(if (self.getOwnerNode()) |owner| owner.asNode() else null);
+    reportStyleSheetEngineStatus(operation, owner_frame);
+}
+
+pub fn setDisabled(self: *CSSStyleSheet, disabled: bool, frame: *Frame) void {
+    if (self._disabled == disabled) return;
     self._disabled = disabled;
+    notifyStyleSheetMutation(self, "disabled", frame);
 }
 
 pub fn getCssRules(self: *CSSStyleSheet, frame: *Frame) !*CSSRuleList {
@@ -131,7 +151,7 @@ fn insertPlaceholderAtRule(self: *CSSStyleSheet, rule: []const u8, requested_ind
     const index = clampInsertIndex(requested_index, rules.length());
     const placeholder = try CSSRule.initRaw(placeholderTypeForAtRule(rule), rule, frame);
     try rules.insert(index, placeholder, frame);
-    ownerFrameFor(self, frame)._style_manager.sheetModified();
+    notifyStyleSheetMutation(self, "insertRule", frame);
     return index;
 }
 
@@ -161,8 +181,7 @@ pub fn insertRule(self: *CSSStyleSheet, rule: []const u8, maybe_index: ?u32, fra
     const index = clampInsertIndex(requested_index, rules.length());
     try rules.insert(index, style_rule._proto, frame);
 
-    // Notify StyleManager that rules have changed
-    ownerFrameFor(self, frame)._style_manager.sheetModified();
+    notifyStyleSheetMutation(self, "insertRule", frame);
 
     return index;
 }
@@ -177,8 +196,7 @@ pub fn deleteRule(self: *CSSStyleSheet, index: u32, frame: *Frame) !void {
     }
     try rules.remove(index);
 
-    // Notify StyleManager that rules have changed
-    ownerFrameFor(self, frame)._style_manager.sheetModified();
+    notifyStyleSheetMutation(self, "deleteRule", frame);
 }
 
 pub fn replace(self: *CSSStyleSheet, text: []const u8, frame: *Frame) CSSError!js.Promise {
@@ -215,8 +233,7 @@ pub fn replaceSync(self: *CSSStyleSheet, text: []const u8, frame: *Frame) CSSErr
         }
     }
 
-    // Notify StyleManager that rules have changed
-    ownerFrameFor(self, frame)._style_manager.sheetModified();
+    notifyStyleSheetMutation(self, "replaceSync", frame);
 }
 
 pub const JsApi = struct {

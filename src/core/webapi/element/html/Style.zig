@@ -74,9 +74,10 @@ pub fn setDisabled(self: *Style, disabled: bool, frame: *Frame) !void {
 
 const CSSStyleSheet = @import("../../css/CSSStyleSheet.zig");
 pub fn getSheet(self: *Style, frame: *Frame) !?*CSSStyleSheet {
+    const owner_frame = self.asNode().ownerFrame(frame);
     // Prefer the frame argument over ownerFrame()/isConnected() parent walks.
     // Document parse after re-nav (Google knitsail → Bing) UAF'd walking _parent.
-    const in_document_parse = frame._document_parse_active and frame._parse_mode == .document;
+    const in_document_parse = owner_frame._document_parse_active and owner_frame._parse_mode == .document;
     if (!in_document_parse and !self.asNode().isConnected()) {
         self._sheet = null;
         return null;
@@ -91,41 +92,42 @@ pub fn getSheet(self: *Style, frame: *Frame) !?*CSSStyleSheet {
     }
 
     if (self._sheet) |sheet| return sheet;
-    const sheet = try CSSStyleSheet.initWithOwner(self.asElement(), frame);
+    const sheet = try CSSStyleSheet.initWithOwner(self.asElement(), owner_frame);
     self._sheet = sheet;
 
-    const sheets = try frame.document.getStyleSheets(frame);
-    try sheets.add(sheet, frame);
+    const sheets = try owner_frame.document.getStyleSheets(owner_frame);
+    try sheets.add(sheet, owner_frame);
 
     return sheet;
 }
 
 pub fn styleAddedCallback(self: *Style, frame: *Frame) !void {
+    const owner_frame = self.asNode().ownerFrame(frame);
     // Main-document HTML parse: do not allocate StyleSheetList / CSSStyleSheet
     // mid-html5ever. After Google knitsail re-nav, ArrayList growth there
     // SIGSEGV'd (Google Search → Bing). Mark StyleManager dirty; sheet is
     // created lazily on document.styleSheets / getSheet after parse.
-    const mid_document_parse = frame._document_parse_active and frame._parse_mode == .document;
+    const mid_document_parse = owner_frame._document_parse_active and owner_frame._parse_mode == .document;
     if (mid_document_parse) {
-        frame._style_manager.sheetModified();
+        owner_frame.styleSheetChanged(self.asNode());
         return;
     }
 
     // Dynamic insert / fragment: register sheet now (spec + CSSOM probes).
-    const sheet = self.getSheet(frame) catch |err| blk: {
-        log.warn(.frame, "style sheet register", .{ .err = err, .url = frame.url });
+    const sheet = self.getSheet(owner_frame) catch |err| blk: {
+        log.warn(.frame, "style sheet register", .{ .err = err, .url = owner_frame.url });
         break :blk null;
     };
     if (sheet != null) {
-        frame._style_manager.sheetModified();
+        owner_frame.styleSheetChanged(self.asNode());
     }
 
-    if (frame.isGoingAway()) {
+    if (owner_frame.isGoingAway()) {
         return;
     }
 
-    frame.queueLoad(self._proto) catch |err| {
-        log.warn(.frame, "style queueLoad", .{ .err = err, .url = frame.url });
+    owner_frame.queueLoad(self._proto) catch |err| {
+        log.warn(.frame, "style queueLoad", .{ .err = err, .url = owner_frame.url });
     };
 }
 

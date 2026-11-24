@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<style id="rules">.target { color: red; }</style>
+<body id="pending"><div id="target" class="target">target</div></body>
+<script>
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+const target = document.getElementById("target");
+const rules = document.getElementById("rules");
+let adopted = false;
+try {
+  document.adoptedStyleSheets = [rules.sheet];
+  adopted = document.adoptedStyleSheets.length === 1;
+} catch (_) {}
+
+target.setAttribute("class", "changed");
+rules.textContent = ".changed { color: blue; }";
+target.remove();
+document.body.appendChild(target);
+
+document.body.id = target.ownerDocument === document ? "pass" : "fail";
+document.body.dataset.adopted = adopted ? "yes" : "unavailable";
+</script>

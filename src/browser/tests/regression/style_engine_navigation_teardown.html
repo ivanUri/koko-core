@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8">
+<body id="pending"></body>
+<script>
+window.testing = {
+  assertOk: () => document.body.id === "pass",
+  printTimeoutState: () => console.log(document.body.textContent),
+};
+
+const frame = document.createElement("iframe");
+frame.srcdoc = "<!doctype html><style>.child { color: red; }</style><body><div class='child'>child</div></body>";
+document.body.appendChild(frame);
+const staleDocument = frame.contentDocument;
+
+frame.srcdoc = "<!doctype html><body><div>replacement</div></body>";
+frame.remove();
+try {
+  if (staleDocument && staleDocument.body) {
+    staleDocument.body.setAttribute("data-detached", "true");
+  }
+  document.body.id = !frame.isConnected && document.body.ownerDocument === document ? "pass" : "fail";
+} catch (_) {
+  document.body.id = "fail";
+}
+</script>

@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8">
+<script src="stylo_fixture.js"></script>
+<style>
+  #stylo-target { color: rgb(141, 151, 161); }
+  #stylo-target.stylo-active { color: rgb(171, 181, 191); margin-top: 9px; }
+</style>
+<body><div id="stylo-target">class mutation</div></body>
+<script>
+  styloFixture.install(() => {
+    const target = document.querySelector("#stylo-target");
+    const before = styloFixture.readStyle(target, ["color", "margin-top"]);
+    if (before.status) return before;
+    if (!target.classList || typeof target.classList.add !== "function") {
+      return styloFixture.unsupported("classList mutation is unavailable");
+    }
+    target.classList.add("stylo-active");
+    const after = styloFixture.readStyle(target, ["color", "margin-top"]);
+    if (after.status) return after;
+    target.classList.remove("stylo-active");
+    const restored = styloFixture.readStyle(target, ["color", "margin-top"]);
+    if (restored.status) return restored;
+    return { status: "pass", observations: { before, after, restored } };
+  });
+</script>

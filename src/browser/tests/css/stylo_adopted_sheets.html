@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<script src="stylo_fixture.js"></script>
+<body><div id="stylo-target">adopted sheet</div></body>
+<script>
+  styloFixture.install(() => {
+    if (typeof CSSStyleSheet !== "function" || typeof CSSStyleSheet.prototype.replaceSync !== "function") {
+      return styloFixture.unsupported("constructable CSSStyleSheet.replaceSync is unavailable");
+    }
+    if (!("adoptedStyleSheets" in document) || !document.adoptedStyleSheets || typeof document.adoptedStyleSheets[Symbol.iterator] !== "function") {
+      return styloFixture.unsupported("Document.adoptedStyleSheets is unavailable");
+    }
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync("#stylo-target { color: rgb(201, 211, 221); padding-bottom: 8px; }");
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+    const target = document.querySelector("#stylo-target");
+    const computed = styloFixture.readStyle(target, ["color", "padding-bottom"]);
+    return computed.status ? computed : {
+      status: "pass",
+      observations: { sheetCount: document.adoptedStyleSheets.length, computed },
+    };
+  });
+</script>

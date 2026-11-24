@@ -14,6 +14,7 @@
 const std = @import("std");
 
 const CssParser = @import("../../browser/css/Parser.zig");
+const StyleEngine = @import("../../browser/StyleEngine.zig").StyleEngine;
 
 const js = @import("../../js/js.zig");
 const Frame = @import("../../browser/Frame.zig");
@@ -45,6 +46,11 @@ const log = @import("../../../support/log.zig");
 const String = @import("../../../support/string.zig").String;
 const Allocator = std.mem.Allocator;
 const CSSStyleDeclaration = @This();
+
+const StyloRead = struct {
+    status: StyleEngine.Status,
+    value: ?[]const u8 = null,
+};
 
 _element: ?*Element = null,
 _properties: std.DoublyLinkedList = .{},
@@ -124,17 +130,8 @@ pub fn getPropertyValue(self: *const CSSStyleDeclaration, property_name: []const
     const wrapped = String.wrap(normalized);
     const style_frame = styleFrameFor(self, frame);
 
-    // Computed styles must reflect stylesheet rules, not just the element's
-    // inline `style=` attribute. Limited to display/visibility — what aria
-    // tree builders (Playwright ariaSnapshot) consult on every element.
     if (self._is_computed) {
-        if (self._element) |element| {
-            if (wrapped.eql(comptime .wrap("display"))) {
-                if (style_frame._style_manager.hasDisplayNone(element)) return "none";
-            } else if (wrapped.eql(comptime .wrap("visibility"))) {
-                if (style_frame._style_manager.hasVisibilityHiddenInherited(element)) return "hidden";
-            }
-        }
+        return getComputedPropertyValue(self, wrapped, style_frame);
     }
 
     const prop = self.findProperty(wrapped) orelse {
@@ -171,7 +168,59 @@ fn getInlineStyleValue(element: *Element, property_name: []const u8) ?[]const u8
     return null;
 }
 
+fn queryStylo(self: *const CSSStyleDeclaration, name: String, style_frame: *Frame) StyloRead {
+    const element = self._element orelse return .{ .status = .invalid_argument };
+    const property = name.str();
+    var output = style_frame.call_arena.alloc(u8, 4096) catch {
+        return .{ .status = .out_of_memory };
+    };
+    const node_id: StyleEngine.NodeId = @intFromPtr(element);
+    var result = if (std.mem.startsWith(u8, property, "--"))
+        style_frame.styleEngine().customProperty(node_id, property, output)
+    else
+        style_frame.styleEngine().computedValue(node_id, property, output);
+
+    if (result.status == .output_buffer_too_small and result.bytes_written > output.len) {
+        output = style_frame.call_arena.alloc(u8, result.bytes_written) catch {
+            return .{ .status = .out_of_memory };
+        };
+        result = if (std.mem.startsWith(u8, property, "--"))
+            style_frame.styleEngine().customProperty(node_id, property, output)
+        else
+            style_frame.styleEngine().computedValue(node_id, property, output);
+    }
+
+    if (!result.isOk()) return .{ .status = result.status };
+    const value = style_frame.call_arena.dupe(u8, output[0..result.bytes_written]) catch {
+        return .{ .status = .out_of_memory };
+    };
+    return .{ .status = .ok, .value = value };
+}
+
+fn reportStyloFallback(operation: []const u8, property: []const u8, status: StyleEngine.Status) void {
+    log.debug(.not_implemented, "Stylo CSS differential fallback", .{
+        .operation = operation,
+        .property = property,
+        .status = @tagName(status),
+    });
+}
+
+fn invalidateInlineStyle(self: *const CSSStyleDeclaration, style_frame: *Frame) void {
+    const element = self._element orelse return;
+    const status = style_frame.styleEngine().invalidateDom(@intFromPtr(element), .attributes);
+    if (status != .ok) {
+        log.debug(.not_implemented, "Stylo inline style invalidation", .{ .status = @tagName(status) });
+    }
+}
+
 fn getComputedPropertyValue(self: *const CSSStyleDeclaration, name: String, style_frame: *Frame) []const u8 {
+    const stylo = queryStylo(self, name, style_frame);
+    if (stylo.value) |value| return value;
+    reportStyloFallback("computed-read", name.str(), stylo.status);
+    return getLegacyComputedPropertyValue(self, name, style_frame);
+}
+
+fn getLegacyComputedPropertyValue(self: *const CSSStyleDeclaration, name: String, style_frame: *Frame) []const u8 {
     const raw = name.str();
     if (raw.len > 2 and raw[0] == '-' and raw[1] == '-') {
         if (self._element) |element| {
@@ -307,6 +356,7 @@ fn syncStyleAttribute(self: *CSSStyleDeclaration, frame: *Frame) !void {
     const element = self._element orelse return;
     const css_text = try self.getCssText(frame);
     try element.setAttributeSafe(comptime .wrap("style"), .wrap(css_text), frame);
+    self.invalidateInlineStyle(styleFrameFor(self, frame));
 }
 
 pub fn getParentRule(_: *const CSSStyleDeclaration, _: *Frame) ?*CSSRule {

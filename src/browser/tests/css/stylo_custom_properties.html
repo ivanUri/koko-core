@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<script src="stylo_fixture.js"></script>
+<style>
+  :root { --stylo-accent: rgb(88, 99, 111); --stylo-gap: 7px; }
+  #stylo-target { color: var(--stylo-accent); margin-inline-start: var(--stylo-gap); }
+</style>
+<body><div id="stylo-target">custom properties</div></body>
+<script>
+  styloFixture.install(() => {
+    const target = document.querySelector("#stylo-target");
+    const observations = styloFixture.readStyle(target, ["--stylo-accent", "--stylo-gap", "color", "margin-inline-start"]);
+    return observations.status ? observations : { status: "pass", observations };
+  });
+</script>

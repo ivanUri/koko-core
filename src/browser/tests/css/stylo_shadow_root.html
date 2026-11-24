@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8">
+<script src="stylo_fixture.js"></script>
+<body><div id="stylo-host"></div></body>
+<script>
+  styloFixture.install(() => {
+    const host = document.querySelector("#stylo-host");
+    if (typeof host.attachShadow !== "function") return styloFixture.unsupported("Element.attachShadow is unavailable");
+    const root = host.attachShadow({ mode: "open" });
+    root.innerHTML = `<style>:host { display: block; } .stylo-shadow { color: rgb(231, 241, 251); padding-left: 10px; }</style><span class="stylo-shadow">shadow</span>`;
+    const target = root.querySelector(".stylo-shadow");
+    const computed = styloFixture.readStyle(target, ["color", "padding-left"]);
+    return computed.status ? computed : {
+      status: "pass",
+      observations: { hostDisplay: window.getComputedStyle(host).getPropertyValue("display"), computed },
+    };
+  });
+</script>

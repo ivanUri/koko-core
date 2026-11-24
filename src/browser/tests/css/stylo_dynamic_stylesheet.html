@@ -1,0 +1,20 @@
+<!doctype html>
+<meta charset="utf-8">
+<script src="stylo_fixture.js"></script>
+<body><div id="stylo-target">dynamic stylesheet</div></body>
+<script>
+  styloFixture.install(() => {
+    const style = document.createElement("style");
+    document.head.appendChild(style);
+    if (!style.sheet || typeof style.sheet.insertRule !== "function") {
+      return styloFixture.unsupported("dynamic CSSStyleSheet.insertRule is unavailable");
+    }
+    style.sheet.insertRule("#stylo-target { color: rgb(113, 123, 133); padding-top: 6px; }", style.sheet.cssRules.length);
+    const target = document.querySelector("#stylo-target");
+    const computed = styloFixture.readStyle(target, ["color", "padding-top"]);
+    return computed.status ? computed : {
+      status: "pass",
+      observations: { ruleCount: style.sheet.cssRules.length, computed },
+    };
+  });
+</script>

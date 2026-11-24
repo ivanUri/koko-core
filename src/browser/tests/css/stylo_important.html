@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<script src="stylo_fixture.js"></script>
+<style>
+  #stylo-target { color: rgb(1, 2, 3); background-color: rgb(4, 5, 6) !important; }
+  .stylo-important { color: rgb(7, 8, 9) !important; background-color: rgb(10, 11, 12); }
+</style>
+<body><div id="stylo-target" class="stylo-important">important</div></body>
+<script>
+  styloFixture.install(() => {
+    const target = document.querySelector("#stylo-target");
+    const observations = styloFixture.readStyle(target, ["color", "background-color"]);
+    return observations.status ? observations : { status: "pass", observations };
+  });
+</script>
