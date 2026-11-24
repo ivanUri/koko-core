@@ -116,6 +116,24 @@ pub fn getOwnerRule(self: *const CSSStyleSheet) ?*CSSRule {
     return self._owner_rule;
 }
 
+/// Return the current stylesheet source for the Stylo bridge. Author sheets
+/// owned by a <style> element use the authoritative text node; constructed
+/// CSSOM sheets are serialized from their CSSRuleList.
+pub fn getTextForStyleEngine(self: *CSSStyleSheet, frame: *Frame) ![]const u8 {
+    if (self.getOwnerNode()) |owner| {
+        if (owner.is(Element.Html.Style)) |_| {
+            return try owner.asNode().getTextContentAlloc(frame.call_arena);
+        }
+    }
+    const rules = self._css_rules orelse return "";
+    var output: std.ArrayList(u8) = .empty;
+    for (0..rules.length()) |index| {
+        const rule = rules.item(index) orelse continue;
+        try output.appendSlice(frame.call_arena, rule.getCssText(frame));
+    }
+    return try output.toOwnedSlice(frame.call_arena);
+}
+
 /// Map an at-rule source string to a CSSRule type tag for placeholder entries.
 /// Full at-rule CSSOM objects (CSSMediaRule, etc.) are not implemented yet; we
 /// still need stable cssRules indices so CSS-in-JS insertRule/deleteRule pairs

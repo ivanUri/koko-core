@@ -81,6 +81,12 @@ pub const StyleEngine = struct {
         }
     };
 
+    pub const FlushResult = struct {
+        status: Status,
+        generation: Generation = 0,
+        changed_node_count: usize = 0,
+    };
+
     frame_id: FrameId,
     generation_value: Generation = 1,
     policy: Policy,
@@ -177,6 +183,53 @@ pub const StyleEngine = struct {
         const api = self.api orelse return self.status();
         const invalidate = api.invalidate_dom orelse return .bridge_unsupported;
         return mapStatus(invalidate(api.user_data, self.engine, node_id, @intFromEnum(kind), self.generation_value));
+    }
+
+    /// Publish a complete stylesheet snapshot in one bridge call. The bridge
+    /// owns no input memory after this synchronous operation returns.
+    pub fn replaceStylesheets(self: *Self, inputs: []const Abi.StylesheetInput) Status {
+        if (!self.alive) return .closed;
+        const api = self.api orelse return self.status();
+        const replace = api.replace_stylesheets orelse return .bridge_unsupported;
+        const ptr: [*c]const Abi.StylesheetInput = if (inputs.len == 0) null else inputs.ptr;
+        self.bumpGeneration();
+        return mapStatus(replace(api.user_data, self.engine, ptr, inputs.len));
+    }
+
+    /// Synchronize one authoritative DOM node through the bridge. This is
+    /// separate from invalidation so the resolver can refresh callback-backed
+    /// metadata before a style flush.
+    pub fn syncNode(self: *Self, node_id: NodeId) Status {
+        if (!self.alive) return .closed;
+        if (node_id == 0) return .invalid_argument;
+        const api = self.api orelse return self.status();
+        const sync = api.sync_node orelse return .bridge_unsupported;
+        return mapStatus(sync(api.user_data, self.engine, node_id));
+    }
+
+    /// Drop callback-backed node metadata at a document boundary. Stable node
+    /// IDs never cross navigation, even though the bridge is per-frame.
+    pub fn resetDocument(self: *Self) Status {
+        if (!self.alive) return .closed;
+        const api = self.api orelse return self.status();
+        const reset = api.reset_document orelse return .bridge_unsupported;
+        self.bumpGeneration();
+        return mapStatus(reset(api.user_data, self.engine));
+    }
+
+    pub fn flushStyles(self: *Self, nodes: []const NodeId) FlushResult {
+        if (!self.alive) return .{ .status = .closed };
+        const api = self.api orelse return .{ .status = self.status() };
+        const flush = api.flush_styles orelse return .{ .status = .bridge_unsupported };
+        const ptr: [*c]const NodeId = if (nodes.len == 0) null else nodes.ptr;
+        var result = Abi.FlushResult{};
+        const flush_status = mapStatus(flush(api.user_data, self.engine, ptr, nodes.len, &result));
+        if (flush_status != .ok) return .{ .status = flush_status };
+        return .{
+            .status = .ok,
+            .generation = result.generation,
+            .changed_node_count = result.changed_node_count,
+        };
     }
 
     pub fn prepareForLayout(self: *Self) Status {
@@ -360,6 +413,10 @@ const FakeBridgeState = struct {
     create_frame_id: StyleEngine.FrameId = 0,
     last_generation: StyleEngine.Generation = 0,
     invalidation_count: u32 = 0,
+    stylesheet_replace_count: u32 = 0,
+    sync_count: u32 = 0,
+    reset_count: u32 = 0,
+    flush_count: u32 = 0,
     destroy_count: u32 = 0,
 };
 
@@ -405,6 +462,56 @@ fn fakeInvalidateDom(
     const state: *FakeBridgeState = @ptrCast(@alignCast(user_data.?));
     state.last_generation = generation;
     state.invalidation_count += 1;
+    return Abi.status_ok;
+}
+
+fn fakeReplaceStylesheets(
+    user_data: ?*anyopaque,
+    engine: ?*anyopaque,
+    inputs: [*c]const Abi.StylesheetInput,
+    count: usize,
+) callconv(.c) Abi.StatusCode {
+    _ = engine;
+    const state: *FakeBridgeState = @ptrCast(@alignCast(user_data.?));
+    if (count != 0 and inputs == null) return Abi.status_invalid_argument;
+    state.stylesheet_replace_count += 1;
+    return Abi.status_ok;
+}
+
+fn fakeSyncNode(
+    user_data: ?*anyopaque,
+    engine: ?*anyopaque,
+    node_id: StyleEngine.NodeId,
+) callconv(.c) Abi.StatusCode {
+    _ = engine;
+    const state: *FakeBridgeState = @ptrCast(@alignCast(user_data.?));
+    if (node_id == 0) return Abi.status_invalid_argument;
+    state.sync_count += 1;
+    return Abi.status_ok;
+}
+
+fn fakeResetDocument(
+    user_data: ?*anyopaque,
+    engine: ?*anyopaque,
+) callconv(.c) Abi.StatusCode {
+    _ = engine;
+    const state: *FakeBridgeState = @ptrCast(@alignCast(user_data.?));
+    state.reset_count += 1;
+    return Abi.status_ok;
+}
+
+fn fakeFlushStyles(
+    user_data: ?*anyopaque,
+    engine: ?*anyopaque,
+    nodes: [*c]const StyleEngine.NodeId,
+    node_count: usize,
+    out_result: *Abi.FlushResult,
+) callconv(.c) Abi.StatusCode {
+    _ = engine;
+    const state: *FakeBridgeState = @ptrCast(@alignCast(user_data.?));
+    if (node_count != 0 and nodes == null) return Abi.status_invalid_argument;
+    state.flush_count += 1;
+    out_result.* = .{ .generation = state.last_generation, .changed_node_count = node_count };
     return Abi.status_ok;
 }
 
@@ -462,6 +569,10 @@ test "StyleEngine adapter forwards the stable C ABI" {
         .destroy = fakeDestroy,
         .invalidate_stylesheets = fakeInvalidateStylesheets,
         .invalidate_dom = fakeInvalidateDom,
+        .replace_stylesheets = fakeReplaceStylesheets,
+        .sync_node = fakeSyncNode,
+        .reset_document = fakeResetDocument,
+        .flush_styles = fakeFlushStyles,
         .prepare_for_layout = fakePrepareForLayout,
         .computed_value = fakeComputedValue,
         .custom_property = null,
@@ -492,6 +603,25 @@ test "StyleEngine adapter forwards the stable C ABI" {
     try std.testing.expectEqual(StyleEngine.Status.ok, engine.invalidateDom(9, .attributes));
     try std.testing.expectEqual(@as(u64, 3), state.last_generation);
     try std.testing.expectEqual(@as(u32, 2), state.invalidation_count);
+
+    const css = "div { color: red }";
+    const sheet = Abi.StylesheetInput{
+        .sheet_id = 1,
+        .origin = .author,
+        .enabled = 1,
+        .css = .{ .ptr = css.ptr, .len = css.len },
+    };
+    try std.testing.expectEqual(StyleEngine.Status.ok, engine.replaceStylesheets(&.{sheet}));
+    try std.testing.expectEqual(@as(u64, 4), engine.generation());
+    try std.testing.expectEqual(@as(u32, 1), state.stylesheet_replace_count);
+    try std.testing.expectEqual(StyleEngine.Status.ok, engine.syncNode(9));
+    const flushed = engine.flushStyles(&.{9});
+    try std.testing.expectEqual(StyleEngine.Status.ok, flushed.status);
+    try std.testing.expectEqual(@as(usize, 1), flushed.changed_node_count);
+    try std.testing.expectEqual(@as(u32, 1), state.sync_count);
+    try std.testing.expectEqual(@as(u32, 1), state.flush_count);
+    try std.testing.expectEqual(StyleEngine.Status.ok, engine.resetDocument());
+    try std.testing.expectEqual(@as(u32, 1), state.reset_count);
 
     const hidden = engine.visibility(9);
     try std.testing.expectEqual(StyleEngine.Status.ok, hidden.status);

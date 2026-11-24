@@ -31,11 +31,17 @@ typedef struct StyloSlice {
 typedef struct StyloNodeInfo {
     uint64_t node_id;
     uint64_t parent_id;
+    uint64_t first_child_id;
+    uint64_t last_child_id;
+    uint64_t prev_sibling_id;
+    uint64_t next_sibling_id;
     uint32_t kind;
     uint32_t flags;
     StyloSlice tag_name;
     StyloSlice id;
     StyloSlice classes;
+    StyloSlice style;
+    StyloSlice attribute_names;
 } StyloNodeInfo;
 
 typedef StyloStatus (*StyloReadNodeCallback)(
@@ -43,9 +49,17 @@ typedef StyloStatus (*StyloReadNodeCallback)(
     const void *node,
     StyloNodeInfo *out);
 
+typedef StyloStatus (*StyloReadAttrCallback)(
+    void *ctx,
+    const void *node,
+    StyloSlice name,
+    StyloSlice namespace_name,
+    StyloSlice *out);
+
 typedef struct StyloDomCallbacks {
     void *ctx;
     StyloReadNodeCallback read_node;
+    StyloReadAttrCallback read_attr;
 } StyloDomCallbacks;
 
 typedef enum StyloStylesheetOrigin {
@@ -83,6 +97,9 @@ StyloStatus koko_stylo_engine_replace_stylesheets(
 StyloStatus koko_stylo_engine_sync_node(
     StyloEngine *engine,
     const void *node);
+
+StyloStatus koko_stylo_engine_reset_document(
+    StyloEngine *engine);
 
 StyloStatus koko_stylo_engine_sync_node_info(
     StyloEngine *engine,

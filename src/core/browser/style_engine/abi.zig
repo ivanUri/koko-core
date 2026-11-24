@@ -37,6 +37,27 @@ pub const Buffer = extern struct {
     len: usize,
 };
 
+pub const StylesheetOrigin = enum(u32) {
+    user_agent = 0,
+    user = 1,
+    author = 2,
+};
+
+/// Borrowed stylesheet input. The bridge must consume the batch synchronously
+/// and must not retain the CSS pointer.
+pub const StylesheetInput = extern struct {
+    sheet_id: u64,
+    origin: StylesheetOrigin,
+    enabled: u8,
+    reserved: [7]u8 = .{ 0, 0, 0, 0, 0, 0, 0 },
+    css: StringSlice,
+};
+
+pub const FlushResult = extern struct {
+    generation: Generation = 0,
+    changed_node_count: usize = 0,
+};
+
 pub const CreateFn = *const fn (
     user_data: ?*anyopaque,
     frame_id: FrameId,
@@ -60,6 +81,32 @@ pub const InvalidateDomFn = *const fn (
     node_id: NodeId,
     kind: u32,
     generation: Generation,
+) callconv(.c) StatusCode;
+
+pub const ReplaceStylesheetsFn = *const fn (
+    user_data: ?*anyopaque,
+    engine: ?*anyopaque,
+    inputs: [*c]const StylesheetInput,
+    count: usize,
+) callconv(.c) StatusCode;
+
+pub const SyncNodeFn = *const fn (
+    user_data: ?*anyopaque,
+    engine: ?*anyopaque,
+    node_id: NodeId,
+) callconv(.c) StatusCode;
+
+pub const ResetDocumentFn = *const fn (
+    user_data: ?*anyopaque,
+    engine: ?*anyopaque,
+) callconv(.c) StatusCode;
+
+pub const FlushStylesFn = *const fn (
+    user_data: ?*anyopaque,
+    engine: ?*anyopaque,
+    nodes: [*c]const NodeId,
+    node_count: usize,
+    out_result: *FlushResult,
 ) callconv(.c) StatusCode;
 
 pub const PrepareForLayoutFn = *const fn (
@@ -95,6 +142,10 @@ pub const Api = extern struct {
     destroy: ?DestroyFn,
     invalidate_stylesheets: ?InvalidateStylesheetsFn,
     invalidate_dom: ?InvalidateDomFn,
+    replace_stylesheets: ?ReplaceStylesheetsFn = null,
+    sync_node: ?SyncNodeFn = null,
+    reset_document: ?ResetDocumentFn = null,
+    flush_styles: ?FlushStylesFn = null,
     prepare_for_layout: ?PrepareForLayoutFn,
     computed_value: ?QueryFn,
     custom_property: ?QueryFn,

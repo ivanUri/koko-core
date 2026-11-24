@@ -14,6 +14,12 @@ crate-type = ["staticlib"]
 # The package is named `stylo`, while its Rust library target is `style`.
 style = { package = "stylo", git = "https://github.com/servo/stylo.git", rev = "0ab78ce95162eca027c874b505b505ef17a85ac8", default-features = false, features = ["servo"] }
 servo_arc = { git = "https://github.com/servo/stylo.git", rev = "0ab78ce95162eca027c874b505b505ef17a85ac8" }
+euclid = "0.22.14"
+app_units = "0.7.8"
+stylo_atoms = { git = "https://github.com/servo/stylo.git", rev = "0ab78ce95162eca027c874b505b505ef17a85ac8" }
+stylo_dom = { git = "https://github.com/servo/stylo.git", rev = "0ab78ce95162eca027c874b505b505ef17a85ac8" }
+selectors = { git = "https://github.com/servo/stylo.git", rev = "0ab78ce95162eca027c874b505b505ef17a85ac8" }
+style_traits = { package = "stylo_traits", git = "https://github.com/servo/stylo.git", rev = "0ab78ce95162eca027c874b505b505ef17a85ac8" }
 url = "2.5"
 
 [profile.release]

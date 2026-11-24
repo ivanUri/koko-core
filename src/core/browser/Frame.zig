@@ -23,6 +23,7 @@ const EventManager = @import("EventManager.zig");
 const ScriptManager = @import("ScriptManager.zig");
 const StyleManager = @import("StyleManager.zig");
 const StyleEngine = @import("StyleEngine.zig").StyleEngine;
+const Abi = @import("style_engine/abi.zig");
 
 const Parser = @import("../parser/Parser.zig");
 const h5e = @import("../parser/html5ever.zig");
@@ -37,6 +38,8 @@ const Event = @import("../webapi/Event.zig");
 const EventTarget = @import("../webapi/EventTarget.zig");
 const CData = @import("../webapi/CData.zig");
 const Element = @import("../dom/Element.zig");
+const CSSStyleSheet = @import("../webapi/css/CSSStyleSheet.zig");
+const StyleSheetList = @import("../webapi/css/StyleSheetList.zig");
 const HtmlElement = @import("../webapi/element/Html.zig");
 const Window = @import("../webapi/Window.zig");
 const HTMLDocument = @import("../webapi/HTMLDocument.zig");
@@ -84,6 +87,75 @@ const IFrame = Element.Html.IFrame;
 const IFrameSandbox = @import("IFrameSandbox.zig");
 const Allocator = std.mem.Allocator;
 const IS_DEBUG = builtin.mode == .Debug;
+
+const StyloCStatus = i32;
+const StyloCSlice = extern struct {
+    ptr: [*c]const u8,
+    len: usize,
+};
+const StyloCNodeInfo = extern struct {
+    node_id: u64,
+    parent_id: u64,
+    first_child_id: u64,
+    last_child_id: u64,
+    prev_sibling_id: u64,
+    next_sibling_id: u64,
+    kind: u32,
+    flags: u32,
+    tag_name: StyloCSlice,
+    id: StyloCSlice,
+    classes: StyloCSlice,
+    style: StyloCSlice,
+    attribute_names: StyloCSlice,
+};
+const StyloReadNodeFn = *const fn (
+    ctx: ?*anyopaque,
+    node: ?*const anyopaque,
+    out: *StyloCNodeInfo,
+) callconv(.c) StyloCStatus;
+const StyloReadAttrFn = *const fn (
+    ctx: ?*anyopaque,
+    node: ?*const anyopaque,
+    name: StyloCSlice,
+    namespace_name: StyloCSlice,
+    out: *StyloCSlice,
+) callconv(.c) StyloCStatus;
+const StyloCDomCallbacks = extern struct {
+    ctx: ?*anyopaque,
+    read_node: ?StyloReadNodeFn,
+    read_attr: ?StyloReadAttrFn,
+};
+const StyloCFlushResult = extern struct {
+    invalidation_generation: u64,
+    changed_node_count: usize,
+};
+
+extern fn koko_stylo_engine_new(
+    callbacks: *const StyloCDomCallbacks,
+    out_engine: *?*anyopaque,
+) StyloCStatus;
+extern fn koko_stylo_engine_destroy(engine: ?*anyopaque) StyloCStatus;
+extern fn koko_stylo_engine_replace_stylesheets(
+    engine: ?*anyopaque,
+    inputs: [*c]const Abi.StylesheetInput,
+    count: usize,
+) StyloCStatus;
+extern fn koko_stylo_engine_sync_node(engine: ?*anyopaque, node: ?*const anyopaque) StyloCStatus;
+extern fn koko_stylo_engine_reset_document(engine: ?*anyopaque) StyloCStatus;
+extern fn koko_stylo_engine_flush_styles(
+    engine: ?*anyopaque,
+    nodes: [*c]const u64,
+    node_count: usize,
+    out_result: *StyloCFlushResult,
+) StyloCStatus;
+extern fn koko_stylo_engine_serialize_property(
+    engine: ?*anyopaque,
+    node_id: u64,
+    property: StyloCSlice,
+    out: [*c]u8,
+    capacity: usize,
+    written: *usize,
+) StyloCStatus;
 
 fn assert(ok: bool, comptime msg: []const u8, args: anytype) void {
     if (ok) return;
@@ -348,6 +420,7 @@ _style_engine_document: ?*Document = null,
 _style_engine_generation: u64 = 0,
 _style_engine_active: bool = false,
 _style_node_sequence: u32 = 1,
+_stylo_node_lookup: std.AutoHashMapUnmanaged(u32, *Node) = .empty,
 _script_manager: ScriptManager,
 
 // List of active live ranges (for mutation updates per DOM spec)
@@ -624,7 +697,11 @@ pub fn init(self: *Frame, frame_id: u32, page: *Page, parent: ?*Frame) !void {
     self._style_manager = try StyleManager.init(self);
     errdefer self._style_manager.deinit();
 
-    self._style_engine = StyleEngine.init(.{ .frame_id = frame_id });
+    var stylo_bridge = styloBridgeApi(self);
+    self._style_engine = StyleEngine.init(.{
+        .frame_id = frame_id,
+        .bridge = &stylo_bridge,
+    });
     errdefer self._style_engine.deinit();
 
     const browser = session.browser;
@@ -675,6 +752,8 @@ fn beginStyleDocumentLifecycle(self: *Frame, document: *Document) void {
     if (self._style_engine_active) self.endStyleDocumentLifecycle();
 
     self._style_engine_generation +%= 1;
+    _ = self._style_engine.resetDocument();
+    self._stylo_node_lookup.clearRetainingCapacity();
     self._style_engine_document = document;
     self._style_engine_active = true;
 
@@ -690,6 +769,7 @@ fn beginStyleDocumentLifecycle(self: *Frame, document: *Document) void {
 fn endStyleDocumentLifecycle(self: *Frame) void {
     const document = self._style_engine_document orelse {
         self._style_engine_active = false;
+        self._stylo_node_lookup.clearRetainingCapacity();
         return;
     };
     const generation = self._style_engine_generation;
@@ -699,6 +779,7 @@ fn endStyleDocumentLifecycle(self: *Frame) void {
     self._style_engine_document = null;
     self._style_engine_active = false;
     self._style_engine_generation +%= 1;
+    self._stylo_node_lookup.clearRetainingCapacity();
 }
 
 /// Notify the optional engine after the Zig DOM has changed.  The fallback
@@ -741,6 +822,269 @@ pub fn styleEngine(self: *Frame) *StyleEngine {
     return &self._style_engine;
 }
 
+fn styloFrame(user_data: ?*anyopaque) ?*Frame {
+    const data = user_data orelse return null;
+    return @ptrCast(@alignCast(data));
+}
+
+fn styloMapStatus(status: StyloCStatus) Abi.StatusCode {
+    return switch (status) {
+        0 => Abi.status_ok,
+        1, 2 => Abi.status_invalid_argument,
+        6 => Abi.status_unsupported,
+        8 => Abi.status_buffer_too_small,
+        else => Abi.status_internal_error,
+    };
+}
+
+fn styloSlice(value: []const u8) StyloCSlice {
+    return .{
+        .ptr = if (value.len == 0) null else value.ptr,
+        .len = value.len,
+    };
+}
+
+fn styloReadNode(
+    ctx: ?*anyopaque,
+    opaque_node: ?*const anyopaque,
+    out: *StyloCNodeInfo,
+) callconv(.c) StyloCStatus {
+    const frame = styloFrame(ctx) orelse return 5;
+    const encoded = @intFromPtr(opaque_node orelse return 2);
+    const encoded_frame: u32 = @truncate(encoded >> 32);
+    if (encoded_frame != frame._frame_id) return 2;
+    const local_id: u32 = @truncate(encoded);
+    const node = frame._stylo_node_lookup.get(local_id) orelse return 5;
+
+    var info = StyloCNodeInfo{
+        .node_id = encoded,
+        .parent_id = 0,
+        .first_child_id = 0,
+        .last_child_id = 0,
+        .prev_sibling_id = 0,
+        .next_sibling_id = 0,
+        .kind = 0,
+        .flags = 0,
+        .tag_name = styloSlice(""),
+        .id = styloSlice(""),
+        .classes = styloSlice(""),
+        .style = styloSlice(""),
+        .attribute_names = styloSlice(""),
+    };
+    if (node._parent) |parent| {
+        info.parent_id = frame.styleNodeId(parent);
+    }
+    if (node.firstChild()) |child| info.first_child_id = frame.styleNodeId(child);
+    if (node.lastChild()) |child| info.last_child_id = frame.styleNodeId(child);
+    if (node.previousSibling()) |sibling| info.prev_sibling_id = frame.styleNodeId(sibling);
+    if (node.nextSibling()) |sibling| info.next_sibling_id = frame.styleNodeId(sibling);
+    switch (node._type) {
+        .document => info.kind = 0,
+        .cdata, .document_type, .attribute => info.kind = 2,
+        .document_fragment => info.kind = if (node.is(ShadowRoot) != null) 3 else 0,
+        .element => |element| {
+            info.kind = 1;
+            info.tag_name = styloSlice(element.getTagNameLower());
+            info.id = styloSlice(element.getId());
+            info.classes = styloSlice(element.getClassName());
+            info.style = styloSlice(element.getAttributeSafe(comptime .wrap("style")) orelse "");
+            const names = element.getAttributeNames(frame) catch return 5;
+            var total: usize = 0;
+            for (names) |attribute_name| total += attribute_name.len + 1;
+            if (total != 0) {
+                const encoded_names = frame.call_arena.alloc(u8, total) catch return 5;
+                var offset: usize = 0;
+                for (names) |attribute_name| {
+                    @memcpy(encoded_names[offset .. offset + attribute_name.len], attribute_name);
+                    offset += attribute_name.len;
+                    encoded_names[offset] = 0;
+                    offset += 1;
+                }
+                info.attribute_names = styloSlice(encoded_names);
+            }
+        },
+    }
+    out.* = info;
+    return 0;
+}
+
+fn styloReadAttr(
+    ctx: ?*anyopaque,
+    opaque_node: ?*const anyopaque,
+    name: StyloCSlice,
+    namespace_name: StyloCSlice,
+    out: *StyloCSlice,
+) callconv(.c) StyloCStatus {
+    const frame = styloFrame(ctx) orelse return 5;
+    if (namespace_name.len != 0) return 0;
+    const encoded = @intFromPtr(opaque_node orelse return 2);
+    const encoded_frame: u32 = @truncate(encoded >> 32);
+    if (encoded_frame != frame._frame_id) return 2;
+    const local_id: u32 = @truncate(encoded);
+    const node = frame._stylo_node_lookup.get(local_id) orelse return 5;
+    const element = switch (node._type) {
+        .element => |element| element,
+        else => return 0,
+    };
+    if (name.len == 0 or name.ptr == null) return 1;
+    const attr_name = name.ptr[0..name.len];
+    const value = element.getAttributeSafe(String.wrap(attr_name)) orelse {
+        out.* = styloSlice("");
+        return 0;
+    };
+    out.* = styloSlice(value);
+    return 0;
+}
+
+fn styloCreate(
+    user_data: ?*anyopaque,
+    _: Abi.FrameId,
+    out_engine: *?*anyopaque,
+) callconv(.c) Abi.StatusCode {
+    if (styloFrame(user_data) == null) return Abi.status_invalid_argument;
+    const callbacks = StyloCDomCallbacks{
+        .ctx = user_data,
+        .read_node = styloReadNode,
+        .read_attr = styloReadAttr,
+    };
+    var engine: ?*anyopaque = null;
+    const status = koko_stylo_engine_new(&callbacks, &engine);
+    if (status != 0 or engine == null) return styloMapStatus(status);
+    out_engine.* = engine;
+    return Abi.status_ok;
+}
+
+fn styloDestroy(_: ?*anyopaque, engine: ?*anyopaque) callconv(.c) void {
+    if (engine != null) _ = koko_stylo_engine_destroy(engine);
+}
+
+fn styloInvalidateStylesheets(
+    _: ?*anyopaque,
+    _: ?*anyopaque,
+    _: Abi.Generation,
+) callconv(.c) Abi.StatusCode {
+    return Abi.status_ok;
+}
+
+fn styloInvalidateDom(
+    _: ?*anyopaque,
+    engine: ?*anyopaque,
+    node_id: Abi.NodeId,
+    _: u32,
+    _: Abi.Generation,
+) callconv(.c) Abi.StatusCode {
+    if (node_id == 0) return Abi.status_ok;
+    return styloMapStatus(koko_stylo_engine_sync_node(engine, @ptrFromInt(node_id)));
+}
+
+fn styloReplaceStylesheets(
+    _: ?*anyopaque,
+    engine: ?*anyopaque,
+    inputs: [*c]const Abi.StylesheetInput,
+    count: usize,
+) callconv(.c) Abi.StatusCode {
+    return styloMapStatus(koko_stylo_engine_replace_stylesheets(engine, inputs, count));
+}
+
+fn styloSyncNode(
+    _: ?*anyopaque,
+    engine: ?*anyopaque,
+    node_id: Abi.NodeId,
+) callconv(.c) Abi.StatusCode {
+    if (node_id == 0) return Abi.status_invalid_argument;
+    return styloMapStatus(koko_stylo_engine_sync_node(engine, @ptrFromInt(node_id)));
+}
+
+fn styloResetDocument(
+    _: ?*anyopaque,
+    engine: ?*anyopaque,
+) callconv(.c) Abi.StatusCode {
+    return styloMapStatus(koko_stylo_engine_reset_document(engine));
+}
+
+fn styloFlushStyles(
+    _: ?*anyopaque,
+    engine: ?*anyopaque,
+    nodes: [*c]const Abi.NodeId,
+    node_count: usize,
+    out_result: *Abi.FlushResult,
+) callconv(.c) Abi.StatusCode {
+    var result = StyloCFlushResult{ .invalidation_generation = 0, .changed_node_count = 0 };
+    const status = koko_stylo_engine_flush_styles(
+        engine,
+        @ptrCast(nodes),
+        node_count,
+        &result,
+    );
+    if (status != 0) return styloMapStatus(status);
+    out_result.* = .{
+        .generation = result.invalidation_generation,
+        .changed_node_count = result.changed_node_count,
+    };
+    return Abi.status_ok;
+}
+
+fn styloPrepareForLayout(
+    user_data: ?*anyopaque,
+    engine: ?*anyopaque,
+    _: Abi.Generation,
+) callconv(.c) Abi.StatusCode {
+    const frame = styloFrame(user_data) orelse return Abi.status_invalid_argument;
+    const sheets = frame.document.getStyleSheets(frame) catch return Abi.status_internal_error;
+    var inputs: std.ArrayListUnmanaged(Abi.StylesheetInput) = .empty;
+    defer inputs.deinit(frame.call_arena);
+    for (sheets.items()) |sheet| {
+        const css = sheet.getTextForStyleEngine(frame) catch return Abi.status_internal_error;
+        inputs.append(frame.call_arena, .{
+            .sheet_id = @intFromPtr(sheet),
+            .origin = .author,
+            .enabled = if (sheet.getDisabled()) 0 else 1,
+            .css = .{ .ptr = if (css.len == 0) null else css.ptr, .len = css.len },
+        }) catch return Abi.status_out_of_memory;
+    }
+    const ptr: [*c]const Abi.StylesheetInput = if (inputs.items.len == 0) null else inputs.items.ptr;
+    return styloMapStatus(koko_stylo_engine_replace_stylesheets(engine, ptr, inputs.items.len));
+}
+
+fn styloComputedValue(
+    _: ?*anyopaque,
+    engine: ?*anyopaque,
+    node_id: Abi.NodeId,
+    property: Abi.StringSlice,
+    output: Abi.Buffer,
+    out_len: *usize,
+) callconv(.c) Abi.StatusCode {
+    return styloMapStatus(koko_stylo_engine_serialize_property(
+        engine,
+        node_id,
+        .{ .ptr = property.ptr, .len = property.len },
+        output.ptr,
+        output.len,
+        out_len,
+    ));
+}
+
+fn styloBridgeApi(frame: *Frame) StyleEngine.AbiApi {
+    return .{
+        .abi_version = Abi.abi_version,
+        .user_data = @ptrCast(frame),
+        .create = styloCreate,
+        .destroy = styloDestroy,
+        .invalidate_stylesheets = styloInvalidateStylesheets,
+        .invalidate_dom = styloInvalidateDom,
+        .replace_stylesheets = styloReplaceStylesheets,
+        .sync_node = styloSyncNode,
+        .reset_document = styloResetDocument,
+        .flush_styles = styloFlushStyles,
+        .prepare_for_layout = styloPrepareForLayout,
+        .computed_value = styloComputedValue,
+        .custom_property = styloComputedValue,
+        .layout_property = null,
+        .visibility = null,
+        .pointer_events = null,
+    };
+}
+
 /// Return a stable opaque node identity for the current frame/document.
 ///
 /// Stylo receives this identity through the C boundary; it must not use the
@@ -756,6 +1100,7 @@ pub fn styleNodeId(self: *Frame, node: *Node) StyleEngine.NodeId {
         node._stylo_frame_id = self._frame_id;
         node._stylo_node_id = id;
     }
+    self._stylo_node_lookup.put(self.arena, node._stylo_node_id, node) catch {};
     return (@as(StyleEngine.NodeId, self._frame_id) << 32) | node._stylo_node_id;
 }
 

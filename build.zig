@@ -334,6 +334,8 @@ fn linkStylo(b: *Build, mod: *Build.Module) !void {
         "src/core/stylo/Cargo.toml",
         "src/core/stylo/Cargo.lock",
         "src/core/stylo/lib.rs",
+        "src/core/stylo/dom_adapter.rs",
+        "src/core/stylo/stylist_store.rs",
         "src/core/stylo/stylo.h",
     }) |path| {
         exec_cargo.addFileInput(b.path(path));

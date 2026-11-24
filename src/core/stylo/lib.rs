@@ -6,15 +6,18 @@
 //! one batch. Traversal/property serialization remain explicit unsupported
 //! operations until the full Stylo DOM trait adapter is wired.
 
+use servo_arc::Arc;
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 
-use servo_arc::Arc;
 use style::context::QuirksMode;
 use style::properties::{parse_style_attribute, PropertyId};
-use style::shared_lock::SharedRwLock;
-use style::stylesheets::{CssRuleType, Origin, Stylesheet, UrlExtraData};
+use style::stylesheets::{CssRuleType, UrlExtraData};
+
+mod dom_adapter;
+mod stylist_store;
 
 const ABI_VERSION: u32 = 1;
 
@@ -63,11 +66,18 @@ impl StyloSlice {
 pub struct StyloNodeInfo {
     pub node_id: u64,
     pub parent_id: u64,
+    pub first_child_id: u64,
+    pub last_child_id: u64,
+    pub prev_sibling_id: u64,
+    pub next_sibling_id: u64,
     pub kind: u32,
     pub flags: u32,
     pub tag_name: StyloSlice,
     pub id: StyloSlice,
     pub classes: StyloSlice,
+    pub style: StyloSlice,
+    /// NUL-separated attribute names copied by the adapter during the callback.
+    pub attribute_names: StyloSlice,
 }
 
 pub type StyloReadNodeCallback = unsafe extern "C" fn(
@@ -76,11 +86,20 @@ pub type StyloReadNodeCallback = unsafe extern "C" fn(
     out: *mut StyloNodeInfo,
 ) -> StyloStatus;
 
+pub type StyloReadAttrCallback = unsafe extern "C" fn(
+    ctx: *mut c_void,
+    node: *const c_void,
+    name: StyloSlice,
+    namespace: StyloSlice,
+    out: *mut StyloSlice,
+) -> StyloStatus;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StyloDomCallbacks {
     pub ctx: *mut c_void,
     pub read_node: Option<StyloReadNodeCallback>,
+    pub read_attr: Option<StyloReadAttrCallback>,
 }
 
 #[repr(C)]
@@ -113,17 +132,11 @@ pub struct StyloEngine {
     inner: Engine,
 }
 
-#[allow(dead_code)]
-struct ParsedStylesheet {
-    sheet_id: u64,
-    origin: StyloStylesheetOrigin,
-    enabled: bool,
-    sheet: Arc<Stylesheet>,
-}
-
 struct Engine {
     callbacks: StyloDomCallbacks,
-    sheets: Vec<ParsedStylesheet>,
+    stylist: stylist_store::StylistStore,
+    node_records: HashMap<u64, Box<dom_adapter::NodeRecord>>,
+    computed_styles: HashMap<u64, Arc<style::properties::ComputedValues>>,
     url_data: UrlExtraData,
     invalidation_generation: u64,
     last_error: String,
@@ -133,7 +146,9 @@ impl Engine {
     fn new(callbacks: StyloDomCallbacks) -> Self {
         Self {
             callbacks,
-            sheets: Vec::new(),
+            stylist: stylist_store::StylistStore::new(1),
+            node_records: HashMap::new(),
+            computed_styles: HashMap::new(),
             url_data: UrlExtraData::from(
                 url::Url::parse("about:blank")
                     .expect("the static about:blank URL must always be valid"),
@@ -148,55 +163,106 @@ impl Engine {
         status
     }
 
-    fn replace_stylesheets(&mut self, inputs: &[StyloStylesheetInput]) -> Result<(), StyloStatus> {
-        if inputs.len() > 65_536 {
-            return Err(StyloStatus::InvalidArgument);
+    pub(crate) fn ensure_node_record_mut(
+        &mut self,
+        node_id: u64,
+    ) -> Option<&mut dom_adapter::NodeRecord> {
+        if node_id == 0 {
+            return None;
         }
-        let lock = SharedRwLock::new();
-        let mut parsed = Vec::with_capacity(inputs.len());
+        let callback = self.callbacks.read_node?;
+        let mut info = StyloNodeInfo::default();
+        let node = node_id as usize as *const c_void;
+        let status = unsafe { callback(self.callbacks.ctx, node, &mut info) };
+        if status != StyloStatus::Ok || info.node_id != node_id {
+            return None;
+        }
+        if self.node_records.contains_key(&node_id) {
+            let record = self.node_records.get_mut(&node_id)?;
+            if record.matches(info) {
+                return Some(record);
+            }
+            if !record.update(info) {
+                return None;
+            }
+            return Some(record);
+        }
+        let record = dom_adapter::NodeRecord::new(info)?;
+        self.node_records.insert(node_id, Box::new(record));
+        self.node_records.get_mut(&node_id).map(Box::as_mut)
+    }
 
-        // Parse the complete batch before publishing it, so replacement is
-        // atomic from the embedder's perspective.
-        for input in inputs {
-            if input.sheet_id == 0 {
-                return Err(StyloStatus::InvalidArgument);
-            }
-            if parsed
-                .iter()
-                .any(|sheet: &ParsedStylesheet| sheet.sheet_id == input.sheet_id)
-            {
-                return Err(StyloStatus::InvalidArgument);
-            }
-            let origin = match input.origin {
-                StyloStylesheetOrigin::UserAgent => Origin::UserAgent,
-                StyloStylesheetOrigin::User => Origin::User,
-                StyloStylesheetOrigin::Author => Origin::Author,
-            };
-            let sheet = Stylesheet::from_bytes(
-                input.css.as_bytes()?,
-                self.url_data.clone(),
-                None,
-                None,
-                origin,
-                Arc::new(lock.wrap(style::media_queries::MediaList::empty())),
-                lock.clone(),
-                None,
-                None,
-                QuirksMode::NoQuirks,
-            );
-            if input.enabled == 0 {
-                sheet.set_disabled(true);
-            }
-            parsed.push(ParsedStylesheet {
-                sheet_id: input.sheet_id,
-                origin: input.origin,
-                enabled: input.enabled != 0,
-                sheet: Arc::new(sheet),
-            });
-        }
-        self.sheets = parsed;
+    pub(crate) fn ensure_node_record(
+        &mut self,
+        node_id: u64,
+    ) -> Option<&'static dom_adapter::NodeRecord> {
+        let record = self.ensure_node_record_mut(node_id)? as *mut dom_adapter::NodeRecord;
+        Some(unsafe { &*record })
+    }
+
+    fn replace_stylesheets(&mut self, inputs: &[StyloStylesheetInput]) -> Result<(), StyloStatus> {
+        self.stylist.replace(inputs)?;
+        self.computed_styles.clear();
         self.invalidation_generation = self.invalidation_generation.wrapping_add(1);
         Ok(())
+    }
+
+    fn reset_document(&mut self) {
+        self.node_records.clear();
+        self.computed_styles.clear();
+        self.invalidation_generation = self.invalidation_generation.wrapping_add(1);
+        self.last_error.clear();
+    }
+
+    fn resolve_node_style(
+        &mut self,
+        engine_ptr: *mut StyloEngine,
+        node_id: u64,
+    ) -> Result<Arc<style::properties::ComputedValues>, StyloStatus> {
+        if node_id == 0 {
+            return Err(StyloStatus::InvalidArgument);
+        }
+        if let Some(style) = self.computed_styles.get(&node_id) {
+            return Ok(style.clone());
+        }
+        let (kind, parent_id) = {
+            let record = self
+                .ensure_node_record(node_id)
+                .ok_or(StyloStatus::CallbackFailed)?;
+            (record.info.kind, record.info.parent_id)
+        };
+        if kind != dom_adapter::NODE_KIND_ELEMENT {
+            return Err(StyloStatus::Unsupported);
+        }
+        let parent_style = if parent_id == 0 {
+            None
+        } else {
+            Some(self.resolve_node_style(engine_ptr, parent_id)?)
+        };
+        let element = dom_adapter::KokoElement::from_engine_node(engine_ptr, node_id)
+            .ok_or(StyloStatus::CallbackFailed)?;
+        let style = self.stylist.resolve_element(
+            engine_ptr,
+            element,
+            parent_style.as_deref(),
+            parent_style.as_deref(),
+        );
+        self.computed_styles.insert(node_id, style.clone());
+        Ok(style)
+    }
+
+    fn flush_styles(
+        &mut self,
+        engine_ptr: *mut StyloEngine,
+        nodes: &[u64],
+    ) -> Result<usize, StyloStatus> {
+        self.stylist.flush();
+        let mut changed = 0;
+        for node_id in nodes {
+            self.resolve_node_style(engine_ptr, *node_id)?;
+            changed += 1;
+        }
+        Ok(changed)
     }
 
     fn sync_node(&mut self, node: *const c_void, out: Option<*mut StyloNodeInfo>) -> StyloStatus {
@@ -216,6 +282,13 @@ impl Engine {
         if unsafe { (*info).node_id } == 0 {
             return self.error(StyloStatus::InvalidArgument, "callback returned node_id 0");
         }
+        if self
+            .ensure_node_record_mut(unsafe { (*info).node_id })
+            .is_none()
+        {
+            return self.error(StyloStatus::CallbackFailed, "node metadata is invalid");
+        }
+        self.computed_styles.clear();
         self.invalidation_generation = self.invalidation_generation.wrapping_add(1);
         self.last_error.clear();
         StyloStatus::Ok
@@ -372,6 +445,16 @@ pub extern "C" fn koko_stylo_engine_sync_node(
     }
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn koko_stylo_engine_reset_document(engine: *mut StyloEngine) -> StyloStatus {
+    match with_engine(engine, |inner| {
+        inner.reset_document();
+        StyloStatus::Ok
+    }) {
+        Ok(status) | Err(status) => status,
+    }
+}
+
 /// Read one authoritative node into caller-owned storage without retaining a
 /// Rust-side DOM mirror.
 #[unsafe(no_mangle)]
@@ -419,16 +502,23 @@ pub extern "C" fn koko_stylo_engine_flush_styles(
         if out_result.is_null() {
             return inner.error(StyloStatus::NullPointer, "out_result is null");
         }
+        let node_slice = if node_count == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(nodes, node_count) }
+        };
+        let changed_node_count = match inner.flush_styles(engine, node_slice) {
+            Ok(count) => count,
+            Err(status) => return inner.error(status, "style flush requires DOM traversal"),
+        };
         unsafe {
             *out_result = StyloFlushResult {
                 invalidation_generation: inner.invalidation_generation,
-                changed_node_count: 0,
+                changed_node_count,
             };
         }
-        inner.error(
-            StyloStatus::Unsupported,
-            "style flush requires Stylo DOM traversal",
-        )
+        inner.last_error.clear();
+        StyloStatus::Ok
     }) {
         Ok(status) | Err(status) => status,
     }
@@ -453,9 +543,31 @@ pub extern "C" fn koko_stylo_engine_serialize_property(
         if written.is_null() {
             return inner.error(StyloStatus::NullPointer, "written is null");
         }
-        let _ = (out, capacity);
-        unsafe { *written = 0 };
-        inner.error(StyloStatus::Unsupported, "computed style is not flushed")
+        let property = match property.as_str() {
+            Ok(property) => property,
+            Err(status) => return inner.error(status, "property is not UTF-8"),
+        };
+        let property_id = match PropertyId::parse_enabled_for_all_content(property) {
+            Ok(property_id) => property_id,
+            Err(()) => return inner.error(StyloStatus::ParseError, "unknown property"),
+        };
+        let computed = match inner.resolve_node_style(engine, node_id) {
+            Ok(style) => style,
+            Err(status) => return inner.error(status, "computed style resolution failed"),
+        };
+        let serialized = match inner
+            .stylist
+            .serialize_computed_property(&computed, &property_id)
+        {
+            Ok(value) => value,
+            Err(status) => return inner.error(status, "property is not a longhand"),
+        };
+        let status = copy_buffer(serialized.as_bytes(), out, capacity, written);
+        if status != StyloStatus::Ok {
+            return inner.error(status, "computed property output buffer is too small");
+        }
+        inner.last_error.clear();
+        StyloStatus::Ok
     }) {
         Ok(status) | Err(status) => status,
     }
@@ -490,7 +602,7 @@ pub extern "C" fn koko_stylo_engine_stylesheet_count(
         if engine.is_null() || out_count.is_null() {
             return StyloStatus::NullPointer;
         }
-        unsafe { *out_count = (*engine).inner.sheets.len() };
+        unsafe { *out_count = (*engine).inner.stylist.stylesheet_count() };
         StyloStatus::Ok
     }))
     .unwrap_or(StyloStatus::Panic)
@@ -507,19 +619,7 @@ pub extern "C" fn koko_stylo_engine_stylesheet_rule_count(
         if engine.is_null() || out_count.is_null() || sheet_id == 0 {
             return StyloStatus::NullPointer;
         }
-        let Some(sheet) = unsafe { &*engine }
-            .inner
-            .sheets
-            .iter()
-            .find(|sheet| sheet.sheet_id == sheet_id)
-        else {
-            unsafe { *out_count = 0 };
-            return StyloStatus::Ok;
-        };
-        let guard = sheet.sheet.shared_lock.read();
-        unsafe {
-            *out_count = sheet.sheet.contents.read_with(&guard).rules(&guard).len();
-        }
+        unsafe { *out_count = (*engine).inner.stylist.rule_count(sheet_id) };
         StyloStatus::Ok
     }))
     .unwrap_or(StyloStatus::Panic)
@@ -559,10 +659,92 @@ mod tests {
         StyloStatus::Ok
     }
 
+    unsafe extern "C" fn read_node_tree(
+        _ctx: *mut c_void,
+        node: *const c_void,
+        out: *mut StyloNodeInfo,
+    ) -> StyloStatus {
+        let node_id = node as usize as u64;
+        let (tag, parent) = if node_id == 1 {
+            (b"body" as &[u8], 0)
+        } else {
+            (b"div" as &[u8], 1)
+        };
+        let inline = if node_id == 2 {
+            b"color: blue" as &[u8]
+        } else {
+            &[]
+        };
+        let attribute_names = if node_id == 2 {
+            b"data-kind\0" as &[u8]
+        } else {
+            &[]
+        };
+        unsafe {
+            (*out).node_id = node_id;
+            (*out).parent_id = parent;
+            (*out).kind = dom_adapter::NODE_KIND_ELEMENT;
+            (*out).tag_name = StyloSlice {
+                ptr: tag.as_ptr(),
+                len: tag.len(),
+            };
+            (*out).style = StyloSlice {
+                ptr: if inline.is_empty() {
+                    ptr::null()
+                } else {
+                    inline.as_ptr()
+                },
+                len: inline.len(),
+            };
+            (*out).attribute_names = StyloSlice {
+                ptr: if attribute_names.is_empty() {
+                    ptr::null()
+                } else {
+                    attribute_names.as_ptr()
+                },
+                len: attribute_names.len(),
+            };
+        }
+        StyloStatus::Ok
+    }
+
+    unsafe extern "C" fn read_attr_tree(
+        _ctx: *mut c_void,
+        _node: *const c_void,
+        name: StyloSlice,
+        _namespace: StyloSlice,
+        out: *mut StyloSlice,
+    ) -> StyloStatus {
+        let Ok(name) = name.as_str() else {
+            return StyloStatus::InvalidUtf8;
+        };
+        if name != "data-kind" {
+            unsafe { *out = StyloSlice::default() };
+            return StyloStatus::Ok;
+        }
+        let value = b"primary";
+        unsafe {
+            *out = StyloSlice {
+                ptr: value.as_ptr(),
+                len: value.len(),
+            };
+        }
+        StyloStatus::Ok
+    }
+
     fn callbacks() -> StyloDomCallbacks {
         StyloDomCallbacks {
             ctx: ptr::null_mut(),
             read_node: Some(read_node),
+            read_attr: None,
+        }
+    }
+
+    fn tree_callbacks() -> StyloDomCallbacks {
+        StyloDomCallbacks {
+            ctx: ptr::null_mut(),
+            read_node: Some(read_node_tree),
+            read_attr: Some(read_attr_tree),
         }
     }
 
@@ -581,7 +763,7 @@ mod tests {
             },
         };
         assert_eq!(engine.replace_stylesheets(&[input]), Ok(()));
-        assert_eq!(engine.sheets.len(), 1);
+        assert_eq!(engine.stylist.stylesheet_count(), 1);
         assert_eq!(engine.invalidation_generation, 1);
     }
 
@@ -596,14 +778,14 @@ mod tests {
     }
 
     #[test]
-    fn flush_is_explicitly_unsupported() {
+    fn flush_without_nodes_builds_cascade_data() {
         let mut engine = StyloEngine {
             inner: Engine::new(callbacks()),
         };
         let mut result = StyloFlushResult::default();
         assert_eq!(
             koko_stylo_engine_flush_styles(&mut engine, ptr::null(), 0, &mut result),
-            StyloStatus::Unsupported
+            StyloStatus::Ok
         );
     }
 
@@ -634,5 +816,91 @@ mod tests {
             StyloStatus::Ok
         );
         assert_eq!(&output[..written], b"1px 2px");
+    }
+
+    #[test]
+    fn flush_resolves_computed_values_through_callback_dom() {
+        let mut engine = StyloEngine {
+            inner: Engine::new(tree_callbacks()),
+        };
+        let css = b"div[data-kind=\"primary\"] { --brand: red; background-color: var(--brand); margin-top: 3px }";
+        let input = StyloStylesheetInput {
+            sheet_id: 1,
+            origin: StyloStylesheetOrigin::Author,
+            enabled: 1,
+            reserved: [0; 7],
+            css: StyloSlice {
+                ptr: css.as_ptr(),
+                len: css.len(),
+            },
+        };
+        assert_eq!(
+            koko_stylo_engine_replace_stylesheets(&mut engine, &input, 1),
+            StyloStatus::Ok
+        );
+        let nodes = [2u64];
+        let mut result = StyloFlushResult::default();
+        assert_eq!(
+            koko_stylo_engine_flush_styles(&mut engine, nodes.as_ptr(), nodes.len(), &mut result),
+            StyloStatus::Ok
+        );
+        assert_eq!(result.changed_node_count, 1);
+
+        let property = b"margin-top";
+        let mut output = [0u8; 64];
+        let mut written = 0;
+        assert_eq!(
+            koko_stylo_engine_serialize_property(
+                &mut engine,
+                2,
+                StyloSlice {
+                    ptr: property.as_ptr(),
+                    len: property.len(),
+                },
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written,
+            ),
+            StyloStatus::Ok
+        );
+        assert_eq!(&output[..written], b"3px");
+
+        let property = b"color";
+        let mut output = [0u8; 64];
+        let mut written = 0;
+        assert_eq!(
+            koko_stylo_engine_serialize_property(
+                &mut engine,
+                2,
+                StyloSlice {
+                    ptr: property.as_ptr(),
+                    len: property.len(),
+                },
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written,
+            ),
+            StyloStatus::Ok
+        );
+        assert_eq!(&output[..written], b"rgb(0, 0, 255)");
+
+        let property = b"--brand";
+        let mut output = [0u8; 64];
+        let mut written = 0;
+        assert_eq!(
+            koko_stylo_engine_serialize_property(
+                &mut engine,
+                2,
+                StyloSlice {
+                    ptr: property.as_ptr(),
+                    len: property.len(),
+                },
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written,
+            ),
+            StyloStatus::Ok
+        );
+        assert_eq!(&output[..written], b"red");
     }
 }
