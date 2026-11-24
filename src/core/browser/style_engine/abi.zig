@@ -124,6 +124,23 @@ pub const QueryFn = *const fn (
     out_len: *usize,
 ) callconv(.c) StatusCode;
 
+pub const PseudoQueryFn = *const fn (
+    user_data: ?*anyopaque,
+    engine: ?*anyopaque,
+    node_id: NodeId,
+    pseudo: StringSlice,
+    name: StringSlice,
+    output: Buffer,
+    out_len: *usize,
+) callconv(.c) StatusCode;
+
+pub const LastErrorFn = *const fn (
+    user_data: ?*anyopaque,
+    engine: ?*anyopaque,
+    output: Buffer,
+    out_len: *usize,
+) callconv(.c) StatusCode;
+
 pub const BoolQueryFn = *const fn (
     user_data: ?*anyopaque,
     engine: ?*anyopaque,
@@ -148,6 +165,8 @@ pub const Api = extern struct {
     flush_styles: ?FlushStylesFn = null,
     prepare_for_layout: ?PrepareForLayoutFn,
     computed_value: ?QueryFn,
+    computed_pseudo_value: ?PseudoQueryFn = null,
+    last_error: ?LastErrorFn = null,
     custom_property: ?QueryFn,
     layout_property: ?QueryFn,
     visibility: ?BoolQueryFn,

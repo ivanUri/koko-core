@@ -29,7 +29,9 @@ use style::queries::values::{
 use style::selector_parser::SnapshotMap;
 use style::servo::media_features::PointerCapabilities;
 use style::shared_lock::{SharedRwLock, StylesheetGuards};
-use style::style_resolver::{PseudoElementResolution, StyleResolverForElement};
+use style::style_resolver::{
+    PseudoElementResolution, ResolvedElementStyles, StyleResolverForElement,
+};
 use style::stylesheets::{DocumentStyleSheet, Origin, Stylesheet, UrlExtraData};
 use style::stylist::{RuleInclusion, Stylist};
 use style::values::computed::{CSSPixelLength, Length};
@@ -163,7 +165,7 @@ impl StylistStore {
         element: KokoElement,
         parent_style: Option<&ComputedValues>,
         layout_parent_style: Option<&ComputedValues>,
-    ) -> Arc<ComputedValues> {
+    ) -> ResolvedElementStyles {
         let _engine_scope = EngineScope::enter(engine);
         let added_layout_state =
             !style::thread_state::get().contains(style::thread_state::ThreadState::LAYOUT);
@@ -187,6 +189,11 @@ impl StylistStore {
             };
             let mut thread_local = ThreadLocalStyleContext::<KokoElement>::new();
             thread_local.current_dom_depth = element.as_node().depth();
+            // Targeted CSSOM resolution runs outside Stylo's normal
+            // traversal, so construct the ancestor bloom filter explicitly.
+            // Without this, descendant and child selectors are rejected by
+            // the fast path before the callback-backed matcher is reached.
+            thread_local.bloom_filter.rebuild(element);
             let mut context = StyleContext {
                 shared: &shared,
                 thread_local: &mut thread_local,
@@ -197,9 +204,7 @@ impl StylistStore {
                 RuleInclusion::All,
                 PseudoElementResolution::Force,
             )
-            .resolve_primary_style(parent_style, layout_parent_style)
-            .style
-            .0
+            .resolve_style(parent_style, layout_parent_style)
         };
         if added_layout_state {
             style::thread_state::exit(style::thread_state::ThreadState::LAYOUT);

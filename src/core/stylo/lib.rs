@@ -14,6 +14,7 @@ use std::ptr;
 
 use style::context::QuirksMode;
 use style::properties::{parse_style_attribute, PropertyId};
+use style::selector_parser::PseudoElement;
 use style::stylesheets::{CssRuleType, UrlExtraData};
 
 mod dom_adapter;
@@ -70,9 +71,17 @@ pub struct StyloNodeInfo {
     pub last_child_id: u64,
     pub prev_sibling_id: u64,
     pub next_sibling_id: u64,
+    pub shadow_host_id: u64,
+    pub shadow_root_id: u64,
     pub kind: u32,
-    pub flags: u32,
+    /// Event/state bits using `stylo_dom::ElementState` bit positions.
+    pub flags: u64,
+    /// UTF-8 byte length for character-data nodes; zero for other nodes.
+    pub text_len: u32,
     pub tag_name: StyloSlice,
+    /// Element namespace URI. Empty means no namespace (used by unit-test
+    /// callback DOMs); HTML documents should provide the XHTML URI.
+    pub namespace_name: StyloSlice,
     pub id: StyloSlice,
     pub classes: StyloSlice,
     pub style: StyloSlice,
@@ -234,21 +243,106 @@ impl Engine {
         if kind != dom_adapter::NODE_KIND_ELEMENT {
             return Err(StyloStatus::Unsupported);
         }
+        // The authoritative DOM reports the document node as the parent of
+        // the document element. It is not a style-bearing element, so stop
+        // inheritance at that boundary. For a shadow root, inherit through
+        // its host; the adapter exposes the same relationship through
+        // `TElement::inheritance_parent`.
         let parent_style = if parent_id == 0 {
             None
         } else {
-            Some(self.resolve_node_style(engine_ptr, parent_id)?)
+            let parent = self
+                .ensure_node_record(parent_id)
+                .ok_or(StyloStatus::CallbackFailed)?;
+            match parent.info.kind {
+                dom_adapter::NODE_KIND_ELEMENT => {
+                    Some(self.resolve_node_style(engine_ptr, parent_id)?)
+                }
+                dom_adapter::NODE_KIND_SHADOW_ROOT if parent.info.shadow_host_id != 0 => {
+                    Some(self.resolve_node_style(engine_ptr, parent.info.shadow_host_id)?)
+                }
+                _ => None,
+            }
         };
         let element = dom_adapter::KokoElement::from_engine_node(engine_ptr, node_id)
             .ok_or(StyloStatus::CallbackFailed)?;
-        let style = self.stylist.resolve_element(
+        let resolved = self.stylist.resolve_element(
             engine_ptr,
             element,
             parent_style.as_deref(),
             parent_style.as_deref(),
         );
+        let style = resolved.primary_style().clone();
+        let record = self
+            .ensure_node_record_mut(node_id)
+            .ok_or(StyloStatus::CallbackFailed)?;
+        record.data.borrow_mut().set_styles(resolved);
         self.computed_styles.insert(node_id, style.clone());
         Ok(style)
+    }
+
+    fn serialize_pseudo_property(
+        &mut self,
+        engine_ptr: *mut StyloEngine,
+        node_id: u64,
+        pseudo: StyloSlice,
+        property: StyloSlice,
+        out: *mut u8,
+        capacity: usize,
+        written: *mut usize,
+    ) -> StyloStatus {
+        let pseudo_name = match pseudo.as_str() {
+            Ok(value) => value.trim(),
+            Err(status) => return self.error(status, "pseudo-element is not UTF-8"),
+        };
+        let pseudo = match pseudo_name.to_ascii_lowercase().as_str() {
+            ":before" | "::before" => PseudoElement::Before,
+            ":after" | "::after" => PseudoElement::After,
+            ":first-letter" | "::first-letter" => PseudoElement::FirstLetter,
+            ":first-line" | "::first-line" => PseudoElement::FirstLine,
+            ":selection" | "::selection" => PseudoElement::Selection,
+            ":marker" | "::marker" => PseudoElement::Marker,
+            _ => return self.error(StyloStatus::Unsupported, "unsupported pseudo-element"),
+        };
+        if let Err(status) = self.resolve_node_style(engine_ptr, node_id) {
+            return self.error(status, "pseudo style resolution failed");
+        }
+        let property = match property.as_str() {
+            Ok(value) if !value.is_empty() => value,
+            Ok(_) => return self.error(StyloStatus::InvalidArgument, "property is empty"),
+            Err(status) => return self.error(status, "property is not UTF-8"),
+        };
+        let property_id = match PropertyId::parse_enabled_for_all_content(property) {
+            Ok(property_id) => property_id,
+            Err(()) => return self.error(StyloStatus::ParseError, "unknown property"),
+        };
+        let style = self
+            .node_records
+            .get(&node_id)
+            .map(|record| record.data.borrow().styles.pseudos.get(&pseudo).cloned())
+            .flatten();
+        let Some(style) = style else {
+            if !self.node_records.contains_key(&node_id) {
+                return self.error(StyloStatus::CallbackFailed, "pseudo node is missing");
+            }
+            return self.error(
+                StyloStatus::Unsupported,
+                "pseudo-element has no computed style",
+            );
+        };
+        let serialized = match self
+            .stylist
+            .serialize_computed_property(&style, &property_id)
+        {
+            Ok(value) => value,
+            Err(status) => return self.error(status, "pseudo property is not a longhand"),
+        };
+        let status = copy_buffer(serialized.as_bytes(), out, capacity, written);
+        if status != StyloStatus::Ok {
+            return self.error(status, "pseudo property output buffer is too small");
+        }
+        self.last_error.clear();
+        StyloStatus::Ok
     }
 
     fn flush_styles(
@@ -573,6 +667,29 @@ pub extern "C" fn koko_stylo_engine_serialize_property(
     }
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn koko_stylo_engine_serialize_pseudo_property(
+    engine: *mut StyloEngine,
+    node_id: u64,
+    pseudo: StyloSlice,
+    property: StyloSlice,
+    out: *mut u8,
+    capacity: usize,
+    written: *mut usize,
+) -> StyloStatus {
+    match with_engine(engine, |inner| {
+        if node_id == 0 {
+            return inner.error(StyloStatus::InvalidArgument, "node_id is zero");
+        }
+        if written.is_null() {
+            return inner.error(StyloStatus::NullPointer, "written is null");
+        }
+        inner.serialize_pseudo_property(engine, node_id, pseudo, property, out, capacity, written)
+    }) {
+        Ok(status) | Err(status) => status,
+    }
+}
+
 /// Parse and canonicalize one specified property value through Stylo's CSSOM
 /// declaration parser. This is intentionally separate from computed-style
 /// serialization, which remains unsupported until DOM traversal is wired.
@@ -666,9 +783,14 @@ mod tests {
     ) -> StyloStatus {
         let node_id = node as usize as u64;
         let (tag, parent) = if node_id == 1 {
-            (b"body" as &[u8], 0)
+            (b"main" as &[u8], 0)
         } else {
             (b"div" as &[u8], 1)
+        };
+        let id = if node_id == 2 {
+            b"stylo-target" as &[u8]
+        } else {
+            &[]
         };
         let inline = if node_id == 2 {
             b"color: blue" as &[u8]
@@ -680,6 +802,7 @@ mod tests {
         } else {
             &[]
         };
+        let namespace = b"http://www.w3.org/1999/xhtml";
         unsafe {
             (*out).node_id = node_id;
             (*out).parent_id = parent;
@@ -687,6 +810,18 @@ mod tests {
             (*out).tag_name = StyloSlice {
                 ptr: tag.as_ptr(),
                 len: tag.len(),
+            };
+            (*out).id = StyloSlice {
+                ptr: if id.is_empty() {
+                    ptr::null()
+                } else {
+                    id.as_ptr()
+                },
+                len: id.len(),
+            };
+            (*out).namespace_name = StyloSlice {
+                ptr: namespace.as_ptr(),
+                len: namespace.len(),
             };
             (*out).style = StyloSlice {
                 ptr: if inline.is_empty() {
@@ -823,7 +958,7 @@ mod tests {
         let mut engine = StyloEngine {
             inner: Engine::new(tree_callbacks()),
         };
-        let css = b"div[data-kind=\"primary\"] { --brand: red; background-color: var(--brand); margin-top: 3px }";
+        let css = b"div[data-kind=\"primary\"] { --brand: red; background-color: var(--brand); margin-top: 3px } main > div[data-kind=\"primary\"] { color: rgb(70, 80, 90) !important } div::before { content: \"stylo\"; display: inline-block }";
         let input = StyloStylesheetInput {
             sheet_id: 1,
             origin: StyloStylesheetOrigin::Author,
@@ -882,7 +1017,7 @@ mod tests {
             ),
             StyloStatus::Ok
         );
-        assert_eq!(&output[..written], b"rgb(0, 0, 255)");
+        assert_eq!(&output[..written], b"rgb(70, 80, 90)");
 
         let property = b"--brand";
         let mut output = [0u8; 64];
@@ -902,5 +1037,29 @@ mod tests {
             StyloStatus::Ok
         );
         assert_eq!(&output[..written], b"red");
+
+        let pseudo = b"::before";
+        let property = b"display";
+        let mut output = [0u8; 64];
+        let mut written = 0;
+        assert_eq!(
+            koko_stylo_engine_serialize_pseudo_property(
+                &mut engine,
+                2,
+                StyloSlice {
+                    ptr: pseudo.as_ptr(),
+                    len: pseudo.len(),
+                },
+                StyloSlice {
+                    ptr: property.as_ptr(),
+                    len: property.len(),
+                },
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written,
+            ),
+            StyloStatus::Ok
+        );
+        assert_eq!(&output[..written], b"inline-block");
     }
 }

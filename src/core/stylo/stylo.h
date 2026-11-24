@@ -35,9 +35,13 @@ typedef struct StyloNodeInfo {
     uint64_t last_child_id;
     uint64_t prev_sibling_id;
     uint64_t next_sibling_id;
+    uint64_t shadow_host_id;
+    uint64_t shadow_root_id;
     uint32_t kind;
-    uint32_t flags;
+    uint64_t flags;
+    uint32_t text_len;
     StyloSlice tag_name;
+    StyloSlice namespace_name;
     StyloSlice id;
     StyloSlice classes;
     StyloSlice style;
@@ -119,6 +123,15 @@ StyloStatus koko_stylo_engine_flush_styles(
 StyloStatus koko_stylo_engine_serialize_property(
     StyloEngine *engine,
     uint64_t node_id,
+    StyloSlice property,
+    uint8_t *out,
+    size_t capacity,
+    size_t *written);
+
+StyloStatus koko_stylo_engine_serialize_pseudo_property(
+    StyloEngine *engine,
+    uint64_t node_id,
+    StyloSlice pseudo,
     StyloSlice property,
     uint8_t *out,
     size_t capacity,

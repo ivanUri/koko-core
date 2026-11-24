@@ -53,16 +53,18 @@ const StyloRead = struct {
 };
 
 _element: ?*Element = null,
+_pseudo_element: ?[]const u8 = null,
 _properties: std.DoublyLinkedList = .{},
 _is_computed: bool = false,
 _computed_indexed_keys: []const []const u8 = &.{},
 _computed_named_keys: []const []const u8 = &.{},
 _computed_in_keys: []const []const u8 = &.{},
 
-pub fn init(element: ?*Element, is_computed: bool, frame: *Frame) !*CSSStyleDeclaration {
+pub fn init(element: ?*Element, is_computed: bool, frame: *Frame, pseudo_element: ?[]const u8) !*CSSStyleDeclaration {
     const profile = frame.loadedProfile();
     const self = try frame._factory.create(CSSStyleDeclaration{
         ._element = element,
+        ._pseudo_element = if (pseudo_element) |pseudo| try frame.dupeString(pseudo) else null,
         ._is_computed = is_computed,
         ._computed_indexed_keys = if (is_computed) profile.css_computed_indexed_keys else &.{},
         ._computed_named_keys = if (is_computed) profile.css_computed_named_keys else &.{},
@@ -175,7 +177,9 @@ fn queryStylo(self: *const CSSStyleDeclaration, name: String, style_frame: *Fram
         return .{ .status = .out_of_memory };
     };
     const node_id: StyleEngine.NodeId = style_frame.styleNodeId(element.asNode());
-    var result = if (std.mem.startsWith(u8, property, "--"))
+    var result = if (self._pseudo_element) |pseudo|
+        style_frame.styleEngine().computedPseudoValue(node_id, pseudo, property, output)
+    else if (std.mem.startsWith(u8, property, "--"))
         style_frame.styleEngine().customProperty(node_id, property, output)
     else
         style_frame.styleEngine().computedValue(node_id, property, output);
@@ -184,7 +188,9 @@ fn queryStylo(self: *const CSSStyleDeclaration, name: String, style_frame: *Fram
         output = style_frame.call_arena.alloc(u8, result.bytes_written) catch {
             return .{ .status = .out_of_memory };
         };
-        result = if (std.mem.startsWith(u8, property, "--"))
+        result = if (self._pseudo_element) |pseudo|
+            style_frame.styleEngine().computedPseudoValue(node_id, pseudo, property, output)
+        else if (std.mem.startsWith(u8, property, "--"))
             style_frame.styleEngine().customProperty(node_id, property, output)
         else
             style_frame.styleEngine().computedValue(node_id, property, output);

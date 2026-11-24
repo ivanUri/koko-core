@@ -100,9 +100,13 @@ const StyloCNodeInfo = extern struct {
     last_child_id: u64,
     prev_sibling_id: u64,
     next_sibling_id: u64,
+    shadow_host_id: u64,
+    shadow_root_id: u64,
     kind: u32,
-    flags: u32,
+    flags: u64,
+    text_len: u32,
     tag_name: StyloCSlice,
+    namespace_name: StyloCSlice,
     id: StyloCSlice,
     classes: StyloCSlice,
     style: StyloCSlice,
@@ -152,6 +156,21 @@ extern fn koko_stylo_engine_serialize_property(
     engine: ?*anyopaque,
     node_id: u64,
     property: StyloCSlice,
+    out: [*c]u8,
+    capacity: usize,
+    written: *usize,
+) StyloCStatus;
+extern fn koko_stylo_engine_serialize_pseudo_property(
+    engine: ?*anyopaque,
+    node_id: u64,
+    pseudo: StyloCSlice,
+    property: StyloCSlice,
+    out: [*c]u8,
+    capacity: usize,
+    written: *usize,
+) StyloCStatus;
+extern fn koko_stylo_engine_last_error(
+    engine: ?*anyopaque,
     out: [*c]u8,
     capacity: usize,
     written: *usize,
@@ -844,6 +863,73 @@ fn styloSlice(value: []const u8) StyloCSlice {
     };
 }
 
+/// Values mirror stylo_dom::ElementState.  Keeping the mapping at this
+/// boundary lets Stylo match dynamic selectors against Koko's live DOM state
+/// without teaching the Rust adapter about Zig element implementations.
+const StyloElementState = struct {
+    const active: u64 = 1 << 0;
+    const focus: u64 = 1 << 1;
+    const enabled: u64 = 1 << 3;
+    const disabled: u64 = 1 << 4;
+    const checked: u64 = 1 << 5;
+    const indeterminate: u64 = 1 << 6;
+    const url_target: u64 = 1 << 8;
+    const required: u64 = 1 << 15;
+    const optional: u64 = 1 << 16;
+    const visited: u64 = 1 << 18;
+    const unvisited: u64 = 1 << 19;
+    const readonly: u64 = 1 << 23;
+    const readwrite: u64 = 1 << 24;
+    const focus_within: u64 = 1 << 31;
+};
+
+fn styloElementState(frame: *Frame, element: *Element) u64 {
+    var state: u64 = 0;
+    const tag = element.getTag();
+
+    if (element.hasDisabledConcept()) {
+        if (element.isDisabled()) state |= StyloElementState.disabled else state |= StyloElementState.enabled;
+    }
+    if (element.getAttributeSafe(comptime .wrap("required")) != null) {
+        state |= StyloElementState.required;
+    } else if (element.hasDisabledConcept()) {
+        state |= StyloElementState.optional;
+    }
+    if (element.getAttributeSafe(comptime .wrap("readonly")) != null) {
+        state |= StyloElementState.readonly;
+    } else if (element.hasDisabledConcept()) {
+        state |= StyloElementState.readwrite;
+    }
+
+    if (element.is(Element.Html.Input)) |input| {
+        if (input.getChecked()) state |= StyloElementState.checked;
+        if (input.getIndeterminate()) state |= StyloElementState.indeterminate;
+    }
+
+    if (tag == .anchor or tag == .area) {
+        if (element.getAttributeSafe(comptime .wrap("href")) != null) {
+            // Koko does not yet persist browsing history, so links are
+            // intentionally exposed as unvisited rather than guessed visited.
+            state |= StyloElementState.unvisited;
+        }
+    }
+
+    if (frame.document._active_element) |active| {
+        if (active == element) state |= StyloElementState.focus;
+        if (element.asNode().contains(active.asNode())) state |= StyloElementState.focus_within;
+    }
+
+    if (element.getAttributeSafe(comptime .wrap("id"))) |id| {
+        if (frame.document._location) |location| {
+            const hash = location.getHash(frame);
+            if (hash.len > 1 and std.mem.eql(u8, id, hash[1..])) {
+                state |= StyloElementState.url_target;
+            }
+        }
+    }
+    return state;
+}
+
 fn styloReadNode(
     ctx: ?*anyopaque,
     opaque_node: ?*const anyopaque,
@@ -863,9 +949,13 @@ fn styloReadNode(
         .last_child_id = 0,
         .prev_sibling_id = 0,
         .next_sibling_id = 0,
+        .shadow_host_id = 0,
+        .shadow_root_id = 0,
         .kind = 0,
         .flags = 0,
+        .text_len = 0,
         .tag_name = styloSlice(""),
+        .namespace_name = styloSlice(""),
         .id = styloSlice(""),
         .classes = styloSlice(""),
         .style = styloSlice(""),
@@ -880,11 +970,27 @@ fn styloReadNode(
     if (node.nextSibling()) |sibling| info.next_sibling_id = frame.styleNodeId(sibling);
     switch (node._type) {
         .document => info.kind = 0,
-        .cdata, .document_type, .attribute => info.kind = 2,
-        .document_fragment => info.kind = if (node.is(ShadowRoot) != null) 3 else 0,
+        .cdata => |cdata| {
+            info.kind = 2;
+            info.text_len = @intCast(cdata._data.str().len);
+        },
+        .document_type, .attribute => info.kind = 2,
+        .document_fragment => {
+            if (node.is(ShadowRoot)) |shadow_root| {
+                info.kind = 3;
+                info.shadow_host_id = frame.styleNodeId(shadow_root._host.asNode());
+            } else {
+                info.kind = 0;
+            }
+        },
         .element => |element| {
             info.kind = 1;
+            info.flags = styloElementState(frame, element);
+            if (frame._element_shadow_roots.get(element)) |shadow_root| {
+                info.shadow_root_id = frame.styleNodeId(shadow_root.asNode());
+            }
             info.tag_name = styloSlice(element.getTagNameLower());
+            info.namespace_name = styloSlice(element.getNamespaceURI() orelse "");
             info.id = styloSlice(element.getId());
             info.classes = styloSlice(element.getClassName());
             info.style = styloSlice(element.getAttributeSafe(comptime .wrap("style")) orelse "");
@@ -1030,6 +1136,15 @@ fn styloPrepareForLayout(
     _: Abi.Generation,
 ) callconv(.c) Abi.StatusCode {
     const frame = styloFrame(user_data) orelse return Abi.status_invalid_argument;
+    // Parser-time <style> callbacks intentionally defer CSSStyleSheet
+    // allocation. Materialize those deferred sheets before taking the Stylo
+    // snapshot so the first computed-style read sees the authoritative CSS.
+    var style_walker = @import("../dom/TreeWalker.zig").Full.Elements.init(frame.document.asNode(), .{});
+    while (style_walker.next()) |element| {
+        if (element.is(Element.Html.Style)) |style| {
+            _ = style.getSheet(frame) catch return Abi.status_internal_error;
+        }
+    }
     const sheets = frame.document.getStyleSheets(frame) catch return Abi.status_internal_error;
     var inputs: std.ArrayListUnmanaged(Abi.StylesheetInput) = .empty;
     defer inputs.deinit(frame.call_arena);
@@ -1064,6 +1179,35 @@ fn styloComputedValue(
     ));
 }
 
+fn styloPseudoComputedValue(
+    _: ?*anyopaque,
+    engine: ?*anyopaque,
+    node_id: Abi.NodeId,
+    pseudo: Abi.StringSlice,
+    property: Abi.StringSlice,
+    output: Abi.Buffer,
+    out_len: *usize,
+) callconv(.c) Abi.StatusCode {
+    return styloMapStatus(koko_stylo_engine_serialize_pseudo_property(
+        engine,
+        node_id,
+        .{ .ptr = pseudo.ptr, .len = pseudo.len },
+        .{ .ptr = property.ptr, .len = property.len },
+        output.ptr,
+        output.len,
+        out_len,
+    ));
+}
+
+fn styloLastError(
+    _: ?*anyopaque,
+    engine: ?*anyopaque,
+    output: Abi.Buffer,
+    out_len: *usize,
+) callconv(.c) Abi.StatusCode {
+    return styloMapStatus(koko_stylo_engine_last_error(engine, output.ptr, output.len, out_len));
+}
+
 fn styloBridgeApi(frame: *Frame) StyleEngine.AbiApi {
     return .{
         .abi_version = Abi.abi_version,
@@ -1078,6 +1222,8 @@ fn styloBridgeApi(frame: *Frame) StyleEngine.AbiApi {
         .flush_styles = styloFlushStyles,
         .prepare_for_layout = styloPrepareForLayout,
         .computed_value = styloComputedValue,
+        .computed_pseudo_value = styloPseudoComputedValue,
+        .last_error = styloLastError,
         .custom_property = styloComputedValue,
         .layout_property = null,
         .visibility = null,

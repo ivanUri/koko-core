@@ -247,6 +247,55 @@ pub const StyleEngine = struct {
         return self.queryString(node_id, property, output, self.apiFn(.custom_property));
     }
 
+    pub fn computedPseudoValue(
+        self: *Self,
+        node_id: NodeId,
+        pseudo: []const u8,
+        property: []const u8,
+        output: []u8,
+    ) QueryResult {
+        if (!self.alive) return .{ .status = .closed };
+        if (pseudo.len == 0 or property.len == 0) return .{ .status = .invalid_argument };
+        const api = self.api orelse return .{ .status = self.status() };
+        const query = api.computed_pseudo_value orelse return .{ .status = .bridge_unsupported };
+        var written: usize = 0;
+        const code = query(
+            api.user_data,
+            self.engine,
+            node_id,
+            .{ .ptr = pseudo.ptr, .len = pseudo.len },
+            .{ .ptr = property.ptr, .len = property.len },
+            .{ .ptr = if (output.len == 0) null else output.ptr, .len = output.len },
+            &written,
+        );
+        const result_status = mapStatus(code);
+        if (result_status == .ok) {
+            if (written > output.len) return .{ .status = .bridge_error };
+            return .{ .status = .ok, .bytes_written = written };
+        }
+        if (result_status == .output_buffer_too_small) {
+            return .{ .status = result_status, .bytes_written = written };
+        }
+        return .{ .status = result_status };
+    }
+
+    pub fn lastError(self: *Self, output: []u8) QueryResult {
+        if (!self.alive) return .{ .status = .closed };
+        const api = self.api orelse return .{ .status = self.status() };
+        const query = api.last_error orelse return .{ .status = .bridge_unsupported };
+        var written: usize = 0;
+        const result_status = mapStatus(query(
+            api.user_data,
+            self.engine,
+            .{ .ptr = if (output.len == 0) null else output.ptr, .len = output.len },
+            &written,
+        ));
+        if (result_status == .ok or result_status == .output_buffer_too_small) {
+            return .{ .status = result_status, .bytes_written = written };
+        }
+        return .{ .status = result_status };
+    }
+
     pub fn layoutProperty(self: *Self, node_id: NodeId, property: []const u8, output: []u8) QueryResult {
         return self.queryString(node_id, property, output, self.apiFn(.layout_property));
     }

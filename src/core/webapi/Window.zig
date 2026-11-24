@@ -688,7 +688,32 @@ pub fn getComputedStyle(_: *const Window, element: *Element, pseudo_element: ?[]
             }
         }
     }
-    return CSSStyleDeclaration.init(element, true, frame);
+    return CSSStyleDeclaration.init(element, true, frame, pseudo_element);
+}
+
+/// Debug/benchmark provenance for the active style backend. This is exposed
+/// as a nonstandard diagnostic object so computed-style benchmarks can prove
+/// they exercised Stylo instead of silently measuring the legacy fallback.
+pub fn getKokoStyleEngine(self: *const Window) !js.Object {
+    const local = self._frame.js.local orelse return error.NotHandled;
+    var result = local.newObject();
+    const stylo = self._frame.styleEngine().status() == .ready;
+    if (!(try result.set("backend", if (stylo) "stylo" else "unavailable", .{}))) {
+        return error.CreateObjectFailure;
+    }
+    if (!(try result.set("computedStyles", stylo, .{}))) {
+        return error.CreateObjectFailure;
+    }
+    var error_bytes = self._frame.call_arena.alloc(u8, 4096) catch return error.OutOfMemory;
+    const error_result = self._frame.styleEngine().lastError(error_bytes);
+    const error_text = if (error_result.status == .ok)
+        error_bytes[0..error_result.bytes_written]
+    else
+        "";
+    if (!(try result.set("lastError", error_text, .{}))) {
+        return error.CreateObjectFailure;
+    }
+    return result;
 }
 
 // window.open(url?, target?, features?) — v1 scope:
@@ -1313,6 +1338,7 @@ pub const JsApi = struct {
     pub const reportError = bridge.function(Window.reportError, .{});
     pub const structuredClone = bridge.function(Window.structuredClone, .{ .dom_exception = true });
     pub const getComputedStyle = bridge.function(Window.getComputedStyle, .{});
+    pub const __kokoStyleEngine = bridge.accessor(Window.getKokoStyleEngine, null, .{});
     pub const getSelection = bridge.function(Window.getSelection, .{});
 
     pub const frames = bridge.accessor(Window.getWindow, null, .{});

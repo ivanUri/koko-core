@@ -23,7 +23,7 @@ use style::context::{SharedStyleContext, TreeCountingCaches};
 use style::data::{ElementDataMut, ElementDataRef, ElementDataWrapper};
 use style::dom::{NodeInfo, TDocument, TElement, TNode, TShadowRoot};
 use style::properties::PropertyDeclarationBlock;
-use style::selector_parser::{AttrValue, Lang, PseudoElement, SelectorImpl};
+use style::selector_parser::{AttrValue, Lang, NonTSPseudoClass, PseudoElement, SelectorImpl};
 use style::shared_lock::{Locked, SharedRwLock};
 use style::stylist::CascadeData;
 use style::values::AtomIdent;
@@ -36,7 +36,7 @@ use super::{StyloEngine, StyloNodeInfo};
 
 pub(crate) const NODE_KIND_ELEMENT: u32 = 1;
 const NODE_KIND_TEXT: u32 = 2;
-const NODE_KIND_SHADOW_ROOT: u32 = 3;
+pub(crate) const NODE_KIND_SHADOW_ROOT: u32 = 3;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct KokoNode {
@@ -60,6 +60,7 @@ pub(crate) struct KokoShadowRoot {
 pub(crate) struct NodeRecord {
     pub(crate) info: StyloNodeInfo,
     pub(crate) tag: String,
+    pub(crate) namespace: String,
     pub(crate) id: String,
     pub(crate) classes: Vec<String>,
     pub(crate) style: String,
@@ -76,6 +77,7 @@ pub(crate) struct NodeRecord {
 impl NodeRecord {
     pub(crate) fn new(info: StyloNodeInfo) -> Option<Self> {
         let tag = slice_string(info.tag_name)?;
+        let namespace = slice_string(info.namespace_name)?;
         let id = slice_string(info.id)?;
         let class_text = slice_string(info.classes)?;
         let style = slice_string(info.style)?;
@@ -100,7 +102,8 @@ impl NodeRecord {
             id_atom,
             class_atoms,
             attribute_names,
-            namespace_atom: Namespace::from(""),
+            namespace_atom: Namespace::from(namespace.as_str()),
+            namespace,
             data: ElementDataWrapper::default(),
             style_attribute: None,
             children_to_process: Cell::new(0),
@@ -113,6 +116,7 @@ impl NodeRecord {
         };
         self.info = next.info;
         self.tag = next.tag;
+        self.namespace = next.namespace;
         self.id = next.id;
         self.classes = next.classes;
         self.style = next.style;
@@ -131,9 +135,12 @@ impl NodeRecord {
             && self.info.last_child_id == info.last_child_id
             && self.info.prev_sibling_id == info.prev_sibling_id
             && self.info.next_sibling_id == info.next_sibling_id
+            && self.info.shadow_host_id == info.shadow_host_id
+            && self.info.shadow_root_id == info.shadow_root_id
             && self.info.kind == info.kind
             && self.info.flags == info.flags
             && slice_matches(info.tag_name, &self.tag)
+            && slice_matches(info.namespace_name, &self.namespace)
             && slice_matches(info.id, &self.id)
             && slice_matches(info.classes, &self.classes.join(" "))
             && slice_matches(info.style, &self.style)
@@ -384,7 +391,15 @@ impl TShadowRoot for KokoShadowRoot {
     }
 
     fn host(&self) -> <Self::ConcreteNode as TNode>::ConcreteElement {
-        panic!("shadow-root host callback is not available")
+        let host_id = self
+            .node
+            .read()
+            .map(|record| record.info.shadow_host_id)
+            .filter(|id| *id != 0)
+            .expect("shadow-root host callback returned no host");
+        KokoNode { node_id: host_id }
+            .element()
+            .expect("shadow-root host callback returned an invalid host")
     }
 
     fn style_data<'a>(&self) -> Option<&'a CascadeData>
@@ -413,6 +428,14 @@ impl SelectorsElement for KokoElement {
     }
 
     fn containing_shadow_host(&self) -> Option<Self> {
+        let mut current = self.node.parent_node();
+        while let Some(node) = current {
+            if node.kind() == Some(NODE_KIND_SHADOW_ROOT) {
+                let host_id = node.read()?.info.shadow_host_id;
+                return KokoNode { node_id: host_id }.element();
+            }
+            current = node.parent_node();
+        }
         None
     }
 
@@ -461,19 +484,24 @@ impl SelectorsElement for KokoElement {
         &self,
         local_name: &<Self::Impl as SelectorImplTrait>::BorrowedLocalName,
     ) -> bool {
-        self.record()
-            .is_some_and(|record| record.tag_atom.0 == *local_name)
+        let matched = self
+            .record()
+            .is_some_and(|record| record.tag_atom.0 == *local_name);
+        matched
     }
 
     fn has_namespace(&self, ns: &<Self::Impl as SelectorImplTrait>::BorrowedNamespaceUrl) -> bool {
         let namespace: &str = ns.as_ref();
-        namespace.is_empty()
+        self.record()
+            .is_some_and(|record| record.namespace == namespace)
     }
 
     fn is_same_type(&self, other: &Self) -> bool {
-        self.record()
+        let matched = self
+            .record()
             .zip(other.record())
-            .is_some_and(|(a, b)| a.tag == b.tag)
+            .is_some_and(|(a, b)| a.tag == b.tag);
+        matched
     }
 
     fn attr_matches(
@@ -494,30 +522,52 @@ impl SelectorsElement for KokoElement {
                 return false;
             }
         }
-        self.get_attr(local_name, &Namespace::from(""))
-            .is_some_and(|value| operation.eval_str(&value))
+        let matched = self
+            .get_attr(local_name, &Namespace::from(""))
+            .is_some_and(|value| operation.eval_str(&value));
+        matched
     }
 
     fn match_non_ts_pseudo_class(
         &self,
-        _pc: &<Self::Impl as SelectorImplTrait>::NonTSPseudoClass,
-        _context: &mut MatchingContext<Self::Impl>,
+        pc: &<Self::Impl as SelectorImplTrait>::NonTSPseudoClass,
+        context: &mut MatchingContext<Self::Impl>,
     ) -> bool {
-        false
+        match pc {
+            NonTSPseudoClass::AnyLink => self.is_link(),
+            NonTSPseudoClass::Link => {
+                self.is_link() && context.visited_handling().matches_unvisited()
+            }
+            NonTSPseudoClass::Visited => {
+                self.is_link() && context.visited_handling().matches_visited()
+            }
+            NonTSPseudoClass::Lang(lang) => self.match_element_lang(None, lang),
+            NonTSPseudoClass::CustomState(_) | NonTSPseudoClass::ServoNonZeroBorder => false,
+            _ => self.state().intersects(pc.state_flag()),
+        }
     }
 
     fn match_pseudo_element(
         &self,
-        _pe: &<Self::Impl as SelectorImplTrait>::PseudoElement,
+        pe: &<Self::Impl as SelectorImplTrait>::PseudoElement,
         _context: &mut MatchingContext<Self::Impl>,
     ) -> bool {
-        false
+        matches!(
+            pe,
+            PseudoElement::Before
+                | PseudoElement::After
+                | PseudoElement::Selection
+                | PseudoElement::FirstLetter
+                | PseudoElement::FirstLine
+                | PseudoElement::Marker
+                | PseudoElement::Placeholder
+        )
     }
 
     fn apply_selector_flags(&self, _flags: ElementSelectorFlags) {}
 
     fn is_link(&self) -> bool {
-        false
+        self.state().intersects(ElementState::VISITED_OR_UNVISITED)
     }
 
     fn is_html_slot_element(&self) -> bool {
@@ -525,7 +575,8 @@ impl SelectorsElement for KokoElement {
     }
 
     fn has_id(&self, id: &AtomIdent, _case_sensitivity: CaseSensitivity) -> bool {
-        self.record().is_some_and(|record| record.id == id.as_ref())
+        let matched = self.record().is_some_and(|record| record.id == id.as_ref());
+        matched
     }
 
     fn has_class(&self, name: &AtomIdent, _case_sensitivity: CaseSensitivity) -> bool {
@@ -547,7 +598,17 @@ impl SelectorsElement for KokoElement {
     }
 
     fn is_empty(&self) -> bool {
-        self.node.first_child().is_none()
+        let mut current = self.node.first_child();
+        while let Some(node) = current {
+            if node.is_element() {
+                return false;
+            }
+            if node.is_text_node() && node.read().is_some_and(|record| record.info.text_len != 0) {
+                return false;
+            }
+            current = node.next_sibling();
+        }
+        true
     }
 
     fn is_root(&self) -> bool {
@@ -567,6 +628,15 @@ impl TElement for KokoElement {
         self.as_node()
     }
 
+    fn inheritance_parent(&self) -> Option<Self> {
+        if let Some(parent) = self.node.parent_node() {
+            if let Some(shadow_root) = parent.as_shadow_root() {
+                return Some(shadow_root.host());
+            }
+        }
+        self.parent_element()
+    }
+
     fn traversal_children(&self) -> style::dom::LayoutIterator<Self::TraversalChildrenIterator> {
         let mut children = Vec::new();
         let mut current = self.node.first_child();
@@ -578,15 +648,20 @@ impl TElement for KokoElement {
     }
 
     fn is_html_element(&self) -> bool {
-        true
+        let result = self.record().is_some_and(|record| {
+            record.namespace.is_empty() || record.namespace == "http://www.w3.org/1999/xhtml"
+        });
+        result
     }
 
     fn is_mathml_element(&self) -> bool {
-        false
+        self.record()
+            .is_some_and(|record| record.namespace == "http://www.w3.org/1998/Math/MathML")
     }
 
     fn is_svg_element(&self) -> bool {
-        false
+        self.record()
+            .is_some_and(|record| record.namespace == "http://www.w3.org/2000/svg")
     }
 
     fn style_attribute(&self) -> Option<ArcBorrow<'_, Locked<PropertyDeclarationBlock>>> {
@@ -630,7 +705,9 @@ impl TElement for KokoElement {
     }
 
     fn state(&self) -> ElementState {
-        ElementState::empty()
+        self.record()
+            .map(|record| ElementState::from_bits_truncate(record.info.flags))
+            .unwrap_or_else(ElementState::empty)
     }
 
     fn has_part_attr(&self) -> bool {
@@ -746,16 +823,35 @@ impl TElement for KokoElement {
         false
     }
     fn shadow_root(&self) -> Option<KokoShadowRoot> {
-        None
+        let root_id = self.record()?.info.shadow_root_id;
+        (root_id != 0).then_some(KokoShadowRoot {
+            node: KokoNode { node_id: root_id },
+        })
     }
     fn containing_shadow(&self) -> Option<KokoShadowRoot> {
+        let mut current = self.node.parent_node();
+        while let Some(node) = current {
+            if node.kind() == Some(NODE_KIND_SHADOW_ROOT) {
+                return Some(KokoShadowRoot { node });
+            }
+            current = node.parent_node();
+        }
         None
     }
     fn lang_attr(&self) -> Option<AttrValue> {
-        None
+        self.get_attr(&LocalName::from("lang"), &Namespace::from(""))
+            .map(|value| AttrValue::from(value.as_str()))
     }
     fn match_element_lang(&self, _override_lang: Option<Option<AttrValue>>, _value: &Lang) -> bool {
-        false
+        let Some(actual) = self.lang_attr() else {
+            return false;
+        };
+        let actual = actual.as_ref();
+        let wanted = _value.as_ref();
+        actual
+            .split('-')
+            .zip(wanted.split('-'))
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
     }
     fn is_html_document_body_element(&self) -> bool {
         self.record()
