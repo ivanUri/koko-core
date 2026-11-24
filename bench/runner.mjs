@@ -85,6 +85,7 @@ function parseArgs(argv) {
     output: "bench-results",
     kokoBin: "zig-out/bin/koko",
     kokoLabel: null,
+    expectedV8PointerCompression: null,
     chromeBin: null,
     lightpandaBin: null,
     optimize: "unknown",
@@ -134,6 +135,13 @@ function parseArgs(argv) {
     else if (argument === "--output") options.output = next();
     else if (argument === "--koko-bin") options.kokoBin = next();
     else if (argument === "--koko-label") options.kokoLabel = next();
+    else if (argument === "--expected-v8-pointer-compression") {
+      const value = next().toLowerCase();
+      if (value !== "on" && value !== "off") {
+        throw new Error(`${argument} must be on or off`);
+      }
+      options.expectedV8PointerCompression = value === "on";
+    }
     else if (argument === "--chrome-bin") options.chromeBin = next();
     else if (argument === "--lightpanda-bin") options.lightpandaBin = next();
     else if (argument === "--optimize") options.optimize = next();
@@ -188,6 +196,7 @@ function printHelp() {
     `  --real-timeout-ms <ms>\n` +
     `  --koko-bin <path> --chrome-bin <path> --lightpanda-bin <path> --output <directory>\n` +
     `  --koko-label <name> (record the exact Koko build/profile under test)\n` +
+    `  --expected-v8-pointer-compression <on|off> (fail if the binary reports another V8 profile)\n` +
     `  --timeout-ms <ms> --idle-settle-ms <ms>\n` +
     `  --regression-against <summary.json> --regression-threshold-pct <n> --regression-mode <warn|fail>\n` +
     `  --quick --allow-non-release --allow-failures\n`);

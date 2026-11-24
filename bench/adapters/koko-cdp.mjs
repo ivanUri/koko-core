@@ -66,6 +66,17 @@ export class KokoCdpAdapter {
     } catch (error) {
       throw new Error(`Koko did not become ready: ${error.message}\n${output.stderr}`);
     }
+    const expectedPointerCompression = this.options.expectedV8PointerCompression;
+    if (expectedPointerCompression != null) {
+      const actualPointerCompression = this.version.kokoBuild?.v8PointerCompression;
+      if (actualPointerCompression !== expectedPointerCompression) {
+        throw new Error(
+          `Koko V8 profile mismatch for ${binary}: expected pointer compression ` +
+          `${expectedPointerCompression ? "on" : "off"}, got ` +
+          `${actualPointerCompression == null ? "unknown" : actualPointerCompression ? "on" : "off"}`,
+        );
+      }
+    }
     this.endpoint = endpoint;
     this.webSocketDebuggerUrl = this.version.webSocketDebuggerUrl;
     const startup = this.version.kokoStartup ?? {};
