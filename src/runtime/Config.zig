@@ -297,6 +297,9 @@ const Commands = cli.Builder(.{
             .{ .name = "host", .type = []const u8, .default = "127.0.0.1" },
             .{ .name = "port", .type = ?u16 },
             .{ .name = "max_sessions", .type = usize, .default = 64 },
+            // HTTP MCP is intentionally loopback-only by default. Supplying a
+            // token is mandatory when binding it to any other interface.
+            .{ .name = "auth_token", .type = ?[]const u8 },
         },
         .shared_options = CommonOptions,
     },

@@ -14,6 +14,7 @@
 
   try {
     ctx.setLineDash([4, 2, 1]);
+    ctx.roundRect(0, 0, 12, 8, 2);
     const normalized = JSON.stringify(ctx.getLineDash());
     ctx.lineDashOffset = 1.5;
     const htmlCanvasOk = normalized === JSON.stringify([4, 2, 1, 4, 2, 1]) && ctx.lineDashOffset === 1.5;
@@ -21,6 +22,7 @@
     let offscreenOk = true;
     if (offscreenCtx) {
       offscreenCtx.setLineDash([3, 1]);
+      offscreenCtx.roundRect(0, 0, 12, 8, 2);
       offscreenCtx.lineDashOffset = 2;
       offscreenOk = JSON.stringify(offscreenCtx.getLineDash()) === JSON.stringify([3, 1]) && offscreenCtx.lineDashOffset === 2;
     }
@@ -28,7 +30,9 @@
     let rejected = false;
     try { ctx.setLineDash([-1]); } catch { rejected = true; }
 
-    if (htmlCanvasOk && offscreenOk && rejected) {
+    const roundRectOk = typeof ctx.roundRect === "function" && (!offscreenCtx || typeof offscreenCtx.roundRect === "function");
+
+    if (htmlCanvasOk && offscreenOk && rejected && roundRectOk) {
       document.body.id = "canvas-line-dash-pass";
       document.body.textContent = "canvas-line-dash-pass";
     } else {

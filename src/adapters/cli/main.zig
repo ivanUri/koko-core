@@ -252,6 +252,13 @@ fn run(allocator: Allocator, main_arena: Allocator, process_args: std.process.Ar
             defer if (cdp_server) |s| s.deinit();
 
             if (opts.port) |port| {
+                if (!isLoopbackMcpHost(opts.host) and (opts.auth_token == null or opts.auth_token.?.len == 0)) {
+                    log.fatal(.mcp, "refusing unauthenticated non-loopback MCP HTTP listener", .{
+                        .host = opts.host,
+                        .hint = "Pass --auth-token <secret>, or bind --host 127.0.0.1.",
+                    });
+                    return error.UnauthenticatedRemoteMcp;
+                }
                 const address = v.net.Address.parseIp(opts.host, port) catch |err| {
                     log.fatal(.mcp, "invalid MCP HTTP address", .{
                         .err = err,
@@ -265,6 +272,7 @@ fn run(allocator: Allocator, main_arena: Allocator, process_args: std.process.Ar
                     app,
                     address,
                     opts.max_sessions,
+                    opts.auth_token,
                 );
                 defer http_server.deinit();
                 app.network.run();
@@ -276,6 +284,10 @@ fn run(allocator: Allocator, main_arena: Allocator, process_args: std.process.Ar
         },
         else => unreachable,
     }
+}
+
+fn isLoopbackMcpHost(host: []const u8) bool {
+    return std.mem.eql(u8, host, "127.0.0.1") or std.mem.eql(u8, host, "::1");
 }
 
 const FetchTerminator = struct {

@@ -141,6 +141,17 @@ pub fn ellipse(
 ) void {}
 pub fn arcTo(_: *OffscreenCanvasRenderingContext2D, _: f64, _: f64, _: f64, _: f64, _: f64) void {}
 pub fn rect(_: *OffscreenCanvasRenderingContext2D, _: f64, _: f64, _: f64, _: f64) void {}
+/// Compatibility implementation matching CanvasRenderingContext2D.roundRect.
+/// The offscreen path engine is currently non-rasterizing, but applications
+/// must be able to invoke the standard API without a TypeError.
+pub fn roundRect(
+    _: *OffscreenCanvasRenderingContext2D,
+    _: f64,
+    _: f64,
+    _: f64,
+    _: f64,
+    _: f64,
+) void {}
 pub fn fill(_: *OffscreenCanvasRenderingContext2D) void {}
 pub fn stroke(_: *OffscreenCanvasRenderingContext2D) void {}
 pub fn clip(_: *OffscreenCanvasRenderingContext2D) void {}
@@ -234,6 +245,7 @@ pub const JsApi = struct {
     pub const arc = bridge.function(OffscreenCanvasRenderingContext2D.arc, .{ .noop = true });
     pub const ellipse = bridge.function(OffscreenCanvasRenderingContext2D.ellipse, .{ .noop = true });
     pub const arcTo = bridge.function(OffscreenCanvasRenderingContext2D.arcTo, .{ .noop = true });
+    pub const roundRect = bridge.function(OffscreenCanvasRenderingContext2D.roundRect, .{ .noop = true });
     pub const shadowBlur = bridge.property(0.0, .{ .template = false, .readonly = false });
     pub const shadowColor = bridge.property("rgba(0, 0, 0, 0)", .{ .template = false, .readonly = false });
     pub const rect = bridge.function(OffscreenCanvasRenderingContext2D.rect, .{ .noop = true });

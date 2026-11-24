@@ -181,7 +181,7 @@ pub const tool_list = [_]protocol.Tool{
     .{
         .action = .fill,
         .name = "fill",
-        .description = "Fill text into an input element. Returns the filled value and current page URL and title.",
+        .description = "Fill text into an input element. Returns the current page URL and title without echoing the supplied value.",
         .inputSchema = protocol.minify(
             \\{
             \\  "type": "object",
@@ -741,9 +741,8 @@ fn handleFill(server: *Server, arena: std.mem.Allocator, id: std.json.Value, arg
     };
 
     const page_title = resolved.frame.getTitle() catch null;
-    const result_text = try std.fmt.allocPrint(arena, "Filled element (backendNodeId: {d}) with \"{s}\". Page url: {s}, title: {s}", .{
+    const result_text = try std.fmt.allocPrint(arena, "Filled element (backendNodeId: {d}). Page url: {s}, title: {s}", .{
         args.backendNodeId,
-        args.text,
         resolved.frame.url,
         page_title orelse "(none)",
     });

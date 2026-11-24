@@ -108,6 +108,28 @@ pub const Tool = struct {
     description: ?[]const u8 = null,
     inputSchema: []const u8,
 
+    /// MCP tool annotations let hosts distinguish passive inspection from
+    /// operations which navigate, evaluate code, or can change remote state.
+    /// They are advisory metadata for the host's confirmation UX.
+    pub const Annotations = struct {
+        readOnlyHint: bool,
+        destructiveHint: bool,
+        openWorldHint: bool,
+    };
+
+    fn annotations(self: Tool) Annotations {
+        const policy = self.action.policy();
+        return switch (policy.effect) {
+            .observation => .{ .readOnlyHint = true, .destructiveHint = false, .openWorldHint = false },
+            // DOM events (`input`, `change`, `click`) can be observed by page
+            // scripts and can trigger network or persistence effects. Mark
+            // them conservatively so an MCP host requests confirmation.
+            .dom_mutation => .{ .readOnlyHint = false, .destructiveHint = true, .openWorldHint = true },
+            .navigation => .{ .readOnlyHint = false, .destructiveHint = false, .openWorldHint = true },
+            .external_side_effect => .{ .readOnlyHint = false, .destructiveHint = true, .openWorldHint = true },
+        };
+    }
+
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
         try jw.objectField("name");
@@ -120,6 +142,8 @@ pub const Tool = struct {
         _ = try jw.beginWriteRaw();
         try jw.writer.writeAll(self.inputSchema);
         jw.endWriteRaw();
+        try jw.objectField("annotations");
+        try jw.write(self.annotations());
         try jw.endObject();
     }
 };
@@ -335,5 +359,5 @@ test "MCP.protocol - Tool serialization" {
 
     try std.json.Stringify.value(t, .{}, &aw.writer);
 
-    try testing.expectString("{\"name\":\"test\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"foo\":{\"type\":\"string\"}}}}", aw.written());
+    try testing.expectString("{\"name\":\"test\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"foo\":{\"type\":\"string\"}}},\"annotations\":{\"readOnlyHint\":false,\"destructiveHint\":false,\"openWorldHint\":true}}", aw.written());
 }

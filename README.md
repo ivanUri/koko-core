@@ -62,6 +62,30 @@ koko serve --host 127.0.0.1 --port 9222
 
 See [Homebrew notes](docs/homebrew.md) for distribution details.
 
+## Run MCP safely
+
+Stdio is the default MCP transport:
+
+```bash
+zig build run -- mcp
+```
+
+For HTTP transport, Koko exposes `POST /mcp` on loopback by default:
+
+```bash
+zig build run -- mcp --host 127.0.0.1 --port 9223
+```
+
+Any non-loopback HTTP listener must use a bearer token. Never place an
+unauthenticated browser-control MCP endpoint on a LAN or public interface:
+
+```bash
+zig build run -- mcp --host 0.0.0.0 --port 9223 --auth-token "$KOKO_MCP_TOKEN"
+```
+
+MCP tool metadata marks inspection operations as read-only and navigation,
+evaluation, and other externally-effectful actions for client confirmation.
+
 ## Automate with Koko SDK
 
 The [Koko SDK](https://github.com/ivanUri/koko-sdk) provides a TypeScript client for Koko's CDP endpoint.

@@ -261,6 +261,25 @@ pub fn ellipse(
 ) void {}
 pub fn arcTo(_: *CanvasRenderingContext2D, _: f64, _: f64, _: f64, _: f64, _: f64) void {}
 pub fn rect(_: *CanvasRenderingContext2D, _: f64, _: f64, _: f64, _: f64) void {}
+/// Adds a rounded rectangle to the current path.
+///
+/// Koko's retained 2D path implementation is deliberately lightweight, so
+/// paths other than arcs are currently non-rasterizing. Still expose this
+/// standard method: modern applications (including nextjs.org) use it while
+/// building decorative canvases, and a missing method turns that cosmetic
+/// operation into a fatal JavaScript TypeError.
+///
+/// The current bridge accepts the numeric-radius overload. Array radii and
+/// exact path geometry can be added when the retained path model grows beyond
+/// its present compatibility surface.
+pub fn roundRect(
+    _: *CanvasRenderingContext2D,
+    _: f64,
+    _: f64,
+    _: f64,
+    _: f64,
+    _: f64,
+) void {}
 
 fn applyProfileLowEntropyPattern(buffer: anytype, pixels: []const u8) void {
     const count = @min(pixels.len / 4, 4);
@@ -560,6 +579,7 @@ pub const JsApi = struct {
     pub const arc = bridge.function(CanvasRenderingContext2D.arc, .{});
     pub const ellipse = bridge.function(CanvasRenderingContext2D.ellipse, .{ .noop = true });
     pub const arcTo = bridge.function(CanvasRenderingContext2D.arcTo, .{ .noop = true });
+    pub const roundRect = bridge.function(CanvasRenderingContext2D.roundRect, .{ .noop = true });
     pub const shadowBlur = bridge.property(0.0, .{ .template = false, .readonly = false });
     pub const shadowColor = bridge.property("rgba(0, 0, 0, 0)", .{ .template = false, .readonly = false });
     pub const rect = bridge.function(CanvasRenderingContext2D.rect, .{ .noop = true });

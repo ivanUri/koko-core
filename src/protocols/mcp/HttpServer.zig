@@ -93,6 +93,9 @@ allocator: std.mem.Allocator,
 app: *App,
 address: net.Address,
 max_sessions: usize,
+/// Optional bearer token. It is required by the CLI for non-loopback binds
+/// and remains opt-in for loopback development servers.
+auth_token: ?[]const u8,
 queue: Queue,
 worker: std.Thread,
 worker_mutex: sync.Mutex = .{},
@@ -106,6 +109,7 @@ pub fn init(
     app: *App,
     address: net.Address,
     max_sessions: usize,
+    auth_token: ?[]const u8,
 ) !*Self {
     const self = try allocator.create(Self);
     errdefer allocator.destroy(self);
@@ -114,6 +118,7 @@ pub fn init(
         .app = app,
         .address = address,
         .max_sessions = max_sessions,
+        .auth_token = auth_token,
         .queue = .{ .max_length = 256 },
         .worker = undefined,
     };
@@ -250,6 +255,11 @@ fn handleConnection(self: *Self, socket: posix.socket_t) void {
         return;
     }
 
+    if (!self.isAuthorized(request.authorization)) {
+        writeResponse(socket, 401, null, "") catch {};
+        return;
+    }
+
     var job: Job = .{
         .kind = if (std.mem.eql(u8, request.method, "DELETE")) .close else .rpc,
         .body = request.body,
@@ -273,6 +283,7 @@ const Request = struct {
     method: []const u8,
     path: []const u8,
     session_id: ?[]const u8,
+    authorization: ?[]const u8,
     body: []const u8,
 };
 
@@ -314,8 +325,24 @@ fn readRequest(allocator: std.mem.Allocator, socket: posix.socket_t) !Request {
         .method = method,
         .path = path,
         .session_id = session_id,
+        .authorization = parseHeader(storage[first_line_end + 2 .. end - 2], "Authorization"),
         .body = storage[end .. end + content_length],
     };
+}
+
+fn isAuthorized(self: *const Self, authorization: ?[]const u8) bool {
+    const expected = self.auth_token orelse return true;
+    const header = authorization orelse return false;
+    const prefix = "Bearer ";
+    if (header.len < prefix.len or !std.ascii.eqlIgnoreCase(header[0..prefix.len], prefix)) return false;
+    return constantTimeEql(expected, header[prefix.len..]);
+}
+
+fn constantTimeEql(expected: []const u8, actual: []const u8) bool {
+    if (expected.len != actual.len) return false;
+    var diff: u8 = 0;
+    for (expected, actual) |left, right| diff |= left ^ right;
+    return diff == 0;
 }
 
 fn parseContentLength(headers: []const u8) ?usize {
@@ -339,6 +366,7 @@ fn writeResponse(socket: posix.socket_t, status: u16, session_id: ?[]const u8, b
         202 => "Accepted",
         204 => "No Content",
         400 => "Bad Request",
+        401 => "Unauthorized",
         404 => "Not Found",
         405 => "Method Not Allowed",
         429 => "Too Many Requests",
@@ -385,4 +413,13 @@ test "MCP HTTP requires initialize before minting a session" {
     try testing.expect(!isInitialize(
         \\{"jsonrpc":"2.0","id":1,"method":"ping"}
     ));
+}
+
+test "MCP HTTP bearer authorization is exact and case-insensitive for scheme" {
+    var server: Self = undefined;
+    server.auth_token = "test-secret";
+    try testing.expect(server.isAuthorized("Bearer test-secret"));
+    try testing.expect(server.isAuthorized("bearer test-secret"));
+    try testing.expect(!server.isAuthorized("Bearer wrong-secret"));
+    try testing.expect(!server.isAuthorized(null));
 }

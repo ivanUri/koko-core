@@ -60,7 +60,9 @@ pub const Action = enum {
                 .secret_fields = &.{"script"},
             },
             .add_init_script => .{
-                .effect = .observation,
+                // This code runs in every future document in the session, so
+                // it must never be presented to an MCP host as passive read.
+                .effect = .external_side_effect,
                 .recordable = false,
                 .replayable = false,
                 .secret_fields = &.{"script"},
@@ -111,8 +113,15 @@ pub const Action = enum {
                 .recordable = false,
                 .replayable = false,
             },
-            .recording_start, .recording_stop, .workflow_export, .workflow_replay => .{
+            .recording_start, .recording_stop, .workflow_export => .{
                 .effect = .observation,
+                .produces_data = true,
+            },
+            .workflow_replay => .{
+                // A valid workflow can navigate and is deliberately replayed
+                // without an LLM, but it is still an externally-effectful
+                // operation that requires host confirmation.
+                .effect = .external_side_effect,
                 .produces_data = true,
             },
         };
