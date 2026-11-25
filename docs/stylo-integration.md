@@ -84,16 +84,22 @@ Stylo unit suite passes 5/5 tests.
 A sparse WPT checkout at Stylo revision `0ab78ce9` was used to run a curated
 12-file CSS subset through Koko's CLI fetch path (the Go CDP runner currently
 checks immediately after `Page.navigate` and races external `testharness.js`).
-The current result is 5/12:
+The pre-CSSOM-fix aggregate was 5/12. Targeted reruns after the current patch
+now pass the two focused CSSOM cases that were previously failing:
 
-- Pass: `getComputedStyle-live`, `adoptedstylesheets-observablearray-removal`,
-  `layers-basic`, `important-vs-inline-001`, and `layer-basic`.
-- Failing CSSOM gaps: shorthand expansion in `inline-style-001`, missing
-  `cssRules`/grouping-rule behavior in `CSSGroupingRule-insertRule` and
-  `CSSStyleSheet`, and live media-query CSSOM parsing in `update-media-feature`.
-- `variable-supports-05` is a reftest without a testharness report, so it needs
-  a visual/reftest comparator before it can be scored; `is-default-ns-003`
-  currently hits a Koko navigation crash.
+- `inline-style-001`: 5/5 subtests pass, including `margin` shorthand reads.
+- `CSSGroupingRule-insertRule`: 7/7 subtests pass, including DOMException
+  names/codes for `HierarchyRequestError`.
+- `CSSStyleSheet`: 6/17 subtests pass; stylesheet registration and initial
+  `cssRules` behavior pass. Remaining failures cover legacy `addRule()` /
+  `removeRule()`, CSSRuleList same-object identity, and index semantics.
+- `style-set-cssText`: stylesheet lookup and initial declaration pass; invalid
+  value filtering still needs work.
+
+The remaining curated-suite gaps include live media-query CSSOM parsing in
+`update-media-feature`. `variable-supports-05` is a reftest without a
+testharness report, so it needs a visual/reftest comparator before it can be
+scored; `is-default-ns-003` currently hits a Koko navigation crash.
 
 This is a real WPT signal, not a completion gate: the WPT corpus is curated,
 not the full suite, and the remaining failures are explicitly tracked below.

@@ -101,7 +101,11 @@ fn detachScope(self: *Style) void {
     self._scope_sheet = null;
 }
 
-pub fn getSheet(self: *Style, frame: *Frame) !?*CSSStyleSheet {
+// The sheet accessor can be reached while Document.getStyleSheets() is
+// materializing parser-deferred <style> elements.  Keep its public error set
+// explicit so that Zig does not infer a cyclic error set across those two
+// document/style lifecycle functions.
+pub fn getSheet(self: *Style, frame: *Frame) anyerror!?*CSSStyleSheet {
     const owner_frame = self.asNode().ownerFrame(frame);
     const scope = containingShadowRoot(self);
     // Prefer the frame argument over ownerFrame()/isConnected() parent walks.

@@ -139,6 +139,13 @@ pub fn getPropertyValue(self: *const CSSStyleDeclaration, property_name: []const
         if (self._is_computed) {
             return getComputedPropertyValue(self, wrapped, style_frame);
         }
+        if (boxShorthandFor(normalized)) |shorthand| {
+            if (self.findProperty(.wrap(shorthand))) |shorthand_prop| {
+                if (expandBoxShorthand(shorthand_prop._value.str(), boxSideFor(normalized))) |expanded| {
+                    return expanded;
+                }
+            }
+        }
         return "";
     };
     return resolveColorPropertyValue(wrapped, prop._value.str());
@@ -487,6 +494,71 @@ pub fn findProperty(self: *const CSSStyleDeclaration, name: String) ?*Property {
         node = n.next;
     }
     return null;
+}
+
+const BoxSide = enum { top, right, bottom, left };
+
+fn boxShorthandFor(name: []const u8) ?[]const u8 {
+    if (std.mem.startsWith(u8, name, "margin-") or std.mem.startsWith(u8, name, "padding-")) {
+        const prefix = name[0..7];
+        const suffix = name[7..];
+        if (std.mem.eql(u8, suffix, "top") or
+            std.mem.eql(u8, suffix, "right") or
+            std.mem.eql(u8, suffix, "bottom") or
+            std.mem.eql(u8, suffix, "left"))
+        {
+            return if (std.mem.eql(u8, prefix, "margin-")) "margin" else "padding";
+        }
+    }
+    return null;
+}
+
+fn boxSideFor(name: []const u8) BoxSide {
+    const suffix = name[7..];
+    if (std.mem.eql(u8, suffix, "right")) return .right;
+    if (std.mem.eql(u8, suffix, "bottom")) return .bottom;
+    if (std.mem.eql(u8, suffix, "left")) return .left;
+    return .top;
+}
+
+/// Resolve a CSS box shorthand for CSSOM longhand reads without replacing the
+/// authored shorthand in cssText. This mirrors the four-value expansion used
+/// by CSSOM while keeping the declaration list compact for Stylo.
+fn expandBoxShorthand(value: []const u8, side: BoxSide) ?[]const u8 {
+    var starts: [4]usize = undefined;
+    var ends: [4]usize = undefined;
+    var count: usize = 0;
+    var index: usize = 0;
+
+    while (index < value.len) {
+        while (index < value.len and std.ascii.isWhitespace(value[index])) : (index += 1) {}
+        if (index == value.len) break;
+        if (count == 4) return null;
+        starts[count] = index;
+        var depth: usize = 0;
+        while (index < value.len) {
+            const c = value[index];
+            if (c == '(') {
+                depth += 1;
+            } else if (c == ')' and depth > 0) {
+                depth -= 1;
+            } else if (std.ascii.isWhitespace(c) and depth == 0) {
+                break;
+            }
+            index += 1;
+        }
+        ends[count] = index;
+        count += 1;
+    }
+
+    if (count == 0) return null;
+    const selected = switch (side) {
+        .top => @as(usize, 0),
+        .right => if (count == 1) @as(usize, 0) else @as(usize, 1),
+        .bottom => if (count <= 2) @as(usize, 0) else @as(usize, 2),
+        .left => if (count == 1) @as(usize, 0) else if (count == 2) @as(usize, 1) else if (count == 3) @as(usize, 1) else @as(usize, 3),
+    };
+    return value[starts[selected]..ends[selected]];
 }
 
 fn normalizePropertyName(name: []const u8, buf: []u8) []const u8 {

@@ -702,6 +702,30 @@ pub fn getStyleSheets(self: *Document, frame: *Frame) !*StyleSheetList {
     const owner_frame = self._frame orelse frame;
     const sheets = try StyleSheetList.init(owner_frame);
     self._style_sheets = sheets;
+
+    // HTML parsing intentionally defers <style> sheet registration so the
+    // parser never grows the page-owned StyleSheetList while the DOM arena is
+    // still being populated.  The first CSSOM access happens after that
+    // boundary in normal operation, so materialize the already parsed style
+    // elements now in document order.  Style.getSheet() is idempotent and
+    // keeps the existing owner-document / shadow-root registration rules.
+    var pending: std.ArrayList(*Node) = .empty;
+    try pending.append(owner_frame.arena, self._proto);
+    while (pending.pop()) |node| {
+        if (node.is(Element.Html.Style)) |style| {
+            // A malformed/non-CSS style must not make document.styleSheets
+            // itself fail; getSheet() already applies the element's type and
+            // lifecycle checks.
+            _ = style.getSheet(owner_frame) catch null;
+        }
+        // The stack is LIFO; push siblings from right to left so traversal
+        // still matches tree/document order.
+        var child = node.lastChild();
+        while (child) |next| {
+            try pending.append(owner_frame.arena, next);
+            child = next.previousSibling();
+        }
+    }
     return sheets;
 }
 
