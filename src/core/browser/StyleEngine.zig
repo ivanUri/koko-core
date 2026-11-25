@@ -583,6 +583,21 @@ fn fakeVisibility(
     return Abi.status_ok;
 }
 
+fn fakePointerEvents(
+    user_data: ?*anyopaque,
+    engine: ?*anyopaque,
+    node_id: StyleEngine.NodeId,
+    generation: StyleEngine.Generation,
+    out_value: *u8,
+) callconv(.c) Abi.StatusCode {
+    _ = user_data;
+    _ = engine;
+    _ = node_id;
+    _ = generation;
+    out_value.* = 0;
+    return Abi.status_ok;
+}
+
 test "StyleEngine adapter forwards the stable C ABI" {
     var state = FakeBridgeState{};
     var api = StyleEngine.AbiApi{
@@ -601,7 +616,7 @@ test "StyleEngine adapter forwards the stable C ABI" {
         .custom_property = null,
         .layout_property = null,
         .visibility = fakeVisibility,
-        .pointer_events = null,
+        .pointer_events = fakePointerEvents,
     };
 
     var engine = StyleEngine.init(.{ .frame_id = 41, .bridge = &api });
@@ -650,7 +665,9 @@ test "StyleEngine adapter forwards the stable C ABI" {
     const hidden = engine.visibility(9);
     try std.testing.expectEqual(StyleEngine.Status.ok, hidden.status);
     try std.testing.expectEqual(@as(?bool, true), hidden.value);
-    try std.testing.expectEqual(StyleEngine.Status.bridge_unsupported, engine.pointerEvents(9).status);
+    const pointer_events = engine.pointerEvents(9);
+    try std.testing.expectEqual(StyleEngine.Status.ok, pointer_events.status);
+    try std.testing.expectEqual(@as(?bool, false), pointer_events.value);
 
     engine.deinit();
     try std.testing.expectEqual(@as(u32, 1), state.destroy_count);

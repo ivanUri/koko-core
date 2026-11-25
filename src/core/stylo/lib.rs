@@ -3,8 +3,8 @@
 //! The embedder owns the DOM. This crate stores opaque node handles and asks
 //! the embedder for node data through callbacks; it never creates a duplicate
 //! Rust DOM. Stylesheet replacement is parsed by Stylo itself and committed as
-//! one batch. Traversal/property serialization remain explicit unsupported
-//! operations until the full Stylo DOM trait adapter is wired.
+//! one batch. Computed values and boolean CSS queries are resolved through
+//! the callback-backed Stylo DOM adapter without creating a second DOM.
 
 use servo_arc::Arc;
 use std::collections::HashMap;
@@ -438,6 +438,25 @@ impl Engine {
         StyloStatus::Ok
     }
 
+    fn query_computed_boolean(
+        &mut self,
+        engine_ptr: *mut StyloEngine,
+        node_id: u64,
+        property: &str,
+        predicate: impl FnOnce(&str) -> bool,
+    ) -> Result<bool, StyloStatus> {
+        let computed = self.resolve_node_style(engine_ptr, node_id)?;
+        let property_id = PropertyId::parse_enabled_for_all_content(property)
+            .map_err(|()| StyloStatus::ParseError)?;
+        let scope_id = self.style_scope_for_node(node_id)?;
+        let stylist = self
+            .stylists
+            .get(&scope_id)
+            .ok_or(StyloStatus::CallbackFailed)?;
+        let serialized = stylist.serialize_computed_property(&computed, &property_id)?;
+        Ok(predicate(serialized.trim()))
+    }
+
     fn flush_styles(
         &mut self,
         engine_ptr: *mut StyloEngine,
@@ -780,6 +799,57 @@ pub extern "C" fn koko_stylo_engine_serialize_property(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn koko_stylo_engine_query_visibility(
+    engine: *mut StyloEngine,
+    node_id: u64,
+    _generation: u64,
+    out_value: *mut u8,
+) -> StyloStatus {
+    match with_engine(engine, |inner| {
+        if out_value.is_null() {
+            return inner.error(StyloStatus::NullPointer, "out_value is null");
+        }
+        let hidden = match inner.query_computed_boolean(engine, node_id, "visibility", |value| {
+            value.eq_ignore_ascii_case("hidden") || value.eq_ignore_ascii_case("collapse")
+        }) {
+            Ok(value) => value,
+            Err(status) => return inner.error(status, "visibility resolution failed"),
+        };
+        unsafe { *out_value = u8::from(hidden) };
+        inner.last_error.clear();
+        StyloStatus::Ok
+    }) {
+        Ok(status) | Err(status) => status,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn koko_stylo_engine_query_pointer_events(
+    engine: *mut StyloEngine,
+    node_id: u64,
+    _generation: u64,
+    out_value: *mut u8,
+) -> StyloStatus {
+    match with_engine(engine, |inner| {
+        if out_value.is_null() {
+            return inner.error(StyloStatus::NullPointer, "out_value is null");
+        }
+        let blocked =
+            match inner.query_computed_boolean(engine, node_id, "pointer-events", |value| {
+                value.eq_ignore_ascii_case("none")
+            }) {
+                Ok(value) => value,
+                Err(status) => return inner.error(status, "pointer-events resolution failed"),
+            };
+        unsafe { *out_value = u8::from(blocked) };
+        inner.last_error.clear();
+        StyloStatus::Ok
+    }) {
+        Ok(status) | Err(status) => status,
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn koko_stylo_engine_serialize_pseudo_property(
     engine: *mut StyloEngine,
     node_id: u64,
@@ -804,7 +874,7 @@ pub extern "C" fn koko_stylo_engine_serialize_pseudo_property(
 
 /// Parse and canonicalize one specified property value through Stylo's CSSOM
 /// declaration parser. This is intentionally separate from computed-style
-/// serialization, which remains unsupported until DOM traversal is wired.
+/// serialization, which reads the callback-backed computed style.
 #[unsafe(no_mangle)]
 pub extern "C" fn koko_stylo_engine_serialize_specified_property(
     engine: *mut StyloEngine,
@@ -1071,7 +1141,7 @@ mod tests {
         let mut engine = StyloEngine {
             inner: Engine::new(tree_callbacks()),
         };
-        let css = b"div[data-kind=\"primary\"] { --brand: red; background-color: var(--brand); margin-top: 3px } main > div[data-kind=\"primary\"] { color: rgb(70, 80, 90) !important } div::before { content: \"stylo\"; display: inline-block }";
+        let css = b"div[data-kind=\"primary\"] { --brand: red; background-color: var(--brand); margin-top: 3px; visibility: hidden; pointer-events: none } main > div[data-kind=\"primary\"] { color: rgb(70, 80, 90) !important } div::before { content: \"stylo\"; display: inline-block }";
         let input = StyloStylesheetInput {
             sheet_id: 1,
             scope_id: 0,
@@ -1175,5 +1245,19 @@ mod tests {
             StyloStatus::Ok
         );
         assert_eq!(&output[..written], b"inline-block");
+
+        let mut hidden = 0u8;
+        assert_eq!(
+            koko_stylo_engine_query_visibility(&mut engine, 2, 1, &mut hidden),
+            StyloStatus::Ok
+        );
+        assert_eq!(hidden, 1);
+
+        let mut pointer_events_none = 0u8;
+        assert_eq!(
+            koko_stylo_engine_query_pointer_events(&mut engine, 2, 1, &mut pointer_events_none),
+            StyloStatus::Ok
+        );
+        assert_eq!(pointer_events_none, 1);
     }
 }

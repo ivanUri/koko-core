@@ -187,6 +187,18 @@ extern fn koko_stylo_engine_serialize_property(
     capacity: usize,
     written: *usize,
 ) StyloCStatus;
+extern fn koko_stylo_engine_query_visibility(
+    engine: ?*anyopaque,
+    node_id: u64,
+    generation: u64,
+    out_value: *u8,
+) StyloCStatus;
+extern fn koko_stylo_engine_query_pointer_events(
+    engine: ?*anyopaque,
+    node_id: u64,
+    generation: u64,
+    out_value: *u8,
+) StyloCStatus;
 extern fn koko_stylo_engine_serialize_pseudo_property(
     engine: ?*anyopaque,
     node_id: u64,
@@ -1327,6 +1339,26 @@ fn styloPseudoComputedValue(
     ));
 }
 
+fn styloVisibility(
+    _: ?*anyopaque,
+    engine: ?*anyopaque,
+    node_id: Abi.NodeId,
+    generation: Abi.Generation,
+    out_value: *u8,
+) callconv(.c) Abi.StatusCode {
+    return styloMapStatus(koko_stylo_engine_query_visibility(engine, node_id, generation, out_value));
+}
+
+fn styloPointerEvents(
+    _: ?*anyopaque,
+    engine: ?*anyopaque,
+    node_id: Abi.NodeId,
+    generation: Abi.Generation,
+    out_value: *u8,
+) callconv(.c) Abi.StatusCode {
+    return styloMapStatus(koko_stylo_engine_query_pointer_events(engine, node_id, generation, out_value));
+}
+
 fn styloLastError(
     _: ?*anyopaque,
     engine: ?*anyopaque,
@@ -1356,8 +1388,8 @@ fn styloBridgeApi(frame: *Frame) StyleEngine.AbiApi {
         .custom_property = styloComputedValue,
         // Layout consumers use the same serialized computed values as CSSOM.
         .layout_property = styloComputedValue,
-        .visibility = null,
-        .pointer_events = null,
+        .visibility = styloVisibility,
+        .pointer_events = styloPointerEvents,
     };
 }
 

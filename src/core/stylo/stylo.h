@@ -131,6 +131,18 @@ StyloStatus koko_stylo_engine_serialize_property(
     size_t capacity,
     size_t *written);
 
+StyloStatus koko_stylo_engine_query_visibility(
+    StyloEngine *engine,
+    uint64_t node_id,
+    uint64_t generation,
+    uint8_t *out_value);
+
+StyloStatus koko_stylo_engine_query_pointer_events(
+    StyloEngine *engine,
+    uint64_t node_id,
+    uint64_t generation,
+    uint8_t *out_value);
+
 StyloStatus koko_stylo_engine_serialize_pseudo_property(
     StyloEngine *engine,
     uint64_t node_id,

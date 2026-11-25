@@ -52,6 +52,10 @@ Parallel traversal stays disabled until the DOM callback contract is proven
 thread-safe. FFI calls should be batched around stylesheet and subtree updates
 to avoid per-selector crossings.
 
+The boolean ABI callbacks for computed `visibility` and `pointer-events` are
+now wired end-to-end. Layout and actionability still use the serialized
+computed-value path so CSSOM, layout, and interaction observe one Stylo result.
+
 ## Build target policy
 
 The Rust archive follows Koko's existing Cargo/static-library build. Build
@@ -71,6 +75,10 @@ CSS engine rather than Koko's current inline-script parsing behavior. The Rust
 Stylo unit suite passes 5/5 tests. A WPT corpus/server is not present in this
 checkout, so the external WPT gate remains pending; the local runner and
 Chromium CDP adapters are available.
+
+The full Zig test step currently includes unrelated iframe/history/network
+regressions that time out in this checkout. Stylo-specific DOM lifecycle and
+navigation-teardown tests pass, as do the targeted Rust and differential suites.
 
 Using the same bounded workload (`32` CSS rules, `32` nodes, one style read),
 the current cached-generation implementation measured approximately:
