@@ -294,7 +294,7 @@ function evaluateStyloFixture(fixtureName) {
         return computed.status ? computed : { status: "pass", observations: { hostDisplay: window.getComputedStyle(host).getPropertyValue("display"), computed } };
       }
       case "stylo_cssom_rule_subtypes.html": {
-        const missing = ["CSSSupportsRule", "CSSKeyframesRule", "CSSKeyframeRule"]
+        const missing = ["CSSSupportsRule", "CSSKeyframesRule", "CSSKeyframeRule", "CSSPageRule", "CSSNamespaceRule", "CSSFontFaceRule", "CSSCounterStyleRule"]
           .filter((name) => typeof window[name] !== "function");
         if (missing.length > 0) return unsupported("CSSOM rule subtype constructors are not exposed", { missing });
         if (typeof CSSStyleSheet !== "function" || typeof CSSStyleSheet.prototype.replaceSync !== "function") {
@@ -302,12 +302,21 @@ function evaluateStyloFixture(fixtureName) {
         }
 
         const sheet = new CSSStyleSheet();
-        sheet.replaceSync(`@supports (display: grid) { #fixture-target { color: rgb(1, 2, 3); } } @keyframes fixture-pulse { from { opacity: 0; } 100% { opacity: 1; } }`);
+        sheet.replaceSync(`@namespace svg url("http://example.test/svg"); @supports (display: grid) { #fixture-target { color: rgb(1, 2, 3); } } @font-face { font-family: fixture; src: local("fixture"); } @page :left { margin: 1cm; } @keyframes fixture-pulse { from { opacity: 0; } 100% { opacity: 1; } } @counter-style fixture-counter { system: cyclic; symbols: "x"; }`);
         const rules = sheet.cssRules;
-        const supportsRule = rules[0];
-        const keyframesRule = rules[1];
+        const namespaceRule = rules[0];
+        const supportsRule = rules[1];
+        const fontFaceRule = rules[2];
+        const pageRule = rules[3];
+        const keyframesRule = rules[4];
+        const counterStyleRule = rules[5];
         const assert = (condition, message) => { if (!condition) throw new Error(message); };
         const ruleType = (name, fallback) => typeof CSSRule === "function" && typeof CSSRule[name] === "number" ? CSSRule[name] : fallback;
+
+        assert(namespaceRule instanceof CSSNamespaceRule && namespaceRule.prefix === "svg", "CSSNamespaceRule did not materialize correctly");
+        assert(fontFaceRule instanceof CSSFontFaceRule && !fontFaceRule.cssText.includes("\\n"), "CSSFontFaceRule did not materialize correctly");
+        assert(pageRule instanceof CSSPageRule && pageRule.selectorText === ":left", "CSSPageRule did not materialize correctly");
+        assert(counterStyleRule instanceof CSSCounterStyleRule && counterStyleRule.type === ruleType("COUNTER_STYLE_RULE", 11), "CSSCounterStyleRule did not materialize correctly");
 
         assert(supportsRule instanceof CSSSupportsRule, "@supports did not materialize as CSSSupportsRule");
         assert(supportsRule.type === ruleType("SUPPORTS_RULE", 12), "CSSSupportsRule.type mismatch");
@@ -341,6 +350,10 @@ function evaluateStyloFixture(fixtureName) {
         return {
           status: "pass",
           observations: {
+            namespace: { type: namespaceRule.type, prefix: namespaceRule.prefix, namespaceURI: namespaceRule.namespaceURI, cssText: namespaceRule.cssText },
+            fontFace: { type: fontFaceRule.type, cssText: fontFaceRule.cssText },
+            page: { type: pageRule.type, selectorText: pageRule.selectorText, cssText: pageRule.cssText },
+            counterStyle: { type: counterStyleRule.type, name: counterStyleRule.name, cssText: counterStyleRule.cssText },
             supports: { type: supportsRule.type, conditionText: supportsRule.conditionText, cssText: supportsRule.cssText },
             keyframes: { type: keyframesRule.type, name: keyframesRule.name, remainingRules: keyframesRule.cssRules.length, cssText: keyframesRule.cssText },
           },

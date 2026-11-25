@@ -1,0 +1,27 @@
+[Exposed=Window]
+interface EventTarget {
+  constructor();
+  undefined addEventListener(DOMString type, EventListener? callback, optional AddEventListenerOptions options = {});
+  undefined removeEventListener(DOMString type, EventListener? callback, optional AddEventListenerOptions options = {});
+};
+
+[Exposed=Window]
+interface Event {
+  constructor(DOMString type, optional EventInit eventInitDict = {});
+  readonly attribute DOMString type;
+  readonly attribute boolean bubbles;
+};
+
+interface mixin GlobalEventHandlers {
+  attribute EventHandler onclick;
+};
+
+EventTarget includes GlobalEventHandlers;
+
+dictionary EventInit {
+  boolean bubbles = false;
+};
+
+enum EventPhase { "none", "capturing", "at-target", "bubbling" };
+
+typedef (DOMString or long) EventType;

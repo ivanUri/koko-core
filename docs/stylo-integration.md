@@ -106,6 +106,22 @@ now pass the focused CSSOM cases that were previously failing:
   prototype subtypes pass the dedicated differential fixture, including
   condition text, live child lists, parent links, keyframe style, append/find/
   delete, and CSSOM serialization.
+- `CSSImportRule`: 12/12; href, media list normalization, supports text,
+  stylesheet ownership, `parentStyleSheet`, layer imports, and canonical
+  `cssText` pass. `CSSStyleSheet.media` now exposes the same live `MediaList`
+  model.
+- `CSSLayerBlockRule` / `CSSLayerStatementRule`: 9/9; named and anonymous
+  layers, nested blocks, statement name lists, and import layer names pass.
+- `CSSScopeRule`: 13/13; condition text, start/end selectors, grouping
+  prototype, nested rules, and serialization pass.
+- `CSSContainerRule`: 2/2; container name/query and condition text pass.
+- `CSSRuleList.item()`: exposed as the CSSOM method in addition to indexed
+  access, matching grouping-rule WPT expectations.
+- `CSSPageRule`: 22/22; selector validation/normalization, empty-rule
+  serialization, style declarations, and parent detachment pass.
+- `CSSNamespaceRule`, `CSSFontFaceRule`, and `CSSCounterStyleRule`: 1/1 each;
+  namespace URI/prefix serialization, newline-free descriptor serialization,
+  concrete prototypes, and CSSRule type constants pass.
 - `CSSKeyframesRule`: 3/3; name, live/indexed child access, duplicate-key
   lookup semantics, append/delete, and quoted-name serialization pass.
 - `CSSKeyframeRule`: 2/2 plus `keyText`: 11/11; `from`/`to`, percentages,
@@ -122,13 +138,17 @@ now pass the focused CSSOM cases that were previously failing:
 - `MediaList-parsing`: 13/13; `NotFoundError` now maps to a DOMException and
   medium normalization is covered. `MediaList.html` also passes, including
   the `mediaText = null` DOMString conversion edge case.
-- `style-set-cssText`: stylesheet lookup and initial declaration pass; invalid
-  value filtering still needs work.
+- `style-set-cssText`: 3/3; invalid declaration values are ignored while
+  valid declarations and `!important` are retained.
+- `update-media-feature`: 14/14; update capability values and invalid-value
+  handling pass.
 
-The remaining curated-suite gaps include live media-query CSSOM parsing in
-`update-media-feature`. `variable-supports-05` is a reftest without a
+`CSSRule-type.html` now passes 14/14 assertions, including the zero-valued
+CSSOM type behavior for layer, container, and scope rules.
+
+The remaining curated-suite gaps are `variable-supports-05`, a reftest without a
 testharness report, so it needs a visual/reftest comparator before it can be
-scored; `is-default-ns-003` currently hits a Koko navigation crash.
+scored; and `is-default-ns-003`, which currently hits a Koko navigation crash.
 
 This is a real WPT signal, not a completion gate: the WPT corpus is curated,
 not the full suite, and the remaining failures are explicitly tracked below.
@@ -147,10 +167,12 @@ the current cached-generation implementation measured approximately:
 | Startup | 258.4 ms | 183.6 ms | -29.0% |
 | Ready RSS | 95.4 MiB | 96.7 MiB | +1.3 MiB |
 
-The latest one-iteration differential benchmark report is
-`bench-results/stylo/1795587825722.json`; the benchmark workload remains the
-same bounded Koko/Chromium comparison while the rule-subtype validation is
-covered by the test mode. All five Koko and five Chromium
-observations passed. These measurements are single-process bounded samples;
-rerun with more iterations before treating them as release-level performance
-numbers.
+The latest one-iteration differential test report is
+`bench-results/stylo/1795617111721.json`; all 13 Koko/Chromium fixture pairs
+passed, including the expanded CSSOM subtype probe. The latest benchmark
+report is `bench-results/stylo/1795616948792.json`: Koko measured 15.04 ms
+parse, 163.02 ms full style, 2.89 ms incremental, 206.70 ms mutation
+invalidation, and 44.30 ms repeated navigation; Chromium measured 27.81 ms,
+0.50 ms, 0.20 ms, 0.40 ms, and 16.27 ms respectively. These are
+single-process bounded samples; rerun with more iterations before treating
+them as release-level performance numbers.

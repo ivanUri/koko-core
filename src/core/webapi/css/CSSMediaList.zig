@@ -7,9 +7,9 @@ const CSSMediaList = @This();
 _media_text: []const u8 = "",
 
 pub fn init(text: []const u8, frame: *Frame) !*CSSMediaList {
-    return frame._factory.create(CSSMediaList{
-        ._media_text = try frame.dupeString(text),
-    });
+    const list = try frame._factory.create(CSSMediaList{});
+    try list.setMediaText(text, frame);
+    return list;
 }
 
 pub fn getMediaText(self: *const CSSMediaList) []const u8 {
@@ -21,6 +21,9 @@ pub fn getMediaText(self: *const CSSMediaList) []const u8 {
 
 pub fn setMediaText(self: *CSSMediaList, text: []const u8, frame: *Frame) !void {
     var trimmed = std.mem.trim(u8, text, &std.ascii.whitespace);
+    if (trimmed.len > 0 and trimmed[trimmed.len - 1] == ';') {
+        trimmed = std.mem.trim(u8, trimmed[0 .. trimmed.len - 1], &std.ascii.whitespace);
+    }
     // The binding layer currently stringifies a JS null for DOMString
     // setters; MediaList uses [TreatNullAs=EmptyString].
     if (std.mem.eql(u8, trimmed, "null")) trimmed = "";

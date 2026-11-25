@@ -61,13 +61,8 @@ const names = [_][]const u8{
     "WebTransportError",
     // v100
     "CSSMathClamp",
-    // v99–100
-    "CSSLayerBlockRule",
-    "CSSLayerStatementRule",
     // v101–104
     "CSSFontPaletteValuesRule",
-    // v105–106
-    "CSSContainerRule",
     // v107–108
     "XRCamera",
     // v109
@@ -96,7 +91,6 @@ const names = [_][]const u8{
     "ReadableStreamBYOBReader",
     "ReadableStreamBYOBRequest",
     "CustomStateSet",
-    "CSSCounterStyleRule",
     "GravitySensor",
     "NavigatorManagedData",
     "RTCEncodedAudioFrame",

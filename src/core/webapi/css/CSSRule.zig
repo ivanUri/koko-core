@@ -8,6 +8,16 @@ const CSSMediaRule = @import("CSSMediaRule.zig");
 const CSSSupportsRule = @import("CSSSupportsRule.zig");
 const CSSKeyframesRule = @import("CSSKeyframesRule.zig");
 const CSSKeyframeRule = @import("CSSKeyframeRule.zig");
+const CSSImportRule = @import("CSSImportRule.zig");
+const CSSPageRule = @import("CSSPageRule.zig");
+const CSSNamespaceRule = @import("CSSNamespaceRule.zig");
+const CSSFontFaceRule = @import("CSSFontFaceRule.zig");
+const CSSCounterStyleRule = @import("CSSCounterStyleRule.zig");
+const CSSContainerRule = @import("CSSContainerRule.zig");
+const CSSGroupingRule = @import("CSSGroupingRule.zig");
+const CSSLayerBlockRule = @import("CSSLayerBlockRule.zig");
+const CSSLayerStatementRule = @import("CSSLayerStatementRule.zig");
+const CSSScopeRule = @import("CSSScopeRule.zig");
 const CSSStyleSheet = @import("CSSStyleSheet.zig");
 const CSSRuleList = @import("CSSRuleList.zig");
 
@@ -16,16 +26,21 @@ const CSSRule = @This();
 pub const Type = union(enum) {
     style: *CSSStyleRule,
     charset: void,
-    import: void,
+    import: *CSSImportRule,
     media: *CSSMediaRule,
-    font_face: void,
-    frame: void,
+    font_face: *CSSFontFaceRule,
+    frame: *CSSPageRule,
     keyframes: *CSSKeyframesRule,
     keyframe: *CSSKeyframeRule,
     margin: void,
-    namespace: void,
-    counter_style: void,
+    namespace: *CSSNamespaceRule,
+    counter_style: *CSSCounterStyleRule,
     supports: *CSSSupportsRule,
+    container: *CSSContainerRule,
+    layer_block: *CSSLayerBlockRule,
+    layer_statement: *CSSLayerStatementRule,
+    scope: *CSSScopeRule,
+    unknown: void,
     document: void,
     font_feature_values: void,
     viewport: void,
@@ -50,6 +65,15 @@ pub fn is(self: *CSSRule, comptime T: type) ?*T {
         .supports => |r| return if (T == CSSSupportsRule) r else null,
         .keyframes => |r| return if (T == CSSKeyframesRule) r else null,
         .keyframe => |r| return if (T == CSSKeyframeRule) r else null,
+        .import => |r| return if (T == CSSImportRule) r else null,
+        .frame => |r| return if (T == CSSPageRule) r else null,
+        .font_face => |r| return if (T == CSSFontFaceRule) r else null,
+        .namespace => |r| return if (T == CSSNamespaceRule) r else null,
+        .counter_style => |r| return if (T == CSSCounterStyleRule) r else null,
+        .container => |r| return if (T == CSSContainerRule) r else null,
+        .layer_block => |r| return if (T == CSSLayerBlockRule) r else if (T == CSSGroupingRule) r._proto else null,
+        .layer_statement => |r| return if (T == CSSLayerStatementRule) r else null,
+        .scope => |r| return if (T == CSSScopeRule) r else if (T == CSSGroupingRule) r._proto else null,
         else => return null,
     }
 }
@@ -88,6 +112,42 @@ pub fn initAtRule(raw_css_text: []const u8, frame: *Frame) !*CSSRule {
         const keyframes_rule = try CSSKeyframesRule.init(raw_css_text, frame);
         return keyframes_rule._proto;
     }
+    if (std.ascii.startsWithIgnoreCase(trimmed, "@import")) {
+        const import_rule = try CSSImportRule.init(raw_css_text, frame);
+        return import_rule._proto;
+    }
+    if (std.ascii.startsWithIgnoreCase(trimmed, "@page")) {
+        const page_rule = try CSSPageRule.init(raw_css_text, frame);
+        return page_rule._proto;
+    }
+    if (std.ascii.startsWithIgnoreCase(trimmed, "@font-face")) {
+        const font_face_rule = try CSSFontFaceRule.init(raw_css_text, frame);
+        return font_face_rule._proto;
+    }
+    if (std.ascii.startsWithIgnoreCase(trimmed, "@namespace")) {
+        const namespace_rule = try CSSNamespaceRule.init(raw_css_text, frame);
+        return namespace_rule._proto;
+    }
+    if (std.ascii.startsWithIgnoreCase(trimmed, "@counter-style")) {
+        const counter_style_rule = try CSSCounterStyleRule.init(raw_css_text, frame);
+        return counter_style_rule._proto;
+    }
+    if (std.ascii.startsWithIgnoreCase(trimmed, "@container")) {
+        const container_rule = try CSSContainerRule.init(raw_css_text, frame);
+        return container_rule._proto._proto;
+    }
+    if (std.ascii.startsWithIgnoreCase(trimmed, "@layer")) {
+        if (std.mem.indexOfScalar(u8, trimmed, '{') != null) {
+            const layer_rule = try CSSLayerBlockRule.init(raw_css_text, frame);
+            return layer_rule._proto._proto;
+        }
+        const layer_rule = try CSSLayerStatementRule.init(raw_css_text, frame);
+        return layer_rule._proto;
+    }
+    if (std.ascii.startsWithIgnoreCase(trimmed, "@scope")) {
+        const scope_rule = try CSSScopeRule.init(raw_css_text, frame);
+        return scope_rule._proto._proto;
+    }
     return initRaw(placeholderTypeForAtRule(raw_css_text), raw_css_text, frame);
 }
 
@@ -100,24 +160,17 @@ fn children(self: *CSSRule, frame: *Frame) !*CSSRuleList {
 
 fn isGroupingType(rule_type: Type) bool {
     return switch (rule_type) {
-        .media, .keyframes, .supports, .document, .font_feature_values, .viewport => true,
+        .media, .keyframes, .supports, .container, .layer_block, .scope, .document, .font_feature_values, .viewport => true,
         else => false,
     };
 }
 
 fn placeholderTypeForAtRule(rule: []const u8) Type {
-    const trimmed = std.mem.trim(u8, rule, &std.ascii.whitespace);
+    _ = rule;
     // @media is materialized by initAtRule so its runtime subtype is retained.
     // These at-rules are materialized by initAtRule before this fallback is
     // reached. Keep the fallback as a raw placeholder for malformed input.
-    if (std.ascii.startsWithIgnoreCase(trimmed, "@keyframes") or std.ascii.startsWithIgnoreCase(trimmed, "@-webkit-keyframes")) return .{ .font_face = {} };
-    if (std.ascii.startsWithIgnoreCase(trimmed, "@font-face")) return .{ .font_face = {} };
-    if (std.ascii.startsWithIgnoreCase(trimmed, "@import")) return .{ .import = {} };
-    if (std.ascii.startsWithIgnoreCase(trimmed, "@supports")) return .{ .font_face = {} };
-    if (std.ascii.startsWithIgnoreCase(trimmed, "@charset")) return .{ .charset = {} };
-    if (std.ascii.startsWithIgnoreCase(trimmed, "@namespace")) return .{ .namespace = {} };
-    if (std.ascii.startsWithIgnoreCase(trimmed, "@counter-style")) return .{ .counter_style = {} };
-    return .{ .font_face = {} };
+    return .{ .unknown = {} };
 }
 
 fn createStyleChild(rule: Parser.Rule, frame: *Frame) !*CSSRule {
@@ -193,7 +246,10 @@ pub fn deleteRule(self: *CSSRule, index: u32, frame: *Frame) !void {
 }
 
 pub fn getType(self: *const CSSRule) u16 {
-    return @as(u16, @intFromEnum(std.meta.activeTag(self._type))) + 1;
+    return switch (self._type) {
+        .container, .layer_block, .layer_statement, .scope, .unknown => 0,
+        else => @as(u16, @intFromEnum(std.meta.activeTag(self._type))) + 1,
+    };
 }
 
 pub fn getGroupingCssText(self: *const CSSRule, frame: *Frame) anyerror![]const u8 {
@@ -219,6 +275,15 @@ pub fn getCssText(self: *const CSSRule, frame: *Frame) anyerror![]const u8 {
         .supports => |supports_rule| return supports_rule.getCssText(frame),
         .keyframes => |keyframes_rule| return keyframes_rule.getCssText(frame),
         .keyframe => |keyframe_rule| return keyframe_rule.getCssText(frame),
+        .import => |import_rule| return import_rule.getCssText(frame),
+        .frame => |page_rule| return page_rule.getCssText(frame),
+        .font_face => |font_face_rule| return font_face_rule.getCssText(frame),
+        .namespace => |namespace_rule| return namespace_rule.getCssText(frame),
+        .counter_style => |counter_style_rule| return counter_style_rule.getCssText(frame),
+        .container => |container_rule| return container_rule.getCssText(frame),
+        .layer_block => |layer_rule| return layer_rule.getCssText(frame),
+        .layer_statement => |layer_rule| return layer_rule.getCssText(frame),
+        .scope => |scope_rule| return scope_rule.getCssText(frame),
         else => return getGroupingCssText(self, frame),
     }
 }

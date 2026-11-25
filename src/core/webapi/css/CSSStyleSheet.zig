@@ -10,6 +10,7 @@ const Node = @import("../../dom/Node.zig");
 const CSSRuleList = @import("CSSRuleList.zig");
 const CSSRule = @import("CSSRule.zig");
 const CSSStyleRule = @import("CSSStyleRule.zig");
+const CSSMediaList = @import("CSSMediaList.zig");
 
 const log = @import("../../../support/log.zig");
 
@@ -36,19 +37,22 @@ pub const CSSError = error{
 _href: ?[]const u8 = null,
 _title: []const u8 = "",
 _disabled: bool = false,
+_media: *CSSMediaList,
 _css_rules: ?*CSSRuleList = null,
 _stylo_source: ?[]const u8 = null,
 _owner_rule: ?*CSSRule = null,
+_parent_style_sheet: ?*CSSStyleSheet = null,
 _owner_node: ?*Element = null,
 _style_scope_owners: std.ArrayListUnmanaged(StyleScopeOwner) = .empty,
 
 pub fn init(frame: *Frame) !*CSSStyleSheet {
-    return frame._factory.create(CSSStyleSheet{});
+    return frame._factory.create(CSSStyleSheet{ ._media = try CSSMediaList.init("", frame) });
 }
 
 pub fn initWithHref(href: []const u8, frame: *Frame) !*CSSStyleSheet {
     return frame._factory.create(CSSStyleSheet{
         ._href = try frame.dupeString(href),
+        ._media = try CSSMediaList.init("", frame),
     });
 }
 
@@ -56,11 +60,12 @@ pub fn initWithHrefOwner(href: []const u8, owner: *Element, frame: *Frame) !*CSS
     return frame._factory.create(CSSStyleSheet{
         ._href = try frame.dupeString(href),
         ._owner_node = owner,
+        ._media = try CSSMediaList.init("", frame),
     });
 }
 
 pub fn initWithOwner(owner: *Element, frame: *Frame) !*CSSStyleSheet {
-    return frame._factory.create(CSSStyleSheet{ ._owner_node = owner });
+    return frame._factory.create(CSSStyleSheet{ ._owner_node = owner, ._media = try CSSMediaList.init("", frame) });
 }
 
 pub fn getOwnerNode(self: *const CSSStyleSheet) ?*Element {
@@ -82,6 +87,15 @@ pub fn getTitle(self: *const CSSStyleSheet) []const u8 {
 
 pub fn getDisabled(self: *const CSSStyleSheet) bool {
     return self._disabled;
+}
+
+pub fn getMedia(self: *CSSStyleSheet) *CSSMediaList {
+    return self._media;
+}
+
+pub fn setMedia(self: *CSSStyleSheet, text: []const u8, frame: *Frame) !void {
+    try self._media.setMediaText(text, frame);
+    notifyStyleSheetMutation(self, "media", frame);
 }
 
 pub fn registerStyleScopeOwner(self: *CSSStyleSheet, frame: *Frame) !void {
@@ -171,9 +185,21 @@ pub fn getOwnerRule(self: *const CSSStyleSheet) ?*CSSRule {
     return self._owner_rule;
 }
 
+pub fn getParentStyleSheet(self: *const CSSStyleSheet) ?*CSSStyleSheet {
+    return self._parent_style_sheet;
+}
+
 fn attachParentStyleSheet(self: *CSSStyleSheet, rule: *CSSRule, frame: *Frame) !void {
     _ = frame;
     rule.setParentStyleSheet(self);
+    switch (rule._type) {
+        .import => |import_rule| {
+            if (import_rule._style_sheet) |style_sheet| {
+                style_sheet._parent_style_sheet = self;
+            }
+        },
+        else => {},
+    }
 }
 
 /// Return the current stylesheet source for the Stylo bridge. Author sheets
@@ -270,6 +296,17 @@ pub fn insertRule(self: *CSSStyleSheet, rule: []const u8, maybe_index: ?u32, fra
 
 pub fn deleteRule(self: *CSSStyleSheet, index: u32, frame: *Frame) !void {
     const rules = try self.getCssRules(frame);
+    const rule = rules.item(index) orelse return error.IndexSizeError;
+    switch (rule._type) {
+        .import => |import_rule| {
+            if (import_rule._style_sheet) |style_sheet| {
+                style_sheet._parent_style_sheet = null;
+            }
+        },
+        else => {},
+    }
+    rule._parent_style_sheet = null;
+    rule._parent_rule = null;
     try rules.remove(index);
     try self.refreshStyloSource(frame);
 
@@ -372,9 +409,11 @@ pub const JsApi = struct {
     pub const href = bridge.accessor(CSSStyleSheet.getHref, null, .{ .null_as_undefined = true });
     pub const title = bridge.accessor(CSSStyleSheet.getTitle, null, .{});
     pub const disabled = bridge.accessor(CSSStyleSheet.getDisabled, CSSStyleSheet.setDisabled, .{});
+    pub const media = bridge.accessor(CSSStyleSheet.getMedia, CSSStyleSheet.setMedia, .{});
     pub const cssRules = bridge.accessor(CSSStyleSheet.getCssRules, null, .{});
     pub const rules = bridge.accessor(CSSStyleSheet.getCssRules, null, .{});
     pub const ownerRule = bridge.accessor(CSSStyleSheet.getOwnerRule, null, .{});
+    pub const parentStyleSheet = bridge.accessor(CSSStyleSheet.getParentStyleSheet, null, .{});
     pub const insertRule = bridge.function(CSSStyleSheet.insertRule, .{ .dom_exception = true });
     pub const deleteRule = bridge.function(CSSStyleSheet.deleteRule, .{ .dom_exception = true });
     pub const addRule = bridge.function(CSSStyleSheet.addRule, .{ .dom_exception = true });

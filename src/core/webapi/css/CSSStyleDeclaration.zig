@@ -14,6 +14,7 @@
 const std = @import("std");
 
 const CssParser = @import("../../browser/css/Parser.zig");
+const CssTokenizer = @import("../../browser/css/Tokenizer.zig");
 const StyleEngine = @import("../../browser/StyleEngine.zig").StyleEngine;
 
 const js = @import("../../js/js.zig");
@@ -256,6 +257,7 @@ fn setPropertyImpl(self: *CSSStyleDeclaration, property_name: []const u8, value:
     }
 
     const normalized = normalizePropertyName(property_name, &frame.buf);
+    if (!isValidDeclaration(normalized, value)) return;
 
     // Normalize the value for canonical serialization
     const normalized_value = try normalizePropertyValue(frame.call_arena, normalized, value);
@@ -275,6 +277,39 @@ fn setPropertyImpl(self: *CSSStyleDeclaration, property_name: []const u8, value:
         ._important = important,
     });
     self._properties.append(&prop._node);
+}
+
+/// CSSOM drops declarations which do not name a known property or contain
+/// invalid declaration-value syntax. The stylesheet parser already removes a
+/// trailing `!important`; a remaining top-level `!` is therefore a malformed
+/// declaration (for example, `color: green!`).
+///
+/// Custom properties intentionally keep their token stream opaque. Their
+/// values are allowed to contain arbitrary component values, including `!`.
+fn isValidDeclaration(property_name: []const u8, value: []const u8) bool {
+    if (std.mem.startsWith(u8, property_name, "--")) return true;
+    if (!isKnownCSSProperty(property_name)) return false;
+
+    var tokenizer = CssTokenizer{ .input = value };
+    var depth: usize = 0;
+    while (tokenizer.next()) |token| {
+        switch (token) {
+            .bad_string, .bad_url => return false,
+            .delim => |character| {
+                if (character == '!' and depth == 0) return false;
+            },
+            .parenthesis_block, .square_bracket_block, .curly_bracket_block, .function => {
+                depth += 1;
+            },
+            .close_parenthesis, .close_square_bracket, .close_curly_bracket => {
+                if (depth == 0) return false;
+                depth -= 1;
+            },
+            else => {},
+        }
+    }
+
+    return depth == 0;
 }
 
 pub fn removeProperty(self: *CSSStyleDeclaration, property_name: []const u8, frame: *Frame) ![]const u8 {

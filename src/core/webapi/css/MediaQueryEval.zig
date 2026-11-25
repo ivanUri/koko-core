@@ -48,12 +48,17 @@ pub const Viewport = struct {
     pointer: PointerCapability = .fine,
     display_mode: DisplayMode = .browser,
     color_gamut: ColorGamut = .p3,
+    // Koko's current media environment is a non-printing, fast display.
+    // Keep this as an explicit capability so `update` follows media-query
+    // semantics instead of being treated as an unknown feature.
+    update: UpdateCapability = .fast,
 
     pub const ColorScheme = enum { light, dark };
     pub const HoverCapability = enum { hover, none };
     pub const PointerCapability = enum { fine, coarse, none };
     pub const DisplayMode = enum { fullscreen, standalone, @"minimal-ui", browser };
     pub const ColorGamut = enum { rec2020, p3, srgb };
+    pub const UpdateCapability = enum { none, slow, fast };
 };
 
 pub fn matches(query: []const u8, vp: Viewport) bool {
@@ -121,26 +126,32 @@ const Parser = struct {
         var any_match = false;
         while (true) {
             const m = self.parseMediaQuery(vp);
-            if (m) any_match = true;
+            if (m) |matched| {
+                if (matched) any_match = true;
+            }
             self.skipWs();
             if (!self.eatChar(',')) break;
         }
         return any_match;
     }
 
-    fn parseMediaQuery(self: *Parser, vp: Viewport) bool {
+    /// Returns null for a syntactically invalid query. This distinction is
+    /// required for expressions such as `not all and (update: ?)`; an
+    /// invalid feature must invalidate the query rather than being turned
+    /// into true by `not`.
+    fn parseMediaQuery(self: *Parser, vp: Viewport) ?bool {
         // [ not ]? ( <type> | <feature> ) ( and ( <type> | <feature> ) )*
         const negate = self.eatKeyword("not");
-        const first = self.parseTermOrFalse(vp);
+        const first = self.parseTermOrFalse(vp) orelse return null;
         var combined = first;
         while (self.eatKeyword("and")) {
-            const next = self.parseTermOrFalse(vp);
+            const next = self.parseTermOrFalse(vp) orelse return null;
             combined = combined and next;
         }
         return if (negate) !combined else combined;
     }
 
-    fn parseTermOrFalse(self: *Parser, vp: Viewport) bool {
+    fn parseTermOrFalse(self: *Parser, vp: Viewport) ?bool {
         self.skipWs();
         if (self.peek() == '(') {
             self.advance();
@@ -154,18 +165,19 @@ const Parser = struct {
         if (std.ascii.eqlIgnoreCase(id, "all")) return true;
         if (std.ascii.eqlIgnoreCase(id, "screen")) return true;
         if (std.ascii.eqlIgnoreCase(id, "print")) return false;
-        // Anything else (including empty) fails closed.
-        return false;
+        // An unknown media type makes the media query invalid. Returning
+        // null preserves that distinction through `not` and `and`.
+        return null;
     }
 
-    fn parseFeature(self: *Parser, vp: Viewport) bool {
+    fn parseFeature(self: *Parser, vp: Viewport) ?bool {
         self.skipWs();
         const name_raw = self.readIdent();
-        if (name_raw.len == 0) return false;
+        if (name_raw.len == 0) return null;
 
         // Lowercase into a fixed buffer; feature names are short.
         var lower_buf: [64]u8 = undefined;
-        if (name_raw.len > lower_buf.len) return false;
+        if (name_raw.len > lower_buf.len) return null;
         for (name_raw, 0..) |c, i| lower_buf[i] = std.ascii.toLower(c);
         const name = lower_buf[0..name_raw.len];
 
@@ -183,11 +195,21 @@ const Parser = struct {
         self.skipWs();
         if (!self.eatChar(':')) {
             // Boolean form: `(feature)` matches iff feature is "truthy".
+            if (!isKnownFeature(feat)) return null;
             return featureBoolean(feat, vp);
         }
 
         // `(feature: value)` form.
-        return matchValue(feat, bound, self.readValue(), vp);
+        const value = self.readValue();
+        if (!isKnownFeature(feat)) return null;
+        if (std.mem.eql(u8, feat, "update")) {
+            if (std.ascii.eqlIgnoreCase(value, "none")) return vp.update == .none;
+            if (std.ascii.eqlIgnoreCase(value, "slow")) return vp.update == .slow;
+            if (std.ascii.eqlIgnoreCase(value, "fast")) return vp.update == .fast;
+            // The feature is known, but the value is not in its grammar.
+            return null;
+        }
+        return matchValue(feat, bound, value, vp);
     }
 
     fn readValue(self: *Parser) []const u8 {
@@ -199,6 +221,29 @@ const Parser = struct {
         return std.mem.trim(u8, self.src[start..self.pos], &std.ascii.whitespace);
     }
 };
+
+fn isKnownFeature(feat: []const u8) bool {
+    return std.mem.eql(u8, feat, "width") or
+        std.mem.eql(u8, feat, "height") or
+        std.mem.eql(u8, feat, "device-width") or
+        std.mem.eql(u8, feat, "device-height") or
+        std.mem.eql(u8, feat, "resolution") or
+        std.mem.eql(u8, feat, "orientation") or
+        std.mem.eql(u8, feat, "prefers-color-scheme") or
+        std.mem.eql(u8, feat, "prefers-reduced-motion") or
+        std.mem.eql(u8, feat, "monochrome") or
+        std.mem.eql(u8, feat, "inverted-colors") or
+        std.mem.eql(u8, feat, "forced-colors") or
+        std.mem.eql(u8, feat, "any-hover") or
+        std.mem.eql(u8, feat, "hover") or
+        std.mem.eql(u8, feat, "any-pointer") or
+        std.mem.eql(u8, feat, "pointer") or
+        std.mem.eql(u8, feat, "device-aspect-ratio") or
+        std.mem.eql(u8, feat, "display-mode") or
+        std.mem.eql(u8, feat, "color-gamut") or
+        std.mem.eql(u8, feat, "color") or
+        std.mem.eql(u8, feat, "update");
+}
 
 fn featureBoolean(feat: []const u8, vp: Viewport) bool {
     if (std.mem.eql(u8, feat, "width")) return vp.width_px > 0;
@@ -217,6 +262,7 @@ fn featureBoolean(feat: []const u8, vp: Viewport) bool {
     if (std.mem.eql(u8, feat, "forced-colors")) return vp.forced_colors;
     if (std.mem.eql(u8, feat, "display-mode")) return true;
     if (std.mem.eql(u8, feat, "color-gamut")) return true;
+    if (std.mem.eql(u8, feat, "update")) return vp.update != .none;
     return false;
 }
 
@@ -431,4 +477,31 @@ test "prefers-color-scheme" {
     };
     try testing.expect(matches("(prefers-color-scheme: light)", vp));
     try testing.expect(!matches("(prefers-color-scheme: dark)", vp));
+}
+
+test "update media feature" {
+    const fast: Viewport = .{
+        .width_px = 1920,
+        .height_px = 1080,
+        .device_width_px = 1920,
+        .device_height_px = 1080,
+        .device_pixel_ratio = 1.0,
+        .update = .fast,
+    };
+    try testing.expect(matches("(update)", fast));
+    try testing.expect(matches("(update: fast)", fast));
+    try testing.expect(!matches("(update: slow)", fast));
+    try testing.expect(!matches("(update: none)", fast));
+    try testing.expect(!matches("(update: ?)", fast));
+    try testing.expect(!matches("(update: 10px)", fast));
+    try testing.expect(!matches("(update: 0)", fast));
+
+    var slow = fast;
+    slow.update = .slow;
+    try testing.expect(matches("(update: slow)", slow));
+    try testing.expect(!matches("(update: fast)", slow));
+    // `not` must not turn an unknown value into a match: invalid features
+    // invalidate the complete media query before boolean negation applies.
+    try testing.expect(!matches("not (update: slow)", slow));
+    try testing.expect(!matches("not (update: ?)", slow));
 }
