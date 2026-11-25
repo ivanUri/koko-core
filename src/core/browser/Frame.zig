@@ -475,6 +475,7 @@ _style_engine_document: ?*Document = null,
 _style_engine_generation: u64 = 0,
 _style_engine_active: bool = false,
 _stylo_prepared_generation: u64 = 0,
+_stylo_adopted_stylesheet_signature: u64 = 0,
 _style_node_sequence: u32 = 1,
 _stylo_node_lookup: std.AutoHashMapUnmanaged(u32, *Node) = .empty,
 _script_manager: ScriptManager,
@@ -1237,6 +1238,47 @@ fn appendStyloAdoptedStylesheets(
     }
 }
 
+fn styloMixAdoptedStylesheetSignature(signature: *u64, value: u64) void {
+    signature.* = (signature.* ^ value) *% 0x100000001b3;
+    signature.* ^= signature.* >> 29;
+}
+
+fn styloAdoptedStylesheetSignature(frame: *Frame) u64 {
+    var signature: u64 = 0xcbf29ce484222325;
+    const appendArray = struct {
+        fn run(frame_: *Frame, signature_: *u64, adopted: JS.Object.Global) void {
+            const local = frame_.js.local orelse return;
+            const array = adopted.local(local).toValue().toArray();
+            styloMixAdoptedStylesheetSignature(signature_, @intCast(array.len()));
+            for (0..array.len()) |index| {
+                const value = array.get(@intCast(index)) catch {
+                    styloMixAdoptedStylesheetSignature(signature_, std.math.maxInt(u64));
+                    continue;
+                };
+                const sheet = value.toZig(*CSSStyleSheet) catch {
+                    styloMixAdoptedStylesheetSignature(signature_, std.math.maxInt(u64) -% @as(u64, @intCast(index)));
+                    continue;
+                };
+                styloMixAdoptedStylesheetSignature(signature_, @intFromPtr(sheet));
+            }
+        }
+    }.run;
+
+    if (frame.document.getAdoptedStyleSheets(frame)) |adopted| {
+        appendArray(frame, &signature, adopted);
+    } else |_| {}
+
+    var shadow_roots = frame._element_shadow_roots.iterator();
+    while (shadow_roots.next()) |entry| {
+        const shadow_root = entry.value_ptr.*;
+        styloMixAdoptedStylesheetSignature(&signature, frame.styleNodeId(shadow_root.asNode()));
+        if (shadow_root.getAdoptedStyleSheets(frame)) |adopted| {
+            appendArray(frame, &signature, adopted);
+        } else |_| {}
+    }
+    return signature;
+}
+
 fn appendStyloNativeStylesheets(
     frame: *Frame,
     inputs: *std.ArrayListUnmanaged(Abi.StylesheetInput),
@@ -1258,7 +1300,9 @@ fn styloPrepareForLayout(
     // invalidation. Avoid reparsing the UA and author sheets for every
     // getComputedStyle()/layout read in a stable generation.
     const generation = frame._style_engine.generation();
-    if (frame._stylo_prepared_generation == generation) return Abi.status_ok;
+    const adopted_signature = styloAdoptedStylesheetSignature(frame);
+    if (frame._stylo_prepared_generation == generation and
+        frame._stylo_adopted_stylesheet_signature == adopted_signature) return Abi.status_ok;
     // Parser-time <style> callbacks intentionally defer CSSStyleSheet
     // allocation. Materialize those deferred sheets before taking the Stylo
     // snapshot so the first computed-style read sees the authoritative CSS.
@@ -1293,11 +1337,15 @@ fn styloPrepareForLayout(
         const scope_id = frame.styleNodeId(shadow_root.asNode());
         appendStyloUserAgentStylesheet(frame, &inputs, scope_id) catch return Abi.status_internal_error;
         appendStyloNativeStylesheets(frame, &inputs, shadow_root.scopedStyleSheets(), scope_id) catch return Abi.status_internal_error;
-        appendStyloNativeStylesheets(frame, &inputs, shadow_root.adoptedStyleSheetsNative(), scope_id) catch return Abi.status_internal_error;
+        const shadow_adopted = shadow_root.getAdoptedStyleSheets(frame) catch return Abi.status_internal_error;
+        appendStyloAdoptedStylesheets(frame, &inputs, shadow_adopted, scope_id) catch return Abi.status_internal_error;
     }
     const ptr: [*c]const Abi.StylesheetInput = if (inputs.items.len == 0) null else inputs.items.ptr;
     const status = styloMapStatus(koko_stylo_engine_replace_stylesheets(engine, ptr, inputs.items.len));
-    if (status == Abi.status_ok) frame._stylo_prepared_generation = frame._style_engine.generation();
+    if (status == Abi.status_ok) {
+        frame._stylo_prepared_generation = frame._style_engine.generation();
+        frame._stylo_adopted_stylesheet_signature = adopted_signature;
+    }
     return status;
 }
 

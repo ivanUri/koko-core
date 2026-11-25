@@ -56,6 +56,13 @@ The boolean ABI callbacks for computed `visibility` and `pointer-events` are
 now wired end-to-end. Layout and actionability still use the serialized
 computed-value path so CSSOM, layout, and interaction observe one Stylo result.
 
+Adopted stylesheet arrays are also checked for live JS mutations. Direct
+operations such as `document.adoptedStyleSheets.length = 0` and
+`shadowRoot.adoptedStyleSheets.pop()` do not invoke the property setter, so the
+bridge fingerprints the current sheet identities before reusing a cached Stylo
+stylesheet snapshot. Shadow scopes read the live JS array during preparation;
+the native list remains an ownership/lifetime index.
+
 ## Build target policy
 
 The Rust archive follows Koko's existing Cargo/static-library build. Build
@@ -72,9 +79,24 @@ stylesheets, cascade, class mutation, custom properties, dynamic stylesheets,
 pseudo-elements, and shadow roots. The differential runner strips fixture
 scripts and executes the same evaluator after navigation so results measure the
 CSS engine rather than Koko's current inline-script parsing behavior. The Rust
-Stylo unit suite passes 5/5 tests. A WPT corpus/server is not present in this
-checkout, so the external WPT gate remains pending; the local runner and
-Chromium CDP adapters are available.
+Stylo unit suite passes 5/5 tests.
+
+A sparse WPT checkout at Stylo revision `0ab78ce9` was used to run a curated
+12-file CSS subset through Koko's CLI fetch path (the Go CDP runner currently
+checks immediately after `Page.navigate` and races external `testharness.js`).
+The current result is 5/12:
+
+- Pass: `getComputedStyle-live`, `adoptedstylesheets-observablearray-removal`,
+  `layers-basic`, `important-vs-inline-001`, and `layer-basic`.
+- Failing CSSOM gaps: shorthand expansion in `inline-style-001`, missing
+  `cssRules`/grouping-rule behavior in `CSSGroupingRule-insertRule` and
+  `CSSStyleSheet`, and live media-query CSSOM parsing in `update-media-feature`.
+- `variable-supports-05` is a reftest without a testharness report, so it needs
+  a visual/reftest comparator before it can be scored; `is-default-ns-003`
+  currently hits a Koko navigation crash.
+
+This is a real WPT signal, not a completion gate: the WPT corpus is curated,
+not the full suite, and the remaining failures are explicitly tracked below.
 
 The full Zig test step currently includes unrelated iframe/history/network
 regressions that time out in this checkout. Stylo-specific DOM lifecycle and
