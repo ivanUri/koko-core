@@ -216,6 +216,12 @@ impl Engine {
         Ok(())
     }
 
+    fn invalidate_stylesheets(&mut self) {
+        self.computed_styles.clear();
+        self.invalidation_generation = self.invalidation_generation.wrapping_add(1);
+        self.last_error.clear();
+    }
+
     fn reset_document(&mut self) {
         self.node_records.clear();
         self.computed_styles.clear();
@@ -524,6 +530,18 @@ pub extern "C" fn koko_stylo_engine_replace_stylesheets(
             }
             Err(status) => inner.error(status, "stylesheet replacement rejected"),
         }
+    }) {
+        Ok(status) | Err(status) => status,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn koko_stylo_engine_invalidate_stylesheets(
+    engine: *mut StyloEngine,
+) -> StyloStatus {
+    match with_engine(engine, |inner| {
+        inner.invalidate_stylesheets();
+        StyloStatus::Ok
     }) {
         Ok(status) | Err(status) => status,
     }

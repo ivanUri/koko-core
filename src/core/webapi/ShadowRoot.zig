@@ -18,6 +18,7 @@ const Frame = @import("../browser/Frame.zig");
 const Node = @import("../dom/Node.zig");
 const DocumentFragment = @import("../dom/DocumentFragment.zig");
 const Element = @import("../dom/Element.zig");
+const CSSStyleSheet = @import("css/CSSStyleSheet.zig");
 
 const ShadowRoot = @This();
 
@@ -33,15 +34,19 @@ pub const Mode = enum {
 _proto: *DocumentFragment,
 _mode: Mode,
 _host: *Element,
+_owner_frame: *Frame,
 _elements_by_id: std.StringHashMapUnmanaged(*Element) = .{},
 _removed_ids: std.StringHashMapUnmanaged(void) = .{},
 _adopted_style_sheets: ?js.Object.Global = null,
+_adopted_style_sheet_items: std.ArrayListUnmanaged(*CSSStyleSheet) = .empty,
+_scoped_style_sheets: std.ArrayListUnmanaged(*CSSStyleSheet) = .empty,
 
 pub fn init(host: *Element, mode: Mode, frame: *Frame) !*ShadowRoot {
     return frame._factory.documentFragment(ShadowRoot{
         ._proto = undefined,
         ._mode = mode,
         ._host = host,
+        ._owner_frame = frame,
     });
 }
 
@@ -90,6 +95,32 @@ pub fn getElementById(self: *ShadowRoot, id: []const u8, frame: *Frame) ?*Elemen
     return null;
 }
 
+pub fn registerScopedStyleSheet(self: *ShadowRoot, sheet: *CSSStyleSheet) !void {
+    for (self._scoped_style_sheets.items) |existing| {
+        if (existing == sheet) return;
+    }
+    try sheet.registerStyleScopeOwner(self._owner_frame);
+    errdefer sheet.unregisterStyleScopeOwner(self._owner_frame);
+    try self._scoped_style_sheets.append(self._owner_frame.arena, sheet);
+}
+
+pub fn unregisterScopedStyleSheet(self: *ShadowRoot, sheet: *CSSStyleSheet) void {
+    for (self._scoped_style_sheets.items, 0..) |existing, index| {
+        if (existing != sheet) continue;
+        _ = self._scoped_style_sheets.swapRemove(index);
+        sheet.unregisterStyleScopeOwner(self._owner_frame);
+        return;
+    }
+}
+
+fn sameStyleSheetList(left: []const *CSSStyleSheet, right: []const *CSSStyleSheet) bool {
+    if (left.len != right.len) return false;
+    for (left, right) |a, b| {
+        if (a != b) return false;
+    }
+    return true;
+}
+
 pub fn getAdoptedStyleSheets(self: *ShadowRoot, frame: *Frame) !js.Object.Global {
     if (self._adopted_style_sheets) |ass| {
         return ass;
@@ -101,7 +132,59 @@ pub fn getAdoptedStyleSheets(self: *ShadowRoot, frame: *Frame) !js.Object.Global
 }
 
 pub fn setAdoptedStyleSheets(self: *ShadowRoot, sheets: js.Object) !void {
-    self._adopted_style_sheets = try sheets.persist();
+    const value = sheets.toValue();
+    if (!value.isArray()) return error.InvalidArgument;
+
+    const input = value.toArray();
+    var next: std.ArrayListUnmanaged(*CSSStyleSheet) = .empty;
+    defer next.deinit(self._owner_frame.call_arena);
+
+    const local = self._owner_frame.js.local orelse return error.InvalidState;
+    var snapshot = local.newArray(@intCast(input.len()));
+    for (0..input.len()) |index| {
+        const item = try input.get(@intCast(index));
+        const sheet = try item.toZig(*CSSStyleSheet);
+        // A stylesheet with an owner node is tied to its <style>/<link>
+        // element and is not a constructable sheet.  Keeping that distinction
+        // prevents a document-owned sheet from being registered in a shadow
+        // scope whose lifecycle it does not follow.
+        if (sheet.getOwnerNode() != null) return error.InvalidArgument;
+        try next.append(self._owner_frame.call_arena, sheet);
+        if (!(try snapshot.set(@intCast(index), item, .{}))) return error.JsException;
+    }
+
+    if (sameStyleSheetList(self._adopted_style_sheet_items.items, next.items)) return;
+    self._adopted_style_sheet_items.ensureTotalCapacity(self._owner_frame.arena, next.items.len) catch |err| return err;
+
+    // Register the new set first.  If an allocator or JS persistence failure
+    // occurs, roll back only the references added by this assignment and keep
+    // the previous adopted set intact.
+    var registered: usize = 0;
+    while (registered < next.items.len) : (registered += 1) {
+        next.items[registered].registerStyleScopeOwner(self._owner_frame) catch |err| {
+            for (next.items[0..registered]) |registered_sheet| {
+                registered_sheet.unregisterStyleScopeOwner(self._owner_frame);
+            }
+            return err;
+        };
+    }
+    const persisted = snapshot.toObject().persist() catch |err| {
+        for (next.items) |registered_sheet| {
+            registered_sheet.unregisterStyleScopeOwner(self._owner_frame);
+        }
+        return err;
+    };
+
+    for (self._adopted_style_sheet_items.items) |old_sheet| {
+        old_sheet.unregisterStyleScopeOwner(self._owner_frame);
+    }
+    self._adopted_style_sheet_items.clearRetainingCapacity();
+    self._adopted_style_sheet_items.appendSliceAssumeCapacity(next.items);
+    self._adopted_style_sheets = persisted;
+
+    if (!self._owner_frame.isGoingAway()) {
+        self._owner_frame.adoptedStyleSheetsChanged();
+    }
 }
 
 pub const JsApi = struct {

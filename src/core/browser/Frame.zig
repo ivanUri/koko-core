@@ -144,6 +144,7 @@ extern fn koko_stylo_engine_replace_stylesheets(
     inputs: [*c]const Abi.StylesheetInput,
     count: usize,
 ) StyloCStatus;
+extern fn koko_stylo_engine_invalidate_stylesheets(engine: ?*anyopaque) StyloCStatus;
 extern fn koko_stylo_engine_sync_node(engine: ?*anyopaque, node: ?*const anyopaque) StyloCStatus;
 extern fn koko_stylo_engine_reset_document(engine: ?*anyopaque) StyloCStatus;
 extern fn koko_stylo_engine_flush_styles(
@@ -828,7 +829,18 @@ pub fn invalidateStyleEngine(self: *Frame, kind: StyleEngineInvalidation, node: 
 pub fn styleSheetChanged(self: *Frame, node: ?*Node) void {
     self._style_manager.sheetModified();
     _ = self._style_engine.invalidateStylesheets();
+    if (node) |changed| {
+        // Stylesheet changes can affect arbitrary descendants.  The stylesheet
+        // callback clears Stylo's global cache; syncing the owner node also
+        // refreshes callback-backed DOM metadata before the next query.
+        _ = self._style_engine.invalidateDom(self.styleNodeId(changed), .subtree);
+    }
     self.invalidateStyleEngine(.stylesheet, node);
+}
+
+fn styleSheetSourceChanged(self: *Frame, node: *Node) void {
+    if (node.is(Element.Html.Style)) |style| style.sourceTextChanged();
+    self.styleSheetChanged(node);
 }
 
 pub fn adoptedStyleSheetsChanged(self: *Frame) void {
@@ -1066,10 +1078,10 @@ fn styloDestroy(_: ?*anyopaque, engine: ?*anyopaque) callconv(.c) void {
 
 fn styloInvalidateStylesheets(
     _: ?*anyopaque,
-    _: ?*anyopaque,
+    engine: ?*anyopaque,
     _: Abi.Generation,
 ) callconv(.c) Abi.StatusCode {
-    return Abi.status_ok;
+    return styloMapStatus(koko_stylo_engine_invalidate_stylesheets(engine));
 }
 
 fn styloInvalidateDom(
@@ -1130,6 +1142,39 @@ fn styloFlushStyles(
     return Abi.status_ok;
 }
 
+fn appendStyloStylesheetInput(
+    frame: *Frame,
+    inputs: *std.ArrayListUnmanaged(Abi.StylesheetInput),
+    sheet: *CSSStyleSheet,
+) !void {
+    const sheet_id = @intFromPtr(sheet);
+    for (inputs.items) |input| {
+        if (input.sheet_id == sheet_id) return;
+    }
+
+    const css = try sheet.getTextForStyleEngine(frame);
+    try inputs.append(frame.call_arena, .{
+        .sheet_id = sheet_id,
+        .origin = .author,
+        .enabled = if (sheet.getDisabled()) 0 else 1,
+        .css = .{ .ptr = if (css.len == 0) null else css.ptr, .len = css.len },
+    });
+}
+
+fn appendStyloAdoptedStylesheets(
+    frame: *Frame,
+    inputs: *std.ArrayListUnmanaged(Abi.StylesheetInput),
+    adopted: JS.Object.Global,
+) !void {
+    const local = frame.js.local orelse return;
+    const array = adopted.local(local).toValue().toArray();
+    for (0..array.len()) |index| {
+        const value = try array.get(@intCast(index));
+        const sheet = try value.toZig(*CSSStyleSheet);
+        try appendStyloStylesheetInput(frame, inputs, sheet);
+    }
+}
+
 fn styloPrepareForLayout(
     user_data: ?*anyopaque,
     engine: ?*anyopaque,
@@ -1149,14 +1194,10 @@ fn styloPrepareForLayout(
     var inputs: std.ArrayListUnmanaged(Abi.StylesheetInput) = .empty;
     defer inputs.deinit(frame.call_arena);
     for (sheets.items()) |sheet| {
-        const css = sheet.getTextForStyleEngine(frame) catch return Abi.status_internal_error;
-        inputs.append(frame.call_arena, .{
-            .sheet_id = @intFromPtr(sheet),
-            .origin = .author,
-            .enabled = if (sheet.getDisabled()) 0 else 1,
-            .css = .{ .ptr = if (css.len == 0) null else css.ptr, .len = css.len },
-        }) catch return Abi.status_out_of_memory;
+        appendStyloStylesheetInput(frame, &inputs, sheet) catch return Abi.status_internal_error;
     }
+    const adopted = frame.document.getAdoptedStyleSheets(frame) catch return Abi.status_internal_error;
+    appendStyloAdoptedStylesheets(frame, &inputs, adopted) catch return Abi.status_internal_error;
     const ptr: [*c]const Abi.StylesheetInput = if (inputs.items.len == 0) null else inputs.items.ptr;
     return styloMapStatus(koko_stylo_engine_replace_stylesheets(engine, ptr, inputs.items.len));
 }
@@ -6859,7 +6900,7 @@ pub fn removeNode(self: *Frame, parent: *Node, child: *Node, opts: RemoveNodeOpt
     }
 
     if (parent.is(Element.Html.Style) != null) {
-        self.styleSheetChanged(parent);
+        self.styleSheetSourceChanged(parent);
     }
     if (self.hasMutationObservers()) {
         const removed = [_]*Node{child};
@@ -7081,7 +7122,7 @@ pub fn _insertNodeRelative(self: *Frame, comptime from_parser: bool, parent: *No
     // (SIGABRT in isConnected). Document parse always inserts into the live tree.
     if (should_notify) {
         if (parent.is(Element.Html.Style) != null) {
-            self.styleSheetChanged(parent);
+            self.styleSheetSourceChanged(parent);
         }
         const parent_is_connected = parent.isConnected();
         if (comptime from_parser == false) {
@@ -7524,7 +7565,7 @@ pub fn characterDataChange(
     }
     self.domChangedForNode(target);
     if (target._parent) |parent| {
-        if (parent.is(Element.Html.Style) != null) self.styleSheetChanged(parent);
+        if (parent.is(Element.Html.Style) != null) self.styleSheetSourceChanged(parent);
     }
     var it: ?*std.DoublyLinkedList.Node = self._mutation_observers.first;
     while (it) |node| : (it = node.next) {
@@ -7550,7 +7591,7 @@ pub fn childListChange(
     }
     self.invalidateStyleEngine(.tree, target);
     if (target.is(Element.Html.Style) != null) {
-        self.styleSheetChanged(target);
+        self.styleSheetSourceChanged(target);
     }
     // Filter out HTML wrapper element during fragment parsing (html5ever quirk)
     if (self._parse_mode == .fragment and added_nodes.len == 1) {

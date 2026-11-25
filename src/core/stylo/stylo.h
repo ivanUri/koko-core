@@ -98,6 +98,8 @@ StyloStatus koko_stylo_engine_replace_stylesheets(
     const StyloStylesheetInput *inputs,
     size_t count);
 
+StyloStatus koko_stylo_engine_invalidate_stylesheets(StyloEngine *engine);
+
 StyloStatus koko_stylo_engine_sync_node(
     StyloEngine *engine,
     const void *node);

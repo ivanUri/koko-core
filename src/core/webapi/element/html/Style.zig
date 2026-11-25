@@ -19,10 +19,15 @@ const log = @import("../../../../support/log.zig");
 const Node = @import("../../../dom/Node.zig");
 const Element = @import("../../../dom/Element.zig");
 const HtmlElement = @import("../Html.zig");
+const ShadowRoot = @import("../../ShadowRoot.zig");
 
 const Style = @This();
 _proto: *HtmlElement,
 _sheet: ?*CSSStyleSheet = null,
+_scope: ?*ShadowRoot = null,
+_scope_sheet: ?*CSSStyleSheet = null,
+_registered_in_document: bool = false,
+_registered_sheet: ?*CSSStyleSheet = null,
 
 pub fn asElement(self: *Style) *Element {
     return self._proto._proto;
@@ -73,12 +78,44 @@ pub fn setDisabled(self: *Style, disabled: bool, frame: *Frame) !void {
 }
 
 const CSSStyleSheet = @import("../../css/CSSStyleSheet.zig");
+
+fn containingShadowRoot(self: *Style) ?*ShadowRoot {
+    var parent = self.asNode().parentNode();
+    var depth: u32 = 0;
+    while (parent) |node| {
+        depth += 1;
+        if (depth > 4096) return null;
+        if (node.is(ShadowRoot)) |root| return root;
+        parent = node.parentNode();
+    }
+    return null;
+}
+
+fn detachScope(self: *Style) void {
+    if (self._scope) |scope| {
+        if (self._scope_sheet) |sheet| {
+            scope.unregisterScopedStyleSheet(sheet);
+        }
+    }
+    self._scope = null;
+    self._scope_sheet = null;
+}
+
 pub fn getSheet(self: *Style, frame: *Frame) !?*CSSStyleSheet {
     const owner_frame = self.asNode().ownerFrame(frame);
+    const scope = containingShadowRoot(self);
     // Prefer the frame argument over ownerFrame()/isConnected() parent walks.
     // Document parse after re-nav (Google knitsail → Bing) UAF'd walking _parent.
     const in_document_parse = owner_frame._document_parse_active and owner_frame._parse_mode == .document;
     if (!in_document_parse and !self.asNode().isConnected()) {
+        self.detachScope();
+        if (self._registered_in_document) {
+            if (owner_frame.document.getStyleSheets(owner_frame) catch null) |sheets| {
+                if (self._registered_sheet) |sheet| sheets.remove(sheet);
+            }
+            self._registered_in_document = false;
+            self._registered_sheet = null;
+        }
         self._sheet = null;
         return null;
     }
@@ -87,18 +124,58 @@ pub fn getSheet(self: *Style, frame: *Frame) !?*CSSStyleSheet {
     // case-insensitive match for "text/css".
     const t = self.getType();
     if (t.len != 0 and !std.ascii.eqlIgnoreCase(t, "text/css")) {
+        self.detachScope();
+        if (self._registered_in_document) {
+            if (owner_frame.document.getStyleSheets(owner_frame) catch null) |sheets| {
+                if (self._registered_sheet) |registered_sheet| sheets.remove(registered_sheet);
+            }
+            self._registered_in_document = false;
+            self._registered_sheet = null;
+        }
         self._sheet = null;
         return null;
     }
 
-    if (self._sheet) |sheet| return sheet;
-    const sheet = try CSSStyleSheet.initWithOwner(self.asElement(), owner_frame);
-    self._sheet = sheet;
+    const sheet = self._sheet orelse blk: {
+        const created = try CSSStyleSheet.initWithOwner(self.asElement(), owner_frame);
+        self._sheet = created;
+        break :blk created;
+    };
 
-    const sheets = try owner_frame.document.getStyleSheets(owner_frame);
-    try sheets.add(sheet, owner_frame);
+    if (scope) |shadow_root| {
+        if (self._scope != shadow_root or self._scope_sheet != sheet) {
+            // Register before removing the old scope so a failed allocation
+            // leaves the current stylesheet ownership usable.
+            try shadow_root.registerScopedStyleSheet(sheet);
+            self.detachScope();
+            if (self._registered_in_document) {
+                if (owner_frame.document.getStyleSheets(owner_frame) catch null) |sheets| {
+                    if (self._registered_sheet) |registered_sheet| sheets.remove(registered_sheet);
+                }
+                self._registered_in_document = false;
+                self._registered_sheet = null;
+            }
+            self._scope = shadow_root;
+            self._scope_sheet = sheet;
+        }
+    } else if (self._scope != null or self._scope_sheet != null or !self._registered_in_document or self._registered_sheet != sheet) {
+        const sheets = try owner_frame.document.getStyleSheets(owner_frame);
+        if (!self._registered_in_document or self._registered_sheet != sheet) {
+            if (self._registered_sheet) |registered_sheet| {
+                sheets.remove(registered_sheet);
+            }
+            try sheets.add(sheet, owner_frame);
+            self._registered_in_document = true;
+            self._registered_sheet = sheet;
+        }
+        self.detachScope();
+    }
 
-    return sheet;
+    return self._sheet;
+}
+
+pub fn sourceTextChanged(self: *Style) void {
+    if (self._sheet) |sheet| sheet.sourceTextChanged();
 }
 
 pub fn styleAddedCallback(self: *Style, frame: *Frame) !void {

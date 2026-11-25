@@ -15,6 +15,16 @@ const log = @import("../../../support/log.zig");
 
 const CSSStyleSheet = @This();
 
+// A constructed sheet may be adopted by more than one document or shadow
+// scope.  Keep only the owning frame and a reference count here: retaining a
+// ShadowRoot pointer would make a detached root observable after its slab is
+// recycled.  The frame owns the sheet's lifetime and is also the invalidation
+// boundary used by the style engine.
+const StyleScopeOwner = struct {
+    frame: *Frame,
+    references: usize = 0,
+};
+
 pub const CSSError = error{
     OutOfMemory,
     IndexSizeError,
@@ -29,6 +39,7 @@ _disabled: bool = false,
 _css_rules: ?*CSSRuleList = null,
 _owner_rule: ?*CSSRule = null,
 _owner_node: ?*Element = null,
+_style_scope_owners: std.ArrayListUnmanaged(StyleScopeOwner) = .empty,
 
 pub fn init(frame: *Frame) !*CSSStyleSheet {
     return frame._factory.create(CSSStyleSheet{});
@@ -72,6 +83,32 @@ pub fn getDisabled(self: *const CSSStyleSheet) bool {
     return self._disabled;
 }
 
+pub fn registerStyleScopeOwner(self: *CSSStyleSheet, frame: *Frame) !void {
+    for (self._style_scope_owners.items) |*owner| {
+        if (owner.frame == frame) {
+            owner.references += 1;
+            return;
+        }
+    }
+
+    try self._style_scope_owners.append(frame.arena, .{
+        .frame = frame,
+        .references = 1,
+    });
+}
+
+pub fn unregisterStyleScopeOwner(self: *CSSStyleSheet, frame: *Frame) void {
+    for (self._style_scope_owners.items, 0..) |*owner, index| {
+        if (owner.frame != frame) continue;
+        if (owner.references > 1) {
+            owner.references -= 1;
+        } else {
+            _ = self._style_scope_owners.swapRemove(index);
+        }
+        return;
+    }
+}
+
 fn reportStyleSheetEngineStatus(operation: []const u8, frame: *Frame) void {
     const status = frame.styleEngine().status();
     if (status != .ok and status != .ready) {
@@ -87,6 +124,14 @@ fn notifyStyleSheetMutation(self: *const CSSStyleSheet, operation: []const u8, f
     // Frame.styleSheetChanged keeps the legacy cache coherent and forwards the
     // invalidation through the per-frame StyleEngine owner.
     owner_frame.styleSheetChanged(if (self.getOwnerNode()) |owner| owner.asNode() else null);
+
+    // Constructed sheets have no owner node.  Notify every frame that has a
+    // live scoped reference so a replaceSync/insertRule/deleteRule mutation
+    // invalidates all adopted shadow scopes, not just the caller's document.
+    for (self._style_scope_owners.items) |scope| {
+        if (scope.frame.isGoingAway()) continue;
+        scope.frame.adoptedStyleSheetsChanged();
+    }
     reportStyleSheetEngineStatus(operation, owner_frame);
 }
 
@@ -112,6 +157,11 @@ pub fn getCssRules(self: *CSSStyleSheet, frame: *Frame) !*CSSRuleList {
     return rules;
 }
 
+/// Drop the parsed CSSOM view after the owning <style> text changes.
+pub fn sourceTextChanged(self: *CSSStyleSheet) void {
+    self._css_rules = null;
+}
+
 pub fn getOwnerRule(self: *const CSSStyleSheet) ?*CSSRule {
     return self._owner_rule;
 }
@@ -122,7 +172,9 @@ pub fn getOwnerRule(self: *const CSSStyleSheet) ?*CSSRule {
 pub fn getTextForStyleEngine(self: *CSSStyleSheet, frame: *Frame) ![]const u8 {
     if (self.getOwnerNode()) |owner| {
         if (owner.is(Element.Html.Style)) |_| {
-            return try owner.asNode().getTextContentAlloc(frame.call_arena);
+            if (self._css_rules == null) {
+                return try owner.asNode().getTextContentAlloc(frame.call_arena);
+            }
         }
     }
     const rules = self._css_rules orelse return "";

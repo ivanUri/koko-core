@@ -79,6 +79,14 @@ pub fn setAs(self: *Link, value: []const u8, frame: *Frame) !void {
     return self.asElement().setAttributeSafe(comptime .wrap("as"), .wrap(value), frame);
 }
 
+fn hasRelToken(rel: []const u8, token: []const u8) bool {
+    var tokens = std.mem.tokenizeAny(u8, rel, " \t\r\n\x0c");
+    while (tokens.next()) |candidate| {
+        if (std.ascii.eqlIgnoreCase(candidate, token)) return true;
+    }
+    return false;
+}
+
 pub fn getCrossOrigin(self: *const Link) ?[]const u8 {
     return self.asConstElement().getAttributeSafe(comptime .wrap("crossOrigin"));
 }
@@ -100,36 +108,54 @@ pub fn linkAddedCallback(self: *Link, frame: *Frame) !void {
 
     const element = self.asElement();
 
-    const rel = element.getAttributeSafe(comptime .wrap("rel")) orelse return;
+    const rel = element.getAttributeSafe(comptime .wrap("rel")) orelse {
+        try self.removeRegisteredSheet(owner_frame);
+        return;
+    };
 
-    if (std.mem.eql(u8, rel, "modulepreload")) {
-        const href = element.getAttributeSafe(comptime .wrap("href")) orelse return;
-        if (href.len == 0) return;
+    if (hasRelToken(rel, "modulepreload")) {
+        const href = element.getAttributeSafe(comptime .wrap("href")) orelse {
+            try self.removeRegisteredSheet(owner_frame);
+            return;
+        };
+        if (href.len == 0) {
+            try self.removeRegisteredSheet(owner_frame);
+            return;
+        }
         const resolved = try self.asNode().resolveURL(href, owner_frame, .{});
         const resolved_z: [:0]const u8 = resolved.ptr[0..resolved.len :0];
         try owner_frame._script_manager.base.preloadImport(resolved_z, owner_frame.base());
         return;
     }
 
-    const is_stylesheet = std.ascii.eqlIgnoreCase(rel, "stylesheet");
-    const is_preload = std.mem.eql(u8, rel, "preload");
+    const is_stylesheet = hasRelToken(rel, "stylesheet");
+    const is_preload = hasRelToken(rel, "preload");
     if (!is_stylesheet and !is_preload) {
+        try self.removeRegisteredSheet(owner_frame);
         return;
     }
 
-    const href = element.getAttributeSafe(comptime .wrap("href")) orelse return;
+    const href = element.getAttributeSafe(comptime .wrap("href")) orelse {
+        try self.removeRegisteredSheet(owner_frame);
+        return;
+    };
     if (href.len == 0) {
+        try self.removeRegisteredSheet(owner_frame);
         return;
     }
 
     if (is_preload and std.ascii.eqlIgnoreCase(self.getAs(), "image")) {
+        try self.removeRegisteredSheet(owner_frame);
         if (!owner_frame.shouldLoadImages() or owner_frame.shouldDeferImages()) return;
         try self.fetchPreloadImage(owner_frame, href);
         return;
     }
 
     if (is_stylesheet) {
-        if (!owner_frame.shouldLoadExternalStylesheets()) return;
+        if (!owner_frame.shouldLoadExternalStylesheets()) {
+            try self.removeRegisteredSheet(owner_frame);
+            return;
+        }
         try self.fetchStylesheet(owner_frame, href);
         return;
     }
@@ -161,9 +187,9 @@ fn fetchStylesheet(self: *Link, frame: *Frame, href: []const u8) !void {
         }
     }
 
+    try self.removeRegisteredSheet(frame);
     self._stylesheet_loading = true;
     self._stylesheet_url = owned_url;
-    self._sheet = null;
 
     const session = frame._session;
     const http_client = &session.browser.http_client;
@@ -208,6 +234,14 @@ fn fetchStylesheet(self: *Link, frame: *Frame, href: []const u8) !void {
         .error_callback = StylesheetLoad.errorCallback,
         .shutdown_callback = StylesheetLoad.shutdownCallback,
     });
+}
+
+fn removeRegisteredSheet(self: *Link, frame: *Frame) !void {
+    const sheet = self._sheet orelse return;
+    const sheets = try frame.document.getStyleSheets(frame);
+    sheets.remove(sheet);
+    self._sheet = null;
+    frame.styleSheetChanged(self.asNode());
 }
 
 const StylesheetLoad = struct {
@@ -574,6 +608,12 @@ pub const Build = struct {
 };
 
 const testing = @import("../../../../testing/testing.zig");
+test "Link rel values are tokenized as a space-separated list" {
+    try std.testing.expect(hasRelToken("preload stylesheet", "stylesheet"));
+    try std.testing.expect(hasRelToken("STYLESHEET", "stylesheet"));
+    try std.testing.expect(!hasRelToken("icon", "stylesheet"));
+}
+
 test "WebApi: HTML.Link" {
     try testing.htmlRunner("element/html/link.html", .{});
 }
