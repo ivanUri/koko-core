@@ -624,7 +624,14 @@ impl SelectorsElement for KokoElement {
     }
 
     fn is_root(&self) -> bool {
-        self.parent_element().is_none()
+        // `parent_element()` is intentionally None for an element whose
+        // parent is a ShadowRoot. That does not make it the document root:
+        // Stylo uses this bit to seed custom-property inheritance, and
+        // treating shadow children as roots drops the host's inherited map.
+        self.node
+            .parent_node()
+            .and_then(|node| node.kind())
+            == Some(0)
     }
 
     fn add_element_unique_hashes(&self, _filter: &mut BloomFilter) -> bool {
