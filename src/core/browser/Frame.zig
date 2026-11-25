@@ -22,6 +22,7 @@ const Session = @import("Session.zig");
 const EventManager = @import("EventManager.zig");
 const ScriptManager = @import("ScriptManager.zig");
 const StyleEngine = @import("StyleEngine.zig").StyleEngine;
+const LayoutEngine = @import("../layout/LayoutEngine.zig").LayoutEngine;
 const Abi = @import("style_engine/abi.zig");
 
 const Parser = @import("../parser/Parser.zig");
@@ -469,6 +470,9 @@ _parser_text_cap: std.AutoHashMapUnmanaged(*CData, usize) = .empty,
 
 /// Per-frame Stylo owner and generation/lifetime boundary for CSS invalidation.
 _style_engine: StyleEngine,
+/// Per-frame Taffy/Parley owner. It stores only layout state; the Zig DOM is
+/// still authoritative and remains the source of node identities and styles.
+_layout_engine: LayoutEngine,
 /// Optional integration hook for embedders that observe style lifecycle.
 _style_engine_hooks: ?StyleEngineHooks = null,
 _style_engine_document: ?*Document = null,
@@ -698,6 +702,7 @@ pub fn init(self: *Frame, frame_id: u32, page: *Page, parent: ?*Frame) !void {
         ._pending_loads = 1, // always 1 for the ScriptManager
         ._type = if (parent == null) .root else .frame,
         ._style_engine = undefined,
+        ._layout_engine = LayoutEngine.init(),
         ._script_manager = undefined,
         ._event_manager = EventManager.init(arena, self),
     };
@@ -803,6 +808,7 @@ fn beginStyleDocumentLifecycle(self: *Frame, document: *Document) void {
     if (self._style_engine_active) self.endStyleDocumentLifecycle();
 
     self._style_engine_generation +%= 1;
+    _ = self._layout_engine.reset();
     _ = self._style_engine.resetDocument();
     self._stylo_node_lookup.clearRetainingCapacity();
     self._style_engine_document = document;
@@ -817,6 +823,7 @@ fn beginStyleDocumentLifecycle(self: *Frame, document: *Document) void {
 fn endStyleDocumentLifecycle(self: *Frame) void {
     const document = self._style_engine_document orelse {
         self._style_engine_active = false;
+        _ = self._layout_engine.reset();
         self._stylo_node_lookup.clearRetainingCapacity();
         return;
     };
@@ -824,6 +831,7 @@ fn endStyleDocumentLifecycle(self: *Frame) void {
     if (self._style_engine_hooks) |hooks| {
         hooks.document_detached(hooks.context, document, generation);
     }
+    _ = self._layout_engine.reset();
     self._style_engine_document = null;
     self._style_engine_active = false;
     self._style_engine_generation +%= 1;
@@ -832,6 +840,7 @@ fn endStyleDocumentLifecycle(self: *Frame) void {
 
 /// Notify Stylo after the authoritative Zig DOM has changed.
 pub fn invalidateStyleEngine(self: *Frame, kind: StyleEngineInvalidation, node: ?*Node) void {
+    _ = self._layout_engine.invalidate();
     if (!self._style_engine_active or self._realm_state != .active) return;
     const document = self._style_engine_document orelse return;
     if (document != self.document or document._frame != self) return;
@@ -875,6 +884,10 @@ pub fn adoptedStyleSheetsChanged(self: *Frame) void {
 
 pub fn styleEngine(self: *Frame) *StyleEngine {
     return &self._style_engine;
+}
+
+pub fn layoutEngine(self: *Frame) *LayoutEngine {
+    return &self._layout_engine;
 }
 
 fn styloFrame(user_data: ?*anyopaque) ?*Frame {
@@ -1826,6 +1839,7 @@ pub fn deinit(self: *Frame) void {
     self.enterRealmDraining();
     self.endStyleDocumentLifecycle();
     self._style_engine.deinit();
+    self._layout_engine.deinit();
 
     // Detach IntersectionObservers while their arena-backed objects are still
     // live. A deferred iframe teardown can run after V8 has finalized the JS

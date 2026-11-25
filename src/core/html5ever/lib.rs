@@ -21,7 +21,7 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 use std::cell::Cell;
 use std::os::raw::{c_uchar, c_void};
-use types::*;
+use self::types::*;
 
 use encoding_rs::Encoding;
 use html5ever::interface::tree_builder::QuirksMode;

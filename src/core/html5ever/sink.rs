@@ -17,7 +17,7 @@ use std::cell::Cell;
 use std::borrow::Cow;
 use std::os::raw::{c_void};
 
-use crate::types::*;
+use super::types::*;
 
 use html5ever::tendril::{StrTendril};
 use html5ever::{Attribute, QualName};

@@ -3,6 +3,7 @@ pub const Runtime = @import("public/Runtime.zig").Runtime;
 pub const Browser = @import("core/browser/Browser.zig");
 pub const Session = @import("core/browser/Session.zig");
 pub const Frame = @import("core/browser/Frame.zig");
+pub const LayoutEngine = @import("core/layout/LayoutEngine.zig").LayoutEngine;
 pub const Config = @import("runtime/Config.zig");
 pub const RealmLifecycleKernel = @import("runtime/RealmLifecycleKernel.zig");
 pub const App = @import("runtime/App.zig");

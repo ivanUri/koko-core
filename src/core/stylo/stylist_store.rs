@@ -39,7 +39,7 @@ use style::values::computed::{CSSPixelLength, Length};
 use style::Atom;
 use style_traits::{CSSPixel, DevicePixel};
 
-use crate::{
+use super::{
     dom_adapter::{EngineScope, KokoElement},
     StyloEngine, StyloStatus, StyloStylesheetInput, StyloStylesheetOrigin,
 };
