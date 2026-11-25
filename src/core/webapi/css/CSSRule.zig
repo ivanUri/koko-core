@@ -5,6 +5,9 @@ const Parser = @import("../../browser/css/Parser.zig");
 
 const CSSStyleRule = @import("CSSStyleRule.zig");
 const CSSMediaRule = @import("CSSMediaRule.zig");
+const CSSSupportsRule = @import("CSSSupportsRule.zig");
+const CSSKeyframesRule = @import("CSSKeyframesRule.zig");
+const CSSKeyframeRule = @import("CSSKeyframeRule.zig");
 const CSSStyleSheet = @import("CSSStyleSheet.zig");
 const CSSRuleList = @import("CSSRuleList.zig");
 
@@ -17,12 +20,12 @@ pub const Type = union(enum) {
     media: *CSSMediaRule,
     font_face: void,
     frame: void,
-    keyframes: void,
-    keyframe: void,
+    keyframes: *CSSKeyframesRule,
+    keyframe: *CSSKeyframeRule,
     margin: void,
     namespace: void,
     counter_style: void,
-    supports: void,
+    supports: *CSSSupportsRule,
     document: void,
     font_feature_values: void,
     viewport: void,
@@ -44,6 +47,9 @@ pub fn is(self: *CSSRule, comptime T: type) ?*T {
     switch (self._type) {
         .style => |r| return if (T == CSSStyleRule) r else null,
         .media => |r| return if (T == CSSMediaRule) r else null,
+        .supports => |r| return if (T == CSSSupportsRule) r else null,
+        .keyframes => |r| return if (T == CSSKeyframesRule) r else null,
+        .keyframe => |r| return if (T == CSSKeyframeRule) r else null,
         else => return null,
     }
 }
@@ -74,6 +80,14 @@ pub fn initAtRule(raw_css_text: []const u8, frame: *Frame) !*CSSRule {
         const media_rule = try CSSMediaRule.init(raw_css_text, frame);
         return media_rule._proto._proto;
     }
+    if (std.ascii.startsWithIgnoreCase(trimmed, "@supports")) {
+        const supports_rule = try CSSSupportsRule.init(raw_css_text, frame);
+        return supports_rule._proto._proto;
+    }
+    if (std.ascii.startsWithIgnoreCase(trimmed, "@keyframes") or std.ascii.startsWithIgnoreCase(trimmed, "@-webkit-keyframes")) {
+        const keyframes_rule = try CSSKeyframesRule.init(raw_css_text, frame);
+        return keyframes_rule._proto;
+    }
     return initRaw(placeholderTypeForAtRule(raw_css_text), raw_css_text, frame);
 }
 
@@ -94,14 +108,16 @@ fn isGroupingType(rule_type: Type) bool {
 fn placeholderTypeForAtRule(rule: []const u8) Type {
     const trimmed = std.mem.trim(u8, rule, &std.ascii.whitespace);
     // @media is materialized by initAtRule so its runtime subtype is retained.
-    if (std.ascii.startsWithIgnoreCase(trimmed, "@keyframes") or std.ascii.startsWithIgnoreCase(trimmed, "@-webkit-keyframes")) return .{ .keyframes = {} };
+    // These at-rules are materialized by initAtRule before this fallback is
+    // reached. Keep the fallback as a raw placeholder for malformed input.
+    if (std.ascii.startsWithIgnoreCase(trimmed, "@keyframes") or std.ascii.startsWithIgnoreCase(trimmed, "@-webkit-keyframes")) return .{ .font_face = {} };
     if (std.ascii.startsWithIgnoreCase(trimmed, "@font-face")) return .{ .font_face = {} };
     if (std.ascii.startsWithIgnoreCase(trimmed, "@import")) return .{ .import = {} };
-    if (std.ascii.startsWithIgnoreCase(trimmed, "@supports")) return .{ .supports = {} };
+    if (std.ascii.startsWithIgnoreCase(trimmed, "@supports")) return .{ .font_face = {} };
     if (std.ascii.startsWithIgnoreCase(trimmed, "@charset")) return .{ .charset = {} };
     if (std.ascii.startsWithIgnoreCase(trimmed, "@namespace")) return .{ .namespace = {} };
     if (std.ascii.startsWithIgnoreCase(trimmed, "@counter-style")) return .{ .counter_style = {} };
-    return .{ .supports = {} };
+    return .{ .font_face = {} };
 }
 
 fn createStyleChild(rule: Parser.Rule, frame: *Frame) !*CSSRule {
@@ -125,7 +141,10 @@ fn ensureChildren(self: *CSSRule, frame: *Frame) !void {
     var iterator = Parser.parseStylesheet(raw[open + 1 .. close]);
     while (iterator.nextItem()) |item| {
         const child = switch (item) {
-            .style => |rule| try createStyleChild(rule, frame),
+            .style => |rule| switch (self._type) {
+                .keyframes => try CSSKeyframesRule.createChild(rule, frame),
+                else => try createStyleChild(rule, frame),
+            },
             .at_rule => |at_rule| try initAtRule(at_rule, frame),
         };
         child._parent_rule = self;
@@ -166,6 +185,9 @@ pub fn deleteRule(self: *CSSRule, index: u32, frame: *Frame) !void {
     if (!isGroupingType(self._type)) return error.InvalidState;
     try ensureChildren(self, frame);
     const rules = self._children orelse return error.InvalidState;
+    const child = rules.item(index) orelse return error.IndexSizeError;
+    child._parent_rule = null;
+    child._parent_style_sheet = null;
     try rules.remove(index);
     if (self._parent_style_sheet) |sheet| try sheet.notifyRuleMutation(frame);
 }
@@ -194,6 +216,9 @@ pub fn getCssText(self: *const CSSRule, frame: *Frame) anyerror![]const u8 {
     switch (self._type) {
         .style => |style_rule| return style_rule.getCssText(frame),
         .media => |media_rule| return media_rule.getCssText(frame),
+        .supports => |supports_rule| return supports_rule.getCssText(frame),
+        .keyframes => |keyframes_rule| return keyframes_rule.getCssText(frame),
+        .keyframe => |keyframe_rule| return keyframe_rule.getCssText(frame),
         else => return getGroupingCssText(self, frame),
     }
 }

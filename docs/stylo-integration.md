@@ -74,10 +74,10 @@ committed.
 
 ## Validation and performance snapshot
 
-The 12-fixture differential suite passes for both Koko and Chromium: adopted
+The 13-fixture differential suite passes for both Koko and Chromium: adopted
 stylesheets, cascade, class mutation, custom properties, dynamic stylesheets,
 `!important`, inheritance, inline styles, stylesheet lifecycle, media queries,
-pseudo-elements, and shadow roots. The differential runner strips fixture
+pseudo-elements, shadow roots, and CSSOM rule subtypes. The differential runner strips fixture
 scripts and executes the same evaluator after navigation so results measure the
 CSS engine rather than Koko's current inline-script parsing behavior. The Rust
 Stylo unit suite passes 5/5 tests.
@@ -102,11 +102,26 @@ now pass the focused CSSOM cases that were previously failing:
   `CSSRuleList` object instead of a newly allocated JavaScript array.
 - `CSSGroupingRule-insertRule-computed`: 1/1; nested insert/delete now
   invalidates the owning stylesheet and recomputes Stylo values.
+- `CSSSupportsRule` / `CSSKeyframesRule` / `CSSKeyframeRule`: the new concrete
+  prototype subtypes pass the dedicated differential fixture, including
+  condition text, live child lists, parent links, keyframe style, append/find/
+  delete, and CSSOM serialization.
+- `CSSKeyframesRule`: 3/3; name, live/indexed child access, duplicate-key
+  lookup semantics, append/delete, and quoted-name serialization pass.
+- `CSSKeyframeRule`: 2/2 plus `keyText`: 11/11; `from`/`to`, percentages,
+  style `[PutForwards]`, and syntax-error handling pass.
+- `CSSKeyframeRule-keyText-edge-cases`: 11/14; direct setters pass, while
+  dynamically appended stylesheet cases for `.5%`, `100.0%`, and `1e1%`
+  still expose a separate stylesheet-list/source selection bug.
+- `CSSKeyframesRule-appendRule-invalid`: 4/4; invalid or multiple entries are
+  silently ignored as required by the CSS Animations CSSOM contract.
+- `CSSKeyframesRule-deleteRule-detach`: 2/2; removed rules release their
+  `parentRule` and `parentStyleSheet` links.
 - `serialize-media-rule`: 12/12; canonical media condition and nested-rule
   serialization pass.
-- `MediaList-parsing`: 11/13. The two remaining failures are DOMException
-  construction for `NotFoundError`; `MediaList.html` also exposes a V8
-  DOMString null-setter edge case that remains tracked separately.
+- `MediaList-parsing`: 13/13; `NotFoundError` now maps to a DOMException and
+  medium normalization is covered. `MediaList.html` also passes, including
+  the `mediaText = null` DOMString conversion edge case.
 - `style-set-cssText`: stylesheet lookup and initial declaration pass; invalid
   value filtering still needs work.
 
@@ -133,7 +148,9 @@ the current cached-generation implementation measured approximately:
 | Ready RSS | 95.4 MiB | 96.7 MiB | +1.3 MiB |
 
 The latest one-iteration differential benchmark report is
-`bench-results/stylo/1795587825722.json`; all five Koko and five Chromium
+`bench-results/stylo/1795587825722.json`; the benchmark workload remains the
+same bounded Koko/Chromium comparison while the rule-subtype validation is
+covered by the test mode. All five Koko and five Chromium
 observations passed. These measurements are single-process bounded samples;
 rerun with more iterations before treating them as release-level performance
 numbers.

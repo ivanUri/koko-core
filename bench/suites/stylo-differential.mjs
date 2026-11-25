@@ -21,6 +21,7 @@ const styloFixtureNames = [
   "stylo_media.html",
   "stylo_pseudo.html",
   "stylo_shadow_root.html",
+  "stylo_cssom_rule_subtypes.html",
 ];
 
 function parseArgs(argv) {
@@ -291,6 +292,59 @@ function evaluateStyloFixture(fixtureName) {
         root.innerHTML = `<style>:host { display: block; } .stylo-shadow { color: rgb(231, 241, 251); padding-left: 10px; }</style><span class="stylo-shadow">shadow</span>`;
         const computed = readStyle(root.querySelector(".stylo-shadow"), ["color", "padding-left"]);
         return computed.status ? computed : { status: "pass", observations: { hostDisplay: window.getComputedStyle(host).getPropertyValue("display"), computed } };
+      }
+      case "stylo_cssom_rule_subtypes.html": {
+        const missing = ["CSSSupportsRule", "CSSKeyframesRule", "CSSKeyframeRule"]
+          .filter((name) => typeof window[name] !== "function");
+        if (missing.length > 0) return unsupported("CSSOM rule subtype constructors are not exposed", { missing });
+        if (typeof CSSStyleSheet !== "function" || typeof CSSStyleSheet.prototype.replaceSync !== "function") {
+          return unsupported("constructable CSSStyleSheet.replaceSync is unavailable");
+        }
+
+        const sheet = new CSSStyleSheet();
+        sheet.replaceSync(`@supports (display: grid) { #fixture-target { color: rgb(1, 2, 3); } } @keyframes fixture-pulse { from { opacity: 0; } 100% { opacity: 1; } }`);
+        const rules = sheet.cssRules;
+        const supportsRule = rules[0];
+        const keyframesRule = rules[1];
+        const assert = (condition, message) => { if (!condition) throw new Error(message); };
+        const ruleType = (name, fallback) => typeof CSSRule === "function" && typeof CSSRule[name] === "number" ? CSSRule[name] : fallback;
+
+        assert(supportsRule instanceof CSSSupportsRule, "@supports did not materialize as CSSSupportsRule");
+        assert(supportsRule.type === ruleType("SUPPORTS_RULE", 12), "CSSSupportsRule.type mismatch");
+        assert(typeof supportsRule.conditionText === "string" && supportsRule.conditionText.length > 0, "CSSSupportsRule.conditionText is unavailable");
+        assert(supportsRule.cssRules && supportsRule.cssRules.length === 1, "CSSSupportsRule.cssRules is not a live one-rule list");
+        assert(supportsRule.cssRules[0].parentRule === supportsRule && supportsRule.cssRules[0].parentStyleSheet === sheet, "nested support rule parent links are incomplete");
+        assert(/@supports\s+\(display:\s*grid\)/.test(supportsRule.cssText), "CSSSupportsRule.cssText lost its condition");
+
+        const nestedBefore = supportsRule.cssRules.length;
+        supportsRule.insertRule("#fixture-target { background: rgb(4, 5, 6); }", nestedBefore);
+        assert(supportsRule.cssRules.length === nestedBefore + 1, "CSSSupportsRule.insertRule did not update the live CSSRuleList");
+        supportsRule.deleteRule(nestedBefore);
+        assert(supportsRule.cssRules.length === nestedBefore, "CSSSupportsRule.deleteRule did not update the live CSSRuleList");
+
+        assert(keyframesRule instanceof CSSKeyframesRule, "@keyframes did not materialize as CSSKeyframesRule");
+        assert(keyframesRule.type === ruleType("KEYFRAMES_RULE", 7), "CSSKeyframesRule.type mismatch");
+        assert(keyframesRule.name === "fixture-pulse", "CSSKeyframesRule.name mismatch");
+        assert(keyframesRule.length === 2 && keyframesRule.cssRules.length === 2, "CSSKeyframesRule length/cssRules mismatch");
+        assert(keyframesRule[0] instanceof CSSKeyframeRule && keyframesRule[1] instanceof CSSKeyframeRule, "CSSKeyframesRule indexed getter did not return CSSKeyframeRule objects");
+        assert(keyframesRule[0].type === ruleType("KEYFRAME_RULE", 8), "CSSKeyframeRule.type mismatch");
+        assert(keyframesRule[0].keyText === "0%" && keyframesRule[1].keyText === "100%", "CSSKeyframeRule.keyText was not normalized");
+        assert(keyframesRule[0].style && keyframesRule[0].style.opacity === "0", "CSSKeyframeRule.style is unavailable");
+        assert(keyframesRule[0].parentRule === keyframesRule && keyframesRule[0].parentStyleSheet === sheet, "CSSKeyframeRule parent links are incomplete");
+
+        keyframesRule.appendRule("50% { opacity: 0.5; }");
+        assert(keyframesRule.findRule("50%").keyText === "50%", "CSSKeyframesRule.findRule/appendRule failed");
+        const removed = keyframesRule.findRule("from");
+        keyframesRule.deleteRule("from");
+        assert(!keyframesRule.findRule("0%") && removed.parentRule === null && removed.parentStyleSheet === null, "CSSKeyframesRule.deleteRule did not detach the removed rule");
+
+        return {
+          status: "pass",
+          observations: {
+            supports: { type: supportsRule.type, conditionText: supportsRule.conditionText, cssText: supportsRule.cssText },
+            keyframes: { type: keyframesRule.type, name: keyframesRule.name, remainingRules: keyframesRule.cssRules.length, cssText: keyframesRule.cssText },
+          },
+        };
       }
       default:
         return { status: "error", reason: `unknown Stylo fixture: ${fixtureName}` };
