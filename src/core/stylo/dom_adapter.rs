@@ -406,7 +406,19 @@ impl TShadowRoot for KokoShadowRoot {
     where
         Self: 'a,
     {
-        None
+        let engine = current_engine()?;
+        let data = unsafe {
+            (&*engine)
+                .inner
+                .stylists
+                .get(&self.node.node_id)?
+                .author_cascade_data()
+        };
+        // Stylo requests shadow cascade data only during the synchronous
+        // callback-backed resolution. The owning StylistStore remains alive
+        // for the whole engine scope, so this lifetime extension does not
+        // retain a second DOM or outlive the active resolution.
+        Some(unsafe { std::mem::transmute::<&CascadeData, &'a CascadeData>(data) })
     }
 }
 

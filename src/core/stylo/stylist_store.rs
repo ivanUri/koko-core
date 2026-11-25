@@ -8,6 +8,7 @@
 //! atomically.
 
 use std::fmt::Debug;
+use std::rc::Rc;
 
 use euclid::{Scale, Size2D};
 use selectors::matching::QuirksMode;
@@ -82,7 +83,7 @@ struct RetainedSheet {
 }
 
 pub(crate) struct StylistStore {
-    lock: SharedRwLock,
+    lock: Rc<SharedRwLock>,
     stylist: Stylist,
     sheets: Vec<RetainedSheet>,
     url_data: UrlExtraData,
@@ -90,7 +91,7 @@ pub(crate) struct StylistStore {
 }
 
 impl StylistStore {
-    pub(crate) fn new(frame_id: u64) -> Self {
+    pub(crate) fn new(frame_id: u64, lock: Rc<SharedRwLock>) -> Self {
         let defaults = ComputedValues::initial_values_with_font_override(Font::initial_values());
         let media = MediaData {
             media_type: MediaType::screen(),
@@ -114,7 +115,7 @@ impl StylistStore {
         );
         let stylist = Stylist::new(device, QuirksMode::NoQuirks);
         Self {
-            lock: SharedRwLock::new(),
+            lock,
             stylist,
             sheets: Vec::new(),
             url_data: UrlExtraData::from(
@@ -129,8 +130,10 @@ impl StylistStore {
         self.generation
     }
 
-    pub(crate) fn shared_lock(&self) -> &SharedRwLock {
-        &self.lock
+    pub(crate) fn author_cascade_data(&self) -> &style::stylist::CascadeData {
+        self.stylist
+            .cascade_data()
+            .borrow_for_origin(Origin::Author)
     }
 
     pub(crate) fn stylesheet_count(&self) -> usize {
@@ -280,7 +283,7 @@ impl StylistStore {
                 None,
                 origin,
                 Arc::new(self.lock.wrap(style::media_queries::MediaList::empty())),
-                self.lock.clone(),
+                self.lock.as_ref().clone(),
                 None,
                 None,
                 QuirksMode::NoQuirks,

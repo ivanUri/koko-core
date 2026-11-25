@@ -56,8 +56,11 @@ pub fn getType(self: *const CSSRule) u16 {
     return @as(u16, @intFromEnum(std.meta.activeTag(self._type))) + 1;
 }
 
-pub fn getCssText(self: *const CSSRule, _: *Frame) []const u8 {
-    return self._raw_css_text orelse "";
+pub fn getCssText(self: *const CSSRule, frame: *Frame) ![]const u8 {
+    switch (self._type) {
+        .style => |style_rule| return style_rule.getCssText(frame),
+        else => return self._raw_css_text orelse "",
+    }
 }
 
 pub fn getParentRule(_: *const CSSRule) ?*CSSRule {

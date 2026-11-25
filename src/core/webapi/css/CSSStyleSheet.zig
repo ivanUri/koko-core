@@ -187,7 +187,7 @@ pub fn getTextForStyleEngine(self: *CSSStyleSheet, frame: *Frame) ![]const u8 {
     var output: std.ArrayList(u8) = .empty;
     for (0..rules.length()) |index| {
         const rule = rules.item(index) orelse continue;
-        try output.appendSlice(frame.call_arena, rule.getCssText(frame));
+        try output.appendSlice(frame.call_arena, try rule.getCssText(frame));
     }
     return try output.toOwnedSlice(frame.call_arena);
 }
@@ -200,7 +200,7 @@ fn refreshStyloSource(self: *CSSStyleSheet, frame: *Frame) !void {
     var output: std.ArrayList(u8) = .empty;
     for (0..rules.length()) |index| {
         const rule = rules.item(index) orelse continue;
-        try output.appendSlice(frame.call_arena, rule.getCssText(frame));
+        try output.appendSlice(frame.call_arena, try rule.getCssText(frame));
     }
     // The snapshot survives this JS binding and is consumed by the next
     // getComputedStyle() call during prepareForLayout().  call_arena is reset

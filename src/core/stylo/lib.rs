@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
+use std::rc::Rc;
 
 use style::context::QuirksMode;
 use style::properties::{parse_style_attribute, PropertyId};
@@ -145,6 +146,7 @@ pub struct StyloEngine {
 
 struct Engine {
     callbacks: StyloDomCallbacks,
+    shared_lock: Rc<style::shared_lock::SharedRwLock>,
     /// One Stylo stylist per tree-scoped stylesheet set. Scope zero is the
     /// document; a ShadowRoot uses its stable node id as the scope key.
     stylists: HashMap<u64, stylist_store::StylistStore>,
@@ -157,10 +159,15 @@ struct Engine {
 
 impl Engine {
     fn new(callbacks: StyloDomCallbacks) -> Self {
+        let shared_lock = Rc::new(style::shared_lock::SharedRwLock::new());
         let mut stylists = HashMap::new();
-        stylists.insert(0, stylist_store::StylistStore::new(1));
+        stylists.insert(
+            0,
+            stylist_store::StylistStore::new(1, Rc::clone(&shared_lock)),
+        );
         Self {
             callbacks,
+            shared_lock,
             stylists,
             node_records: HashMap::new(),
             computed_styles: HashMap::new(),
@@ -225,14 +232,21 @@ impl Engine {
         // previous document/shadow stylesheet snapshot intact.
         let mut next_stylists = HashMap::with_capacity(grouped.len().max(1));
         for (scope_id, scope_inputs) in grouped {
-            let mut stylist = stylist_store::StylistStore::new(scope_id.max(1));
+            let mut stylist =
+                stylist_store::StylistStore::new(scope_id.max(1), Rc::clone(&self.shared_lock));
             stylist.replace(&scope_inputs)?;
             next_stylists.insert(scope_id, stylist);
         }
         next_stylists
             .entry(0)
-            .or_insert_with(|| stylist_store::StylistStore::new(1));
+            .or_insert_with(|| stylist_store::StylistStore::new(1, Rc::clone(&self.shared_lock)));
         self.stylists = next_stylists;
+        // Inline declaration blocks are locked by the StylistStore that
+        // parsed them. Replacing the stores invalidates those locks too, so
+        // never reuse a cached block across a stylesheet snapshot.
+        for record in self.node_records.values_mut() {
+            record.style_attribute = None;
+        }
         self.computed_styles.clear();
         self.invalidation_generation = self.invalidation_generation.wrapping_add(1);
         Ok(())
@@ -254,10 +268,7 @@ impl Engine {
     }
 
     pub(crate) fn shared_lock(&self) -> &style::shared_lock::SharedRwLock {
-        self.stylists
-            .get(&0)
-            .expect("document StylistStore is always present")
-            .shared_lock()
+        self.shared_lock.as_ref()
     }
 
     fn invalidate_stylesheets(&mut self) {
