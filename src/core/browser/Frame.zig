@@ -145,6 +145,7 @@ extern fn koko_stylo_engine_replace_stylesheets(
     count: usize,
 ) StyloCStatus;
 extern fn koko_stylo_engine_invalidate_stylesheets(engine: ?*anyopaque) StyloCStatus;
+extern fn koko_stylo_engine_stylesheet_count(engine: ?*anyopaque, out_count: *usize) StyloCStatus;
 extern fn koko_stylo_engine_sync_node(engine: ?*anyopaque, node: ?*const anyopaque) StyloCStatus;
 extern fn koko_stylo_engine_reset_document(engine: ?*anyopaque) StyloCStatus;
 extern fn koko_stylo_engine_flush_styles(
@@ -988,9 +989,20 @@ fn styloReadNode(
         },
         .document_type, .attribute => info.kind = 2,
         .document_fragment => {
-            if (node.is(ShadowRoot)) |shadow_root| {
+            const shadow_root = node.is(ShadowRoot) orelse blk: {
+                // Some wrapper paths expose the ShadowRoot through its
+                // DocumentFragment prototype while retaining the same
+                // authoritative node. Resolve it from the frame's root map
+                // as a robust fallback for the Stylo adapter.
+                var roots = frame._element_shadow_roots.iterator();
+                while (roots.next()) |entry| {
+                    if (entry.value_ptr.*.asNode() == node) break :blk entry.value_ptr.*;
+                }
+                break :blk null;
+            };
+            if (shadow_root) |root| {
                 info.kind = 3;
-                info.shadow_host_id = frame.styleNodeId(shadow_root._host.asNode());
+                info.shadow_host_id = frame.styleNodeId(root._host.asNode());
             } else {
                 info.kind = 0;
             }
@@ -1104,6 +1116,14 @@ fn styloReplaceStylesheets(
     return styloMapStatus(koko_stylo_engine_replace_stylesheets(engine, inputs, count));
 }
 
+fn styloStylesheetCount(
+    _: ?*anyopaque,
+    engine: ?*anyopaque,
+    out_count: *usize,
+) callconv(.c) Abi.StatusCode {
+    return styloMapStatus(koko_stylo_engine_stylesheet_count(engine, out_count));
+}
+
 fn styloSyncNode(
     _: ?*anyopaque,
     engine: ?*anyopaque,
@@ -1146,15 +1166,17 @@ fn appendStyloStylesheetInput(
     frame: *Frame,
     inputs: *std.ArrayListUnmanaged(Abi.StylesheetInput),
     sheet: *CSSStyleSheet,
+    scope_id: u64,
 ) !void {
     const sheet_id = @intFromPtr(sheet);
     for (inputs.items) |input| {
-        if (input.sheet_id == sheet_id) return;
+        if (input.sheet_id == sheet_id and input.scope_id == scope_id) return;
     }
 
     const css = try sheet.getTextForStyleEngine(frame);
     try inputs.append(frame.call_arena, .{
         .sheet_id = sheet_id,
+        .scope_id = scope_id,
         .origin = .author,
         .enabled = if (sheet.getDisabled()) 0 else 1,
         .css = .{ .ptr = if (css.len == 0) null else css.ptr, .len = css.len },
@@ -1165,13 +1187,25 @@ fn appendStyloAdoptedStylesheets(
     frame: *Frame,
     inputs: *std.ArrayListUnmanaged(Abi.StylesheetInput),
     adopted: JS.Object.Global,
+    scope_id: u64,
 ) !void {
     const local = frame.js.local orelse return;
     const array = adopted.local(local).toValue().toArray();
     for (0..array.len()) |index| {
         const value = try array.get(@intCast(index));
         const sheet = try value.toZig(*CSSStyleSheet);
-        try appendStyloStylesheetInput(frame, inputs, sheet);
+        try appendStyloStylesheetInput(frame, inputs, sheet, scope_id);
+    }
+}
+
+fn appendStyloNativeStylesheets(
+    frame: *Frame,
+    inputs: *std.ArrayListUnmanaged(Abi.StylesheetInput),
+    sheets: []const *CSSStyleSheet,
+    scope_id: u64,
+) !void {
+    for (sheets) |sheet| {
+        try appendStyloStylesheetInput(frame, inputs, sheet, scope_id);
     }
 }
 
@@ -1194,10 +1228,27 @@ fn styloPrepareForLayout(
     var inputs: std.ArrayListUnmanaged(Abi.StylesheetInput) = .empty;
     defer inputs.deinit(frame.call_arena);
     for (sheets.items()) |sheet| {
-        appendStyloStylesheetInput(frame, &inputs, sheet) catch return Abi.status_internal_error;
+        appendStyloStylesheetInput(frame, &inputs, sheet, 0) catch return Abi.status_internal_error;
     }
     const adopted = frame.document.getAdoptedStyleSheets(frame) catch return Abi.status_internal_error;
-    appendStyloAdoptedStylesheets(frame, &inputs, adopted) catch return Abi.status_internal_error;
+    appendStyloAdoptedStylesheets(frame, &inputs, adopted, 0) catch return Abi.status_internal_error;
+
+    // ShadowRoot styles are not part of Document.styleSheets.  Snapshot each
+    // root into its own scope so selectors cannot leak across encapsulation
+    // boundaries while inheritance still crosses through the host in Rust.
+    var shadow_roots = frame._element_shadow_roots.iterator();
+    while (shadow_roots.next()) |entry| {
+        const shadow_root = entry.value_ptr.*;
+        var shadow_style_walker = @import("../dom/TreeWalker.zig").Full.Elements.init(shadow_root.asNode(), .{});
+        while (shadow_style_walker.next()) |element| {
+            if (element.is(Element.Html.Style)) |style| {
+                _ = style.getSheet(frame) catch return Abi.status_internal_error;
+            }
+        }
+        const scope_id = frame.styleNodeId(shadow_root.asNode());
+        appendStyloNativeStylesheets(frame, &inputs, shadow_root.scopedStyleSheets(), scope_id) catch return Abi.status_internal_error;
+        appendStyloNativeStylesheets(frame, &inputs, shadow_root.adoptedStyleSheetsNative(), scope_id) catch return Abi.status_internal_error;
+    }
     const ptr: [*c]const Abi.StylesheetInput = if (inputs.items.len == 0) null else inputs.items.ptr;
     return styloMapStatus(koko_stylo_engine_replace_stylesheets(engine, ptr, inputs.items.len));
 }
@@ -1258,6 +1309,7 @@ fn styloBridgeApi(frame: *Frame) StyleEngine.AbiApi {
         .invalidate_stylesheets = styloInvalidateStylesheets,
         .invalidate_dom = styloInvalidateDom,
         .replace_stylesheets = styloReplaceStylesheets,
+        .stylesheet_count = styloStylesheetCount,
         .sync_node = styloSyncNode,
         .reset_document = styloResetDocument,
         .flush_styles = styloFlushStyles,

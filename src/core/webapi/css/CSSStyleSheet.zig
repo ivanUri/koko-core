@@ -37,6 +37,7 @@ _href: ?[]const u8 = null,
 _title: []const u8 = "",
 _disabled: bool = false,
 _css_rules: ?*CSSRuleList = null,
+_stylo_source: ?[]const u8 = null,
 _owner_rule: ?*CSSRule = null,
 _owner_node: ?*Element = null,
 _style_scope_owners: std.ArrayListUnmanaged(StyleScopeOwner) = .empty,
@@ -151,6 +152,9 @@ pub fn getCssRules(self: *CSSStyleSheet, frame: *Frame) !*CSSRuleList {
         if (owner.is(Element.Html.Style)) |style| {
             const text = try style.asNode().getTextContentAlloc(frame.call_arena);
             try self.replaceSync(text, frame);
+            // Parsing the owner element's source initializes CSSOM objects but
+            // must not make that temporary serialization authoritative.
+            self._stylo_source = null;
         }
     }
 
@@ -160,6 +164,7 @@ pub fn getCssRules(self: *CSSStyleSheet, frame: *Frame) !*CSSRuleList {
 /// Drop the parsed CSSOM view after the owning <style> text changes.
 pub fn sourceTextChanged(self: *CSSStyleSheet) void {
     self._css_rules = null;
+    self._stylo_source = null;
 }
 
 pub fn getOwnerRule(self: *const CSSStyleSheet) ?*CSSRule {
@@ -170,6 +175,7 @@ pub fn getOwnerRule(self: *const CSSStyleSheet) ?*CSSRule {
 /// owned by a <style> element use the authoritative text node; constructed
 /// CSSOM sheets are serialized from their CSSRuleList.
 pub fn getTextForStyleEngine(self: *CSSStyleSheet, frame: *Frame) ![]const u8 {
+    if (self._stylo_source) |source| return source;
     if (self.getOwnerNode()) |owner| {
         if (owner.is(Element.Html.Style)) |_| {
             if (self._css_rules == null) {
@@ -184,6 +190,23 @@ pub fn getTextForStyleEngine(self: *CSSStyleSheet, frame: *Frame) ![]const u8 {
         try output.appendSlice(frame.call_arena, rule.getCssText(frame));
     }
     return try output.toOwnedSlice(frame.call_arena);
+}
+
+fn refreshStyloSource(self: *CSSStyleSheet, frame: *Frame) !void {
+    const rules = self._css_rules orelse {
+        self._stylo_source = null;
+        return;
+    };
+    var output: std.ArrayList(u8) = .empty;
+    for (0..rules.length()) |index| {
+        const rule = rules.item(index) orelse continue;
+        try output.appendSlice(frame.call_arena, rule.getCssText(frame));
+    }
+    // The snapshot survives this JS binding and is consumed by the next
+    // getComputedStyle() call during prepareForLayout().  call_arena is reset
+    // when the top-level native binding returns, so storing a slice allocated
+    // there leaves a dangling CSS source after insertRule()/deleteRule().
+    self._stylo_source = try frame.dupeString(output.items);
 }
 
 /// Map an at-rule source string to a CSSRule type tag for placeholder entries.
@@ -221,6 +244,7 @@ fn insertPlaceholderAtRule(self: *CSSStyleSheet, rule: []const u8, requested_ind
     const index = clampInsertIndex(requested_index, rules.length());
     const placeholder = try CSSRule.initRaw(placeholderTypeForAtRule(rule), rule, frame);
     try rules.insert(index, placeholder, frame);
+    try self.refreshStyloSource(frame);
     notifyStyleSheetMutation(self, "insertRule", frame);
     return index;
 }
@@ -250,6 +274,7 @@ pub fn insertRule(self: *CSSStyleSheet, rule: []const u8, maybe_index: ?u32, fra
     const rules = try self.getCssRules(frame);
     const index = clampInsertIndex(requested_index, rules.length());
     try rules.insert(index, style_rule._proto, frame);
+    try self.refreshStyloSource(frame);
 
     notifyStyleSheetMutation(self, "insertRule", frame);
 
@@ -265,6 +290,7 @@ pub fn deleteRule(self: *CSSStyleSheet, index: u32, frame: *Frame) !void {
         return;
     }
     try rules.remove(index);
+    try self.refreshStyloSource(frame);
 
     notifyStyleSheetMutation(self, "deleteRule", frame);
 }
@@ -303,6 +329,7 @@ pub fn replaceSync(self: *CSSStyleSheet, text: []const u8, frame: *Frame) CSSErr
         }
     }
 
+    self._stylo_source = try frame.dupeString(text);
     notifyStyleSheetMutation(self, "replaceSync", frame);
 }
 

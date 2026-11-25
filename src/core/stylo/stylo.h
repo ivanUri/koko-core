@@ -74,6 +74,7 @@ typedef enum StyloStylesheetOrigin {
 
 typedef struct StyloStylesheetInput {
     uint64_t sheet_id;
+    uint64_t scope_id;
     StyloStylesheetOrigin origin;
     uint8_t enabled;
     uint8_t reserved[7];

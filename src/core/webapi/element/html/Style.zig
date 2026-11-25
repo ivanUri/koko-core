@@ -107,7 +107,12 @@ pub fn getSheet(self: *Style, frame: *Frame) !?*CSSStyleSheet {
     // Prefer the frame argument over ownerFrame()/isConnected() parent walks.
     // Document parse after re-nav (Google knitsail → Bing) UAF'd walking _parent.
     const in_document_parse = owner_frame._document_parse_active and owner_frame._parse_mode == .document;
-    if (!in_document_parse and !self.asNode().isConnected()) {
+    // Shadow trees are connected through their host even though the generic
+    // Node.isConnected implementation only walks the light-DOM parent chain.
+    // Keep their scoped sheet eligible for the Stylo snapshot until the root
+    // itself is detached; otherwise a first computed-style read silently
+    // drops every <style> sheet inside a ShadowRoot.
+    if (!in_document_parse and !self.asNode().isConnected() and scope == null) {
         self.detachScope();
         if (self._registered_in_document) {
             if (owner_frame.document.getStyleSheets(owner_frame) catch null) |sheets| {

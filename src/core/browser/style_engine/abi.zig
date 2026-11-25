@@ -8,7 +8,7 @@
 /// This module deliberately contains no extern declarations for named
 /// symbols.  The bridge is supplied as an optional function table, so a
 /// Koko build and its unit tests do not need a Rust archive at link time.
-pub const abi_version: u32 = 1;
+pub const abi_version: u32 = 2;
 
 pub const FrameId = u64;
 pub const NodeId = u64;
@@ -47,6 +47,8 @@ pub const StylesheetOrigin = enum(u32) {
 /// and must not retain the CSS pointer.
 pub const StylesheetInput = extern struct {
     sheet_id: u64,
+    /// Stable ShadowRoot node id; zero is the document scope.
+    scope_id: u64,
     origin: StylesheetOrigin,
     enabled: u8,
     reserved: [7]u8 = .{ 0, 0, 0, 0, 0, 0, 0 },
@@ -88,6 +90,12 @@ pub const ReplaceStylesheetsFn = *const fn (
     engine: ?*anyopaque,
     inputs: [*c]const StylesheetInput,
     count: usize,
+) callconv(.c) StatusCode;
+
+pub const StylesheetCountFn = *const fn (
+    user_data: ?*anyopaque,
+    engine: ?*anyopaque,
+    out_count: *usize,
 ) callconv(.c) StatusCode;
 
 pub const SyncNodeFn = *const fn (
@@ -160,6 +168,7 @@ pub const Api = extern struct {
     invalidate_stylesheets: ?InvalidateStylesheetsFn,
     invalidate_dom: ?InvalidateDomFn,
     replace_stylesheets: ?ReplaceStylesheetsFn = null,
+    stylesheet_count: ?StylesheetCountFn = null,
     sync_node: ?SyncNodeFn = null,
     reset_document: ?ResetDocumentFn = null,
     flush_styles: ?FlushStylesFn = null,

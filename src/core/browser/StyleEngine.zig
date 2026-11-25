@@ -196,6 +196,15 @@ pub const StyleEngine = struct {
         return mapStatus(replace(api.user_data, self.engine, ptr, inputs.len));
     }
 
+    pub fn stylesheetCount(self: *Self) struct { status: Status, value: usize = 0 } {
+        if (!self.alive) return .{ .status = .closed };
+        const api = self.api orelse return .{ .status = self.status() };
+        const count = api.stylesheet_count orelse return .{ .status = .bridge_unsupported };
+        var value: usize = 0;
+        const result_status = mapStatus(count(api.user_data, self.engine, &value));
+        return .{ .status = result_status, .value = if (result_status == .ok) value else 0 };
+    }
+
     /// Synchronize one authoritative DOM node through the bridge. This is
     /// separate from invalidation so the resolver can refresh callback-backed
     /// metadata before a style flush.
@@ -656,6 +665,7 @@ test "StyleEngine adapter forwards the stable C ABI" {
     const css = "div { color: red }";
     const sheet = Abi.StylesheetInput{
         .sheet_id = 1,
+        .scope_id = 0,
         .origin = .author,
         .enabled = 1,
         .css = .{ .ptr = css.ptr, .len = css.len },

@@ -57,6 +57,16 @@ const expected = {
     token: "17px",
     priority: "important",
   },
+  shadowScope: {
+    styleColor: "rgb(211, 221, 231)",
+    adoptedColor: "rgb(241, 231, 221)",
+    adoptedPaddingTop: "13px",
+    outsideColor: "rgb(0, 0, 0)",
+    shadowRuleCount: 1,
+    documentStyleSheetCount: 1,
+    engineStyleSheetCount: 3,
+    engineLastError: "",
+  },
 };
 
 function parseArgs(argv) {
@@ -165,6 +175,13 @@ function matrixExpression() {
       if (typeof result !== "string") throw new Error("non-string computed value for " + property);
       return result.trim();
     };
+    const engineDiagnostics = () => {
+      const engine = window.__kokoStyleEngine;
+      return engine ? {
+        engineStyleSheetCount: engine.stylesheetCount,
+        engineLastError: engine.lastError,
+      } : {};
+    };
     const selector = (query, property = "color") => value(document.querySelector(query), property);
     const result = {
       selectorCombinators: {
@@ -218,6 +235,42 @@ function matrixExpression() {
       token: value(inlineTarget, "--stylo-validation-inline-token"),
       priority: inlineTarget.style.getPropertyPriority("color"),
     };
+
+    const shadowHost = document.createElement("div");
+    shadowHost.id = "stylo-validation-shadow-host";
+    document.body.appendChild(shadowHost);
+    const shadowRoot = shadowHost.attachShadow({ mode: "open" });
+    const shadowStyle = document.createElement("style");
+    shadowStyle.textContent = ".shadow-target { color: rgb(211, 221, 231); }";
+    shadowRoot.appendChild(shadowStyle);
+    const shadowContainer = document.createElement("div");
+    shadowRoot.appendChild(shadowContainer);
+    const shadowTarget = document.createElement("span");
+    shadowTarget.className = "shadow-target";
+    shadowContainer.appendChild(shadowTarget);
+    if (!shadowStyle.sheet || shadowStyle.sheet.cssRules.length !== 1) {
+      throw new Error("shadow stylesheet was not materialized");
+    }
+    const shadowStyleColor = value(shadowTarget, "color");
+    const adopted = new CSSStyleSheet();
+    adopted.replaceSync(".shadow-target { color: rgb(241, 231, 221); padding-top: 13px; }");
+    shadowRoot.adoptedStyleSheets = [adopted];
+    const shadowAdoptedColor = value(shadowTarget, "color");
+    const shadowAdoptedPaddingTop = value(shadowTarget, "padding-top");
+    const outsideShadowTarget = document.createElement("span");
+    outsideShadowTarget.className = "shadow-target";
+    document.body.appendChild(outsideShadowTarget);
+    result.shadowScope = {
+      styleColor: shadowStyleColor,
+      adoptedColor: shadowAdoptedColor,
+      adoptedPaddingTop: shadowAdoptedPaddingTop,
+      outsideColor: value(outsideShadowTarget, "color"),
+      shadowRuleCount: shadowStyle.sheet.cssRules.length,
+      documentStyleSheetCount: document.styleSheets.length,
+      ...engineDiagnostics(),
+    };
+    outsideShadowTarget.remove();
+    shadowHost.remove();
     return result;
   })()`;
 }
@@ -261,9 +314,12 @@ async function waitForPage(session, expectedPage, timeoutMs) {
   })()`, timeoutMs + 1_000);
 }
 
-function classifyMatrix(observed) {
+function classifyMatrix(observed, baseline) {
   const cases = {};
-  for (const [name, expectedValue] of Object.entries(expected)) {
+  const baselineExpected = baseline === "chromium-cdp"
+    ? { ...expected, shadowScope: Object.fromEntries(Object.entries(expected.shadowScope).filter(([key]) => !key.startsWith("engine"))) }
+    : expected;
+  for (const [name, expectedValue] of Object.entries(baselineExpected)) {
     const observedValue = observed?.[name];
     cases[name] = {
       status: observedValue == null ? "error" : equal(expectedValue, observedValue) ? "pass" : "mismatch",
@@ -287,7 +343,7 @@ async function runTests(factory, server, timeoutMs) {
       const observed = await session.evaluate(matrixExpression(), timeoutMs);
       result.page = firstPage;
       result.observed = observed;
-      result.cases = classifyMatrix(observed);
+      result.cases = classifyMatrix(observed, factory.id);
 
       await session.navigate(`${server.origin}/stylo/validation/${teardownFixtureName}?phase=teardown`, { timeoutMs });
       const teardownPage = await waitForPage(session, "teardown", timeoutMs);

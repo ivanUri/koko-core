@@ -20,7 +20,7 @@ use style::stylesheets::{CssRuleType, UrlExtraData};
 mod dom_adapter;
 mod stylist_store;
 
-const ABI_VERSION: u32 = 1;
+const ABI_VERSION: u32 = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -123,6 +123,8 @@ pub enum StyloStylesheetOrigin {
 #[derive(Clone, Copy, Debug)]
 pub struct StyloStylesheetInput {
     pub sheet_id: u64,
+    /// Stable ShadowRoot node id; zero is the document scope.
+    pub scope_id: u64,
     pub origin: StyloStylesheetOrigin,
     pub enabled: u8,
     pub reserved: [u8; 7],
@@ -143,7 +145,9 @@ pub struct StyloEngine {
 
 struct Engine {
     callbacks: StyloDomCallbacks,
-    stylist: stylist_store::StylistStore,
+    /// One Stylo stylist per tree-scoped stylesheet set. Scope zero is the
+    /// document; a ShadowRoot uses its stable node id as the scope key.
+    stylists: HashMap<u64, stylist_store::StylistStore>,
     node_records: HashMap<u64, Box<dom_adapter::NodeRecord>>,
     computed_styles: HashMap<u64, Arc<style::properties::ComputedValues>>,
     url_data: UrlExtraData,
@@ -153,9 +157,11 @@ struct Engine {
 
 impl Engine {
     fn new(callbacks: StyloDomCallbacks) -> Self {
+        let mut stylists = HashMap::new();
+        stylists.insert(0, stylist_store::StylistStore::new(1));
         Self {
             callbacks,
-            stylist: stylist_store::StylistStore::new(1),
+            stylists,
             node_records: HashMap::new(),
             computed_styles: HashMap::new(),
             url_data: UrlExtraData::from(
@@ -210,10 +216,48 @@ impl Engine {
     }
 
     fn replace_stylesheets(&mut self, inputs: &[StyloStylesheetInput]) -> Result<(), StyloStatus> {
-        self.stylist.replace(inputs)?;
+        let mut grouped: HashMap<u64, Vec<StyloStylesheetInput>> = HashMap::new();
+        for input in inputs {
+            grouped.entry(input.scope_id).or_default().push(*input);
+        }
+
+        // Build every scope off to the side so a parse failure leaves the
+        // previous document/shadow stylesheet snapshot intact.
+        let mut next_stylists = HashMap::with_capacity(grouped.len().max(1));
+        for (scope_id, scope_inputs) in grouped {
+            let mut stylist = stylist_store::StylistStore::new(scope_id.max(1));
+            stylist.replace(&scope_inputs)?;
+            next_stylists.insert(scope_id, stylist);
+        }
+        next_stylists
+            .entry(0)
+            .or_insert_with(|| stylist_store::StylistStore::new(1));
+        self.stylists = next_stylists;
         self.computed_styles.clear();
         self.invalidation_generation = self.invalidation_generation.wrapping_add(1);
         Ok(())
+    }
+
+    fn stylesheet_count(&self) -> usize {
+        self.stylists
+            .values()
+            .map(stylist_store::StylistStore::stylesheet_count)
+            .sum()
+    }
+
+    fn stylesheet_rule_count(&self, sheet_id: u64) -> usize {
+        self.stylists
+            .values()
+            .map(|stylist| stylist.rule_count(sheet_id))
+            .find(|count| *count != 0)
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn shared_lock(&self) -> &style::shared_lock::SharedRwLock {
+        self.stylists
+            .get(&0)
+            .expect("document StylistStore is always present")
+            .shared_lock()
     }
 
     fn invalidate_stylesheets(&mut self) {
@@ -270,9 +314,14 @@ impl Engine {
                 _ => None,
             }
         };
+        let scope_id = self.style_scope_for_node(node_id)?;
         let element = dom_adapter::KokoElement::from_engine_node(engine_ptr, node_id)
             .ok_or(StyloStatus::CallbackFailed)?;
-        let resolved = self.stylist.resolve_element(
+        let stylist = self
+            .stylists
+            .get(&scope_id)
+            .ok_or(StyloStatus::CallbackFailed)?;
+        let resolved = stylist.resolve_element(
             engine_ptr,
             element,
             parent_style.as_deref(),
@@ -285,6 +334,28 @@ impl Engine {
         record.data.borrow_mut().set_styles(resolved);
         self.computed_styles.insert(node_id, style.clone());
         Ok(style)
+    }
+
+    fn style_scope_for_node(&mut self, node_id: u64) -> Result<u64, StyloStatus> {
+        let mut current = node_id;
+        for _ in 0..4096 {
+            let parent_id = self
+                .ensure_node_record(current)
+                .ok_or(StyloStatus::CallbackFailed)?
+                .info
+                .parent_id;
+            if parent_id == 0 {
+                return Ok(0);
+            }
+            let parent = self
+                .ensure_node_record(parent_id)
+                .ok_or(StyloStatus::CallbackFailed)?;
+            if parent.info.kind == dom_adapter::NODE_KIND_SHADOW_ROOT {
+                return Ok(parent.info.node_id);
+            }
+            current = parent_id;
+        }
+        Err(StyloStatus::CallbackFailed)
     }
 
     fn serialize_pseudo_property(
@@ -336,10 +407,15 @@ impl Engine {
                 "pseudo-element has no computed style",
             );
         };
-        let serialized = match self
-            .stylist
-            .serialize_computed_property(&style, &property_id)
-        {
+        let scope_id = match self.style_scope_for_node(node_id) {
+            Ok(scope_id) => scope_id,
+            Err(status) => return self.error(status, "pseudo scope is missing"),
+        };
+        let stylist = match self.stylists.get(&scope_id) {
+            Some(stylist) => stylist,
+            None => return self.error(StyloStatus::CallbackFailed, "pseudo scope is missing"),
+        };
+        let serialized = match stylist.serialize_computed_property(&style, &property_id) {
             Ok(value) => value,
             Err(status) => return self.error(status, "pseudo property is not a longhand"),
         };
@@ -356,7 +432,9 @@ impl Engine {
         engine_ptr: *mut StyloEngine,
         nodes: &[u64],
     ) -> Result<usize, StyloStatus> {
-        self.stylist.flush();
+        for stylist in self.stylists.values_mut() {
+            stylist.flush();
+        }
         let mut changed = 0;
         for node_id in nodes {
             self.resolve_node_style(engine_ptr, *node_id)?;
@@ -667,10 +745,15 @@ pub extern "C" fn koko_stylo_engine_serialize_property(
             Ok(style) => style,
             Err(status) => return inner.error(status, "computed style resolution failed"),
         };
-        let serialized = match inner
-            .stylist
-            .serialize_computed_property(&computed, &property_id)
-        {
+        let scope_id = match inner.style_scope_for_node(node_id) {
+            Ok(scope_id) => scope_id,
+            Err(status) => return inner.error(status, "computed scope is missing"),
+        };
+        let stylist = match inner.stylists.get(&scope_id) {
+            Some(stylist) => stylist,
+            None => return inner.error(StyloStatus::CallbackFailed, "computed scope is missing"),
+        };
+        let serialized = match stylist.serialize_computed_property(&computed, &property_id) {
             Ok(value) => value,
             Err(status) => return inner.error(status, "property is not a longhand"),
         };
@@ -737,7 +820,7 @@ pub extern "C" fn koko_stylo_engine_stylesheet_count(
         if engine.is_null() || out_count.is_null() {
             return StyloStatus::NullPointer;
         }
-        unsafe { *out_count = (*engine).inner.stylist.stylesheet_count() };
+        unsafe { *out_count = (*engine).inner.stylesheet_count() };
         StyloStatus::Ok
     }))
     .unwrap_or(StyloStatus::Panic)
@@ -754,7 +837,7 @@ pub extern "C" fn koko_stylo_engine_stylesheet_rule_count(
         if engine.is_null() || out_count.is_null() || sheet_id == 0 {
             return StyloStatus::NullPointer;
         }
-        unsafe { *out_count = (*engine).inner.stylist.rule_count(sheet_id) };
+        unsafe { *out_count = (*engine).inner.stylesheet_rule_count(sheet_id) };
         StyloStatus::Ok
     }))
     .unwrap_or(StyloStatus::Panic)
@@ -907,6 +990,7 @@ mod tests {
         let css = b"div { color: red }";
         let input = StyloStylesheetInput {
             sheet_id: 1,
+            scope_id: 0,
             origin: StyloStylesheetOrigin::Author,
             enabled: 1,
             reserved: [0; 7],
@@ -916,7 +1000,7 @@ mod tests {
             },
         };
         assert_eq!(engine.replace_stylesheets(&[input]), Ok(()));
-        assert_eq!(engine.stylist.stylesheet_count(), 1);
+        assert_eq!(engine.stylesheet_count(), 1);
         assert_eq!(engine.invalidation_generation, 1);
     }
 
@@ -979,6 +1063,7 @@ mod tests {
         let css = b"div[data-kind=\"primary\"] { --brand: red; background-color: var(--brand); margin-top: 3px } main > div[data-kind=\"primary\"] { color: rgb(70, 80, 90) !important } div::before { content: \"stylo\"; display: inline-block }";
         let input = StyloStylesheetInput {
             sheet_id: 1,
+            scope_id: 0,
             origin: StyloStylesheetOrigin::Author,
             enabled: 1,
             reserved: [0; 7],

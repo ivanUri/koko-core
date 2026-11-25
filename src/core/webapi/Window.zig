@@ -704,6 +704,10 @@ pub fn getKokoStyleEngine(self: *const Window) !js.Object {
     if (!(try result.set("computedStyles", stylo, .{}))) {
         return error.CreateObjectFailure;
     }
+    const stylesheet_count = self._frame.styleEngine().stylesheetCount();
+    if (!(try result.set("stylesheetCount", if (stylesheet_count.status == .ok) stylesheet_count.value else @as(usize, 0), .{}))) {
+        return error.CreateObjectFailure;
+    }
     var error_bytes = self._frame.call_arena.alloc(u8, 4096) catch return error.OutOfMemory;
     const error_result = self._frame.styleEngine().lastError(error_bytes);
     const error_text = if (error_result.status == .ok)

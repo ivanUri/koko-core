@@ -271,7 +271,7 @@ impl KokoDocument {
             !engine.is_null(),
             "Stylo engine is not active on this thread"
         );
-        unsafe { (&*engine).inner.stylist.shared_lock() }
+        unsafe { (&*engine).inner.shared_lock() }
     }
 }
 
@@ -680,7 +680,7 @@ impl TElement for KokoElement {
                     selectors::matching::QuirksMode::NoQuirks,
                     style::stylesheets::CssRuleType::Style,
                 );
-                Arc::new(inner.stylist.shared_lock().wrap(block))
+                Arc::new(inner.shared_lock().wrap(block))
             };
             self.record_mut()?.style_attribute = Some(parsed);
         }

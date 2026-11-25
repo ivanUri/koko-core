@@ -113,6 +113,14 @@ pub fn unregisterScopedStyleSheet(self: *ShadowRoot, sheet: *CSSStyleSheet) void
     }
 }
 
+pub fn scopedStyleSheets(self: *const ShadowRoot) []const *CSSStyleSheet {
+    return self._scoped_style_sheets.items;
+}
+
+pub fn adoptedStyleSheetsNative(self: *const ShadowRoot) []const *CSSStyleSheet {
+    return self._adopted_style_sheet_items.items;
+}
+
 fn sameStyleSheetList(left: []const *CSSStyleSheet, right: []const *CSSStyleSheet) bool {
     if (left.len != right.len) return false;
     for (left, right) |a, b| {
