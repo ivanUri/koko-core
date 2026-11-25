@@ -33,6 +33,7 @@ function parseArgs(argv) {
     timeoutMs: defaultTimeoutMs,
     output: null,
     baselines: ["koko-cdp", "chromium-cdp"],
+    fixture: null,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -45,6 +46,7 @@ function parseArgs(argv) {
     else if (argument === "--timeout-ms") options.timeoutMs = Number(next());
     else if (argument === "--output") options.output = next();
     else if (argument === "--baseline") options.baselines = next().split(",").map((value) => value.trim()).filter(Boolean);
+    else if (argument === "--fixture") options.fixture = next();
     else if (argument === "--help" || argument === "-h") options.help = true;
     else throw new Error(`Unknown argument: ${argument}`);
   }
@@ -60,7 +62,7 @@ function usage() {
     `  node bench/suites/stylo-differential.mjs [options]\n\n` +
     `  --mode <tests|bench|all> --baseline <koko-cdp,chromium-cdp>\n` +
     `  --koko-bin <path> --chrome-bin <path> --iterations <n> --warmup <n>\n` +
-    `  --timeout-ms <n> --output <json-path>\n`;
+    `  --timeout-ms <n> --fixture <fixture.html> --output <json-path>\n`;
 }
 
 function contentType(pathname) {
@@ -136,7 +138,10 @@ async function startFixtureServer(fixtureNames) {
       return;
     }
     const name = pathname.startsWith("/stylo/css/") ? pathname.slice("/stylo/css/".length) : null;
-    const body = name ? files.get(name) : null;
+    const rawBody = name ? files.get(name) : null;
+    const body = rawBody && name.endsWith(".html")
+      ? rawBody.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
+      : rawBody;
     if (!body) {
       response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
       response.end("not found");
@@ -165,18 +170,138 @@ function normalize(value) {
   return value;
 }
 
-function sameObservations(left, right) {
-  return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
+function evaluateStyloFixture(fixtureName) {
+  function unsupported(reason, details = {}) {
+    return { status: "unsupported", reason, details };
+  }
+
+  function readStyle(element, properties, pseudo = undefined) {
+    if (!element || typeof window.getComputedStyle !== "function") return unsupported("getComputedStyle is unavailable");
+    let style;
+    try {
+      style = window.getComputedStyle(element, pseudo);
+    } catch (error) {
+      return unsupported(`getComputedStyle threw: ${error.name || error}`);
+    }
+    if (!style || typeof style.getPropertyValue !== "function") return unsupported("computed style object is unavailable");
+    const observations = {};
+    for (const property of properties) {
+      const value = style.getPropertyValue(property);
+      if (typeof value !== "string" || value.length === 0) return unsupported(`computed style did not expose ${property}`);
+      observations[property] = value;
+    }
+    return observations;
+  }
+
+  try {
+    switch (fixtureName) {
+      case "stylo_adopted_sheets.html": {
+        if (typeof CSSStyleSheet !== "function" || typeof CSSStyleSheet.prototype.replaceSync !== "function") return unsupported("constructable CSSStyleSheet.replaceSync is unavailable");
+        if (!("adoptedStyleSheets" in document) || !document.adoptedStyleSheets || typeof document.adoptedStyleSheets[Symbol.iterator] !== "function") return unsupported("Document.adoptedStyleSheets is unavailable");
+        const sheet = new CSSStyleSheet();
+        sheet.replaceSync("#stylo-target { color: rgb(201, 211, 221); padding-bottom: 8px; }");
+        document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+        const computed = readStyle(document.querySelector("#stylo-target"), ["color", "padding-bottom"]);
+        return computed.status ? computed : { status: "pass", observations: { sheetCount: document.adoptedStyleSheets.length, computed } };
+      }
+      case "stylo_cascade.html": {
+        const observations = readStyle(document.querySelector("#stylo-target"), ["color", "padding-top", "border-top-width", "border-top-style"]);
+        return observations.status ? observations : { status: "pass", observations };
+      }
+      case "stylo_class_mutation.html": {
+        const target = document.querySelector("#stylo-target");
+        const before = readStyle(target, ["color", "margin-top"]);
+        if (before.status) return before;
+        if (!target.classList || typeof target.classList.add !== "function") return unsupported("classList mutation is unavailable");
+        target.classList.add("stylo-active");
+        const after = readStyle(target, ["color", "margin-top"]);
+        if (after.status) return after;
+        target.classList.remove("stylo-active");
+        const restored = readStyle(target, ["color", "margin-top"]);
+        if (restored.status) return restored;
+        return { status: "pass", observations: { before, after, restored } };
+      }
+      case "stylo_custom_properties.html": {
+        const observations = readStyle(document.querySelector("#stylo-target"), ["--stylo-accent", "--stylo-gap", "color", "margin-inline-start"]);
+        return observations.status ? observations : { status: "pass", observations };
+      }
+      case "stylo_dynamic_stylesheet.html": {
+        const style = document.createElement("style");
+        document.head.appendChild(style);
+        if (!style.sheet || typeof style.sheet.insertRule !== "function") return unsupported("dynamic CSSStyleSheet.insertRule is unavailable");
+        style.sheet.insertRule("#stylo-target { color: rgb(113, 123, 133); padding-top: 6px; }", style.sheet.cssRules.length);
+        const computed = readStyle(document.querySelector("#stylo-target"), ["color", "padding-top"]);
+        return computed.status ? computed : { status: "pass", observations: { ruleCount: style.sheet.cssRules.length, computed } };
+      }
+      case "stylo_important.html": {
+        const observations = readStyle(document.querySelector("#stylo-target"), ["color", "background-color"]);
+        return observations.status ? observations : { status: "pass", observations };
+      }
+      case "stylo_inheritance.html": {
+        const parentStyle = readStyle(document.querySelector("#stylo-parent"), ["color", "font-family"]);
+        const childStyle = readStyle(document.querySelector("#stylo-child"), ["color", "font-family", "line-height"]);
+        if (parentStyle.status) return parentStyle;
+        if (childStyle.status) return childStyle;
+        return { status: "pass", observations: { parent: parentStyle, child: childStyle } };
+      }
+      case "stylo_inline.html": {
+        const target = document.querySelector("#stylo-target");
+        if (!target.style || typeof target.style.setProperty !== "function") return unsupported("inline CSSStyleDeclaration is unavailable");
+        target.style.setProperty("color", "rgb(61, 71, 81)");
+        target.style.setProperty("padding-inline-start", "5px");
+        target.style.setProperty("--stylo-inline-token", "13px");
+        const style = readStyle(target, ["color", "padding-inline-start", "--stylo-inline-token"]);
+        return style.status ? style : { status: "pass", observations: { cssText: target.style.cssText, style } };
+      }
+      case "stylo_lifecycle.html": {
+        const target = document.querySelector("#stylo-target");
+        const style = document.createElement("style");
+        if (!style || typeof style.remove !== "function") return unsupported("style element lifecycle methods are unavailable");
+        style.textContent = "#stylo-target { letter-spacing: 1px; }";
+        document.head.appendChild(style);
+        const beforeRemoval = readStyle(target, ["letter-spacing"]);
+        if (beforeRemoval.status) return beforeRemoval;
+        style.remove();
+        const afterRemoval = readStyle(target, ["letter-spacing"]);
+        if (afterRemoval.status) return afterRemoval;
+        document.head.appendChild(style);
+        style.textContent = "#stylo-target { letter-spacing: 2px; }";
+        const afterReinsert = readStyle(target, ["letter-spacing"]);
+        if (afterReinsert.status) return afterReinsert;
+        return { status: "pass", observations: { beforeRemoval, afterRemoval, afterReinsert } };
+      }
+      case "stylo_media.html": {
+        if (typeof window.matchMedia !== "function") return unsupported("matchMedia is unavailable");
+        const style = readStyle(document.querySelector("#stylo-target"), ["display", "color"]);
+        if (style.status) return style;
+        return { status: "pass", observations: { mediaMatches: window.matchMedia("screen").matches, style } };
+      }
+      case "stylo_pseudo.html": {
+        const target = document.querySelector("#stylo-target");
+        const before = readStyle(target, ["content", "display", "color"], "::before");
+        const after = readStyle(target, ["content", "display", "border-top-width"], "::after");
+        if (before.status) return before;
+        if (after.status) return after;
+        return { status: "pass", observations: { before, after } };
+      }
+      case "stylo_shadow_root.html": {
+        const host = document.querySelector("#stylo-host");
+        if (typeof host.attachShadow !== "function") return unsupported("Element.attachShadow is unavailable");
+        const root = host.attachShadow({ mode: "open" });
+        root.innerHTML = `<style>:host { display: block; } .stylo-shadow { color: rgb(231, 241, 251); padding-left: 10px; }</style><span class="stylo-shadow">shadow</span>`;
+        const computed = readStyle(root.querySelector(".stylo-shadow"), ["color", "padding-left"]);
+        return computed.status ? computed : { status: "pass", observations: { hostDisplay: window.getComputedStyle(host).getPropertyValue("display"), computed } };
+      }
+      default:
+        return { status: "error", reason: `unknown Stylo fixture: ${fixtureName}` };
+    }
+  } catch (error) {
+    return { status: "error", reason: `${error.name || "Error"}: ${error.message || error}` };
+  }
 }
 
-async function waitForFixtureResult(session, timeoutMs) {
-  return session.evaluate(`(async () => {
-    const deadline = Date.now() + ${timeoutMs};
-    while (!window.__styloResult && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    return window.__styloResult || { status: "error", reason: "fixture did not publish a result" };
-  })()`, timeoutMs + 1_000);
+function sameObservations(left, right) {
+  return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
 }
 
 async function runDifferentialTests(factories, server, fixtureNames, timeoutMs) {
@@ -195,7 +320,7 @@ async function runDifferentialTests(factories, server, fixtureNames, timeoutMs) 
         try {
           session = await runtime.newSession();
           await session.navigate(`${server.origin}/stylo/css/${encodeURIComponent(fixtureName)}`, { timeoutMs });
-          observations[factory.id] = await waitForFixtureResult(session, timeoutMs);
+          observations[factory.id] = await session.evaluate(`(${evaluateStyloFixture.toString()})(${JSON.stringify(fixtureName)})`, timeoutMs);
         } catch (error) {
           observations[factory.id] = { status: "error", reason: `${error.name || "Error"}: ${error.message || error}` };
         } finally {
@@ -280,7 +405,10 @@ async function main() {
     return;
   }
   const availableFixtures = new Set(await readdir(cssFixtureDirectory));
-  const fixtureNames = styloFixtureNames.filter((name) => availableFixtures.has(name));
+  const requestedFixtures = options.fixture ? [options.fixture] : styloFixtureNames;
+  const fixtureNames = requestedFixtures.filter((name) => availableFixtures.has(name));
+  const missingRequested = requestedFixtures.filter((name) => !availableFixtures.has(name));
+  if (missingRequested.length) throw new Error(`Missing Stylo fixture(s): ${missingRequested.join(", ")}`);
   const missingFixtures = styloFixtureNames.filter((name) => !availableFixtures.has(name));
   if (missingFixtures.length) throw new Error(`Missing Stylo fixture(s): ${missingFixtures.join(", ")}`);
   const server = await startFixtureServer(fixtureNames);

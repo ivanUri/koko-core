@@ -62,9 +62,12 @@ committed.
 
 ## Validation and performance snapshot
 
-The bounded matrix passes for both Koko and Chromium: selector combinators,
-`!important`, custom properties, pseudo-elements, dynamic stylesheet mutation,
-inline mutation, UA defaults, shadow scopes, and navigation teardown. The Rust
+The 12-fixture differential suite passes for both Koko and Chromium: adopted
+stylesheets, cascade, class mutation, custom properties, dynamic stylesheets,
+`!important`, inheritance, inline styles, stylesheet lifecycle, media queries,
+pseudo-elements, and shadow roots. The differential runner strips fixture
+scripts and executes the same evaluator after navigation so results measure the
+CSS engine rather than Koko's current inline-script parsing behavior. The Rust
 Stylo unit suite passes 5/5 tests. A WPT corpus/server is not present in this
 checkout, so the external WPT gate remains pending; the local runner and
 Chromium CDP adapters are available.
