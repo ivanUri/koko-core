@@ -194,7 +194,12 @@ pub fn styleAddedCallback(self: *Style, frame: *Frame) !void {
     // SIGSEGV'd (Google Search → Bing). Invalidate Stylo; the sheet is
     // created lazily on document.styleSheets / getSheet after parse.
     const mid_document_parse = owner_frame._document_parse_active and owner_frame._parse_mode == .document;
-    if (mid_document_parse) {
+    // Static parser-created styles are deferred until the document stylesheet
+    // snapshot is materialized. If CSSOM has already materialized that list,
+    // however, a dynamically appended <style> must be registered immediately
+    // or document.styleSheets will keep returning the previous last sheet.
+    const defer_registration = mid_document_parse and owner_frame.document._style_sheets == null;
+    if (defer_registration) {
         owner_frame.styleSheetChanged(self.asNode());
         return;
     }

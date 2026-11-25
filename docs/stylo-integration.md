@@ -110,9 +110,9 @@ now pass the focused CSSOM cases that were previously failing:
   lookup semantics, append/delete, and quoted-name serialization pass.
 - `CSSKeyframeRule`: 2/2 plus `keyText`: 11/11; `from`/`to`, percentages,
   style `[PutForwards]`, and syntax-error handling pass.
-- `CSSKeyframeRule-keyText-edge-cases`: 11/14; direct setters pass, while
-  dynamically appended stylesheet cases for `.5%`, `100.0%`, and `1e1%`
-  still expose a separate stylesheet-list/source selection bug.
+- `CSSKeyframeRule-keyText-edge-cases`: 14/14; direct setters and dynamically
+  appended stylesheet cases for `.5%`, `100.0%`, and `1e1%` pass after fixing
+  stylesheet registration while document parsing is still active.
 - `CSSKeyframesRule-appendRule-invalid`: 4/4; invalid or multiple entries are
   silently ignored as required by the CSS Animations CSSOM contract.
 - `CSSKeyframesRule-deleteRule-detach`: 2/2; removed rules release their
