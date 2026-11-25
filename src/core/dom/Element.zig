@@ -15,7 +15,6 @@ const std = @import("std");
 
 const js = @import("../js/js.zig");
 const Frame = @import("../browser/Frame.zig");
-const StyleManager = @import("../browser/StyleManager.zig");
 const reflect = @import("../browser/reflect.zig");
 
 const Node = @import("Node.zig");
@@ -1332,43 +1331,53 @@ pub fn parentElement(self: *Element) ?*Element {
     return self._proto.parentElement();
 }
 
-/// Cache for visibility checks - re-exported from StyleManager for convenience.
-pub const VisibilityCache = StyleManager.VisibilityCache;
+/// Compatibility cache types retained for callers that batch semantic/input
+/// traversal. CSS values are no longer stored here; Stylo is queried directly
+/// so mutation invalidation cannot leave a stale handwritten cascade cache.
+pub const VisibilityCache = std.AutoHashMapUnmanaged(*Element, bool);
+pub const PointerEventsCache = std.AutoHashMapUnmanaged(*Element, bool);
 
-/// Cache for pointer-events checks - re-exported from StyleManager for convenience.
-pub const PointerEventsCache = StyleManager.PointerEventsCache;
-
-pub fn hasPointerEventsNone(self: *Element, cache: ?*PointerEventsCache, frame: *Frame) bool {
-    return frame._style_manager.hasPointerEventsNone(self, cache);
+/// Read a serialized computed property from Stylo using caller-owned storage.
+/// Layout and interaction code must consume the same cascade as CSSOM; it must
+/// not reparse inline declarations or consult a second CSS cascade.
+fn styloComputedProperty(self: *Element, property_name: []const u8, frame: *Frame) ?[]const u8 {
+    if (frame.styleEngine().prepareForLayout() != .ok) return null;
+    var output = frame.call_arena.alloc(u8, 4096) catch return null;
+    const node_id = frame.styleNodeId(self.asNode());
+    var result = frame.styleEngine().layoutProperty(node_id, property_name, output);
+    if (result.status == .output_buffer_too_small and result.bytes_written > output.len) {
+        output = frame.call_arena.alloc(u8, result.bytes_written) catch return null;
+        result = frame.styleEngine().layoutProperty(node_id, property_name, output);
+    }
+    if (!result.isOk()) return null;
+    return frame.call_arena.dupe(u8, output[0..result.bytes_written]) catch null;
 }
 
-pub fn checkVisibilityCached(self: *Element, cache: ?*VisibilityCache, frame: *Frame) bool {
-    return !frame._style_manager.isHidden(self, cache, .{});
+fn styloPropertyEquals(self: *Element, property_name: []const u8, expected: []const u8, frame: *Frame) bool {
+    const value = styloComputedProperty(self, property_name, frame) orelse return false;
+    return std.ascii.eqlIgnoreCase(std.mem.trim(u8, value, &std.ascii.whitespace), expected);
 }
 
-/// Layout geometry (getClientRects / getBoundingClientRect) must include
-/// `visibility:hidden` boxes; only `display:none` (and similar) zero them out.
-fn layoutVisibilityCache(frame: *Frame) *StyleManager.VisibilityCache {
-    return &frame._layout_visibility_cache;
+pub fn hasPointerEventsNone(self: *Element, _: ?*PointerEventsCache, frame: *Frame) bool {
+    // `pointer-events` is inherited, so Stylo's computed value already
+    // includes the complete ancestor cascade.
+    return styloPropertyEquals(self, "pointer-events", "none", frame);
+}
+
+pub fn checkVisibilityCached(self: *Element, _: ?*VisibilityCache, frame: *Frame) bool {
+    return !isHiddenForLayout(self, frame);
 }
 
 fn withLayoutResolveActive(frame: *Frame, comptime func: anytype, args: anytype) @TypeOf(@call(.auto, func, args)) {
     frame.finishTopLevelLayoutResolve();
-    frame._style_manager.prepareForLayout();
+    _ = frame.styleEngine().prepareForLayout();
     frame.beginLayoutResolve();
     defer frame.finishTopLevelLayoutResolve();
     return @call(.auto, func, args);
 }
 
 fn isHiddenForLayout(self: *Element, frame: *Frame) bool {
-    // Skip the visibility HashMap cache: SERP scripts call getBoundingClientRect
-    // from V8 DefaultWorker threads while the parser mutates the tree on the
-    // network thread; cache get/put then races and segfaults.
-    return frame._style_manager.isHidden(self, null, .{
-        .check_display = true,
-        .check_visibility = false,
-        .check_opacity = false,
-    });
+    return styloHidden(self, frame, .{ .check_display = true });
 }
 
 const CheckVisibilityOpts = struct {
@@ -1379,19 +1388,52 @@ const CheckVisibilityOpts = struct {
 };
 pub fn checkVisibility(self: *Element, opts_: ?CheckVisibilityOpts, frame: *Frame) bool {
     const opts = opts_ orelse CheckVisibilityOpts{};
-    return !frame._style_manager.isHidden(self, null, .{
+    return !styloHidden(self, frame, .{
+        .check_display = true,
         .check_opacity = opts.checkOpacity or opts.opacityProperty,
         .check_visibility = opts.visibilityProperty or opts.checkVisibilityCSS,
     });
 }
 
-fn getLayoutPropertyValue(self: *Element, property_name: []const u8, frame: *Frame) ?[]const u8 {
-    if (self.getStyle(frame)) |style| {
-        const decl = style.asCSSStyleDeclaration();
-        const value = decl.getPropertyValue(property_name, frame);
-        if (value.len > 0) return value;
+const StyloHiddenOptions = struct {
+    check_display: bool = false,
+    check_visibility: bool = false,
+    check_opacity: bool = false,
+};
+
+fn styloHidden(self: *Element, frame: *Frame, options: StyloHiddenOptions) bool {
+    var current: ?*Element = self;
+    var guard: u32 = 0;
+    while (current) |element| {
+        guard += 1;
+        if (guard > 128) return false;
+
+        if (options.check_display and styloPropertyEquals(element, "display", "none", frame)) {
+            return true;
+        }
+        if (options.check_opacity) {
+            if (styloComputedProperty(element, "opacity", frame)) |value| {
+                const opacity = std.fmt.parseFloat(f64, std.mem.trim(u8, value, &std.ascii.whitespace)) catch 1.0;
+                if (opacity <= 0.0) return true;
+            }
+        }
+        current = element.parentElement();
     }
-    return frame._style_manager.getLayoutProperty(self, property_name);
+
+    // Visibility is inherited. Query the target itself so an explicit
+    // `visibility: visible` override correctly re-enables a descendant.
+    if (options.check_visibility) {
+        if (styloPropertyEquals(self, "visibility", "hidden", frame) or
+            styloPropertyEquals(self, "visibility", "collapse", frame))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn getLayoutPropertyValue(self: *Element, property_name: []const u8, frame: *Frame) ?[]const u8 {
+    return styloComputedProperty(self, property_name, frame);
 }
 
 fn parseRotateDegrees(transform: []const u8) ?f64 {
@@ -2021,7 +2063,7 @@ fn flowOffsetAmongSiblingsForHitTest(self: *Element, frame: *Frame) struct { top
         if (s.is(Element)) |sib| {
             walked += 1;
             if (walked > max_siblings) break;
-            // Cheap display:none skip — avoid full StyleManager HashMap walks.
+            // Cheap display:none skip through Stylo's computed cascade.
             if (sib.isHiddenForLayout(frame)) {
                 sibling = s.nextSibling();
                 continue;
@@ -2171,11 +2213,7 @@ fn autoFlexItemWidth(self: *Element, frame: *Frame, parent_size: LayoutSize) ?f6
 }
 
 fn readLayoutPropertyRaw(self: *Element, frame: *Frame, property_name: []const u8) ?[]const u8 {
-    if (self.getStyle(frame)) |style| {
-        const value = style.asCSSStyleDeclaration().getPropertyValue(property_name, frame);
-        if (value.len > 0) return value;
-    }
-    return frame._style_manager.getLayoutProperty(self, property_name);
+    return styloComputedProperty(self, property_name, frame);
 }
 
 fn parseLayoutDimension(value: []const u8, parent_size: f64) ?f64 {

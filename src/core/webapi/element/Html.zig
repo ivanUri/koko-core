@@ -231,7 +231,7 @@ fn _getInnerText(self: *HtmlElement, writer: *std.Io.Writer, state: *innerTextSt
         switch (child._type) {
             .element => |e| switch (e._type) {
                 .html => |he| {
-                    if (state.frame._style_manager.hasDisplayNone(he.asElement())) {
+                    if (!he.asElement().checkVisibility(null, state.frame)) {
                         continue;
                     }
                     switch (he._type) {

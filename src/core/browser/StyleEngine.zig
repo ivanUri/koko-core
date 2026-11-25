@@ -28,14 +28,6 @@ pub const StyleEngine = struct {
         document = 5,
     };
 
-    /// Stylo is the only production authority.  The second policy is a
-    /// migration/testing mode for comparing against the legacy StyleManager;
-    /// it does not cause this adapter to compute or return fallback values.
-    pub const Policy = enum {
-        stylo_authoritative,
-        stylo_with_legacy_style_manager_differential_fallback,
-    };
-
     pub const Status = enum {
         ready,
         ok,
@@ -47,14 +39,12 @@ pub const StyleEngine = struct {
         invalid_argument,
         stale_generation,
         output_buffer_too_small,
-        legacy_style_manager_differential_fallback_required,
         closed,
     };
 
     pub const InitOptions = struct {
         frame_id: FrameId,
         bridge: ?*const AbiApi = null,
-        policy: Policy = .stylo_authoritative,
     };
 
     /// String queries write into caller-owned storage.  `bytes_written` is
@@ -89,7 +79,6 @@ pub const StyleEngine = struct {
 
     frame_id: FrameId,
     generation_value: Generation = 1,
-    policy: Policy,
     api: ?AbiApi = null,
     engine: ?*anyopaque = null,
     availability: Status,
@@ -98,7 +87,6 @@ pub const StyleEngine = struct {
     pub fn init(options: InitOptions) StyleEngine {
         var self = StyleEngine{
             .frame_id = options.frame_id,
-            .policy = options.policy,
             .availability = if (options.bridge == null) .bridge_unavailable else .ready,
         };
 
@@ -149,24 +137,9 @@ pub const StyleEngine = struct {
         return self.generation_value;
     }
 
-    pub fn policyOf(self: *const Self) Policy {
-        return self.policy;
-    }
-
     /// Reports bridge/lifetime availability, not the result of the last call.
     pub fn status(self: *const Self) Status {
         return if (!self.alive) .closed else self.availability;
-    }
-
-    /// This is a coordination signal for the existing StyleManager caller.
-    /// It is intentionally not a value-producing fallback.
-    pub fn differentialFallbackStatus(self: *const Self) Status {
-        if (self.policy == .stylo_with_legacy_style_manager_differential_fallback and
-            self.status() != .ready)
-        {
-            return .legacy_style_manager_differential_fallback_required;
-        }
-        return self.status();
     }
 
     pub fn invalidateStylesheets(self: *Self) Status {
@@ -427,14 +400,6 @@ test "StyleEngine reports unavailable without fabricated CSS values" {
     const result = engine.computedValue(1, "display", &output);
     try std.testing.expectEqual(StyleEngine.Status.bridge_unavailable, result.status);
     try std.testing.expectEqual(@as(usize, 0), result.bytes_written);
-    try std.testing.expectEqual(StyleEngine.Status.legacy_style_manager_differential_fallback_required, blk: {
-        var differential = StyleEngine.init(.{
-            .frame_id = 7,
-            .policy = .stylo_with_legacy_style_manager_differential_fallback,
-        });
-        defer differential.deinit();
-        break :blk differential.differentialFallbackStatus();
-    });
 }
 
 test "StyleEngine generation advances only for live invalidations" {

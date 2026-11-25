@@ -187,7 +187,7 @@ pub fn styleAddedCallback(self: *Style, frame: *Frame) !void {
     const owner_frame = self.asNode().ownerFrame(frame);
     // Main-document HTML parse: do not allocate StyleSheetList / CSSStyleSheet
     // mid-html5ever. After Google knitsail re-nav, ArrayList growth there
-    // SIGSEGV'd (Google Search → Bing). Mark StyleManager dirty; sheet is
+    // SIGSEGV'd (Google Search → Bing). Invalidate Stylo; the sheet is
     // created lazily on document.styleSheets / getSheet after parse.
     const mid_document_parse = owner_frame._document_parse_active and owner_frame._parse_mode == .document;
     if (mid_document_parse) {

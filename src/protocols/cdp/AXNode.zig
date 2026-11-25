@@ -1145,9 +1145,11 @@ fn isHidden(elt: *DOMNode.Element, frame: *Frame, cache: *DOMNode.Element.Visibi
         return true;
     }
 
-    // CSS display:none and visibility:hidden (both inherited from ancestors via
-    // style computation). Matches Chromium's AX tree which prunes both.
-    if (frame._style_manager.isHidden(elt, cache, .{ .check_visibility = true })) {
+    // CSS display:none and visibility:hidden are resolved by Stylo. Keep the
+    // cache parameter for the AX traversal API, but do not route CSS through
+    // the retired handwritten StyleManager cascade.
+    _ = cache;
+    if (!elt.checkVisibility(.{ .checkVisibilityCSS = true, .visibilityProperty = true }, frame)) {
         return true;
     }
 

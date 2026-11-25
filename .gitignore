@@ -16,6 +16,7 @@ zig-out
 /vendor/curl-impersonate/linux/lib.tgz
 koko.id
 /src/html5ever/target/
+/src/core/stylo/target/
 src/snapshot.bin
 *.bak
 *.bak/

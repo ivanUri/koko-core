@@ -21,7 +21,6 @@ const Factory = @import("Factory.zig");
 const Session = @import("Session.zig");
 const EventManager = @import("EventManager.zig");
 const ScriptManager = @import("ScriptManager.zig");
-const StyleManager = @import("StyleManager.zig");
 const StyleEngine = @import("StyleEngine.zig").StyleEngine;
 const Abi = @import("style_engine/abi.zig");
 
@@ -87,6 +86,32 @@ const IFrame = Element.Html.IFrame;
 const IFrameSandbox = @import("IFrameSandbox.zig");
 const Allocator = std.mem.Allocator;
 const IS_DEBUG = builtin.mode == .Debug;
+
+// Keep HTML's default presentation in the same CSS engine as author rules.
+// This is a UA-origin stylesheet, not a second cascade implementation. It is
+// intentionally small and limited to HTML rendering defaults that Koko needs
+// before layout; Stylo still parses, matches, cascades, and serializes it.
+const koko_user_agent_css =
+    "*:not(html, body, head, title, meta, link, style, script, template, slot, " ++
+    "area, base, col, embed, param, source, track) { display: block; }" ++
+    "html, body, div, dl, dt, dd, fieldset, figcaption, figure, footer, form, " ++
+    "h1, h2, h3, h4, h5, h6, header, hr, main, nav, ol, p, pre, section, ul, " ++
+    "article, aside, details, dialog, hgroup, menu, summary, table, tbody, " ++
+    "thead, tfoot, tr, td, th, caption, colgroup, option, select, canvas, " ++
+    "button, input, textarea, iframe, img, video, audio, object, embed, " ++
+    "blockquote, address { display: block; }" ++
+    "a, abbr, b, bdi, bdo, cite, code, dfn, em, i, kbd, label, mark, q, s, " ++
+    "samp, small, span, strong, sub, sup, time, u, var, wbr, br, font { display: inline; }" ++
+    "table { display: table; } tbody { display: table-row-group; } " ++
+    "thead { display: table-header-group; } tfoot { display: table-footer-group; } " ++
+    "tr { display: table-row; } td, th { display: table-cell; } " ++
+    "colgroup { display: table-column-group; } col { display: table-column; } " ++
+    "caption { display: table-caption; }" ++
+    "head, title, meta, link, style, script, template, base, area, col, " ++
+    "embed, param, source, track, [hidden], input[type=hidden i] { display: none !important; }" ++
+    "details:not([open]) > * { display: none !important; }" ++
+    "details:not([open]) > summary { display: block !important; }";
+const koko_user_agent_sheet_id = std.math.maxInt(u64);
 
 const StyloCStatus = i32;
 const StyloCSlice = extern struct {
@@ -267,9 +292,9 @@ pub const InputHit = struct {
 
 /// Optional bridge for a document-owned style engine.
 ///
-/// The current renderer remains StyleManager-backed.  A Stylo bridge can
-/// register these callbacks without owning or mirroring the DOM: node pointers
-/// are only invalidation subjects and the Zig DOM remains authoritative.
+/// Stylo can register these callbacks without owning or mirroring the DOM:
+/// node pointers are only invalidation subjects and the Zig DOM remains
+/// authoritative.
 /// Callbacks are deliberately synchronous and single-threaded.  A missing
 /// bridge is a supported configuration and must not change DOM behavior.
 pub const StyleEngineInvalidation = enum {
@@ -430,16 +455,14 @@ _cdp_poll_counter: u16 = 0,
 /// many small AppendText chunks (bitbucket.org ~591KB CSS → multi-GB RSS).
 _parser_text_cap: std.AutoHashMapUnmanaged(*CData, usize) = .empty,
 
-_style_manager: StyleManager,
-/// Per-frame Stylo owner. The bridge may be unavailable during staged rollout;
-/// the object still owns the generation/lifetime boundary for CSS invalidation.
+/// Per-frame Stylo owner and generation/lifetime boundary for CSS invalidation.
 _style_engine: StyleEngine,
-/// Optional Stylo-compatible lifecycle boundary.  StyleManager remains the
-/// active fallback when this is null.
+/// Optional integration hook for embedders that observe style lifecycle.
 _style_engine_hooks: ?StyleEngineHooks = null,
 _style_engine_document: ?*Document = null,
 _style_engine_generation: u64 = 0,
 _style_engine_active: bool = false,
+_stylo_prepared_generation: u64 = 0,
 _style_node_sequence: u32 = 1,
 _stylo_node_lookup: std.AutoHashMapUnmanaged(u32, *Node) = .empty,
 _script_manager: ScriptManager,
@@ -602,9 +625,7 @@ _element_layout_cache: std.AutoHashMapUnmanaged(usize, struct {
 }) = .empty,
 _layout_cache_dom_version: usize = 0,
 
-// Layout hot-path caches (visibility + document position). Invalidated via version on domChanged.
-_layout_visibility_cache: StyleManager.VisibilityCache = .empty,
-_layout_visibility_cache_version: usize = 0,
+// Layout hot-path cache (document position). Invalidated via version on domChanged.
 _layout_doc_position_cache: std.AutoHashMapUnmanaged(usize, f64) = .empty,
 // Image preload responses are keyed by URL + request credentials mode. The
 // eventual HTMLImageElement either subscribes to an in-flight preload or
@@ -663,7 +684,6 @@ pub fn init(self: *Frame, frame_id: u32, page: *Page, parent: ?*Frame) !void {
         ._factory = factory,
         ._pending_loads = 1, // always 1 for the ScriptManager
         ._type = if (parent == null) .root else .frame,
-        ._style_manager = undefined,
         ._style_engine = undefined,
         ._script_manager = undefined,
         ._event_manager = EventManager.init(arena, self),
@@ -714,9 +734,6 @@ pub fn init(self: *Frame, frame_id: u32, page: *Page, parent: ?*Frame) !void {
         try self.window._child_navigation.commitNavigation(self);
     }
     self._realm_has_window = true;
-
-    self._style_manager = try StyleManager.init(self);
-    errdefer self._style_manager.deinit();
 
     var stylo_bridge = styloBridgeApi(self);
     self._style_engine = StyleEngine.init(.{
@@ -778,9 +795,6 @@ fn beginStyleDocumentLifecycle(self: *Frame, document: *Document) void {
     self._style_engine_document = document;
     self._style_engine_active = true;
 
-    // A Frame reuses its StyleManager across navigations.  Mark the new
-    // document dirty before any style read can observe rules from the old one.
-    self._style_manager.sheetModified();
     _ = self._style_engine.invalidateStylesheets();
     if (self._style_engine_hooks) |hooks| {
         hooks.document_attached(hooks.context, document, self._style_engine_generation);
@@ -803,9 +817,7 @@ fn endStyleDocumentLifecycle(self: *Frame) void {
     self._stylo_node_lookup.clearRetainingCapacity();
 }
 
-/// Notify the optional engine after the Zig DOM has changed.  The fallback
-/// StyleManager is intentionally kept separate so installing no hook preserves
-/// its existing cache and stylesheet semantics.
+/// Notify Stylo after the authoritative Zig DOM has changed.
 pub fn invalidateStyleEngine(self: *Frame, kind: StyleEngineInvalidation, node: ?*Node) void {
     if (!self._style_engine_active or self._realm_state != .active) return;
     const document = self._style_engine_document orelse return;
@@ -828,7 +840,6 @@ pub fn invalidateStyleEngine(self: *Frame, kind: StyleEngineInvalidation, node: 
 }
 
 pub fn styleSheetChanged(self: *Frame, node: ?*Node) void {
-    self._style_manager.sheetModified();
     _ = self._style_engine.invalidateStylesheets();
     if (node) |changed| {
         // Stylesheet changes can affect arbitrary descendants.  The stylesheet
@@ -845,7 +856,6 @@ fn styleSheetSourceChanged(self: *Frame, node: *Node) void {
 }
 
 pub fn adoptedStyleSheetsChanged(self: *Frame) void {
-    self._style_manager.sheetModified();
     _ = self._style_engine.invalidateStylesheets();
     self.invalidateStyleEngine(.adopted_stylesheet, null);
 }
@@ -1183,6 +1193,23 @@ fn appendStyloStylesheetInput(
     });
 }
 
+fn appendStyloUserAgentStylesheet(
+    frame: *Frame,
+    inputs: *std.ArrayListUnmanaged(Abi.StylesheetInput),
+    scope_id: u64,
+) !void {
+    for (inputs.items) |input| {
+        if (input.sheet_id == koko_user_agent_sheet_id and input.scope_id == scope_id) return;
+    }
+    try inputs.append(frame.call_arena, .{
+        .sheet_id = koko_user_agent_sheet_id,
+        .scope_id = scope_id,
+        .origin = .user_agent,
+        .enabled = 1,
+        .css = .{ .ptr = koko_user_agent_css.ptr, .len = koko_user_agent_css.len },
+    });
+}
+
 fn appendStyloAdoptedStylesheets(
     frame: *Frame,
     inputs: *std.ArrayListUnmanaged(Abi.StylesheetInput),
@@ -1215,6 +1242,11 @@ fn styloPrepareForLayout(
     _: Abi.Generation,
 ) callconv(.c) Abi.StatusCode {
     const frame = styloFrame(user_data) orelse return Abi.status_invalid_argument;
+    // Stylesheet snapshots are immutable until an explicit stylesheet
+    // invalidation. Avoid reparsing the UA and author sheets for every
+    // getComputedStyle()/layout read in a stable generation.
+    const generation = frame._style_engine.generation();
+    if (frame._stylo_prepared_generation == generation) return Abi.status_ok;
     // Parser-time <style> callbacks intentionally defer CSSStyleSheet
     // allocation. Materialize those deferred sheets before taking the Stylo
     // snapshot so the first computed-style read sees the authoritative CSS.
@@ -1227,6 +1259,7 @@ fn styloPrepareForLayout(
     const sheets = frame.document.getStyleSheets(frame) catch return Abi.status_internal_error;
     var inputs: std.ArrayListUnmanaged(Abi.StylesheetInput) = .empty;
     defer inputs.deinit(frame.call_arena);
+    appendStyloUserAgentStylesheet(frame, &inputs, 0) catch return Abi.status_internal_error;
     for (sheets.items()) |sheet| {
         appendStyloStylesheetInput(frame, &inputs, sheet, 0) catch return Abi.status_internal_error;
     }
@@ -1246,11 +1279,14 @@ fn styloPrepareForLayout(
             }
         }
         const scope_id = frame.styleNodeId(shadow_root.asNode());
+        appendStyloUserAgentStylesheet(frame, &inputs, scope_id) catch return Abi.status_internal_error;
         appendStyloNativeStylesheets(frame, &inputs, shadow_root.scopedStyleSheets(), scope_id) catch return Abi.status_internal_error;
         appendStyloNativeStylesheets(frame, &inputs, shadow_root.adoptedStyleSheetsNative(), scope_id) catch return Abi.status_internal_error;
     }
     const ptr: [*c]const Abi.StylesheetInput = if (inputs.items.len == 0) null else inputs.items.ptr;
-    return styloMapStatus(koko_stylo_engine_replace_stylesheets(engine, ptr, inputs.items.len));
+    const status = styloMapStatus(koko_stylo_engine_replace_stylesheets(engine, ptr, inputs.items.len));
+    if (status == Abi.status_ok) frame._stylo_prepared_generation = frame._style_engine.generation();
+    return status;
 }
 
 fn styloComputedValue(
@@ -1318,7 +1354,8 @@ fn styloBridgeApi(frame: *Frame) StyleEngine.AbiApi {
         .computed_pseudo_value = styloPseudoComputedValue,
         .last_error = styloLastError,
         .custom_property = styloComputedValue,
-        .layout_property = null,
+        // Layout consumers use the same serialized computed values as CSSOM.
+        .layout_property = styloComputedValue,
         .visibility = null,
         .pointer_events = null,
     };
@@ -1849,8 +1886,6 @@ pub fn deinit(self: *Frame) void {
     }
 
     self._script_manager.deinit();
-    self._style_manager.deinit();
-
     page.releaseArena(self.call_arena);
 }
 
@@ -5134,7 +5169,6 @@ pub fn invalidateElementLayoutCache(self: *Frame) void {
     // domChanged avoids it because workers raced HTTP/parser on SERP.
     self._element_layout_cache.clearRetainingCapacity();
     self._layout_cache_dom_version = self.version;
-    self._style_manager.invalidateLayoutPropertyCache();
 }
 
 pub fn domChanged(self: *Frame) void {
@@ -5152,8 +5186,6 @@ pub fn domChangedForNode(self: *Frame, node: ?*Node) void {
     // worker threads raced HTTP/parser threads and segfaulted in metadata init
     // (Google SERP ~800KB hop). Lazy miss via version checks on read paths.
     self._layout_cache_dom_version = self.version;
-    self._layout_visibility_cache_version = self.version;
-    self._style_manager.invalidateLayoutPropertyCache();
     self.invalidateStyleEngine(.tree, node);
 
     self.scheduleIntersectionChecks();

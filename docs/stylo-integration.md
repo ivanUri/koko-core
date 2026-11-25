@@ -7,13 +7,18 @@ Zig responsibilities.
 
 ## Current branch status
 
-This branch has completed the build/ABI and lifecycle phase: the pinned Stylo
-bridge parses and stores stylesheet sets, synchronizes opaque node metadata,
-tracks invalidation generations, and links into the Koko executable. The
-callback-backed `TElement` traversal and computed-style flush are still gated;
-until that adapter is complete, computed-style reads report the explicit Stylo
-status and use Koko's differential legacy path. No fabricated Stylo values are
-returned, and the legacy path must be removed after cascade parity is proven.
+The Stylo bridge, callback-backed DOM adapter, CSSOM integration, scoped
+ShadowRoot styles, mutation invalidation, UA stylesheet, and teardown lifecycle
+are active on this branch. `getComputedStyle()`, layout-property reads,
+visibility, pointer-events, accessibility pruning, and rendered `innerText`
+now consume Stylo computed values. Computed-style failures return an empty CSSOM
+value plus an explicit diagnostic; no legacy value synthesis remains.
+
+The handwritten `StyleManager` parser, selector matcher, specificity/cascade,
+custom-property store, visibility resolver, pointer-events resolver, and layout
+property resolver were removed after the differential gate passed. CSSOM
+declaration parsing and stylesheet/rule object serialization remain because
+they are Web API object behavior, not a replacement cascade engine.
 
 ## Ownership contract
 
@@ -34,9 +39,10 @@ returned, and the legacy path must be removed after cascade parity is proven.
    `StyleManager` for differential validation.
 3. Flush Stylo computed values through `getComputedStyle()` and layout reads.
 4. Compare cascade, inheritance, custom properties, media queries, pseudo
-   elements, CSSOM mutation, and invalidation against Chromium/WPT fixtures.
+   elements, CSSOM mutation, UA defaults, shadow scopes, and invalidation
+   against Chromium fixtures.
 5. Remove the redundant handwritten cascade after parity and performance gates
-   pass. The old engine is not a permanent parallel implementation.
+   pass. Completed on this branch; the old engine is not retained at runtime.
 
 ## Safety constraints
 
@@ -53,3 +59,25 @@ integration must use an exact Stylo release or commit, a locked dependency
 graph, and an explicit Rust target mapping for every supported Zig target.
 Generated Cargo `target/` directories are build artifacts and must not be
 committed.
+
+## Validation and performance snapshot
+
+The bounded matrix passes for both Koko and Chromium: selector combinators,
+`!important`, custom properties, pseudo-elements, dynamic stylesheet mutation,
+inline mutation, UA defaults, shadow scopes, and navigation teardown. The Rust
+Stylo unit suite passes 5/5 tests. A WPT corpus/server is not present in this
+checkout, so the external WPT gate remains pending; the local runner and
+Chromium CDP adapters are available.
+
+Using the same bounded workload (`32` CSS rules, `32` nodes, one style read),
+the current cached-generation implementation measured approximately:
+
+| Workload | Before | Current | Delta |
+| --- | ---: | ---: | ---: |
+| Full style read | 38.3 ms | 10.0 ms | -73.9% |
+| Incremental style read | 7.2 ms | 10.2 ms | +41.7% |
+| Startup | 258.4 ms | 183.6 ms | -29.0% |
+| Ready RSS | 95.4 MiB | 96.7 MiB | +1.3 MiB |
+
+The measurements are single-process bounded samples; rerun the benchmark with
+more iterations before treating them as release-level performance numbers.

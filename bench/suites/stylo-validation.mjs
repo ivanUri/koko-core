@@ -57,6 +57,13 @@ const expected = {
     token: "17px",
     priority: "important",
   },
+  uaDefaults: {
+    divDisplay: "block",
+    spanDisplay: "inline",
+    hiddenDisplay: "none",
+    hiddenInputDisplay: "none",
+    hiddenCheckVisibility: false,
+  },
   shadowScope: {
     styleColor: "rgb(211, 221, 231)",
     adoptedColor: "rgb(241, 231, 221)",
@@ -64,7 +71,9 @@ const expected = {
     outsideColor: "rgb(0, 0, 0)",
     shadowRuleCount: 1,
     documentStyleSheetCount: 1,
-    engineStyleSheetCount: 3,
+    // One UA stylesheet is installed per Stylo scope (document + shadow),
+    // in addition to the document and two shadow author sheets.
+    engineStyleSheetCount: 5,
     engineLastError: "",
   },
 };
@@ -235,6 +244,25 @@ function matrixExpression() {
       token: value(inlineTarget, "--stylo-validation-inline-token"),
       priority: inlineTarget.style.getPropertyPriority("color"),
     };
+
+    const uaDiv = document.createElement("div");
+    const uaSpan = document.createElement("span");
+    const uaHidden = document.createElement("div");
+    uaHidden.hidden = true;
+    const uaHiddenInput = document.createElement("input");
+    uaHiddenInput.type = "hidden";
+    document.body.append(uaDiv, uaSpan, uaHidden, uaHiddenInput);
+    result.uaDefaults = {
+      divDisplay: value(uaDiv, "display"),
+      spanDisplay: value(uaSpan, "display"),
+      hiddenDisplay: value(uaHidden, "display"),
+      hiddenInputDisplay: value(uaHiddenInput, "display"),
+      hiddenCheckVisibility: uaHidden.checkVisibility(),
+    };
+    uaDiv.remove();
+    uaSpan.remove();
+    uaHidden.remove();
+    uaHiddenInput.remove();
 
     const shadowHost = document.createElement("div");
     shadowHost.id = "stylo-validation-shadow-host";

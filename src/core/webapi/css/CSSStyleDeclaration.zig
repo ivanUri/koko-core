@@ -21,7 +21,6 @@ const Frame = @import("../../browser/Frame.zig");
 const Element = @import("../../dom/Element.zig");
 const CSSRule = @import("CSSRule.zig");
 const ComputedStyleProps = @import("computed_style_properties.zig");
-const ClientRectsIntelligent = @import("../../../runtime/profile/ClientRectsIntelligent.zig");
 
 const known_property_map: std.StaticStringMap(void) = blk: {
     var entries: [ComputedStyleProps.names.len]struct { []const u8, void } = undefined;
@@ -159,17 +158,6 @@ fn isColorProperty(name: String) bool {
         std.mem.eql(u8, raw, "outline-color");
 }
 
-fn getInlineStyleValue(element: *Element, property_name: []const u8) ?[]const u8 {
-    const attr_value = element.getAttributeSafe(comptime .wrap("style")) orelse return null;
-    var it = CssParser.parseDeclarationsList(attr_value);
-    while (it.next()) |declaration| {
-        if (std.ascii.eqlIgnoreCase(declaration.name, property_name)) {
-            return declaration.value;
-        }
-    }
-    return null;
-}
-
 fn queryStylo(self: *const CSSStyleDeclaration, name: String, style_frame: *Frame) StyloRead {
     const element = self._element orelse return .{ .status = .invalid_argument };
     const property = name.str();
@@ -203,8 +191,8 @@ fn queryStylo(self: *const CSSStyleDeclaration, name: String, style_frame: *Fram
     return .{ .status = .ok, .value = value };
 }
 
-fn reportStyloFallback(operation: []const u8, property: []const u8, status: StyleEngine.Status) void {
-    log.debug(.not_implemented, "Stylo CSS differential fallback", .{
+fn reportStyloComputedReadFailure(operation: []const u8, property: []const u8, status: StyleEngine.Status) void {
+    log.debug(.not_implemented, "Stylo computed-style query failed", .{
         .operation = operation,
         .property = property,
         .status = @tagName(status),
@@ -222,67 +210,12 @@ fn invalidateInlineStyle(self: *const CSSStyleDeclaration, style_frame: *Frame) 
 fn getComputedPropertyValue(self: *const CSSStyleDeclaration, name: String, style_frame: *Frame) []const u8 {
     const stylo = queryStylo(self, name, style_frame);
     if (stylo.value) |value| return value;
-    reportStyloFallback("computed-read", name.str(), stylo.status);
-    return getLegacyComputedPropertyValue(self, name, style_frame);
-}
-
-fn getLegacyComputedPropertyValue(self: *const CSSStyleDeclaration, name: String, style_frame: *Frame) []const u8 {
-    const raw = name.str();
-    if (raw.len > 2 and raw[0] == '-' and raw[1] == '-') {
-        if (self._element) |element| {
-            if (style_frame._style_manager.getCustomProperty(element, raw)) |custom| {
-                return custom;
-            }
-        }
-        return "";
-    }
-    if (self._element) |element| {
-        if (name.eql(comptime .wrap("display"))) {
-            if (style_frame._style_manager.hasDisplayNone(element)) return "none";
-        } else if (name.eql(comptime .wrap("visibility"))) {
-            if (style_frame._style_manager.hasVisibilityHiddenInherited(element)) return "hidden";
-        }
-        if (getInlineStyleValue(element, raw)) |inline_value| {
-            return resolveColorPropertyValue(name, inline_value);
-        }
-        if (name.eql(comptime .wrap("font-family"))) {
-            if (getInlineSystemFontFamily(element)) |family| return family;
-        }
-        if (name.eql(comptime .wrap("block-size")) or name.eql(comptime .wrap("inline-size"))) {
-            if (ClientRectsIntelligent.lookupEmojiLogicalSize(element, style_frame)) |dims| {
-                const logical = if (name.eql(comptime .wrap("block-size"))) dims.block_size else dims.inline_size;
-                // Chrome serializes logical emoji sizes at ~6 decimal places.
-                const value = @round(logical * 1_000_000.0) / 1_000_000.0;
-                const formatted = std.fmt.bufPrint(&style_frame.buf, "{d}px", .{value}) catch return "auto";
-                return formatted;
-            }
-        }
-    }
-    return resolveColorPropertyValue(name, getDefaultPropertyValue(self, name));
-}
-
-fn getInlineSystemFontFamily(element: *Element) ?[]const u8 {
-    const attr_value = element.getAttributeSafe(comptime .wrap("style")) orelse return null;
-    var it = CssParser.parseDeclarationsList(attr_value);
-    while (it.next()) |declaration| {
-        if (!std.ascii.eqlIgnoreCase(declaration.name, "font")) continue;
-        var value = std.mem.trim(u8, declaration.value, " ");
-        if (std.mem.endsWith(u8, value, "!important")) {
-            value = std.mem.trimEnd(u8, value[0 .. value.len - "!important".len], " ");
-        }
-        if (resolveSystemFontKeyword(value)) |family| return family;
-    }
-    return null;
-}
-
-fn resolveSystemFontKeyword(value: []const u8) ?[]const u8 {
-    const keywords = [_][]const u8{
-        "caption", "icon", "menu", "message-box", "small-caption", "status-bar",
-    };
-    for (keywords) |kw| {
-        if (std.mem.eql(u8, value, kw)) return "Arial";
-    }
-    return null;
+    reportStyloComputedReadFailure("computed-read", name.str(), stylo.status);
+    // Stylo is authoritative for computed style. Do not synthesize a value
+    // from an alternate CSS implementation or element defaults when a property is
+    // unsupported/invalid; CSSOM represents that case as an empty value and
+    // the explicit status remains available through the diagnostics path.
+    return "";
 }
 
 pub fn getPropertyPriority(self: *const CSSStyleDeclaration, property_name: []const u8, frame: *Frame) []const u8 {
@@ -1002,162 +935,6 @@ fn isLengthProperty(name: []const u8) bool {
     });
 
     return length_properties.has(name);
-}
-
-fn getDefaultPropertyValue(self: *const CSSStyleDeclaration, name: String) []const u8 {
-    const element = self._element orelse return "";
-
-    if (name.eql(comptime .wrap("font-family"))) {
-        return getDefaultFontFamily(element);
-    }
-    if (name.eql(comptime .wrap("font-size"))) {
-        return getDefaultFontSize(element);
-    }
-    if (name.eql(comptime .wrap("font-style"))) {
-        return "normal";
-    }
-    if (name.eql(comptime .wrap("font-weight"))) {
-        return getDefaultFontWeight(element);
-    }
-    if (name.eql(comptime .wrap("font-variant"))) {
-        return "normal";
-    }
-    if (std.mem.eql(u8, name.str(), "line-height")) {
-        return "normal";
-    }
-    if (std.mem.eql(u8, name.str(), "letter-spacing")) {
-        return "normal";
-    }
-    if (std.mem.eql(u8, name.str(), "word-spacing")) {
-        return "0px";
-    }
-    if (name.eql(comptime .wrap("text-align"))) {
-        return "start";
-    }
-    if (name.eql(comptime .wrap("text-indent"))) {
-        return "0px";
-    }
-    if (name.eql(comptime .wrap("white-space"))) {
-        return "normal";
-    }
-    if (name.eql(comptime .wrap("block-size"))) {
-        return getDefaultBlockSize(element);
-    }
-    if (name.eql(comptime .wrap("inline-size"))) {
-        return getDefaultInlineSize(element);
-    }
-
-    switch (name.len) {
-        5 => {
-            if (name.eql(comptime .wrap("color"))) {
-                return getDefaultColor(element);
-            }
-        },
-        7 => {
-            if (name.eql(comptime .wrap("opacity"))) {
-                return "1";
-            }
-            if (name.eql(comptime .wrap("display"))) {
-                return getDefaultDisplay(element);
-            }
-        },
-        10 => {
-            if (name.eql(comptime .wrap("visibility"))) {
-                return "visible";
-            }
-        },
-        16 => {
-            if (name.eqlSlice("background-color")) {
-                // transparent
-                return "rgba(0, 0, 0, 0)";
-            }
-        },
-        else => {},
-    }
-    return "";
-}
-
-fn getDefaultDisplay(element: *const Element) []const u8 {
-    switch (element._type) {
-        .html => |html| {
-            return switch (html._type) {
-                .anchor, .br, .span, .label, .time, .font, .mod, .quote => "inline",
-                .body, .div, .dl, .p, .heading, .form, .button, .canvas, .details, .dialog, .embed, .head, .html, .hr, .iframe, .img, .input, .li, .link, .meta, .ol, .option, .script, .select, .slot, .style, .template, .textarea, .title, .ul, .media, .area, .base, .datalist, .directory, .fieldset, .frameset, .legend, .map, .marquee, .meter, .object, .optgroup, .output, .param, .picture, .pre, .progress, .source, .table, .table_caption, .table_cell, .table_col, .table_row, .table_section, .track => "block",
-                .generic, .custom, .unknown, .data => blk: {
-                    const tag = element.getTagNameLower();
-                    if (isInlineTag(tag)) break :blk "inline";
-                    break :blk "block";
-                },
-            };
-        },
-        .svg => return "inline",
-    }
-}
-
-fn getDefaultFontFamily(element: *const Element) []const u8 {
-    _ = element;
-    return "Helvetica Neue";
-}
-
-fn getDefaultFontSize(element: *const Element) []const u8 {
-    _ = element;
-    return "16px";
-}
-
-fn getDefaultFontWeight(element: *const Element) []const u8 {
-    switch (element._type) {
-        .html => |html| {
-            return switch (html._type) {
-                .heading, .button => "700",
-                else => "400",
-            };
-        },
-        .svg => return "400",
-    }
-}
-
-fn getDefaultBlockSize(element: *const Element) []const u8 {
-    const display = getDefaultDisplay(element);
-    if (std.mem.eql(u8, display, "inline")) {
-        return "auto";
-    }
-    return "auto";
-}
-
-fn getDefaultInlineSize(element: *const Element) []const u8 {
-    const display = getDefaultDisplay(element);
-    if (std.mem.eql(u8, display, "inline")) {
-        return "auto";
-    }
-    return "auto";
-}
-
-fn isInlineTag(tag_name: []const u8) bool {
-    const inline_tags = [_][]const u8{
-        "abbr",  "b",    "bdi",    "bdo",  "cite", "code", "dfn",
-        "em",    "i",    "kbd",    "mark", "q",    "s",    "samp",
-        "small", "span", "strong", "sub",  "sup",  "time", "u",
-        "var",   "wbr",
-    };
-
-    for (inline_tags) |inline_tag| {
-        if (std.mem.eql(u8, tag_name, inline_tag)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-fn getDefaultColor(element: *const Element) []const u8 {
-    switch (element._type) {
-        .html => |html| {
-            return switch (html._type) {
-                .anchor => "rgb(0, 0, 238)", // blue
-                else => "rgb(0, 0, 0)",
-            };
-        },
-        .svg => return "rgb(0, 0, 0)",
-    }
 }
 
 /// Resolve CSS system colors to realistic **macOS light / Chrome-on-Mac** values.
