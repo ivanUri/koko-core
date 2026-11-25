@@ -171,6 +171,11 @@ pub fn getOwnerRule(self: *const CSSStyleSheet) ?*CSSRule {
     return self._owner_rule;
 }
 
+fn attachParentStyleSheet(self: *CSSStyleSheet, rule: *CSSRule, frame: *Frame) !void {
+    _ = frame;
+    rule.setParentStyleSheet(self);
+}
+
 /// Return the current stylesheet source for the Stylo bridge. Author sheets
 /// owned by a <style> element use the authoritative text node; constructed
 /// CSSOM sheets are serialized from their CSSRuleList.
@@ -209,22 +214,9 @@ fn refreshStyloSource(self: *CSSStyleSheet, frame: *Frame) !void {
     self._stylo_source = try frame.dupeString(output.items);
 }
 
-/// Map an at-rule source string to a CSSRule type tag for placeholder entries.
-/// Full at-rule CSSOM objects (CSSMediaRule, etc.) are not implemented yet; we
-/// still need stable cssRules indices so CSS-in-JS insertRule/deleteRule pairs
-/// (BBC/Next, Expo/Reanimated, styled-jsx) do not throw IndexSizeError.
-fn placeholderTypeForAtRule(rule: []const u8) CSSRule.Type {
-    const trimmed = std.mem.trim(u8, rule, &std.ascii.whitespace);
-    if (std.ascii.startsWithIgnoreCase(trimmed, "@media")) return .{ .media = {} };
-    if (std.ascii.startsWithIgnoreCase(trimmed, "@keyframes") or std.ascii.startsWithIgnoreCase(trimmed, "@-webkit-keyframes")) return .{ .keyframes = {} };
-    if (std.ascii.startsWithIgnoreCase(trimmed, "@font-face")) return .{ .font_face = {} };
-    if (std.ascii.startsWithIgnoreCase(trimmed, "@import")) return .{ .import = {} };
-    if (std.ascii.startsWithIgnoreCase(trimmed, "@supports")) return .{ .supports = {} };
-    if (std.ascii.startsWithIgnoreCase(trimmed, "@charset")) return .{ .charset = {} };
-    if (std.ascii.startsWithIgnoreCase(trimmed, "@namespace")) return .{ .namespace = {} };
-    if (std.ascii.startsWithIgnoreCase(trimmed, "@counter-style")) return .{ .counter_style = {} };
-    // @layer, @container, @property, @starting-style, etc. — keep a neutral slot.
-    return .{ .supports = {} };
+pub fn notifyRuleMutation(self: *CSSStyleSheet, frame: *Frame) !void {
+    try self.refreshStyloSource(frame);
+    notifyStyleSheetMutation(self, "groupingRuleMutation", frame);
 }
 
 fn validateInsertIndex(requested_index: u32, length: u32) !u32 {
@@ -232,12 +224,12 @@ fn validateInsertIndex(requested_index: u32, length: u32) !u32 {
     return requested_index;
 }
 
-fn insertPlaceholderAtRule(self: *CSSStyleSheet, rule: []const u8, requested_index: u32, frame: *Frame) !u32 {
-    log.debug(.not_implemented, "CSSStyleSheet.insertRule at-rule placeholder", .{});
+fn insertAtRule(self: *CSSStyleSheet, rule: []const u8, requested_index: u32, frame: *Frame) !u32 {
     const rules = try self.getCssRules(frame);
     const index = try validateInsertIndex(requested_index, rules.length());
-    const placeholder = try CSSRule.initRaw(placeholderTypeForAtRule(rule), rule, frame);
-    try rules.insert(index, placeholder, frame);
+    const at_rule = try CSSRule.initAtRule(rule, frame);
+    try rules.insert(index, at_rule, frame);
+    try self.attachParentStyleSheet(at_rule, frame);
     try self.refreshStyloSource(frame);
     notifyStyleSheetMutation(self, "insertRule", frame);
     return index;
@@ -251,7 +243,7 @@ pub fn insertRule(self: *CSSStyleSheet, rule: []const u8, maybe_index: ?u32, fra
             // Previously returned requested_index without storing a rule, which
             // left cssRules.length short and made deleteRule(index) throw
             // IndexSizeError (seen on www.bbc.com/news during Next hydration).
-            return self.insertPlaceholderAtRule(rule, requested_index, frame);
+            return self.insertAtRule(rule, requested_index, frame);
         }
         return error.SyntaxError;
     };
@@ -268,6 +260,7 @@ pub fn insertRule(self: *CSSStyleSheet, rule: []const u8, maybe_index: ?u32, fra
     const rules = try self.getCssRules(frame);
     const index = try validateInsertIndex(requested_index, rules.length());
     try rules.insert(index, style_rule._proto, frame);
+    try self.attachParentStyleSheet(style_rule._proto, frame);
     try self.refreshStyloSource(frame);
 
     notifyStyleSheetMutation(self, "insertRule", frame);
@@ -298,11 +291,24 @@ pub fn addRule(
     const requested_index = maybe_index orelse rules.length();
     const index = try validateInsertIndex(requested_index, rules.length());
 
+    // The legacy API accepts an at-rule selector and a complete nested rule
+    // as its style argument.  Chromium serializes addRule("@media ...",
+    // "selector { ... }") as one CSSMediaRule rather than a CSSStyleRule
+    // whose selector happens to begin with '@'.
+    const trimmed_selector = std.mem.trim(u8, selector, &std.ascii.whitespace);
+    if (std.mem.startsWith(u8, trimmed_selector, "@")) {
+        var source = std.Io.Writer.Allocating.init(frame.call_arena);
+        try source.writer.print("{s} {{ {s} }}", .{ trimmed_selector, style_text });
+        _ = try insertAtRule(self, source.written(), index, frame);
+        return -1;
+    }
+
     const style_rule = try CSSStyleRule.init(frame);
     try style_rule.setSelectorText(selector, frame);
     const style_props = try style_rule.getStyle(frame);
     try style_props.asCSSStyleDeclaration().setCssText(style_text, frame);
     try rules.insert(index, style_rule._proto, frame);
+    try self.attachParentStyleSheet(style_rule._proto, frame);
     try self.refreshStyloSource(frame);
     notifyStyleSheetMutation(self, "addRule", frame);
     return -1;
@@ -334,13 +340,15 @@ pub fn replaceSync(self: *CSSStyleSheet, text: []const u8, frame: *Frame) CSSErr
                 try style.setCssText(parsed_rule.block, frame);
 
                 try rules.insert(index, style_rule._proto, frame);
+                try self.attachParentStyleSheet(style_rule._proto, frame);
                 index += 1;
             },
             .at_rule => |at_text| {
                 // Keep cssRules length aligned with real browsers so callers that
                 // index into sheets (or round-trip insertRule/deleteRule) work.
-                const placeholder = try CSSRule.initRaw(placeholderTypeForAtRule(at_text), at_text, frame);
-                try rules.insert(index, placeholder, frame);
+                const at_rule = try CSSRule.initAtRule(at_text, frame);
+                try rules.insert(index, at_rule, frame);
+                try self.attachParentStyleSheet(at_rule, frame);
                 index += 1;
             },
         }

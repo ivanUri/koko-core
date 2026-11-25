@@ -14,11 +14,11 @@ visibility, pointer-events, accessibility pruning, and rendered `innerText`
 now consume Stylo computed values. Computed-style failures return an empty CSSOM
 value plus an explicit diagnostic; no legacy value synthesis remains.
 
-The handwritten `StyleManager` parser, selector matcher, specificity/cascade,
-custom-property store, visibility resolver, pointer-events resolver, and layout
-property resolver were removed after the differential gate passed. CSSOM
-declaration parsing and stylesheet/rule object serialization remain because
-they are Web API object behavior, not a replacement cascade engine.
+Stylo is the runtime source for computed style and the differential gate covers
+the legacy cascade paths. The legacy `StyleManager` is not yet fully removable:
+some UA/layout/actionability call sites still need migration. CSSOM declaration
+parsing and stylesheet/rule object serialization remain because they are Web API
+object behavior, not a replacement cascade engine.
 
 ## Ownership contract
 
@@ -42,7 +42,8 @@ they are Web API object behavior, not a replacement cascade engine.
    elements, CSSOM mutation, UA defaults, shadow scopes, and invalidation
    against Chromium fixtures.
 5. Remove the redundant handwritten cascade after parity and performance gates
-   pass. Completed on this branch; the old engine is not retained at runtime.
+   pass. The remaining removal is gated on migrating the last layout,
+   visibility, pointer-events, and UA-style call sites.
 
 ## Safety constraints
 
@@ -92,9 +93,20 @@ now pass the focused CSSOM cases that were previously failing:
   names/codes for `HierarchyRequestError`.
 - `CSSStyleSheet`: 17/17 subtests pass, including legacy `addRule()` /
   `removeRule()`, `rules` alias identity, out-of-range index exceptions, and
-  empty-rule serialization. `CSSMediaRule` is currently exposed as the
-  grouping-rule compatibility alias; runtime CSS rule subtype objects remain
-  a follow-up item.
+  empty-rule serialization.
+- `CSSStyleRule`: 10/10; CSSRule constants, `[PutForwards=cssText]`,
+  `SameObject` style identity, and typed `parentStyleSheet` pass.
+- `CSSConditionRule`: 1/1; `CSSMediaRule` now has the runtime prototype chain
+  `CSSMediaRule → CSSConditionRule → CSSRule`.
+- `CSSGroupingRule-cssRules`: 1/1; grouping `cssRules` now returns one live
+  `CSSRuleList` object instead of a newly allocated JavaScript array.
+- `CSSGroupingRule-insertRule-computed`: 1/1; nested insert/delete now
+  invalidates the owning stylesheet and recomputes Stylo values.
+- `serialize-media-rule`: 12/12; canonical media condition and nested-rule
+  serialization pass.
+- `MediaList-parsing`: 11/13. The two remaining failures are DOMException
+  construction for `NotFoundError`; `MediaList.html` also exposes a V8
+  DOMString null-setter edge case that remains tracked separately.
 - `style-set-cssText`: stylesheet lookup and initial declaration pass; invalid
   value filtering still needs work.
 
@@ -120,5 +132,8 @@ the current cached-generation implementation measured approximately:
 | Startup | 258.4 ms | 183.6 ms | -29.0% |
 | Ready RSS | 95.4 MiB | 96.7 MiB | +1.3 MiB |
 
-The measurements are single-process bounded samples; rerun the benchmark with
-more iterations before treating them as release-level performance numbers.
+The latest one-iteration differential benchmark report is
+`bench-results/stylo/1795587825722.json`; all five Koko and five Chromium
+observations passed. These measurements are single-process bounded samples;
+rerun with more iterations before treating them as release-level performance
+numbers.
