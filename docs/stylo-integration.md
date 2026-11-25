@@ -14,11 +14,11 @@ visibility, pointer-events, accessibility pruning, and rendered `innerText`
 now consume Stylo computed values. Computed-style failures return an empty CSSOM
 value plus an explicit diagnostic; no legacy value synthesis remains.
 
-Stylo is the runtime source for computed style and the differential gate covers
-the legacy cascade paths. The legacy `StyleManager` is not yet fully removable:
-some UA/layout/actionability call sites still need migration. CSSOM declaration
-parsing and stylesheet/rule object serialization remain because they are Web API
-object behavior, not a replacement cascade engine.
+Stylo is the runtime source for computed style, layout-property reads,
+visibility, pointer-events, and actionability. The handwritten cascade manager
+is no longer a runtime dependency on this branch. CSSOM declaration parsing and
+stylesheet/rule object serialization remain because they are Web API object
+behavior, not a replacement cascade engine.
 
 ## Ownership contract
 
