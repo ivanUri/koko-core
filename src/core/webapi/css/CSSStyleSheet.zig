@@ -227,21 +227,15 @@ fn placeholderTypeForAtRule(rule: []const u8) CSSRule.Type {
     return .{ .supports = {} };
 }
 
-fn clampInsertIndex(requested_index: u32, length: u32) u32 {
-    // Per spec, index > length should throw IndexSizeError. Because we still
-    // have incomplete at-rule support and historical length skew, clamp to tail.
-    // See #2214 (and the sibling #1970 / #1972 tolerance for at-rules).
-    if (requested_index > length) {
-        log.debug(.not_implemented, "insertRule clamped index", .{});
-        return length;
-    }
+fn validateInsertIndex(requested_index: u32, length: u32) !u32 {
+    if (requested_index > length) return error.IndexSizeError;
     return requested_index;
 }
 
 fn insertPlaceholderAtRule(self: *CSSStyleSheet, rule: []const u8, requested_index: u32, frame: *Frame) !u32 {
     log.debug(.not_implemented, "CSSStyleSheet.insertRule at-rule placeholder", .{});
     const rules = try self.getCssRules(frame);
-    const index = clampInsertIndex(requested_index, rules.length());
+    const index = try validateInsertIndex(requested_index, rules.length());
     const placeholder = try CSSRule.initRaw(placeholderTypeForAtRule(rule), rule, frame);
     try rules.insert(index, placeholder, frame);
     try self.refreshStyloSource(frame);
@@ -272,7 +266,7 @@ pub fn insertRule(self: *CSSStyleSheet, rule: []const u8, maybe_index: ?u32, fra
     try style.setCssText(parsed_rule.block, frame);
 
     const rules = try self.getCssRules(frame);
-    const index = clampInsertIndex(requested_index, rules.length());
+    const index = try validateInsertIndex(requested_index, rules.length());
     try rules.insert(index, style_rule._proto, frame);
     try self.refreshStyloSource(frame);
 
@@ -283,16 +277,39 @@ pub fn insertRule(self: *CSSStyleSheet, rule: []const u8, maybe_index: ?u32, fra
 
 pub fn deleteRule(self: *CSSStyleSheet, index: u32, frame: *Frame) !void {
     const rules = try self.getCssRules(frame);
-    // Defensive: legacy sheets (or mixed insert paths) may still have index skew.
-    // Prefer no-op over IndexSizeError so CSS-in-JS cleanup does not crash the page.
-    if (index >= rules.length()) {
-        log.debug(.not_implemented, "deleteRule no-op out-of-range index", .{});
-        return;
-    }
     try rules.remove(index);
     try self.refreshStyloSource(frame);
 
     notifyStyleSheetMutation(self, "deleteRule", frame);
+}
+
+/// Legacy CSSOM alias for insertRule(). The historical API returns -1 on
+/// success and defaults the index to the current rule-list length.
+pub fn addRule(
+    self: *CSSStyleSheet,
+    selector_: ?[]const u8,
+    style_: ?[]const u8,
+    maybe_index: ?u32,
+    frame: *Frame,
+) !i32 {
+    const selector = selector_ orelse "undefined";
+    const style_text = style_ orelse "";
+    const rules = try self.getCssRules(frame);
+    const requested_index = maybe_index orelse rules.length();
+    const index = try validateInsertIndex(requested_index, rules.length());
+
+    const style_rule = try CSSStyleRule.init(frame);
+    try style_rule.setSelectorText(selector, frame);
+    const style_props = try style_rule.getStyle(frame);
+    try style_props.asCSSStyleDeclaration().setCssText(style_text, frame);
+    try rules.insert(index, style_rule._proto, frame);
+    try self.refreshStyloSource(frame);
+    notifyStyleSheetMutation(self, "addRule", frame);
+    return -1;
+}
+
+pub fn removeRule(self: *CSSStyleSheet, maybe_index: ?u32, frame: *Frame) !void {
+    try self.deleteRule(maybe_index orelse 0, frame);
 }
 
 pub fn replace(self: *CSSStyleSheet, text: []const u8, frame: *Frame) CSSError!js.Promise {
@@ -348,9 +365,12 @@ pub const JsApi = struct {
     pub const title = bridge.accessor(CSSStyleSheet.getTitle, null, .{});
     pub const disabled = bridge.accessor(CSSStyleSheet.getDisabled, CSSStyleSheet.setDisabled, .{});
     pub const cssRules = bridge.accessor(CSSStyleSheet.getCssRules, null, .{});
+    pub const rules = bridge.accessor(CSSStyleSheet.getCssRules, null, .{});
     pub const ownerRule = bridge.accessor(CSSStyleSheet.getOwnerRule, null, .{});
     pub const insertRule = bridge.function(CSSStyleSheet.insertRule, .{ .dom_exception = true });
     pub const deleteRule = bridge.function(CSSStyleSheet.deleteRule, .{ .dom_exception = true });
+    pub const addRule = bridge.function(CSSStyleSheet.addRule, .{ .dom_exception = true });
+    pub const removeRule = bridge.function(CSSStyleSheet.removeRule, .{ .dom_exception = true });
     pub const replace = bridge.function(CSSStyleSheet.replace, .{});
     pub const replaceSync = bridge.function(CSSStyleSheet.replaceSync, .{});
 };

@@ -168,6 +168,10 @@ pub const JsApi = struct {
 
     pub const Meta = struct {
         pub const name = "CSSRule";
+        // The current rule wrapper owns the grouping-rule surface used by
+        // CSSMediaRule (cssRules/insertRule). Keep the legacy interface name
+        // available until the rule list gains runtime subtype objects.
+        pub const constructor_alias = "CSSMediaRule";
         pub const prototype_chain = bridge.prototypeChain();
         pub var class_id: bridge.ClassId = undefined;
     };

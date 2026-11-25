@@ -85,14 +85,16 @@ A sparse WPT checkout at Stylo revision `0ab78ce9` was used to run a curated
 12-file CSS subset through Koko's CLI fetch path (the Go CDP runner currently
 checks immediately after `Page.navigate` and races external `testharness.js`).
 The pre-CSSOM-fix aggregate was 5/12. Targeted reruns after the current patch
-now pass the two focused CSSOM cases that were previously failing:
+now pass the focused CSSOM cases that were previously failing:
 
 - `inline-style-001`: 5/5 subtests pass, including `margin` shorthand reads.
 - `CSSGroupingRule-insertRule`: 7/7 subtests pass, including DOMException
   names/codes for `HierarchyRequestError`.
-- `CSSStyleSheet`: 6/17 subtests pass; stylesheet registration and initial
-  `cssRules` behavior pass. Remaining failures cover legacy `addRule()` /
-  `removeRule()`, CSSRuleList same-object identity, and index semantics.
+- `CSSStyleSheet`: 17/17 subtests pass, including legacy `addRule()` /
+  `removeRule()`, `rules` alias identity, out-of-range index exceptions, and
+  empty-rule serialization. `CSSMediaRule` is currently exposed as the
+  grouping-rule compatibility alias; runtime CSS rule subtype objects remain
+  a follow-up item.
 - `style-set-cssText`: stylesheet lookup and initial declaration pass; invalid
   value filtering still needs work.
 
