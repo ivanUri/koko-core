@@ -36,6 +36,10 @@ pub fn init(element: *Element, frame: *Frame) !*StylePropertyMapReadOnly {
 }
 pub fn get(self: *StylePropertyMapReadOnly, property_name: []const u8, frame: *Frame) !?*CSSUnitValue {
     const owner = self._element.asNode().ownerFrame(frame);
+    // Typed OM is a style read, not a layout read. Prepare Stylo's cascade
+    // snapshot here so computedStyleMap() observes stylesheet rules without
+    // forcing Taffy/Parley layout.
+    _ = owner.styleEngine().prepareForLayout();
     const declaration = try CSSStyleDeclaration.init(self._element, true, owner, null);
     const value = std.mem.trim(u8, declaration.getPropertyValue(property_name, owner), &std.ascii.whitespace);
     var end: usize = 0;

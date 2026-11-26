@@ -354,6 +354,16 @@ pub const BUF_SIZE = 1024;
 
 const Frame = @This();
 
+/// Document-scoped CSS.registerProperty state. The browsing context owns this
+/// registry so CSS namespace wrappers and computed-style reads observe the
+/// same authoritative state even when V8 creates different wrapper objects.
+pub const RegisteredProperty = struct {
+    name: []const u8,
+    syntax: []const u8,
+    inherits: bool,
+    initial_value: []const u8,
+};
+
 const QueuedElementLoad = struct {
     element: *Element.Html,
     task_owner: RealmLifecycleKernel.TaskOwner,
@@ -554,6 +564,7 @@ _stylo_prepared_stylesheet_generation: u64 = 0,
 _stylo_adopted_stylesheet_signature: u64 = 0,
 _style_node_sequence: u32 = 1,
 _stylo_node_lookup: std.AutoHashMapUnmanaged(u32, *Node) = .empty,
+_registered_properties: std.ArrayListUnmanaged(RegisteredProperty) = .empty,
 _script_manager: ScriptManager,
 
 // List of active live ranges (for mutation updates per DOM spec)
@@ -862,6 +873,20 @@ pub fn init(self: *Frame, frame_id: u32, page: *Page, parent: ?*Frame) !void {
     }
 }
 
+pub fn registerProperty(self: *Frame, registration: RegisteredProperty) !void {
+    for (self._registered_properties.items) |existing| {
+        if (std.mem.eql(u8, existing.name, registration.name)) return error.InvalidState;
+    }
+    try self._registered_properties.append(self.arena, registration);
+}
+
+pub fn getRegisteredProperty(self: *const Frame, name: []const u8) ?RegisteredProperty {
+    for (self._registered_properties.items) |registration| {
+        if (std.mem.eql(u8, registration.name, name)) return registration;
+    }
+    return null;
+}
+
 /// Install or replace the optional style-engine bridge.  Replacing a bridge
 /// closes the old document session before publishing the new one, so a bridge
 /// can never retain a stale document generation.
@@ -890,6 +915,7 @@ fn beginStyleDocumentLifecycle(self: *Frame, document: *Document) void {
     self._stylo_prepared_stylesheet_generation = 0;
     self._stylo_adopted_stylesheet_signature = 0;
     self._stylo_node_lookup.clearRetainingCapacity();
+    self._registered_properties.clearRetainingCapacity();
     self._style_engine_document = document;
     self._style_engine_active = true;
 

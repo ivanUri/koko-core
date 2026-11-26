@@ -112,6 +112,10 @@ _type: Type,
 _proto: *Node,
 _namespace: Namespace = .html,
 _attributes: ?*Attribute.List = null,
+/// Web Animations created for this element. The DOM element remains
+/// authoritative; animation objects are document-arena owned and are exposed
+/// through getAnimations() until the element's document is torn down.
+_animations: std.ArrayListUnmanaged(*Animation) = .empty,
 
 pub const Type = union(enum) {
     html: *Html,
@@ -1301,12 +1305,19 @@ pub fn querySelectorAll(self: *Element, input: []const u8, frame: *Frame) !*Sele
     return Selector.querySelectorAll(self.asNode(), input, frame);
 }
 
-pub fn getAnimations(_: *const Element) []*Animation {
-    return &.{};
+pub fn getAnimations(self: *const Element) []*Animation {
+    return self._animations.items;
 }
 
-pub fn animate(_: *Element, _: ?js.Object, _: ?js.Object, frame: *Frame) !*Animation {
-    return Animation.init(frame);
+pub fn animate(self: *Element, _: ?js.Object, _: ?js.Object, frame: *Frame) !*Animation {
+    const animation = try Animation.init(frame);
+    errdefer animation.deinit(frame._page);
+    try self._animations.append(frame.arena, animation);
+    errdefer _ = self._animations.pop();
+    // Element.animate() starts the animation immediately. The animation
+    // object is retained by the element so getAnimations() observes it.
+    try animation.play(frame);
+    return animation;
 }
 
 pub fn closest(self: *Element, selector: []const u8, frame: *Frame) !?*Element {

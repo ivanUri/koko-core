@@ -16,15 +16,9 @@ const js = @import("../js/js.zig");
 const Frame = @import("../browser/Frame.zig");
 
 const CSS = @This();
-pub const PropertyRegistration = struct { name: []const u8, syntax: []const u8, inherits: bool, initial_value: []const u8 };
-_registrations: std.ArrayListUnmanaged(PropertyRegistration) = .empty,
+pub const PropertyRegistration = Frame.RegisteredProperty;
 
 pub const init: CSS = .{};
-
-pub fn getRegisteredProperty(self: *const CSS, name: []const u8) ?PropertyRegistration {
-    for (self._registrations.items) |registration| if (std.mem.eql(u8, registration.name, name)) return registration;
-    return null;
-}
 
 pub fn valueMatchesSyntax(syntax_: []const u8, value_: []const u8) bool {
     const syntax = std.mem.trim(u8, syntax_, &std.ascii.whitespace);
@@ -53,13 +47,21 @@ fn finiteNumber(value: []const u8) bool {
     return std.math.isFinite(number);
 }
 
-const RegisterPropertyOptions = struct { name: []const u8, syntax: []const u8 = "*", inherits: bool = true, initialValue: []const u8 = "" };
+// Keep `inherits` optional at the binding boundary so an explicitly supplied
+// JavaScript `false` cannot be confused with the WebIDL dictionary default.
+// The generic dictionary converter preserves an omitted member as null, while
+// still converting an explicit false value to false.
+const RegisterPropertyOptions = struct { name: []const u8, syntax: []const u8 = "*", inherits: ?bool = null, initialValue: []const u8 = "" };
 
-pub fn registerProperty(self: *CSS, options: RegisterPropertyOptions, frame: *Frame) !void {
+pub fn registerProperty(_: *CSS, options: RegisterPropertyOptions, frame: *Frame) !void {
     if (options.name.len < 3 or !std.mem.startsWith(u8, options.name, "--")) return error.SyntaxError;
-    if (self.getRegisteredProperty(options.name) != null) return error.InvalidState;
     if (!std.mem.eql(u8, options.syntax, "*") and (options.initialValue.len == 0 or !valueMatchesSyntax(options.syntax, options.initialValue))) return error.SyntaxError;
-    try self._registrations.append(frame.arena, .{ .name = try frame.dupeString(options.name), .syntax = try frame.dupeString(options.syntax), .inherits = options.inherits, .initial_value = try frame.dupeString(options.initialValue) });
+    try frame.registerProperty(.{
+        .name = try frame.dupeString(options.name),
+        .syntax = try frame.dupeString(options.syntax),
+        .inherits = options.inherits orelse true,
+        .initial_value = try frame.dupeString(options.initialValue),
+    });
     frame.styleSheetChanged(null);
 }
 

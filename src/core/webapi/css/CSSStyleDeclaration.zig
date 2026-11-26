@@ -218,10 +218,30 @@ fn invalidateInlineStyle(self: *const CSSStyleDeclaration, style_frame: *Frame) 
 
 fn getComputedPropertyValue(self: *const CSSStyleDeclaration, name: String, style_frame: *Frame) []const u8 {
     const stylo = queryStylo(self, name, style_frame);
-    if (std.mem.startsWith(u8, name.str(), "--")) if (style_frame.window.getCSS().getRegisteredProperty(name.str())) |registration| {
-        if (stylo.value) |value| if (CSS.valueMatchesSyntax(registration.syntax, value) or registration.inherits) return value;
-        return registration.initial_value;
-    };
+    if (std.mem.startsWith(u8, name.str(), "--")) {
+        if (style_frame.getRegisteredProperty(name.str())) |registration| {
+            if (registration.inherits) {
+                if (stylo.value) |value| if (CSS.valueMatchesSyntax(registration.syntax, value)) return value;
+                return registration.initial_value;
+            }
+
+            // Non-inherited registered properties do not accept the inherited
+            // value returned by a computed-style query. For declarations on the
+            // element itself, validate the specified token stream and otherwise
+            // resolve to the registered initial value.
+            if (self._element) |element| {
+                if (element.getAttributeSafe(comptime .wrap("style"))) |inline_style| {
+                    var declarations = CssParser.parseDeclarationsList(inline_style);
+                    while (declarations.next()) |declaration| {
+                        if (!std.mem.eql(u8, declaration.name, name.str())) continue;
+                        if (CSS.valueMatchesSyntax(registration.syntax, declaration.value)) return declaration.value;
+                        return registration.initial_value;
+                    }
+                }
+            }
+            return registration.initial_value;
+        }
+    }
     if (stylo.value) |value| return value;
     reportStyloComputedReadFailure("computed-read", name.str(), stylo.status);
     // Stylo is authoritative for computed style. Do not synthesize a value
