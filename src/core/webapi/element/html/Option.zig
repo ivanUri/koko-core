@@ -81,6 +81,17 @@ pub fn getDefaultSelected(self: *const Option) bool {
     return self._default_selected;
 }
 
+pub fn setDefaultSelected(self: *Option, selected: bool, frame: *Frame) !void {
+    // `defaultSelected` reflects the option's `selected` content attribute.
+    // Route the mutation through the DOM attribute machinery so the option
+    // state, style invalidation, observers, and serialization stay in sync.
+    if (selected) {
+        try self.asElement().setAttributeSafe(comptime .wrap("selected"), .wrap(""), frame);
+    } else {
+        try self.asElement().removeAttribute(comptime .wrap("selected"), frame);
+    }
+}
+
 pub fn getDisabled(self: *const Option) bool {
     return self._disabled;
 }
@@ -127,7 +138,7 @@ pub const JsApi = struct {
     pub const label = bridge.accessor(Option.getLabel, Option.setLabel, .{});
     pub const text = bridge.accessor(Option.getText, Option.setText, .{});
     pub const selected = bridge.accessor(Option.getSelected, Option.setSelected, .{});
-    pub const defaultSelected = bridge.accessor(Option.getDefaultSelected, null, .{});
+    pub const defaultSelected = bridge.accessor(Option.getDefaultSelected, Option.setDefaultSelected, .{});
     pub const disabled = bridge.accessor(Option.getDisabled, Option.setDisabled, .{});
     pub const name = bridge.accessor(Option.getName, Option.setName, .{});
 };

@@ -133,7 +133,21 @@ pub fn getAdoptedStyleSheets(self: *ShadowRoot, frame: *Frame) !js.Object.Global
     if (self._adopted_style_sheets) |ass| {
         return ass;
     }
-    const js_arr = frame.js.local.?.newArray(0);
+
+    // Layout and observer callbacks may enter from Zig without an active V8
+    // Caller. Create the persistent JS value in the shadow root's owner realm
+    // instead of assuming that a native callback already has a Local scope.
+    _ = frame;
+    const owner_frame = self._owner_frame;
+    const had_local = owner_frame.js.local != null;
+    var owned_scope: js.Local.Scope = undefined;
+    const local = if (owner_frame.js.local) |active| active else blk: {
+        if (!owner_frame.js.tryLocalScope(&owned_scope)) return error.InvalidState;
+        break :blk &owned_scope.local;
+    };
+    defer if (!had_local) owned_scope.deinit();
+
+    const js_arr = local.newArray(0);
     const js_obj = js_arr.toObject();
     self._adopted_style_sheets = try js_obj.persist();
     return self._adopted_style_sheets.?;

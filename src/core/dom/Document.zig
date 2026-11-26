@@ -1213,7 +1213,18 @@ pub fn getAdoptedStyleSheets(self: *Document, frame: *Frame) !js.Object.Global {
         return ass;
     }
     const owner_frame = self._frame orelse frame;
-    const js_arr = owner_frame.js.local.?.newArray(0);
+    // This getter is also used by native style/layout callbacks, where no V8
+    // Caller is active. Open a temporary scope in the document's realm rather
+    // than unwrapping Context.local and turning a valid callback into a crash.
+    const had_local = owner_frame.js.local != null;
+    var owned_scope: js.Local.Scope = undefined;
+    const local = if (owner_frame.js.local) |active| active else blk: {
+        if (!owner_frame.js.tryLocalScope(&owned_scope)) return error.InvalidState;
+        break :blk &owned_scope.local;
+    };
+    defer if (!had_local) owned_scope.deinit();
+
+    const js_arr = local.newArray(0);
     const js_obj = js_arr.toObject();
     self._adopted_style_sheets = try js_obj.persist();
     return self._adopted_style_sheets.?;

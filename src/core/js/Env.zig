@@ -827,6 +827,15 @@ pub fn performMicrotaskCheckpoint(self: *Env, ctx: *Context) void {
     if (!exec.canEnterJs(.allow_draining)) {
         return;
     }
+    // Every native entry into V8's microtask runner must hold the same gate as
+    // runMicrotasks(). A Promise reaction can synchronously reach a timer or
+    // DOM callback, and that callback must not start a second V8 checkpoint.
+    if (self.checkpoint_active) {
+        self.checkpoint_pending = true;
+        return;
+    }
+    self.checkpoint_active = true;
+    defer self.checkpoint_active = false;
     v8.v8__MicrotaskQueue__PerformCheckpoint(ctx.microtask_queue, self.isolate.handle);
 }
 
@@ -849,8 +858,9 @@ pub fn performMicrotaskCheckpointFp(self: *Env, ctx: *Context) void {
         self.checkpoint_pending = true;
         return;
     }
+    self.checkpoint_active = true;
+    defer self.checkpoint_active = false;
     v8.v8__MicrotaskQueue__PerformCheckpoint(ctx.microtask_queue, self.isolate.handle);
-    if (self.checkpoint_active) self.checkpoint_pending = true;
 }
 
 /// Drain every live realm's microtask queue once, then the isolate default
@@ -862,6 +872,8 @@ pub fn drainAllRealmMicrotasks(self: *Env) void {
         self.checkpoint_pending = true;
         return;
     }
+    self.checkpoint_active = true;
+    defer self.checkpoint_active = false;
     // Snapshot — destroyContext can run from a reaction.
     var snapshot: [64]*Context = undefined;
     const n = self.context_count;
