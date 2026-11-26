@@ -507,12 +507,16 @@ pub const Writer = struct {
         try w.write(ignore);
 
         if (ignore) {
+            const aria_hidden = in_aria_hidden or blk: {
+                const element = axn.dom.is(DOMNode.Element) orelse break :blk false;
+                break :blk hasAriaHiddenTrue(element);
+            };
             // Ignore reasons
             try w.objectField("ignoredReasons");
             try w.beginArray();
             try w.beginObject();
             try w.objectField("name");
-            try w.write(if (in_aria_hidden) "ariaHiddenSubtree" else "uninteresting");
+            try w.write(if (aria_hidden) "ariaHiddenSubtree" else "uninteresting");
             try w.objectField("value");
             try self.writeAXValue(.{ .boolean = true }, w);
             try w.endObject();

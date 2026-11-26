@@ -807,14 +807,45 @@ fn getBoxModel(cmd: *CDP.Command) !void {
     const element = node.dom.is(DOMNode.Element) orelse return error.NodeIsNotAnElement;
 
     const rect = element.getBoundingClientRect(frame);
-    const quad = rectToQuad(rect);
-    const zero = [_]f64{0.0} ** 8;
+    const geometry = frame.layoutGeometry(element.asNode());
+    const border_left: f64 = if (geometry) |g| g.border_left else 0;
+    const border_right: f64 = if (geometry) |g| g.border_right else 0;
+    const border_top: f64 = if (geometry) |g| g.border_top else 0;
+    const border_bottom: f64 = if (geometry) |g| g.border_bottom else 0;
+    const padding_left: f64 = if (geometry) |g| g.padding_left else 0;
+    const padding_right: f64 = if (geometry) |g| g.padding_right else 0;
+    const padding_top: f64 = if (geometry) |g| g.padding_top else 0;
+    const padding_bottom: f64 = if (geometry) |g| g.padding_bottom else 0;
+    const margin_left: f64 = if (geometry) |g| g.margin_left else 0;
+    const margin_right: f64 = if (geometry) |g| g.margin_right else 0;
+    const margin_top: f64 = if (geometry) |g| g.margin_top else 0;
+    const margin_bottom: f64 = if (geometry) |g| g.margin_bottom else 0;
+
+    const border = rectToQuad(rect);
+    const padding_rect = DOMNode.Element.DOMRect{
+        ._x = rect._x + border_left,
+        ._y = rect._y + border_top,
+        ._width = @max(0, rect._width - border_left - border_right),
+        ._height = @max(0, rect._height - border_top - border_bottom),
+    };
+    const content_rect = DOMNode.Element.DOMRect{
+        ._x = padding_rect._x + padding_left,
+        ._y = padding_rect._y + padding_top,
+        ._width = @max(0, padding_rect._width - padding_left - padding_right),
+        ._height = @max(0, padding_rect._height - padding_top - padding_bottom),
+    };
+    const margin_rect = DOMNode.Element.DOMRect{
+        ._x = rect._x - margin_left,
+        ._y = rect._y - margin_top,
+        ._width = rect._width + margin_left + margin_right,
+        ._height = rect._height + margin_top + margin_bottom,
+    };
 
     return cmd.sendResult(.{ .model = BoxModel{
-        .content = quad,
-        .padding = zero,
-        .border = zero,
-        .margin = zero,
+        .content = rectToQuad(content_rect),
+        .padding = rectToQuad(padding_rect),
+        .border = border,
+        .margin = rectToQuad(margin_rect),
         .width = @intFromFloat(rect._width),
         .height = @intFromFloat(rect._height),
     } }, .{});
