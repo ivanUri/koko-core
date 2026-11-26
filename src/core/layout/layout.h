@@ -64,6 +64,19 @@ KokoLayoutStatus koko_layout_node_set_computed_style(
     float viewport_width,
     float viewport_height
 );
+
+/*
+ * Applies only text shaping/line-breaking properties to a node. This narrow
+ * API does not require box properties such as display, width, or height.
+ * Supported property names: font-family, font-size, font-weight, font-style,
+ * line-height, direction, and white-space.
+ */
+KokoLayoutStatus koko_layout_node_set_text_style(
+    KokoLayoutSession *session,
+    KokoLayoutNode node,
+    const KokoLayoutProperty *properties,
+    uint64_t property_count
+);
 KokoLayoutStatus koko_layout_node_set_text(
     KokoLayoutSession *session,
     KokoLayoutNode node,
@@ -90,6 +103,20 @@ KokoLayoutStatus koko_layout_compute(
  * set to zero before validation and to `count` only on success.
  */
 KokoLayoutStatus koko_layout_snapshot_batch(
+    const KokoLayoutSession *session,
+    const KokoLayoutNode *nodes,
+    uint64_t count,
+    KokoLayoutGeometry *out,
+    uint64_t out_capacity,
+    uint64_t *out_count
+);
+
+/*
+ * Same as koko_layout_snapshot_batch, but accumulates each node's Taffy
+ * parent locations up to the tree root. Coordinates are root/document-tree
+ * coordinates; scrolling, transforms, and iframe offsets remain Zig-side.
+ */
+KokoLayoutStatus koko_layout_snapshot_absolute_batch(
     const KokoLayoutSession *session,
     const KokoLayoutNode *nodes,
     uint64_t count,

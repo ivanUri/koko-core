@@ -2512,6 +2512,9 @@ pub fn getClientWidth(self: *Element, frame: *Frame) f64 {
 
 fn getClientWidthInner(self: *Element, frame: *Frame) f64 {
     if (self.isHiddenForLayout(frame)) return 0.0;
+    if (frame.layoutGeometry(self.asNode())) |geometry| {
+        return @max(0.0, @as(f64, geometry.width) - @as(f64, geometry.border_left) - @as(f64, geometry.border_right));
+    }
     const dims = self.getElementDimensions(frame);
     return dims.width;
 }
@@ -2522,6 +2525,9 @@ pub fn getClientHeight(self: *Element, frame: *Frame) f64 {
 
 fn getClientHeightInner(self: *Element, frame: *Frame) f64 {
     if (self.isHiddenForLayout(frame)) return 0.0;
+    if (frame.layoutGeometry(self.asNode())) |geometry| {
+        return @max(0.0, @as(f64, geometry.height) - @as(f64, geometry.border_top) - @as(f64, geometry.border_bottom));
+    }
     const dims = self.getElementDimensions(frame);
     return dims.height;
 }
@@ -2556,6 +2562,20 @@ pub fn getBoundingClientRectForVisible(self: *Element, frame: *Frame) DOMRect {
     const pos_kind = layoutPositionKind(self, frame);
     if (pos_kind == .absolute or pos_kind == .fixed) {
         return self.getPositionedBoundingClientRect(frame);
+    }
+
+    // Taffy owns the current CSS geometry. Convert its document-space
+    // snapshot into client coordinates here; scrolling and Koko-specific
+    // transforms remain DOM/window responsibilities.
+    if (frame.layoutGeometry(self.asNode())) |geometry| {
+        const scroll_x = @as(f64, @floatFromInt(frame.window.getScrollX()));
+        const scroll_y = @as(f64, @floatFromInt(frame.window.getScrollY()));
+        return finalizeClientRect(self, frame, .{
+            ._x = @as(f64, geometry.x) - scroll_x,
+            ._y = @as(f64, geometry.y) - scroll_y,
+            ._width = @as(f64, geometry.width),
+            ._height = @as(f64, geometry.height),
+        });
     }
 
     const dims = self.getElementDimensions(frame);
@@ -2711,6 +2731,7 @@ pub fn getOffsetHeight(self: *Element, frame: *Frame) f64 {
 
 fn getOffsetHeightInner(self: *Element, frame: *Frame) f64 {
     if (self.isHiddenForLayout(frame)) return 0.0;
+    if (frame.layoutGeometry(self.asNode())) |geometry| return @as(f64, geometry.height);
     const dims = self.getElementDimensions(frame);
     return dims.height;
 }
@@ -2722,6 +2743,7 @@ pub fn getOffsetWidth(self: *Element, frame: *Frame) f64 {
 fn getOffsetWidthInner(self: *Element, frame: *Frame) f64 {
     if (readLayoutCache(self, frame)) |cached| return cached.width;
     if (self.isHiddenForLayout(frame)) return 0.0;
+    if (frame.layoutGeometry(self.asNode())) |geometry| return @as(f64, geometry.width);
     const dims = self.getElementDimensions(frame);
     return dims.width;
 }
@@ -2741,7 +2763,6 @@ pub fn getOffsetLeft(self: *Element, frame: *Frame) f64 {
 }
 
 pub fn getClientTop(_: *Element) f64 {
-    // Border width - in our dummy layout, we don't apply borders to layout
     return 0.0;
 }
 

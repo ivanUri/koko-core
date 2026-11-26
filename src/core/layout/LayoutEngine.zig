@@ -51,6 +51,12 @@ extern fn koko_layout_node_set_computed_style(
     viewport_width: f32,
     viewport_height: f32,
 ) StatusCode;
+extern fn koko_layout_node_set_text_style(
+    session: ?*CSession,
+    node: u64,
+    properties: [*c]const CProperty,
+    property_count: u64,
+) StatusCode;
 extern fn koko_layout_node_set_text(
     session: ?*CSession,
     node: u64,
@@ -65,6 +71,14 @@ extern fn koko_layout_compute(
     viewport_height: f32,
 ) StatusCode;
 extern fn koko_layout_snapshot_batch(
+    session: ?*const CSession,
+    nodes: [*c]const u64,
+    count: u64,
+    output: [*c]Geometry,
+    output_capacity: u64,
+    output_count: *u64,
+) StatusCode;
+extern fn koko_layout_snapshot_absolute_batch(
     session: ?*const CSession,
     nodes: [*c]const u64,
     count: u64,
@@ -170,7 +184,7 @@ pub const LayoutEngine = struct {
         if (!std.math.isFinite(viewport_width) or !std.math.isFinite(viewport_height)) {
             return .invalid_argument;
         }
-        var abi = std.ArrayListUnmanaged(CProperty){};
+        var abi: std.ArrayListUnmanaged(CProperty) = .empty;
         defer abi.deinit(std.heap.c_allocator);
         abi.ensureTotalCapacity(std.heap.c_allocator, properties.len) catch return .internal_error;
         for (properties) |property| {
@@ -192,6 +206,30 @@ pub const LayoutEngine = struct {
         ));
     }
 
+    /// Apply only text shaping and line-breaking properties. Box properties
+    /// remain unchanged, so text leaves do not need a full layout snapshot.
+    pub fn setTextStyle(self: *LayoutEngine, node: u64, properties: []const Property) Status {
+        if (!self.alive or node == 0) return .invalid_argument;
+        var abi: std.ArrayListUnmanaged(CProperty) = .empty;
+        defer abi.deinit(std.heap.c_allocator);
+        abi.ensureTotalCapacity(std.heap.c_allocator, properties.len) catch return .internal_error;
+        for (properties) |property| {
+            abi.appendAssumeCapacity(.{
+                .name = if (property.name.len == 0) null else property.name.ptr,
+                .name_len = property.name.len,
+                .value = if (property.value.len == 0) null else property.value.ptr,
+                .value_len = property.value.len,
+            });
+        }
+        const pointer: [*c]const CProperty = if (abi.items.len == 0) null else abi.items.ptr;
+        return Status.fromCode(koko_layout_node_set_text_style(
+            self.session,
+            node,
+            pointer,
+            properties.len,
+        ));
+    }
+
     pub fn compute(self: *LayoutEngine, root: u64, viewport_width: f32, viewport_height: f32) Status {
         if (!self.alive or root == 0) return .invalid_argument;
         return Status.fromCode(koko_layout_compute(self.session, root, viewport_width, viewport_height));
@@ -209,6 +247,26 @@ pub const LayoutEngine = struct {
         const node_ptr: [*c]const u64 = if (nodes.len == 0) null else nodes.ptr;
         const output_ptr: [*c]Geometry = if (nodes.len == 0) null else output.ptr;
         const result_code = koko_layout_snapshot_batch(
+            self.session,
+            node_ptr,
+            nodes.len,
+            output_ptr,
+            output.len,
+            &count,
+        );
+        if (result_code != status_ok) return Status.fromCode(result_code);
+        return if (count == nodes.len) .ok else .internal_error;
+    }
+
+    /// Snapshot coordinates accumulated through Taffy parents up to the root.
+    /// The result is root/document-tree space; window scrolling, transforms,
+    /// and iframe offsets are applied by the Zig coordinator.
+    pub fn snapshotAbsolute(self: *const LayoutEngine, nodes: []const u64, output: []Geometry) Status {
+        if (!self.alive or output.len < nodes.len) return .invalid_argument;
+        var count: u64 = 0;
+        const node_ptr: [*c]const u64 = if (nodes.len == 0) null else nodes.ptr;
+        const output_ptr: [*c]Geometry = if (nodes.len == 0) null else output.ptr;
+        const result_code = koko_layout_snapshot_absolute_batch(
             self.session,
             node_ptr,
             nodes.len,

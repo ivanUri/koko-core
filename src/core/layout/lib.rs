@@ -147,13 +147,146 @@ fn text_style_from_snapshot(snapshot: &PropertySnapshot) -> parley_adapter::Text
         };
     }
     if let Some(value) = snapshot.values.get("line-height") {
-        if let Some(value) = parse_non_negative_px(&value) {
+        let value = value.trim();
+        if value.eq_ignore_ascii_case("normal") {
+            style.line_height = parley_adapter::LineHeight::Normal;
+        } else if let Some(value) = parse_non_negative_px(value) {
             if let Ok(value) = parley_adapter::Scalar::new(value) {
                 style.line_height = parley_adapter::LineHeight::Absolute(value);
             }
         }
     }
+    if let Some(value) = snapshot.values.get("direction") {
+        style.direction = match value.trim().to_ascii_lowercase().as_str() {
+            "ltr" => parley_adapter::TextDirection::Ltr,
+            "rtl" => parley_adapter::TextDirection::Rtl,
+            _ => parley_adapter::TextDirection::Auto,
+        };
+    }
+    if let Some(value) = snapshot.values.get("white-space") {
+        style.white_space = match value.trim().to_ascii_lowercase().as_str() {
+            "pre" => parley_adapter::WhiteSpaceMode::Pre,
+            "pre-wrap" => parley_adapter::WhiteSpaceMode::PreWrap,
+            "pre-line" => parley_adapter::WhiteSpaceMode::PreLine,
+            "break-spaces" => parley_adapter::WhiteSpaceMode::BreakSpaces,
+            _ => parley_adapter::WhiteSpaceMode::Normal,
+        };
+    }
     style
+}
+
+const TEXT_STYLE_PROPERTIES: &[&str] = &[
+    "font-family",
+    "font-size",
+    "font-weight",
+    "font-style",
+    "line-height",
+    "direction",
+    "white-space",
+];
+
+/// Applies only properties that affect Parley text shaping/line breaking.
+/// This is separate from the full computed-style ABI so a text leaf can
+/// update inherited text state without resending box geometry properties.
+fn apply_text_style_snapshot(
+    style: &mut parley_adapter::TextStyle,
+    snapshot: &PropertySnapshot,
+) -> Result<(), KokoLayoutStatus> {
+    if snapshot
+        .values
+        .keys()
+        .any(|name| !TEXT_STYLE_PROPERTIES.contains(&name.as_str()))
+    {
+        return Err(KokoLayoutStatus::InvalidArgument);
+    }
+
+    for (name, value) in &snapshot.values {
+        match name.as_str() {
+            "font-family" => {
+                let families = value
+                    .split(',')
+                    .map(str::trim)
+                    .map(|family| family.trim_matches(['\'', '"']))
+                    .filter(|family| !family.is_empty())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>();
+                if families.is_empty() {
+                    return Err(KokoLayoutStatus::InvalidArgument);
+                }
+                style.font_families = families;
+            }
+            "font-size" => {
+                let value =
+                    parse_non_negative_px(value).ok_or(KokoLayoutStatus::InvalidArgument)?;
+                style.font_size = parley_adapter::Scalar::new(value)
+                    .map_err(|_| KokoLayoutStatus::InvalidArgument)?;
+            }
+            "font-weight" => {
+                style.font_weight = if value.trim().eq_ignore_ascii_case("normal") {
+                    parley_adapter::FontWeight::NORMAL
+                } else if value.trim().eq_ignore_ascii_case("bold") {
+                    parley_adapter::FontWeight::BOLD
+                } else {
+                    let value = value
+                        .trim()
+                        .parse::<u16>()
+                        .map_err(|_| KokoLayoutStatus::InvalidArgument)?;
+                    parley_adapter::FontWeight::new(value)
+                };
+            }
+            "font-style" => {
+                style.font_style = match value.trim().to_ascii_lowercase().as_str() {
+                    "normal" => parley_adapter::FontStyle::Normal,
+                    "italic" => parley_adapter::FontStyle::Italic,
+                    "oblique" => parley_adapter::FontStyle::Oblique,
+                    _ => return Err(KokoLayoutStatus::InvalidArgument),
+                };
+            }
+            "line-height" => {
+                let value = value.trim();
+                style.line_height = if value.eq_ignore_ascii_case("normal") {
+                    parley_adapter::LineHeight::Normal
+                } else if let Some(value) = value.strip_suffix("px") {
+                    let value = value
+                        .trim()
+                        .parse::<f32>()
+                        .map_err(|_| KokoLayoutStatus::InvalidArgument)?;
+                    parley_adapter::LineHeight::Absolute(
+                        parley_adapter::Scalar::new(value)
+                            .map_err(|_| KokoLayoutStatus::InvalidArgument)?,
+                    )
+                } else {
+                    let value = value
+                        .parse::<f32>()
+                        .map_err(|_| KokoLayoutStatus::InvalidArgument)?;
+                    parley_adapter::LineHeight::Multiplier(
+                        parley_adapter::Scalar::new(value)
+                            .map_err(|_| KokoLayoutStatus::InvalidArgument)?,
+                    )
+                };
+            }
+            "direction" => {
+                style.direction = match value.trim().to_ascii_lowercase().as_str() {
+                    "ltr" => parley_adapter::TextDirection::Ltr,
+                    "rtl" => parley_adapter::TextDirection::Rtl,
+                    _ => return Err(KokoLayoutStatus::InvalidArgument),
+                };
+            }
+            "white-space" => {
+                style.white_space = match value.trim().to_ascii_lowercase().as_str() {
+                    "normal" => parley_adapter::WhiteSpaceMode::Normal,
+                    "pre" => parley_adapter::WhiteSpaceMode::Pre,
+                    "pre-wrap" => parley_adapter::WhiteSpaceMode::PreWrap,
+                    "pre-line" => parley_adapter::WhiteSpaceMode::PreLine,
+                    "break-spaces" => parley_adapter::WhiteSpaceMode::BreakSpaces,
+                    _ => return Err(KokoLayoutStatus::InvalidArgument),
+                };
+            }
+            _ => unreachable!("validated by TEXT_STYLE_PROPERTIES"),
+        }
+    }
+
+    Ok(())
 }
 
 #[repr(C)]
@@ -439,7 +572,12 @@ fn property_snapshot(
         return Err(KokoLayoutStatus::InvalidArgument);
     }
     let mut values = HashMap::with_capacity(count);
-    for property in unsafe { std::slice::from_raw_parts(properties, count) } {
+    let properties = if count == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(properties, count) }
+    };
+    for property in properties {
         if (property.name_len > 0 && property.name.is_null())
             || (property.value_len > 0 && property.value.is_null())
         {
@@ -481,6 +619,41 @@ fn geometry(layout: &taffy::Layout) -> KokoLayoutGeometry {
         margin_top: layout.margin.top,
         margin_bottom: layout.margin.bottom,
     }
+}
+
+/// Returns the location of a node in the root coordinate space of its Taffy
+/// tree. Taffy's `Layout::location` is parent-relative, so the coordinator
+/// must not expose it directly as a document/client rectangle.
+///
+/// This deliberately accumulates only layout-tree locations. Scroll offsets,
+/// transforms, viewport offsets, and iframe coordinate-space conversion remain
+/// Zig-side concerns because they depend on Koko's authoritative DOM/window
+/// lifecycle.
+fn absolute_location(
+    tree: &TaffyTree<LayoutNodeContext>,
+    node: NodeId,
+) -> Result<(f32, f32), KokoLayoutStatus> {
+    let mut current = Some(node);
+    let mut x = 0.0;
+    let mut y = 0.0;
+    let mut visited = 0usize;
+
+    while let Some(current_node) = current {
+        let layout = tree
+            .layout(current_node)
+            .map_err(|_| KokoLayoutStatus::InternalError)?;
+        x += layout.location.x;
+        y += layout.location.y;
+        visited = visited
+            .checked_add(1)
+            .ok_or(KokoLayoutStatus::InternalError)?;
+        if visited > tree.total_node_count() {
+            return Err(KokoLayoutStatus::InternalError);
+        }
+        current = tree.parent(current_node);
+    }
+
+    Ok((x, y))
 }
 
 #[no_mangle]
@@ -626,6 +799,44 @@ pub unsafe extern "C" fn koko_layout_node_set_computed_style(
         if let Some(context) = session.tree.get_node_context_mut(node) {
             context.text_style = text_style_from_snapshot(&snapshot);
         }
+        session.invalidate();
+        KokoLayoutStatus::Ok
+    })
+}
+
+/// Apply only text shaping and line-breaking properties to a node.
+///
+/// Unlike `koko_layout_node_set_computed_style`, this method does not parse or
+/// replace any box/layout properties. The supplied list must contain only the
+/// allowlisted inherited/text properties documented in `layout.h`.
+#[no_mangle]
+pub unsafe extern "C" fn koko_layout_node_set_text_style(
+    session: *mut LayoutSession,
+    handle: u64,
+    properties: *const KokoLayoutProperty,
+    count: u64,
+) -> KokoLayoutStatus {
+    if session.is_null() || handle == 0 || count > usize::MAX as u64 {
+        return KokoLayoutStatus::InvalidArgument;
+    }
+    status(|| {
+        let session = &mut *session;
+        let node = match session.node(handle) {
+            Ok(node) => node,
+            Err(error) => return error,
+        };
+        let snapshot = match property_snapshot(properties, count as usize) {
+            Ok(snapshot) => snapshot,
+            Err(error) => return error,
+        };
+        let context = match session.tree.get_node_context_mut(node) {
+            Some(context) => context,
+            None => return KokoLayoutStatus::InternalError,
+        };
+        if let Err(error) = apply_text_style_snapshot(&mut context.text_style, &snapshot) {
+            return error;
+        }
+        session.text_measure_cache.clear();
         session.invalidate();
         KokoLayoutStatus::Ok
     })
@@ -826,6 +1037,37 @@ pub unsafe extern "C" fn koko_layout_snapshot_batch(
     out_capacity: u64,
     out_count: *mut u64,
 ) -> KokoLayoutStatus {
+    snapshot_batch(session, nodes, count, out, out_capacity, out_count, false)
+}
+
+/// Fills a caller-owned array with geometry whose `x`/`y` coordinates are
+/// accumulated through each node's Taffy parents up to the tree root.
+///
+/// The remaining fields are identical to `koko_layout_snapshot_batch`. The
+/// result is root/document-tree coordinates, not final viewport coordinates:
+/// scrolling, transforms, fixed-position containing blocks, and iframe
+/// offsets must still be applied by the Zig coordinator.
+#[no_mangle]
+pub unsafe extern "C" fn koko_layout_snapshot_absolute_batch(
+    session: *const LayoutSession,
+    nodes: *const u64,
+    count: u64,
+    out: *mut KokoLayoutGeometry,
+    out_capacity: u64,
+    out_count: *mut u64,
+) -> KokoLayoutStatus {
+    snapshot_batch(session, nodes, count, out, out_capacity, out_count, true)
+}
+
+unsafe fn snapshot_batch(
+    session: *const LayoutSession,
+    nodes: *const u64,
+    count: u64,
+    out: *mut KokoLayoutGeometry,
+    out_capacity: u64,
+    out_count: *mut u64,
+    absolute: bool,
+) -> KokoLayoutStatus {
     if session.is_null() || out_count.is_null() {
         return KokoLayoutStatus::InvalidArgument;
     }
@@ -833,7 +1075,7 @@ pub unsafe extern "C" fn koko_layout_snapshot_batch(
     if count == 0 {
         return KokoLayoutStatus::Ok;
     }
-    if nodes.is_null() || out.is_null() || out_capacity < count {
+    if count > usize::MAX as u64 || nodes.is_null() || out.is_null() || out_capacity < count {
         return KokoLayoutStatus::InvalidArgument;
     }
     status(|| {
@@ -858,7 +1100,16 @@ pub unsafe extern "C" fn koko_layout_snapshot_batch(
                 Ok(layout) => layout,
                 Err(_) => return KokoLayoutStatus::InternalError,
             };
-            *slot = geometry(layout);
+            let mut value = geometry(layout);
+            if absolute {
+                let (x, y) = match absolute_location(&session.tree, node) {
+                    Ok(location) => location,
+                    Err(error) => return error,
+                };
+                value.x = x;
+                value.y = y;
+            }
+            *slot = value;
         }
         *out_count = count;
         KokoLayoutStatus::Ok
@@ -1024,6 +1275,115 @@ mod tests {
     }
 
     #[test]
+    fn absolute_snapshot_accumulates_parent_locations() {
+        unsafe {
+            let session = koko_layout_session_new();
+            assert!(!session.is_null());
+            let root = koko_layout_node_new(session);
+            let parent = koko_layout_node_new(session);
+            let child = koko_layout_node_new(session);
+
+            let mut root_values = computed_properties("flex", "600px", "100px", "0");
+            root_values
+                .iter_mut()
+                .find(|(name, _)| name == "align-items")
+                .unwrap()
+                .1 = "center".to_owned();
+            let parent_values = computed_properties("block", "0px", "20px", "1");
+            let mut child_values = computed_properties("block", "50px", "10px", "0");
+            child_values
+                .iter_mut()
+                .find(|(name, _)| name == "margin-top")
+                .unwrap()
+                .1 = "13px".to_owned();
+
+            let root_abi = property_abi(&root_values);
+            let parent_abi = property_abi(&parent_values);
+            let child_abi = property_abi(&child_values);
+            assert_eq!(
+                koko_layout_node_set_computed_style(
+                    session,
+                    root,
+                    root_abi.as_ptr(),
+                    root_abi.len() as u64,
+                    600.0,
+                    100.0,
+                ),
+                KokoLayoutStatus::Ok
+            );
+            assert_eq!(
+                koko_layout_node_set_computed_style(
+                    session,
+                    parent,
+                    parent_abi.as_ptr(),
+                    parent_abi.len() as u64,
+                    600.0,
+                    100.0,
+                ),
+                KokoLayoutStatus::Ok
+            );
+            assert_eq!(
+                koko_layout_node_set_computed_style(
+                    session,
+                    child,
+                    child_abi.as_ptr(),
+                    child_abi.len() as u64,
+                    600.0,
+                    100.0,
+                ),
+                KokoLayoutStatus::Ok
+            );
+            assert_eq!(
+                koko_layout_append_child(session, root, parent),
+                KokoLayoutStatus::Ok
+            );
+            assert_eq!(
+                koko_layout_append_child(session, parent, child),
+                KokoLayoutStatus::Ok
+            );
+            assert_eq!(
+                koko_layout_compute(session, root, 600.0, 100.0),
+                KokoLayoutStatus::Ok
+            );
+
+            let nodes = [parent, child];
+            let mut local = [KokoLayoutGeometry::default(); 2];
+            let mut absolute = [KokoLayoutGeometry::default(); 2];
+            let mut local_count = 0;
+            let mut absolute_count = 0;
+            assert_eq!(
+                koko_layout_snapshot_batch(
+                    session,
+                    nodes.as_ptr(),
+                    nodes.len() as u64,
+                    local.as_mut_ptr(),
+                    local.len() as u64,
+                    &mut local_count,
+                ),
+                KokoLayoutStatus::Ok
+            );
+            assert_eq!(
+                koko_layout_snapshot_absolute_batch(
+                    session,
+                    nodes.as_ptr(),
+                    nodes.len() as u64,
+                    absolute.as_mut_ptr(),
+                    absolute.len() as u64,
+                    &mut absolute_count,
+                ),
+                KokoLayoutStatus::Ok
+            );
+            assert_eq!(local_count, nodes.len() as u64);
+            assert_eq!(absolute_count, nodes.len() as u64);
+            assert!((absolute[1].x - (absolute[0].x + local[1].x)).abs() < 0.001);
+            assert!((absolute[1].y - (absolute[0].y + local[1].y)).abs() < 0.001);
+            assert!(absolute[0].y > 0.0);
+            assert!(local[1].y > 0.0);
+            koko_layout_session_free(session);
+        }
+    }
+
+    #[test]
     fn text_leaf_uses_parley_measurement() {
         unsafe {
             let session = koko_layout_session_new();
@@ -1095,6 +1455,84 @@ mod tests {
             assert_eq!(count, 1);
             assert!(output[0].width > 0.0);
             assert!(output[0].height > 0.0);
+            koko_layout_session_free(session);
+        }
+    }
+
+    #[test]
+    fn text_style_can_update_leaf_without_layout_properties() {
+        unsafe {
+            let session = koko_layout_session_new();
+            assert!(!session.is_null());
+            let root = koko_layout_node_new(session);
+            let text = koko_layout_node_new(session);
+
+            let root_values = computed_properties("block", "240px", "100px", "0");
+            let root_abi = property_abi(&root_values);
+            assert_eq!(
+                koko_layout_node_set_computed_style(
+                    session,
+                    root,
+                    root_abi.as_ptr(),
+                    root_abi.len() as u64,
+                    240.0,
+                    100.0,
+                ),
+                KokoLayoutStatus::Ok
+            );
+
+            let text_style_values = vec![
+                ("font-size".to_owned(), "20px".to_owned()),
+                ("line-height".to_owned(), "24px".to_owned()),
+                ("direction".to_owned(), "ltr".to_owned()),
+                ("white-space".to_owned(), "normal".to_owned()),
+            ];
+            let text_style_abi = property_abi(&text_style_values);
+            assert_eq!(
+                koko_layout_node_set_text_style(
+                    session,
+                    text,
+                    text_style_abi.as_ptr(),
+                    text_style_abi.len() as u64,
+                ),
+                KokoLayoutStatus::Ok
+            );
+            let text_bytes = "Text style ABI keeps layout properties optional.";
+            assert_eq!(
+                koko_layout_node_set_text(
+                    session,
+                    text,
+                    text_bytes.as_ptr(),
+                    text_bytes.len() as u64,
+                ),
+                KokoLayoutStatus::Ok
+            );
+            assert_eq!(
+                koko_layout_append_child(session, root, text),
+                KokoLayoutStatus::Ok
+            );
+            assert_eq!(
+                koko_layout_compute(session, root, 240.0, 100.0),
+                KokoLayoutStatus::Ok
+            );
+
+            let handles = [text];
+            let mut output = [KokoLayoutGeometry::default(); 1];
+            let mut count = 0;
+            assert_eq!(
+                koko_layout_snapshot_absolute_batch(
+                    session,
+                    handles.as_ptr(),
+                    1,
+                    output.as_mut_ptr(),
+                    1,
+                    &mut count,
+                ),
+                KokoLayoutStatus::Ok
+            );
+            assert_eq!(count, 1);
+            assert!(output[0].width > 0.0);
+            assert!(output[0].height >= 24.0);
             koko_layout_session_free(session);
         }
     }

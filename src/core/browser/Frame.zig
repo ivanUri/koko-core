@@ -22,7 +22,10 @@ const Session = @import("Session.zig");
 const EventManager = @import("EventManager.zig");
 const ScriptManager = @import("ScriptManager.zig");
 const StyleEngine = @import("StyleEngine.zig").StyleEngine;
-const LayoutEngine = @import("../layout/LayoutEngine.zig").LayoutEngine;
+const LayoutModule = @import("../layout/LayoutEngine.zig");
+const LayoutEngine = LayoutModule.LayoutEngine;
+const LayoutGeometryAbi = LayoutModule.Geometry;
+const LayoutProperty = LayoutModule.Property;
 const Abi = @import("style_engine/abi.zig");
 
 const Parser = @import("../parser/Parser.zig");
@@ -87,6 +90,39 @@ const IFrame = Element.Html.IFrame;
 const IFrameSandbox = @import("IFrameSandbox.zig");
 const Allocator = std.mem.Allocator;
 const IS_DEBUG = builtin.mode == .Debug;
+
+// Complete inputs consumed by the Rust Stylo -> Taffy mapper. Keeping this
+// list centralized prevents layout from reparsing declarations or silently
+// using a second cascade for a missing property.
+const layout_property_names = [_][]const u8{
+    "display",               "box-sizing",
+    "width",                 "height",
+    "min-width",             "min-height",
+    "max-width",             "max-height",
+    "margin-top",            "margin-right",
+    "margin-bottom",         "margin-left",
+    "padding-top",           "padding-right",
+    "padding-bottom",        "padding-left",
+    "border-top-width",      "border-right-width",
+    "border-bottom-width",   "border-left-width",
+    "row-gap",               "column-gap",
+    "flex-direction",        "flex-wrap",
+    "flex-grow",             "flex-shrink",
+    "flex-basis",            "align-content",
+    "align-items",           "align-self",
+    "justify-content",       "order",
+    "grid-template-columns", "grid-template-rows",
+    "grid-auto-columns",     "grid-auto-rows",
+    "grid-auto-flow",        "position",
+    "top",                   "right",
+    "bottom",                "left",
+    "z-index",               "overflow-x",
+    "overflow-y",
+};
+const text_property_names = [_][]const u8{
+    "font-size", "font-family", "font-weight", "font-style", "line-height",
+    "direction",
+};
 
 // Keep HTML's default presentation in the same CSS engine as author rules.
 // This is a UA-origin stylesheet, not a second cascade implementation. It is
@@ -473,6 +509,14 @@ _style_engine: StyleEngine,
 /// Per-frame Taffy/Parley owner. It stores only layout state; the Zig DOM is
 /// still authoritative and remains the source of node identities and styles.
 _layout_engine: LayoutEngine,
+// The layout tree is a projection of the authoritative Zig DOM. These maps
+// are rebuilt as one batch after invalidation; they never own or duplicate DOM
+// nodes and all Rust handles die with the per-document layout session.
+_layout_node_handles: std.AutoHashMapUnmanaged(*Node, u64) = .empty,
+_layout_geometry: std.AutoHashMapUnmanaged(*Node, LayoutGeometryAbi) = .empty,
+_layout_generation: u64 = 0,
+_layout_dirty: bool = true,
+_layout_building: bool = false,
 /// Optional integration hook for embedders that observe style lifecycle.
 _style_engine_hooks: ?StyleEngineHooks = null,
 _style_engine_document: ?*Document = null,
@@ -809,6 +853,10 @@ fn beginStyleDocumentLifecycle(self: *Frame, document: *Document) void {
 
     self._style_engine_generation +%= 1;
     _ = self._layout_engine.reset();
+    self._layout_node_handles.clearRetainingCapacity();
+    self._layout_geometry.clearRetainingCapacity();
+    self._layout_generation = 0;
+    self._layout_dirty = true;
     _ = self._style_engine.resetDocument();
     self._stylo_node_lookup.clearRetainingCapacity();
     self._style_engine_document = document;
@@ -824,6 +872,10 @@ fn endStyleDocumentLifecycle(self: *Frame) void {
     const document = self._style_engine_document orelse {
         self._style_engine_active = false;
         _ = self._layout_engine.reset();
+        self._layout_node_handles.clearRetainingCapacity();
+        self._layout_geometry.clearRetainingCapacity();
+        self._layout_generation = 0;
+        self._layout_dirty = true;
         self._stylo_node_lookup.clearRetainingCapacity();
         return;
     };
@@ -832,6 +884,10 @@ fn endStyleDocumentLifecycle(self: *Frame) void {
         hooks.document_detached(hooks.context, document, generation);
     }
     _ = self._layout_engine.reset();
+    self._layout_node_handles.clearRetainingCapacity();
+    self._layout_geometry.clearRetainingCapacity();
+    self._layout_generation = 0;
+    self._layout_dirty = true;
     self._style_engine_document = null;
     self._style_engine_active = false;
     self._style_engine_generation +%= 1;
@@ -841,6 +897,7 @@ fn endStyleDocumentLifecycle(self: *Frame) void {
 /// Notify Stylo after the authoritative Zig DOM has changed.
 pub fn invalidateStyleEngine(self: *Frame, kind: StyleEngineInvalidation, node: ?*Node) void {
     _ = self._layout_engine.invalidate();
+    self._layout_dirty = true;
     if (!self._style_engine_active or self._realm_state != .active) return;
     const document = self._style_engine_document orelse return;
     if (document != self.document or document._frame != self) return;
@@ -888,6 +945,137 @@ pub fn styleEngine(self: *Frame) *StyleEngine {
 
 pub fn layoutEngine(self: *Frame) *LayoutEngine {
     return &self._layout_engine;
+}
+
+fn appendLayoutProperties(
+    self: *Frame,
+    node: *Node,
+    properties: *std.ArrayListUnmanaged(LayoutProperty),
+) bool {
+    const node_id = self.styleNodeId(node);
+    for (layout_property_names) |name| {
+        var output = self.call_arena.alloc(u8, 4096) catch return false;
+        var result = self._style_engine.layoutProperty(node_id, name, output);
+        if (result.status == .output_buffer_too_small and result.bytes_written > output.len) {
+            output = self.call_arena.alloc(u8, result.bytes_written) catch return false;
+            result = self._style_engine.layoutProperty(node_id, name, output);
+        }
+        if (!result.isOk()) return false;
+        const value = output[0..result.bytes_written];
+        properties.append(self.call_arena, .{ .name = name, .value = value }) catch return false;
+    }
+    return true;
+}
+
+fn appendTextProperties(
+    self: *Frame,
+    node: *Node,
+    properties: *std.ArrayListUnmanaged(LayoutProperty),
+) bool {
+    const node_id = self.styleNodeId(node);
+    for (text_property_names) |name| {
+        var output = self.call_arena.alloc(u8, 4096) catch return false;
+        var result = self._style_engine.layoutProperty(node_id, name, output);
+        if (result.status == .output_buffer_too_small and result.bytes_written > output.len) {
+            output = self.call_arena.alloc(u8, result.bytes_written) catch return false;
+            result = self._style_engine.layoutProperty(node_id, name, output);
+        }
+        if (!result.isOk()) return false;
+        properties.append(self.call_arena, .{
+            .name = name,
+            .value = output[0..result.bytes_written],
+        }) catch return false;
+    }
+    return true;
+}
+
+fn buildLayoutNode(self: *Frame, node: *Node) ?u64 {
+    const handle = self._layout_engine.newNode() orelse return null;
+    self._layout_node_handles.put(self.arena, node, handle) catch return null;
+
+    switch (node._type) {
+        .element => {
+            var properties: std.ArrayListUnmanaged(LayoutProperty) = .empty;
+            if (!self.appendLayoutProperties(node, &properties)) return null;
+            const viewport = self.windowProfile();
+            if (self._layout_engine.setComputedStyle(
+                handle,
+                properties.items,
+                @floatFromInt(viewport.inner_width),
+                @floatFromInt(viewport.inner_height),
+            ) != .ok) return null;
+        },
+        .cdata => {
+            if (self._layout_engine.setText(handle, node.getData().str()) != .ok) return null;
+            if (node.parentElement()) |parent| {
+                var text_properties: std.ArrayListUnmanaged(LayoutProperty) = .empty;
+                if (!self.appendTextProperties(parent.asNode(), &text_properties)) return null;
+                if (self._layout_engine.setTextStyle(handle, text_properties.items) != .ok) return null;
+            }
+        },
+        else => {},
+    }
+
+    var child = node.firstChild();
+    while (child) |child_node| : (child = child_node.nextSibling()) {
+        switch (child_node._type) {
+            .element, .cdata => {
+                const child_handle = self.buildLayoutNode(child_node) orelse return null;
+                if (self._layout_engine.appendChild(handle, child_handle) != .ok) return null;
+            },
+            else => {},
+        }
+    }
+    return handle;
+}
+
+/// Flush the single authoritative Zig DOM into Stylo/Taffy and cache one
+/// absolute snapshot per DOM node. This is intentionally synchronous: DOM
+/// geometry APIs require a current layout before returning a value.
+pub fn flushLayout(self: *Frame) bool {
+    if (!self._layout_engine.alive or self._realm_state != .active or self.document._frame != self) {
+        return false;
+    }
+    if (!self._layout_dirty and self._layout_generation == self._layout_engine.generation) return true;
+    if (self._layout_building) return false;
+    self._layout_building = true;
+    defer self._layout_building = false;
+
+    if (self._style_engine.prepareForLayout() != .ok) return false;
+    if (self._layout_engine.reset() != .ok) return false;
+    self._layout_node_handles.clearRetainingCapacity();
+    self._layout_geometry.clearRetainingCapacity();
+
+    const root_element = self.document.getDocumentElement() orelse return false;
+    const root_handle = self.buildLayoutNode(root_element.asNode()) orelse return false;
+    const viewport = self.windowProfile();
+    const viewport_width: f32 = @floatFromInt(viewport.inner_width);
+    const viewport_height: f32 = @floatFromInt(viewport.inner_height);
+    if (self._layout_engine.compute(root_handle, viewport_width, viewport_height) != .ok) return false;
+
+    var nodes: std.ArrayListUnmanaged(*Node) = .empty;
+    var handles: std.ArrayListUnmanaged(u64) = .empty;
+    defer nodes.deinit(self.call_arena);
+    defer handles.deinit(self.call_arena);
+    var iterator = self._layout_node_handles.iterator();
+    while (iterator.next()) |entry| {
+        nodes.append(self.call_arena, entry.key_ptr.*) catch return false;
+        handles.append(self.call_arena, entry.value_ptr.*) catch return false;
+    }
+    const snapshots = self.call_arena.alloc(LayoutGeometryAbi, handles.items.len) catch return false;
+    if (self._layout_engine.snapshotAbsolute(handles.items, snapshots) != .ok) return false;
+    for (nodes.items, snapshots) |node, geometry| {
+        self._layout_geometry.put(self.arena, node, geometry) catch return false;
+    }
+    self._layout_generation = self._layout_engine.generation;
+    self._layout_dirty = false;
+    return true;
+}
+
+pub fn layoutGeometry(self: *Frame, node: *Node) ?LayoutGeometryAbi {
+    if (!self.flushLayout()) return null;
+    if (self._layout_geometry.get(node)) |geometry| return geometry;
+    return null;
 }
 
 fn styloFrame(user_data: ?*anyopaque) ?*Frame {
