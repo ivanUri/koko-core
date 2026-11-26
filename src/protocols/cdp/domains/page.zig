@@ -160,8 +160,17 @@ fn navigateToHistoryEntry(cmd: *CDP.Command) !void {
         if (entry_id != params.entryId) continue;
         if (entry._url == null) return error.InvalidParams;
 
-        _ = try navigation.navigateInner(entry._url, .{ .traverse = index }, frame);
-        return cmd.sendResult(null, .{});
+        // Route history traversal through Session's root-navigation lifecycle.
+        // Calling Navigation.navigateInner here schedules work directly on
+        // the current frame; a CDP client is allowed to close the target
+        // immediately after this command, which could tear that frame down
+        // while the request still held its pointer and caused a SIGSEGV.
+        try bc.session.initiateRootNavigation(frame._frame_id, entry._url, .{
+            .reason = .history,
+            .cdp_id = cmd.input.id,
+            .kind = .{ .traverse = index },
+        });
+        return;
     }
 
     return error.InvalidParams;
