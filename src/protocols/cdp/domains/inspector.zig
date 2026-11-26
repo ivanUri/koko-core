@@ -16,13 +16,14 @@ const std = @import("std");
 const CDP = @import("../CDP.zig");
 
 pub fn processMessage(cmd: *CDP.Command) !void {
-    const action = std.meta.stringToEnum(enum {
+    _ = std.meta.stringToEnum(enum {
         enable,
         disable,
     }, cmd.input.action) orelse return error.UnknownMethod;
 
-    switch (action) {
-        .enable => return cmd.sendResult(null, .{}),
-        .disable => return cmd.sendResult(null, .{}),
-    }
+    // Inspector state is owned by V8's inspector session. Do not acknowledge
+    // these commands locally: a local success would make this domain diverge
+    // from the Debugger/Profiler domains, which are forwarded to V8 as well.
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    bc.callInspector(cmd.input.json);
 }
