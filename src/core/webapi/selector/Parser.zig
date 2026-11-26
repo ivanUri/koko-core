@@ -1649,6 +1649,32 @@ test "Selector: Parser.parseNthPattern" {
     }
 }
 
+test "Selector: Parser relative has and filtered nth-child" {
+    defer testing.reset();
+    const arena = testing.arena_allocator;
+
+    const has_selectors = try Parser.parseList(arena, ".card:has(> .flag)");
+    const has_part = has_selectors[0].first.parts[1].pseudo_class;
+    const relative = switch (has_part) {
+        .has => |selectors| selectors[0].relative_combinator,
+        else => null,
+    };
+    try testing.expectEqual(Combinator.child, relative.?);
+
+    const nth_selectors = try Parser.parseList(arena, "li:nth-child(2 of .x)");
+    const nth_part = nth_selectors[0].first.parts[1].pseudo_class;
+    const filtered = switch (nth_part) {
+        .nth_child => |pattern| pattern,
+        else => return error.TestUnexpectedResult,
+    };
+    try testing.expectEqual(@as(i32, 0), filtered.a);
+    try testing.expectEqual(@as(i32, 2), filtered.b);
+    try testing.expectEqual(@as(usize, 1), filtered.of.?.len);
+
+    const forgiving = try Parser.parseList(arena, ".card:has(> :is(.a, .b))");
+    try testing.expectEqual(@as(usize, 1), forgiving.len);
+}
+
 test "Selector: Parser HTML tag aliases" {
     defer testing.reset();
     const arena = testing.arena_allocator;
