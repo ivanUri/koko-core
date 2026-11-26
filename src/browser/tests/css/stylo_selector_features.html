@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<script src="stylo_fixture.js"></script>
+<style>
+  .card:has(> .flag) p { color: rgb(201, 31, 31); }
+  li:nth-child(2n of .x) { color: rgb(31, 101, 201); }
+  #target:target { color: rgb(31, 171, 91); }
+</style>
+<div class="card"><span class="flag"></span><p id="has-result">has</p></div>
+<ul><li class="x" id="nth-one">one</li><li>skip</li><li class="x" id="nth-two">two</li></ul>
+<a id="jump" href="#target">jump</a><div id="target">target</div>
+<script>
+  styloFixture.install(() => {
+    const has = styloFixture.readStyle(document.querySelector("#has-result"), ["color"]);
+    if (has.status) return has;
+    const nth = styloFixture.readStyle(document.querySelector("#nth-two"), ["color"]);
+    if (nth.status) return nth;
+    document.querySelector("#jump").click();
+    const target = styloFixture.readStyle(document.querySelector("#target"), ["color"]);
+    if (target.status) return target;
+    return { status: "pass", observations: { has, nth, target, hash: location.hash } };
+  });
+</script>

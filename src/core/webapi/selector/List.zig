@@ -640,8 +640,8 @@ fn matchesPseudoClass(el: *Node.Element, pseudo: Selector.PseudoClass, scope: *N
         .first_of_type => return isFirstOfType(el),
         .last_of_type => return isLastOfType(el),
         .only_of_type => return isFirstOfType(el) and isLastOfType(el),
-        .nth_child => |pattern| return matchesNthChild(el, pattern),
-        .nth_last_child => |pattern| return matchesNthLastChild(el, pattern),
+        .nth_child => |pattern| return matchesNthChild(el, pattern, scope, frame),
+        .nth_last_child => |pattern| return matchesNthLastChild(el, pattern, scope, frame),
         .nth_of_type => |pattern| return matchesNthOfType(el, pattern),
         .nth_last_of_type => |pattern| return matchesNthLastOfType(el, pattern),
 
@@ -681,27 +681,43 @@ fn matchesPseudoClass(el: *Node.Element, pseudo: Selector.PseudoClass, scope: *N
         },
         .has => |selectors| {
             for (selectors) |selector| {
-                var child = node.firstChild();
-                while (child) |c| {
-                    const child_el = c.is(Node.Element) orelse {
-                        child = c.nextSibling();
-                        continue;
-                    };
-
-                    if (matches(child_el.asNode(), selector, scope, frame)) {
-                        return true;
-                    }
-
-                    if (matchesHasDescendant(child_el, selector, scope, frame)) {
-                        return true;
-                    }
-
-                    child = c.nextSibling();
-                }
+                if (matchesRelativeHas(node, selector, scope, frame)) return true;
             }
             return false;
         },
     }
+}
+
+fn matchesRelativeHas(subject: *Node, selector: Selector.Selector, scope: *Node, frame: *Frame) bool {
+    const relation = selector.relative_combinator orelse .descendant;
+    switch (relation) {
+        .child, .next_sibling, .subsequent_sibling, .descendant => {},
+    }
+    if (relation == .child) {
+        var child = subject.firstChild();
+        while (child) |candidate| {
+            if (candidate.is(Node.Element)) |element| if (matches(element.asNode(), selector, scope, frame)) return true;
+            child = candidate.nextSibling();
+        }
+        return false;
+    }
+    if (relation == .next_sibling) {
+        var sibling = subject.nextSibling();
+        while (sibling) |candidate| {
+            if (candidate.is(Node.Element)) |element| return matches(element.asNode(), selector, scope, frame);
+            sibling = candidate.nextSibling();
+        }
+        return false;
+    }
+    var candidate = if (relation == .subsequent_sibling) subject.nextSibling() else subject.firstChild();
+    while (candidate) |current| {
+        if (current.is(Node.Element)) |element| {
+            if (matches(element.asNode(), selector, scope, frame)) return true;
+            if (relation == .descendant and matchesHasDescendant(element, selector, scope, frame)) return true;
+        }
+        candidate = current.nextSibling();
+    }
+    return false;
 }
 
 fn matchesHasDescendant(el: *Node.Element, selector: Selector.Selector, scope: *Node, frame: *Frame) bool {
@@ -819,13 +835,13 @@ fn isLastOfType(el: *Node.Element) bool {
     return true;
 }
 
-fn matchesNthChild(el: *Node.Element, pattern: Selector.NthPattern) bool {
-    const index = getChildIndex(el) orelse return false;
+fn matchesNthChild(el: *Node.Element, pattern: Selector.NthPattern, scope: *Node, frame: *Frame) bool {
+    const index = getChildIndex(el, pattern.of, scope, frame) orelse return false;
     return matchesNthPattern(index, pattern);
 }
 
-fn matchesNthLastChild(el: *Node.Element, pattern: Selector.NthPattern) bool {
-    const index = getChildIndexFromEnd(el) orelse return false;
+fn matchesNthLastChild(el: *Node.Element, pattern: Selector.NthPattern, scope: *Node, frame: *Frame) bool {
+    const index = getChildIndexFromEnd(el, pattern.of, scope, frame) orelse return false;
     return matchesNthPattern(index, pattern);
 }
 
@@ -839,34 +855,42 @@ fn matchesNthLastOfType(el: *Node.Element, pattern: Selector.NthPattern) bool {
     return matchesNthPattern(index, pattern);
 }
 
-fn getChildIndex(el: *Node.Element) ?usize {
+fn getChildIndex(el: *Node.Element, filter: ?[]const Selector.Selector, scope: *Node, frame: *Frame) ?usize {
     const node = el.asNode();
     var index: usize = 1;
     var sibling = node.previousSibling();
 
     while (sibling) |s| {
-        if (s.is(Node.Element)) |_| {
-            index += 1;
+        if (s.is(Node.Element)) |sibling_el| {
+            if (matchesNthFilter(sibling_el.asNode(), filter, scope, frame)) index += 1;
         }
         sibling = s.previousSibling();
     }
 
+    if (!matchesNthFilter(node, filter, scope, frame)) return null;
     return index;
 }
 
-fn getChildIndexFromEnd(el: *Node.Element) ?usize {
+fn getChildIndexFromEnd(el: *Node.Element, filter: ?[]const Selector.Selector, scope: *Node, frame: *Frame) ?usize {
     const node = el.asNode();
     var index: usize = 1;
     var sibling = node.nextSibling();
 
     while (sibling) |s| {
-        if (s.is(Node.Element)) |_| {
-            index += 1;
+        if (s.is(Node.Element)) |sibling_el| {
+            if (matchesNthFilter(sibling_el.asNode(), filter, scope, frame)) index += 1;
         }
         sibling = s.nextSibling();
     }
 
+    if (!matchesNthFilter(node, filter, scope, frame)) return null;
     return index;
+}
+
+fn matchesNthFilter(node: *Node, filter: ?[]const Selector.Selector, scope: *Node, frame: *Frame) bool {
+    const selectors = filter orelse return true;
+    for (selectors) |selector| if (matches(node, selector, scope, frame)) return true;
+    return false;
 }
 
 fn getTypeIndex(el: *Node.Element) ?usize {

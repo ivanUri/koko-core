@@ -3430,6 +3430,10 @@ fn scheduleNavigationWithArena(originator: *Frame, arena: Allocator, request_url
         );
         target.document._url = target.url;
         try target.navigationStore().updateEntries(target.url, opts.kind, target, true);
+        // Fragment-only navigation changes :target without changing the
+        // stylesheet snapshot. Invalidate computed styles through Stylo so
+        // both the old and new target are reevaluated on the next flush.
+        target.invalidateStyleEngine(.document, null);
         // don't defer this, the caller is responsible for freeing it on error
         session.releaseArena(arena);
         return;
@@ -9097,6 +9101,10 @@ test "Frame: style engine DOM invalidation follows stylesheet and tree mutations
 
 test "Frame: style engine lifecycle survives navigation teardown" {
     try testing.htmlRunner("regression/style_engine_navigation_teardown.html", .{});
+}
+
+test "Frame: Stylo selector level 4 and fragment target state" {
+    try testing.htmlRunner("css/stylo_selector_features.html", .{});
 }
 
 test "Frame: srcdoc History URL rewriting follows about-srcdoc rules" {

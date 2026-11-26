@@ -188,6 +188,11 @@ impl Engine {
             // Expose the CSS Text values used by the computed-style bridge.
             stylo_static_prefs::set_pref!("layout.css.hyphens.enabled", true);
             stylo_static_prefs::set_pref!("layout.css.text-wrap-style.balance.enabled", true);
+            // Level 4 selectors are implemented by Stylo's selector parser and
+            // matcher. Keep the feature gates enabled at the engine boundary so
+            // callers do not need a second selector implementation in Zig.
+            stylo_static_prefs::set_pref!("layout.css.has-selector.enabled", true);
+            stylo_static_prefs::set_pref!("layout.css.nth-child-of.enabled", true);
         });
         let shared_lock = Rc::new(style::shared_lock::SharedRwLock::new());
         let mut stylists = HashMap::new();
@@ -1402,6 +1407,30 @@ mod tests {
         assert_eq!(engine.replace_stylesheets(&[input]), Ok(()));
         assert_eq!(engine.stylesheet_count(), 1);
         assert_eq!(engine.invalidation_generation, 1);
+    }
+
+    #[test]
+    fn selector_level4_features_are_parsed_by_stylo() {
+        let mut engine = Engine::new(tree_callbacks());
+        let css = b".card:has(> :is(.a, .b)) p { color: red } \
+                    li:nth-child(2n of .x) { color: blue }";
+        let input = StyloStylesheetInput {
+            sheet_id: 1,
+            scope_id: 0,
+            origin: StyloStylesheetOrigin::Author,
+            enabled: 1,
+            reserved: [0; 7],
+            css: StyloSlice {
+                ptr: css.as_ptr(),
+                len: css.len(),
+            },
+        };
+
+        // Both selectors must be accepted by Stylo's stylesheet parser. The
+        // DOM adapter remains the sole source of matching nodes; this test is
+        // deliberately not backed by a second Rust DOM.
+        assert_eq!(engine.replace_stylesheets(&[input]), Ok(()));
+        assert_eq!(engine.stylesheet_count(), 1);
     }
 
     #[test]

@@ -400,14 +400,14 @@ fn pseudoClass(self: *Parser, arena: Allocator) !Selector.PseudoClass {
         self.input = self.input[1..]; // Skip '('
 
         if (std.mem.eql(u8, name, "nth-child")) {
-            const pattern = try self.parseNthPattern();
+            const pattern = try self.parseNthPatternWithOf(arena);
             if (self.peek() != ')') return error.InvalidPseudoClass;
             self.input = self.input[1..];
             return .{ .nth_child = pattern };
         }
 
         if (std.mem.eql(u8, name, "nth-last-child")) {
-            const pattern = try self.parseNthPattern();
+            const pattern = try self.parseNthPatternWithOf(arena);
             if (self.peek() != ')') return error.InvalidPseudoClass;
             self.input = self.input[1..];
             return .{ .nth_last_child = pattern };
@@ -440,7 +440,7 @@ fn pseudoClass(self: *Parser, arena: Allocator) !Selector.PseudoClass {
                 if (self.peek() == 0) return error.InvalidPseudoClass;
 
                 // Parse a full selector (with potential combinators and compounds)
-                const selector = try parse(arena, self.consumeUntilCommaOrParen());
+                const selector = try self.parseRelativeSelector(arena);
                 try selectors.append(arena, selector);
 
                 _ = self.skipSpaces();
@@ -620,6 +620,49 @@ fn pseudoClass(self: *Parser, arena: Allocator) !Selector.PseudoClass {
     }
 
     return error.UnknownPseudoClass;
+}
+
+fn parseRelativeSelector(self: *Parser, arena: Allocator) !Selector.Selector {
+    _ = self.skipSpaces();
+    var relative_combinator: ?Combinator = null;
+    switch (self.peek()) {
+        '>' => relative_combinator = .child,
+        '+' => relative_combinator = .next_sibling,
+        '~' => relative_combinator = .subsequent_sibling,
+        else => {},
+    }
+    if (relative_combinator != null) self.input = self.input[1..];
+    _ = self.skipSpaces();
+    if (self.peek() == 0 or self.peek() == ')') return error.InvalidPseudoClass;
+    var selector = try parse(arena, self.consumeUntilCommaOrParen());
+    selector.relative_combinator = relative_combinator;
+    return selector;
+}
+
+fn parseNthPatternWithOf(self: *Parser, arena: Allocator) !Selector.NthPattern {
+    var pattern = try self.parseNthPattern();
+    _ = self.skipSpaces();
+    if (std.mem.startsWith(u8, self.input, "of")) {
+        if (self.input.len > 2 and (std.ascii.isAlphanumeric(self.input[2]) or self.input[2] == '-' or self.input[2] == '_')) {
+            return pattern;
+        }
+        self.input = self.input[2..];
+        _ = self.skipSpaces();
+        if (self.peek() == 0 or self.peek() == ')') return error.InvalidPseudoClass;
+        var filters: std.ArrayList(Selector.Selector) = .empty;
+        while (true) {
+            const selector_input = self.consumeUntilCommaOrParen();
+            if (std.mem.trim(u8, selector_input, &std.ascii.whitespace).len == 0) return error.InvalidPseudoClass;
+            try filters.append(arena, try parse(arena, selector_input));
+            _ = self.skipSpaces();
+            if (self.peek() != ',') break;
+            self.input = self.input[1..];
+            _ = self.skipSpaces();
+            if (self.peek() == 0 or self.peek() == ')') return error.InvalidPseudoClass;
+        }
+        pattern.of = filters.items;
+    }
+    return pattern;
 }
 
 fn nthKeywordBoundary(start: []const u8, kw_len: usize) bool {

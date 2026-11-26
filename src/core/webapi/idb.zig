@@ -894,9 +894,9 @@ pub const IDBIndex = struct {
                 try self.request.succeed(try scope.local.zigValueToJs(entries.len, .{}));
             } else {
                 const max = self.limit orelse std.math.maxInt(u32);
-                const count = @min(entries.len, @as(usize, max));
-                const result = scope.local.newArray(@intCast(count));
-                for (entries[0..count], 0..) |entry, i| {
+                const entry_count = @min(entries.len, @as(usize, max));
+                const result = scope.local.newArray(@intCast(entry_count));
+                for (entries[0..entry_count], 0..) |entry, i| {
                     const value = if (self.keys_only) entry.record.key.local(&scope.local) else entry.record.value.local(&scope.local);
                     _ = try result.set(@intCast(i), value, .{});
                 }
@@ -941,7 +941,9 @@ pub const IDBIndex = struct {
             ._frame = self._frame,
         });
         self._transaction.requestStarted();
-        errdefer if (self._transaction._pending_requests > 0) self._transaction._pending_requests -= 1;
+        errdefer {
+            if (self._transaction._pending_requests > 0) self._transaction._pending_requests -= 1;
+        }
         const callback = try self._frame._factory.create(IndexRead{
             .request = request,
             .index = self,
@@ -1091,30 +1093,30 @@ pub const IDBObjectStore = struct {
         const owned_name = try arena.dupe(u8, name);
         const owned_path = try arena.dupe(u8, try path.toSlice());
         if (self._data.indexes.contains(owned_name)) return error.ConstraintError;
-        const index = try arena.create(IndexData);
-        index.* = .{ .name = owned_name, .key_path = owned_path };
+        const index_data = try arena.create(IndexData);
+        index_data.* = .{ .name = owned_name, .key_path = owned_path };
         if (options) |opts| {
-            if (optionalProperty(opts, "unique")) |unique| index.unique = unique.toBool();
-            if (optionalProperty(opts, "multiEntry")) |multi_entry| index.multi_entry = multi_entry.toBool();
+            if (optionalProperty(opts, "unique")) |unique| index_data.unique = unique.toBool();
+            if (optionalProperty(opts, "multiEntry")) |multi_entry| index_data.multi_entry = multi_entry.toBool();
         }
-        try self._data.indexes.put(arena, owned_name, index);
+        try self._data.indexes.put(arena, owned_name, index_data);
         return frame._factory.create(IDBIndex{
             ._frame = frame,
             ._transaction = transaction,
             ._store = self._data,
-            ._data = index,
+            ._data = index_data,
         });
     }
 
     pub fn index(self: *IDBObjectStore, name: []const u8, frame: *Frame) !*IDBIndex {
         const transaction = self._transaction orelse return error.TransactionInactiveError;
         if (!transaction._active) return error.TransactionInactiveError;
-        const index = self._data.indexes.get(name) orelse return error.NotFoundError;
+        const index_data = self._data.indexes.get(name) orelse return error.NotFoundError;
         return frame._factory.create(IDBIndex{
             ._frame = frame,
             ._transaction = transaction,
             ._store = self._data,
-            ._data = index,
+            ._data = index_data,
         });
     }
 
@@ -1201,9 +1203,9 @@ pub const IDBObjectStore = struct {
                 }
             }
             sortEntries(local, entries.items, false);
-            const count: u32 = @intCast(@min(entries.items.len, @as(usize, max)));
-            const array = local.newArray(count);
-            for (entries.items[0..count], 0..) |entry, i| {
+            const entry_count: u32 = @intCast(@min(entries.items.len, @as(usize, max)));
+            const array = local.newArray(entry_count);
+            for (entries.items[0..entry_count], 0..) |entry, i| {
                 const source = if (self.keys_only) entry.record.key else entry.record.value;
                 _ = try array.set(@intCast(i), source.local(local), .{});
             }
@@ -1235,7 +1237,7 @@ pub const IDBObjectStore = struct {
         const transaction = self._transaction orelse return error.TransactionInactiveError;
         if (!transaction._active) return error.TransactionInactiveError;
         const normalized_query = try queryFromValue(query);
-        const request = try self.request();
+        const cursor_request = try self.request();
         var entries: std.ArrayListUnmanaged(CursorEntry) = .empty;
         var records = self._data.records.valueIterator();
         while (records.next()) |record| {
@@ -1247,7 +1249,7 @@ pub const IDBObjectStore = struct {
         sortEntries(frame.js.local.?, entries.items, reverse);
         const cursor = try frame._factory.create(IDBCursor{
             ._frame = frame,
-            ._request = request,
+            ._request = cursor_request,
             ._transaction = transaction,
             ._entries = try entries.toOwnedSlice(frame._page.frame_arena),
             ._direction = try frame._page.frame_arena.dupe(u8, direction orelse "next"),

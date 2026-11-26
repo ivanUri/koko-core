@@ -199,6 +199,8 @@ pub const PseudoClass = union(enum) {
 pub const NthPattern = struct {
     a: i32, // coefficient (e.g., 2 in "2n+1")
     b: i32, // offset (e.g., 1 in "2n+1")
+    // CSS Selectors 4 filtered sibling list: :nth-child(An+B of S).
+    of: ?[]const Selector = null,
 
     // Common patterns:
     // odd: a=2, b=1
@@ -213,21 +215,28 @@ pub const NthPattern = struct {
         const b = self.b;
         if (a == 0) {
             try writer.print("{d}", .{b});
-            return;
-        }
-        if (a == 1) {
-            try writer.writeByte('n');
-        } else if (a == -1) {
-            try writer.writeAll("-n");
         } else {
-            try writer.print("{d}n", .{a});
+            if (a == 1) {
+                try writer.writeByte('n');
+            } else if (a == -1) {
+                try writer.writeAll("-n");
+            } else {
+                try writer.print("{d}n", .{a});
+            }
+            if (b != 0) {
+                if (b > 0) {
+                    try writer.print("+{d}", .{b});
+                } else {
+                    try writer.print("{d}", .{b});
+                }
+            }
         }
-        if (b == 0) return;
-        if (b > 0) {
-            try writer.print("+{d}", .{b});
-        } else {
-            // Negative b already includes '-'.
-            try writer.print("{d}", .{b});
+        if (self.of) |selectors| {
+            try writer.writeAll(" of ");
+            for (selectors, 0..) |selector, index| {
+                if (index != 0) try writer.writeAll(", ");
+                try selector.format(writer);
+            }
         }
     }
 };
@@ -389,8 +398,19 @@ pub const Segment = struct {
 pub const Selector = struct {
     first: Compound,
     segments: []const Segment,
+    relative_combinator: ?Combinator = null,
 
     pub fn format(self: Selector, writer: *std.Io.Writer) !void {
+        if (self.relative_combinator) |combinator| {
+            try writer.writeByte(' ');
+            try writer.writeByte(switch (combinator) {
+                .child => '>',
+                .next_sibling => '+',
+                .subsequent_sibling => '~',
+                .descendant => ' ',
+            });
+            try writer.writeByte(' ');
+        }
         try self.first.format(writer);
         for (self.segments) |segment| {
             try segment.format(writer);
