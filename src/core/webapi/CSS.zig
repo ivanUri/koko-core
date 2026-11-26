@@ -16,9 +16,44 @@ const js = @import("../js/js.zig");
 const Frame = @import("../browser/Frame.zig");
 
 const CSS = @This();
-_pad: bool = false,
+pub const PropertyRegistration = struct { name: []const u8, syntax: []const u8, inherits: bool, initial_value: []const u8 };
+_registrations: std.ArrayListUnmanaged(PropertyRegistration) = .empty,
 
 pub const init: CSS = .{};
+
+pub fn getRegisteredProperty(self: *const CSS, name: []const u8) ?PropertyRegistration {
+    for (self._registrations.items) |registration| if (std.mem.eql(u8, registration.name, name)) return registration;
+    return null;
+}
+
+pub fn valueMatchesSyntax(syntax_: []const u8, value_: []const u8) bool {
+    const syntax = std.mem.trim(u8, syntax_, &std.ascii.whitespace);
+    const value = std.mem.trim(u8, value_, &std.ascii.whitespace);
+    if (value.len == 0) return false;
+    if (std.mem.eql(u8, syntax, "*")) return true;
+    if (std.mem.eql(u8, syntax, "<length>") or std.mem.eql(u8, syntax, "<length-percentage>")) {
+        const percent = std.mem.endsWith(u8, value, "%");
+        if (percent and std.mem.eql(u8, syntax, "<length>")) return false;
+        const unit_len: ?usize = if (percent) 1 else if (std.mem.endsWith(u8, value, "rem")) 3 else if (std.mem.endsWith(u8, value, "px") or std.mem.endsWith(u8, value, "em") or
+            std.mem.endsWith(u8, value, "vh") or std.mem.endsWith(u8, value, "vw")) 2 else null;
+        if (unit_len) |len| return std.fmt.parseFloat(f64, value[0 .. value.len - len]) != error.InvalidCharacter;
+    }
+    if (std.mem.eql(u8, syntax, "<percentage>")) return std.mem.endsWith(u8, value, "%");
+    if (std.mem.eql(u8, syntax, "<number>")) return std.fmt.parseFloat(f64, value) != error.InvalidCharacter;
+    if (std.mem.eql(u8, syntax, "<integer>")) if (std.fmt.parseFloat(f64, value)) |number| return @trunc(number) == number else |_| return false;
+    if (std.mem.eql(u8, syntax, "<color>")) return value[0] == '#' or std.ascii.startsWithIgnoreCase(value, "rgb(") or std.ascii.startsWithIgnoreCase(value, "rgba(") or std.ascii.eqlIgnoreCase(value, "transparent");
+    return false;
+}
+
+const RegisterPropertyOptions = struct { name: []const u8, syntax: []const u8 = "*", inherits: bool = true, initialValue: []const u8 = "" };
+
+pub fn registerProperty(self: *CSS, options: RegisterPropertyOptions, frame: *Frame) !void {
+    if (options.name.len < 3 or !std.mem.startsWith(u8, options.name, "--")) return error.SyntaxError;
+    if (self.getRegisteredProperty(options.name) != null) return error.InvalidState;
+    if (!std.mem.eql(u8, options.syntax, "*") and (options.initialValue.len == 0 or !valueMatchesSyntax(options.syntax, options.initialValue))) return error.SyntaxError;
+    try self._registrations.append(frame.arena, .{ .name = try frame.dupeString(options.name), .syntax = try frame.dupeString(options.syntax), .inherits = options.inherits, .initial_value = try frame.dupeString(options.initialValue) });
+    frame.styleSheetChanged(null);
+}
 
 pub fn parseDimension(value: []const u8) ?f64 {
     const trimmed = std.mem.trim(u8, value, &std.ascii.whitespace);
@@ -184,6 +219,7 @@ pub const JsApi = struct {
 
     pub const escape = bridge.function(CSS.escape, .{});
     pub const supports = bridge.function(CSS.supports, .{});
+    pub const registerProperty = bridge.function(CSS.registerProperty, .{ .dom_exception = true });
 };
 
 const testing = @import("../../testing/testing.zig");

@@ -27,6 +27,7 @@ const Selector = @import("../webapi/selector/Selector.zig");
 const Animation = @import("../webapi/animation/Animation.zig");
 const DOMStringMap = @import("../webapi/element/DOMStringMap.zig");
 const CSSStyleProperties = @import("../webapi/css/CSSStyleProperties.zig");
+const TypedOM = @import("../webapi/css/TypedOM.zig");
 const ClientRectsIntelligent = @import("../../runtime/profile/ClientRectsIntelligent.zig");
 const TextMetrics = @import("../webapi/canvas/TextMetrics.zig");
 const testing = @import("../../testing/testing.zig");
@@ -996,6 +997,9 @@ pub fn getOrCreateStyle(self: *Element, frame: *Frame) !*CSSStyleProperties {
         gop.value_ptr.* = try CSSStyleProperties.init(self, false, owner_frame);
     }
     return gop.value_ptr.*;
+}
+pub fn computedStyleMap(self: *Element, frame: *Frame) !*TypedOM {
+    return TypedOM.init(self, self.asNode().ownerFrame(frame));
 }
 
 fn getStyle(self: *Element, frame: *Frame) ?*CSSStyleProperties {
@@ -3473,6 +3477,7 @@ pub const JsApi = struct {
     pub const classList = bridge.accessor(Element.getClassList, Element.setClassList, .{});
     pub const dataset = bridge.accessor(Element.getDataset, null, .{});
     pub const style = bridge.accessor(Element.getOrCreateStyle, null, .{});
+    pub const computedStyleMap = bridge.function(Element.computedStyleMap, .{});
     pub const attributes = bridge.accessor(Element.getAttributeNamedNodeMap, null, .{});
     pub const hasAttribute = bridge.function(Element.hasAttribute, .{});
     pub const hasAttributes = bridge.function(Element.hasAttributes, .{});

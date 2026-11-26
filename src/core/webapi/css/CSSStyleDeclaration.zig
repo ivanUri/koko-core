@@ -20,6 +20,7 @@ const StyleEngine = @import("../../browser/StyleEngine.zig").StyleEngine;
 const js = @import("../../js/js.zig");
 const Frame = @import("../../browser/Frame.zig");
 const Element = @import("../../dom/Element.zig");
+const CSS = @import("../CSS.zig");
 const CSSRule = @import("CSSRule.zig");
 const ComputedStyleProps = @import("computed_style_properties.zig");
 
@@ -217,6 +218,10 @@ fn invalidateInlineStyle(self: *const CSSStyleDeclaration, style_frame: *Frame) 
 
 fn getComputedPropertyValue(self: *const CSSStyleDeclaration, name: String, style_frame: *Frame) []const u8 {
     const stylo = queryStylo(self, name, style_frame);
+    if (std.mem.startsWith(u8, name.str(), "--")) if (style_frame.window.getCSS().getRegisteredProperty(name.str())) |registration| {
+        if (stylo.value) |value| if (CSS.valueMatchesSyntax(registration.syntax, value) or registration.inherits) return value;
+        return registration.initial_value;
+    };
     if (stylo.value) |value| return value;
     reportStyloComputedReadFailure("computed-read", name.str(), stylo.status);
     // Stylo is authoritative for computed style. Do not synthesize a value
@@ -629,6 +634,7 @@ fn normalizePropertyValue(arena: Allocator, property_name: []const u8, value: []
             return single;
         }
     }
+    if (std.ascii.startsWithIgnoreCase(value, "rgb(") or std.ascii.startsWithIgnoreCase(value, "rgba(")) if (canonicalizeRgbCommas(arena, value)) |canonical| return canonical;
 
     // Canonicalize anchor-size() function: anchor name (dashed ident) comes before size keyword
     if (std.mem.indexOf(u8, value, "anchor-size(")) |idx| {
@@ -644,6 +650,21 @@ fn normalizePropertyValue(arena: Allocator, property_name: []const u8, value: []
     }
 
     return value;
+}
+
+fn canonicalizeRgbCommas(arena: Allocator, value: []const u8) ?[]const u8 {
+    var compact = false;
+    for (value, 0..) |c, i| if (c == ',' and (i + 1 == value.len or !std.ascii.isWhitespace(value[i + 1]))) {
+        compact = true;
+        break;
+    };
+    if (!compact) return null;
+    var out = std.Io.Writer.Allocating.init(arena);
+    for (value, 0..) |c, i| {
+        out.writer.writeByte(c) catch return null;
+        if (c == ',' and (i + 1 == value.len or !std.ascii.isWhitespace(value[i + 1]))) out.writer.writeByte(' ') catch return null;
+    }
+    return out.written();
 }
 
 // Canonicalize anchor-size() so that the dashed ident (anchor name) comes before the size keyword.
