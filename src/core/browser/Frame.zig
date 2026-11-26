@@ -947,7 +947,20 @@ pub fn invalidateStyleEngine(self: *Frame, kind: StyleEngineInvalidation, node: 
                 .attribute => .attributes,
                 .stylesheet, .adopted_stylesheet => unreachable,
             };
-            _ = self._style_engine.invalidateDom(if (node) |n| self.styleNodeId(n) else 0, engine_kind);
+            // A document-level state change (for example a fragment
+            // navigation changing :target) has no single mutated element.
+            // Use the document node as the invalidation anchor so Stylo can
+            // coalesce it with other DOM invalidations without rebuilding the
+            // stylesheet snapshot.
+            const invalidation_node = if (node) |n|
+                self.styleNodeId(n)
+            else if (kind == .document)
+                self.styleNodeId(self.document.asNode())
+            else
+                0;
+            if (invalidation_node != 0) {
+                _ = self._style_engine.invalidateDom(invalidation_node, engine_kind);
+            }
         },
     }
     if (self._style_engine_hooks) |hooks| {
@@ -3420,6 +3433,7 @@ fn scheduleNavigationWithArena(originator: *Frame, arena: Allocator, request_url
     if (!opts.force and is_fragment_navigation and
         !std.mem.eql(u8, target.url, resolved_url))
     {
+        const old_url = target.url;
         target.url = try target.arena.dupeZ(u8, resolved_url);
         // Location has stable identity for the lifetime of a Window. Keep JS
         // references live while updating the URL owned by this context.
@@ -3434,6 +3448,14 @@ fn scheduleNavigationWithArena(originator: *Frame, arena: Allocator, request_url
         // stylesheet snapshot. Invalidate computed styles through Stylo so
         // both the old and new target are reevaluated on the next flush.
         target.invalidateStyleEngine(.document, null);
+        const hash_event = (try @import("../webapi/event/HashChangeEvent.zig").initTrusted(
+            .wrap("hashchange"),
+            .{ .oldURL = old_url, .newURL = target.url },
+            target,
+        )).asEvent();
+        target._event_manager.dispatch(target.window.asEventTarget(), hash_event) catch |err| {
+            log.warn(.event, "hashchange dispatch", .{ .err = err, .url = target.url });
+        };
         // don't defer this, the caller is responsible for freeing it on error
         session.releaseArena(arena);
         return;
@@ -7573,6 +7595,10 @@ pub fn _insertNodeRelative(self: *Frame, comptime from_parser: bool, parent: *No
         },
     }
     child._parent = parent;
+    // Template contents are disconnected and inert. Propagate that marker to
+    // parsed descendants so deferred resource activation cannot execute a
+    // script merely because the template fragment was parsed.
+    child._is_template_content = child._is_template_content or parent._is_template_content;
 
     // Dynamic insertion can change which <base href> is first in tree order.
     // Parser-created base elements are handled while constructing the initial
@@ -8245,6 +8271,7 @@ pub fn notifyDescendantsConnected(self: *Frame, subtree_root: *Node) !void {
 }
 
 fn nodeIsReady(self: *Frame, comptime from_parser: bool, node: *Node) !void {
+    if (node._is_template_content) return;
     if ((comptime from_parser) and self._parse_mode == .fragment) {
         // we don't execute scripts added via innerHTML = '<script...';
         return;

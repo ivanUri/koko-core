@@ -14,6 +14,7 @@
 const std = @import("std");
 const js = @import("../../js/js.zig");
 const Frame = @import("../../browser/Frame.zig");
+const StorageEvent = @import("../event/StorageEvent.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -70,8 +71,31 @@ pub const Lookup = struct {
 
     pub fn setItem(self: *Lookup, key_: ?[]const u8, value: []const u8, frame: *Frame) !void {
         const k = key_ orelse return;
+        const old_value = self._data.get(k);
+        if (old_value) |old| if (std.mem.eql(u8, old, value)) return;
         try self.put(frame._session.arena, k, value);
         if (self.scope == .local) frame._session.persistLocalSet(frame.origin orelse "null", k, value);
+        dispatchStorageEvent(frame, k, old_value, value);
+    }
+
+    fn dispatchStorageEvent(source: *Frame, storage_key: ?[]const u8, old_value: ?[]const u8, new_value: ?[]const u8) void {
+        const root = &source._page.frame;
+        dispatchStorageEventInTree(root, source, storage_key, old_value, new_value);
+    }
+
+    fn dispatchStorageEventInTree(current: *Frame, source: *Frame, storage_key: ?[]const u8, old_value: ?[]const u8, new_value: ?[]const u8) void {
+        if (current != source and current.origin != null and source.origin != null and std.mem.eql(u8, current.origin.?, source.origin.?)) {
+            const event = StorageEvent.initTrusted(comptime .wrap("storage"), .{
+                .key = storage_key,
+                .oldValue = old_value,
+                .newValue = new_value,
+                .url = source.url,
+            }, source) catch return;
+            current._event_manager.dispatch(current.window.asEventTarget(), event.asEvent()) catch {};
+        }
+        for (current.child_frames.items) |child| {
+            dispatchStorageEventInTree(child, source, storage_key, old_value, new_value);
+        }
     }
 
     /// Insert or replace one value while preserving quota accounting if any
@@ -104,13 +128,16 @@ pub const Lookup = struct {
             self._size -= value.len;
             _ = self._data.remove(k);
             if (self.scope == .local) frame._session.persistLocalRemove(frame.origin orelse "null", k);
+            dispatchStorageEvent(frame, k, value, null);
         }
     }
 
     pub fn clear(self: *Lookup, frame: *Frame) void {
+        if (self._data.count() == 0) return;
         self._data.clearRetainingCapacity();
         self._size = 0;
         if (self.scope == .local) frame._session.persistLocalClear(frame.origin orelse "null");
+        dispatchStorageEvent(frame, null, null, null);
     }
 
     pub fn key(self: *const Lookup, index: u32) ?[]const u8 {

@@ -1075,6 +1075,7 @@ pub const PageJsApis = flattenTypes(&.{
     @import("../webapi/event/FormDataEvent.zig"),
     @import("../webapi/event/DragEvent.zig"),
     @import("../webapi/event/HashChangeEvent.zig"),
+    @import("../webapi/event/StorageEvent.zig"),
     @import("../webapi/event/ToggleEvent.zig"),
     // CookieChangeEvent waits on CookieStore CookieListItem surface (Koko parity).
     @import("../webapi/DataTransfer.zig"),

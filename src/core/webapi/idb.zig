@@ -452,21 +452,44 @@ pub const IDBDatabase = struct {
 // not Array. Keep this as a live view so schema changes made during an upgrade
 // are immediately observable through an already-retrieved list.
 pub const DOMStringList = struct {
-    _database: *IDBDatabase,
+    _database: ?*IDBDatabase = null,
+    _store: ?*StoreData = null,
+
+    fn namesCount(self: *const DOMStringList) usize {
+        if (self._store) |store| return store.indexes.count();
+        if (self._database) |database| return database._data.stores.count();
+        return 0;
+    }
+
+    fn namesContains(self: *const DOMStringList, name: []const u8) bool {
+        if (self._store) |store| return store.indexes.contains(name);
+        if (self._database) |database| return database._data.stores.contains(name);
+        return false;
+    }
 
     pub fn getLength(self: *const DOMStringList) u32 {
-        return @intCast(self._database._data.stores.count());
+        return @intCast(self.namesCount());
     }
 
     pub fn contains(self: *const DOMStringList, name: []const u8) bool {
-        return self._database._data.stores.contains(name);
+        return self.namesContains(name);
     }
 
     pub fn item(self: *const DOMStringList, index: u32) ?[]const u8 {
-        var it = self._database._data.stores.keyIterator();
-        var current: u32 = 0;
-        while (it.next()) |name| : (current += 1) {
-            if (current == index) return name.*;
+        if (self._store) |store| {
+            var current: u32 = 0;
+            var it = store.indexes.keyIterator();
+            while (it.next()) |name| : (current += 1) {
+                if (current == index) return name.*;
+            }
+            return null;
+        }
+        if (self._database) |database| {
+            var current: u32 = 0;
+            var it = database._data.stores.keyIterator();
+            while (it.next()) |name| : (current += 1) {
+                if (current == index) return name.*;
+            }
         }
         return null;
     }
@@ -1019,6 +1042,10 @@ pub const IDBObjectStore = struct {
         return self._transaction;
     }
 
+    pub fn indexNames(self: *const IDBObjectStore, frame: *Frame) !*DOMStringList {
+        return frame._factory.create(DOMStringList{ ._store = self._data });
+    }
+
     fn request(self: *IDBObjectStore) !*IDBRequest {
         return self._frame._factory.eventTarget(IDBRequest{
             ._proto = undefined,
@@ -1299,6 +1326,7 @@ pub const IDBObjectStore = struct {
         };
         pub const name = bridge.accessor(IDBObjectStore.getName, null, .{});
         pub const transaction = bridge.accessor(IDBObjectStore.getTransaction, null, .{});
+        pub const indexNames = bridge.accessor(IDBObjectStore.indexNames, null, .{});
         pub const put = bridge.function(IDBObjectStore.put, .{});
         pub const add = bridge.function(IDBObjectStore.add, .{});
         pub const createIndex = bridge.function(IDBObjectStore.createIndex, .{});

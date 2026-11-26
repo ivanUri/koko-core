@@ -26,6 +26,7 @@ const CustomElementRegistry = @This();
 
 _definitions: std.StringHashMapUnmanaged(*CustomElementDefinition) = .{},
 _when_defined: std.StringHashMapUnmanaged(js.PromiseResolver.Global) = .{},
+_upgrade_retry_scheduled: bool = false,
 
 const DefineOptions = struct {
     extends: ?[]const u8 = null,
@@ -114,7 +115,13 @@ pub fn define(self: *CustomElementRegistry, name: []const u8, constructor: js.Fu
         }
 
         upgradeCustomElement(custom, definition, frame) catch {
-            _ = frame._undefined_custom_elements.swapRemove(idx);
+            // The constructor cannot be entered recursively while
+            // customElements.define() is still executing on the V8 stack.
+            // Keep the candidate and retry from a scheduler turn instead of
+            // permanently losing the upgrade.
+            custom._definition = null;
+            self.scheduleUpgradeRetry(frame) catch {};
+            idx += 1;
             continue;
         };
 
@@ -125,6 +132,53 @@ pub fn define(self: *CustomElementRegistry, name: []const u8, constructor: js.Fu
         frame.js.toLocal(entry.value).resolve("whenDefined", constructor);
     }
 }
+
+fn scheduleUpgradeRetry(self: *CustomElementRegistry, frame: *Frame) !void {
+    if (self._upgrade_retry_scheduled) return;
+    self._upgrade_retry_scheduled = true;
+    const callback = try frame.arena.create(UpgradeRetry);
+    callback.* = .{ .registry = self, .frame = frame, .attempts = 0 };
+    try frame.js.scheduler.add(callback, UpgradeRetry.run, 0, .{
+        .name = "CustomElementRegistry.upgrade",
+        .low_priority = false,
+    });
+}
+
+const UpgradeRetry = struct {
+    registry: *CustomElementRegistry,
+    frame: *Frame,
+    attempts: u8,
+
+    fn run(ctx: *anyopaque) !?u32 {
+        const self: *UpgradeRetry = @ptrCast(@alignCast(ctx));
+        self.registry._upgrade_retry_scheduled = false;
+
+        var idx: usize = 0;
+        while (idx < self.frame._undefined_custom_elements.items.len) {
+            const custom = self.frame._undefined_custom_elements.items[idx];
+            if (!custom.asNode().isConnected()) {
+                idx += 1;
+                continue;
+            }
+            const definition = self.registry._definitions.get(custom._tag_name.str()) orelse {
+                idx += 1;
+                continue;
+            };
+            upgradeCustomElement(custom, definition, self.frame) catch {
+                custom._definition = null;
+                idx += 1;
+                continue;
+            };
+            _ = self.frame._undefined_custom_elements.swapRemove(idx);
+        }
+
+        if (self.frame._undefined_custom_elements.items.len > 0 and self.attempts < 16) {
+            self.attempts += 1;
+            self.registry.scheduleUpgradeRetry(self.frame) catch {};
+        }
+        return null;
+    }
+};
 
 pub fn get(self: *CustomElementRegistry, name: []const u8) ?js.Function.Global {
     const definition = self._definitions.get(name) orelse return null;
