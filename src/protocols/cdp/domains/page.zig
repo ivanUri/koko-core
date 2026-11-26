@@ -165,7 +165,7 @@ fn navigateToHistoryEntry(cmd: *CDP.Command) !void {
         // the current frame; a CDP client is allowed to close the target
         // immediately after this command, which could tear that frame down
         // while the request still held its pointer and caused a SIGSEGV.
-        try bc.session.initiateRootNavigation(frame._frame_id, entry._url, .{
+        try bc.session.initiateRootNavigation(frame._frame_id, entry._url.?, .{
             .reason = .history,
             .cdp_id = cmd.input.id,
             .kind = .{ .traverse = index },
