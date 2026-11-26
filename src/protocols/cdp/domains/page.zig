@@ -38,7 +38,11 @@ pub fn processMessage(cmd: *CDP.Command) !void {
         getFrameTree,
         getNavigationHistory,
         resetNavigationHistory,
+        navigateToHistoryEntry,
         setDocumentContent,
+        setBypassCSP,
+        setInterceptFileChooserDialog,
+        getAppManifest,
         setLifecycleEventsEnabled,
         addScriptToEvaluateOnNewDocument,
         removeScriptToEvaluateOnNewDocument,
@@ -60,7 +64,11 @@ pub fn processMessage(cmd: *CDP.Command) !void {
         .getFrameTree => return getFrameTree(cmd),
         .getNavigationHistory => return getNavigationHistory(cmd),
         .resetNavigationHistory => return resetNavigationHistory(cmd),
+        .navigateToHistoryEntry => return navigateToHistoryEntry(cmd),
         .setDocumentContent => return setDocumentContent(cmd),
+        .setBypassCSP => return setBypassCSP(cmd),
+        .setInterceptFileChooserDialog => return setInterceptFileChooserDialog(cmd),
+        .getAppManifest => return getAppManifest(cmd),
         .setLifecycleEventsEnabled => return setLifecycleEventsEnabled(cmd),
         .addScriptToEvaluateOnNewDocument => return addScriptToEvaluateOnNewDocument(cmd),
         .removeScriptToEvaluateOnNewDocument => return removeScriptToEvaluateOnNewDocument(cmd),
@@ -137,6 +145,70 @@ fn resetNavigationHistory(cmd: *CDP.Command) !void {
     try navigation._entries.append(bc.session.arena, current);
     navigation._index = 0;
     return cmd.sendResult(null, .{});
+}
+
+fn navigateToHistoryEntry(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        entryId: i64,
+    })) orelse return error.InvalidParams;
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    const frame = bc.session.currentFrame() orelse return error.FrameNotLoaded;
+    const navigation = frame.navigationStore();
+
+    for (navigation._entries.items, 0..) |entry, index| {
+        const entry_id = std.fmt.parseInt(i64, entry._id, 10) catch continue;
+        if (entry_id != params.entryId) continue;
+        if (entry._url == null) return error.InvalidParams;
+
+        _ = try navigation.navigateInner(entry._url, .{ .traverse = index }, frame);
+        return cmd.sendResult(null, .{});
+    }
+
+    return error.InvalidParams;
+}
+
+fn setBypassCSP(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        enabled: bool,
+    })) orelse return error.InvalidParams;
+    _ = params;
+    log.warn(.not_implemented, "Page.setBypassCSP", .{
+        .info = "Koko has no document CSP enforcement producer to bypass",
+    });
+    return error.NotImplemented;
+}
+
+fn setInterceptFileChooserDialog(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        enabled: bool,
+    })) orelse return error.InvalidParams;
+    _ = params;
+    log.warn(.not_implemented, "Page.setInterceptFileChooserDialog", .{
+        .info = "file chooser input has no CDP interception producer",
+    });
+    return error.NotImplemented;
+}
+
+fn getAppManifest(cmd: *CDP.Command) !void {
+    _ = try cmd.params(struct {});
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    const frame = bc.session.currentFrame() orelse return error.FrameNotLoaded;
+    const document = frame.document.is(HTMLDocument) orelse return error.NotSupported;
+    const head = document.getHead() orelse {
+        return cmd.sendResult(.{ .url = "", .errors = &.{}, .data = null }, .{});
+    };
+    const manifest_link = head.querySelector("link[rel~='manifest']", frame) catch |err| {
+        log.warn(.cdp, "Page.getAppManifest selector", .{ .err = err });
+        return error.NotImplemented;
+    };
+    if (manifest_link == null) {
+        return cmd.sendResult(.{ .url = "", .errors = &.{}, .data = null }, .{});
+    }
+
+    log.warn(.not_implemented, "Page.getAppManifest", .{
+        .info = "manifest discovery exists but manifest fetching/parsing is not wired to CDP",
+    });
+    return error.NotImplemented;
 }
 
 fn setDocumentContent(cmd: *CDP.Command) !void {
@@ -783,6 +855,15 @@ pub fn frameNavigated(arena: Allocator, bc: *CDP.BrowserContext, event: *const N
     const is_new_document = previous_context == null or previous_context.? != context_id;
     if (is_new_document) {
         try bc.new_document_script_contexts.put(bc.arena, event.frame_id, context_id);
+    }
+
+    if (!is_new_document) {
+        const navigation_type = if (event.opts.reason == .history) "history" else "fragment";
+        try cdp.sendEvent("Page.navigatedWithinDocument", .{
+            .frameId = frame_id,
+            .url = event.url,
+            .navigationType = navigation_type,
+        }, .{ .session_id = session_id });
     }
 
     // Evaluate scripts registered via Page.addScriptToEvaluateOnNewDocument.

@@ -20,6 +20,7 @@ const CDP = @import("../CDP.zig");
 
 const URL = @import("../../../core/browser/URL.zig");
 const Mime = @import("../../../core/browser/Mime.zig");
+const runtime_io = @import("../../../support/io.zig");
 const Notification = @import("../../../runtime/Notification.zig");
 const timestamp = @import("../../../support/datetime.zig").timestamp;
 const Transfer = @import("../../../core/browser/HttpClient.zig").Transfer;
@@ -36,6 +37,9 @@ pub fn processMessage(cmd: *CDP.Command) !void {
         enable,
         disable,
         setCacheDisabled,
+        clearBrowserCache,
+        emulateNetworkConditions,
+        setBypassServiceWorker,
         setExtraHTTPHeaders,
         setUserAgentOverride,
         deleteCookies,
@@ -44,6 +48,7 @@ pub fn processMessage(cmd: *CDP.Command) !void {
         setCookies,
         getCookies,
         getAllCookies,
+        getRequestPostData,
         getResponseBody,
     }, cmd.input.action) orelse return error.UnknownMethod;
 
@@ -51,6 +56,9 @@ pub fn processMessage(cmd: *CDP.Command) !void {
         .enable => return enable(cmd),
         .disable => return disable(cmd),
         .setCacheDisabled => return setCacheDisabled(cmd),
+        .clearBrowserCache => return clearBrowserCache(cmd),
+        .emulateNetworkConditions => return emulateNetworkConditions(cmd),
+        .setBypassServiceWorker => return setBypassServiceWorker(cmd),
         .setUserAgentOverride => return @import("emulation.zig").setUserAgentOverride(cmd),
         .setExtraHTTPHeaders => return setExtraHTTPHeaders(cmd),
         .deleteCookies => return deleteCookies(cmd),
@@ -59,6 +67,7 @@ pub fn processMessage(cmd: *CDP.Command) !void {
         .setCookies => return setCookies(cmd),
         .getCookies => return getCookies(cmd),
         .getAllCookies => return getAllCookies(cmd),
+        .getRequestPostData => return getRequestPostData(cmd),
         .getResponseBody => return getResponseBody(cmd),
     }
 }
@@ -82,6 +91,87 @@ fn setCacheDisabled(cmd: *CDP.Command) !void {
     const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
     bc.session.browser.http_client.network.cache_disabled = params.cacheDisabled;
     return cmd.sendResult(null, .{});
+}
+
+fn clearBrowserCache(cmd: *CDP.Command) !void {
+    // Koko's cache is a content-addressed filesystem cache. Clear the cache
+    // directory itself, rather than merely toggling cache_disabled: the latter
+    // would leave stale entries available to later requests.
+    _ = try cmd.params(struct {});
+
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    const cache_path = bc.session.browser.app.config.httpCacheDir() orelse {
+        return cmd.sendResult(null, .{});
+    };
+
+    var dir = std.Io.Dir.cwd().openDir(runtime_io.get(), cache_path, .{
+        .iterate = true,
+        .follow_symlinks = false,
+        .access_sub_paths = false,
+    }) catch |err| switch (err) {
+        error.FileNotFound => return cmd.sendResult(null, .{}),
+        else => return err,
+    };
+    defer dir.close(runtime_io.get());
+
+    var it = dir.iterate();
+    while (try it.next(runtime_io.get())) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.name, ".cache") and
+            !std.mem.endsWith(u8, entry.name, ".cache.tmp")) continue;
+        dir.deleteFile(runtime_io.get(), entry.name) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        };
+    }
+
+    return cmd.sendResult(null, .{});
+}
+
+fn emulateNetworkConditions(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        offline: bool,
+        latency: f64,
+        downloadThroughput: f64,
+        uploadThroughput: f64,
+        connectionType: ?enum {
+            none,
+            cellular2g,
+            cellular3g,
+            cellular4g,
+            bluetooth,
+            ethernet,
+            wifi,
+            wimax,
+            other,
+        } = null,
+        packetLoss: ?f64 = null,
+        packetQueueLength: ?i32 = null,
+        packetReordering: ?bool = null,
+    })) orelse return error.InvalidParams;
+
+    if (!std.math.isFinite(params.latency) or params.latency < 0 or
+        !std.math.isFinite(params.downloadThroughput) or params.downloadThroughput < 0 or
+        !std.math.isFinite(params.uploadThroughput) or params.uploadThroughput < 0) return error.InvalidParams;
+    if (params.packetLoss) |loss| {
+        if (!std.math.isFinite(loss) or loss < 0 or loss > 100) return error.InvalidParams;
+    }
+
+    log.warn(.not_implemented, "Network.emulateNetworkConditions", .{
+        .info = "the transport scheduler has no latency, throughput, or offline producer",
+    });
+    return error.NotImplemented;
+}
+
+fn setBypassServiceWorker(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        bypass: bool,
+    })) orelse return error.InvalidParams;
+    _ = params;
+    log.warn(.not_implemented, "Network.setBypassServiceWorker", .{
+        .info = "service-worker interception is not implemented by the runtime",
+    });
+    return error.NotImplemented;
 }
 
 fn setExtraHTTPHeaders(cmd: *CDP.Command) !void {
@@ -244,6 +334,62 @@ fn getAllCookies(cmd: *CDP.Command) !void {
     jar.removeExpired(null);
     const writer = CdpStorage.CookieWriter{ .cookies = jar.cookies.items };
     try cmd.sendResult(.{ .cookies = writer }, .{});
+}
+
+fn requestIdMatches(request: *const Request, request_id: []const u8) bool {
+    const actual = id.toRequestId(request);
+    return std.mem.eql(u8, &actual, request_id);
+}
+
+fn findRequestPostDataInConnections(
+    list: std.DoublyLinkedList,
+    request_id: []const u8,
+) ?[]const u8 {
+    var node = list.first;
+    while (node) |current| : (node = current.next) {
+        const connection: *@import("../../../runtime/network/http.zig").Connection = @fieldParentPtr("node", current);
+        switch (connection.transport) {
+            .http => |transfer| {
+                if (requestIdMatches(&transfer.req, request_id)) return transfer.req.params.body;
+            },
+            .websocket, .none => {},
+        }
+    }
+    return null;
+}
+
+fn findRequestPostDataInQueue(
+    list: std.DoublyLinkedList,
+    request_id: []const u8,
+) ?[]const u8 {
+    var node = list.first;
+    while (node) |current| : (node = current.next) {
+        const transfer: *Transfer = @fieldParentPtr("_node", current);
+        if (requestIdMatches(&transfer.req, request_id)) return transfer.req.params.body;
+    }
+    return null;
+}
+
+fn getRequestPostData(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        requestId: []const u8,
+    })) orelse return error.InvalidParams;
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    const client = &bc.session.browser.http_client;
+
+    if (findRequestPostDataInConnections(client.in_use, params.requestId)) |body| {
+        return cmd.sendResult(.{ .postData = body }, .{});
+    }
+    if (findRequestPostDataInConnections(client.ready_queue, params.requestId)) |body| {
+        return cmd.sendResult(.{ .postData = body }, .{});
+    }
+    if (findRequestPostDataInQueue(client.queue, params.requestId)) |body| {
+        return cmd.sendResult(.{ .postData = body }, .{});
+    }
+
+    // The runtime does not retain completed request bodies. Returning a
+    // not-found error is preferable to fabricating post data after teardown.
+    return error.RequestNotFound;
 }
 
 fn getResponseBody(cmd: *CDP.Command) !void {
