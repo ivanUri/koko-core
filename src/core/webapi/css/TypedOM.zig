@@ -53,3 +53,8 @@ pub const JsApi = struct {
     };
     pub const get = bridge.function(StylePropertyMapReadOnly.get, .{ .null_as_undefined = true });
 };
+
+const testing = @import("../../../testing/testing.zig");
+test "WebApi: CSS Typed OM" {
+    try testing.htmlRunner("css/typed_om.html", .{});
+}

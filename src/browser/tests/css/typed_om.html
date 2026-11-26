@@ -1,0 +1,7 @@
+<!doctype html><meta charset="utf-8"><style>#target{font-size:21px}</style><body>
+<div id="target">typed om</div><script>
+window.testing={assertOk:()=>document.body.id==="typed-om-pass",printTimeoutState:()=>console.log(document.body.textContent)};
+const v=document.getElementById("target").computedStyleMap().get("font-size");
+if(!v||v.value!==21||v.unit!=="px"||v.toString()!=="21px")throw new Error("Typed OM CSSUnitValue mismatch");
+document.body.id="typed-om-pass";document.body.textContent="typed-om-pass";
+</script></body>

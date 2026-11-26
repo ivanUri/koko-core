@@ -226,3 +226,10 @@ const testing = @import("../../testing/testing.zig");
 test "WebApi: CSS" {
     try testing.htmlRunner("css.html", .{});
 }
+
+test "CSS registerProperty grammar" {
+    try std.testing.expect(valueMatchesSyntax("<length>", "30px"));
+    try std.testing.expect(!valueMatchesSyntax("<length>", "banana"));
+    try std.testing.expect(valueMatchesSyntax("<length-percentage>", "25%"));
+    try std.testing.expect(valueMatchesSyntax("<color>", "rgb(5, 6, 7)"));
+}
