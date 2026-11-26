@@ -25,6 +25,7 @@ const DEV_TOOLS_WINDOW_ID = 1923710101;
 pub fn processMessage(cmd: *CDP.Command) !void {
     const action = std.meta.stringToEnum(enum {
         getVersion,
+        getBrowserCommandLine,
         setPermission,
         setWindowBounds,
         resetPermissions,
@@ -36,6 +37,7 @@ pub fn processMessage(cmd: *CDP.Command) !void {
 
     switch (action) {
         .getVersion => return getVersion(cmd),
+        .getBrowserCommandLine => return getBrowserCommandLine(cmd),
         .setPermission => return setPermission(cmd),
         .setWindowBounds => return setWindowBounds(cmd),
         .resetPermissions => return resetPermissions(cmd),
@@ -65,6 +67,16 @@ fn getVersion(cmd: *CDP.Command) !void {
         .userAgent = persona.network.user_agent,
         .jsVersion = v8.getVersion(),
     }, .{ .include_session_id = false });
+}
+
+/// Return the command-line information that Koko retains from process
+/// startup. The CLI parser keeps the real executable argument in Config;
+/// Koko does not retain a copy of every original argv entry, so do not invent
+/// flags or return a Chrome-specific command line here.
+fn getBrowserCommandLine(cmd: *CDP.Command) !void {
+    const arguments = try cmd.arena.alloc([]const u8, 1);
+    arguments[0] = cmd.cdp.browser.app.config.exec_name;
+    return cmd.sendResult(.{ .arguments = arguments }, .{ .include_session_id = false });
 }
 
 // TODO: noop method
@@ -136,9 +148,9 @@ fn setPermission(cmd: *CDP.Command) !void {
     const params = (try cmd.params(struct {
         permission: struct {
             name: []const u8,
-            setting: enum { granted, denied, prompt },
         },
         origin: []const u8,
+        setting: enum { granted, denied, prompt },
         browserContextId: ?[]const u8 = null,
     })) orelse return error.InvalidParams;
 
@@ -146,9 +158,9 @@ fn setPermission(cmd: *CDP.Command) !void {
     _ = params.browserContextId;
 
     const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
-    switch (params.permission.setting) {
+    switch (params.setting) {
         .granted => try bc.emulation.grantPermission(bc.arena, params.permission.name),
-        .denied, .prompt => {},
+        .denied, .prompt => return error.NotImplemented,
     }
     return cmd.sendResult(null, .{});
 }

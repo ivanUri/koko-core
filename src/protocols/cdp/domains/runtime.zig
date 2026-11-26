@@ -21,9 +21,18 @@ const io = @import("../../../support/io.zig");
 pub fn processMessage(cmd: *CDP.Command) !void {
     const action = std.meta.stringToEnum(enum {
         enable,
+        disable,
         runIfWaitingForDebugger,
         evaluate,
+        awaitPromise,
+        compileScript,
+        runScript,
+        discardConsoleEntries,
+        globalLexicalScopeNames,
+        queryObjects,
+        setAsyncCallStackDepth,
         addBinding,
+        removeBinding,
         callFunctionOn,
         releaseObject,
         releaseObjectGroup,

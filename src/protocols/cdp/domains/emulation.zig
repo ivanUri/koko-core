@@ -25,6 +25,7 @@ pub fn processMessage(cmd: *CDP.Command) !void {
         setEmulatedMedia,
         setFocusEmulationEnabled,
         setDeviceMetricsOverride,
+        setCPUThrottlingRate,
         setTouchEmulationEnabled,
         setUserAgentOverride,
         setTimezoneOverride,
@@ -45,6 +46,7 @@ pub fn processMessage(cmd: *CDP.Command) !void {
         .setEmulatedMedia => return setEmulatedMedia(cmd),
         .setFocusEmulationEnabled => return setFocusEmulationEnabled(cmd),
         .setDeviceMetricsOverride => return setDeviceMetricsOverride(cmd),
+        .setCPUThrottlingRate => return setCPUThrottlingRate(cmd),
         .setTouchEmulationEnabled => return setTouchEmulationEnabled(cmd),
         .setUserAgentOverride => return setUserAgentOverride(cmd),
         .setTimezoneOverride => return setTimezoneOverride(cmd),
@@ -114,6 +116,22 @@ fn setDeviceMetricsOverride(cmd: *CDP.Command) !void {
         .device_scale_factor = if (params.deviceScaleFactor > 0) params.deviceScaleFactor else 1.0,
         .mobile = params.mobile,
     });
+    return cmd.sendResult(null, .{});
+}
+
+fn setCPUThrottlingRate(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        rate: f64,
+    })) orelse return error.InvalidParams;
+
+    if (!std.math.isFinite(params.rate) or params.rate < 1) return error.InvalidParams;
+    _ = try browserContext(cmd);
+
+    // Koko has no scheduler/clock producer for CPU slowdown yet. A rate of
+    // 1 is the existing runtime behavior and therefore needs no state change;
+    // every other rate must remain explicitly unsupported until it can affect
+    // script and task execution timings.
+    if (params.rate != 1) return error.NotImplemented;
     return cmd.sendResult(null, .{});
 }
 
