@@ -106,13 +106,14 @@ pub const Writer = struct {
                     }
                 },
                 .element => {
-                    // Prune hidden subtrees entirely (display:none,
-                    // visibility:hidden, aria-hidden, hidden, inert). Matches
-                    // Chromium: these elements aren't exposed to the AX tree.
                     const child_el = dom_node.as(DOMNode.Element);
-                    if (child_in_aria_hidden or isHidden(child_el, self.frame, self.visibility_cache)) {
-                        continue;
-                    }
+                    // aria-hidden is represented in the AX tree as one
+                    // ignored boundary node. Its descendants remain pruned,
+                    // but the boundary itself must be serialized so CDP
+                    // clients can observe the reason for exclusion.
+                    if (child_in_aria_hidden) continue;
+                    if (isHidden(child_el, self.frame, self.visibility_cache) and
+                        !hasAriaHiddenTrue(child_el)) continue;
                 },
                 else => continue,
             }
@@ -566,7 +567,16 @@ pub const Writer = struct {
         }
 
         // Children
-        const write_children = axn.ignoreChildren() == false;
+        // An aria-hidden element is the serialized boundary for an excluded
+        // subtree. Do not expose any of its descendants as childIds or as
+        // separate AX nodes. Other hidden semantics continue to use the
+        // existing pruning path above.
+        const self_aria_hidden = if (n.is(DOMNode.Element)) |element|
+            hasAriaHiddenTrue(element)
+        else
+            false;
+        const write_children = axn.ignoreChildren() == false and
+            !in_aria_hidden and !self_aria_hidden;
         const skip_text = ignoreText(axn.dom);
 
         const child_in_aria_hidden = in_aria_hidden or blk: {
@@ -586,9 +596,14 @@ pub const Writer = struct {
                 }
 
                 // Skip hidden element children so childIds matches the
-                // subtree-pruning done in writeNodeChildren.
+                // subtree-pruning done in writeNodeChildren. Preserve an
+                // aria-hidden boundary node; its own writeChildren=false
+                // prevents descendants from being exposed.
                 if (child.is(DOMNode.Element)) |child_el| {
-                    if (child_in_aria_hidden or isHidden(child_el, self.frame, self.visibility_cache)) {
+                    if (child_in_aria_hidden or
+                        (isHidden(child_el, self.frame, self.visibility_cache) and
+                            !hasAriaHiddenTrue(child_el)))
+                    {
                         continue;
                     }
                 }
