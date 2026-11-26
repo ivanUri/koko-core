@@ -90,7 +90,26 @@ pub fn generateKey(
             AES.validate(params, key_usages) catch |err| {
                 return local.rejectPromise(.{ .dom_exception = .{ .err = err } });
             };
-            log.warn(.not_implemented, "generateKey", .{ .name = params.name });
+            if (!std.ascii.eqlIgnoreCase(params.name, "AES-GCM")) {
+                return local.rejectPromise(.{ .dom_exception = .{ .err = error.NotSupported } });
+            }
+            var mask: u8 = 0;
+            for (key_usages) |usage| {
+                if (std.mem.eql(u8, usage, "encrypt")) mask |= CryptoKey.Usages.encrypt else if (std.mem.eql(u8, usage, "decrypt")) mask |= CryptoKey.Usages.decrypt else if (std.mem.eql(u8, usage, "wrapKey")) mask |= CryptoKey.Usages.wrapKey else if (std.mem.eql(u8, usage, "unwrapKey")) mask |= CryptoKey.Usages.unwrapKey;
+            }
+            const key = try exec.arena.alloc(u8, params.length / 8);
+            errdefer exec.arena.free(key);
+            if (crypto.RAND_bytes(key.ptr, key.len) != 1) {
+                return local.rejectPromise(.{ .dom_exception = .{ .err = error.OperationError } });
+            }
+            const crypto_key = try exec._factory.create(CryptoKey{
+                ._type = .aes,
+                ._extractable = extractable,
+                ._usages = mask,
+                ._key = key,
+                ._vary = .{ .aes = {} },
+            });
+            return local.resolvePromise(crypto_key);
         },
         .ec_key_gen => |params| return EC.generateKey(params, extractable, key_usages, exec),
         .rsa_hashed_key_gen => |params| {

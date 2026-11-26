@@ -41,6 +41,34 @@ pub fn encode(_: *const TextEncoder, v_: ?js.Value) !js.TypedArray(u8) {
     return .{ .values = str };
 }
 
+/// Encode a string into an existing Uint8Array without allocating a second
+/// buffer. `read` is measured in UTF-16 code units while `written` is the
+/// number of UTF-8 bytes copied, matching the Encoding Standard contract.
+pub fn encodeInto(_: *const TextEncoder, source: []const u8, destination: js.TypedArray(u8), exec: *const js.Execution) !js.Value {
+    const local = exec.context.local orelse return error.JsEntryIllegal;
+    var read: usize = 0;
+    var written: usize = 0;
+    var i: usize = 0;
+    const output = @constCast(destination.values);
+
+    while (i < source.len) {
+        const cp_len = std.unicode.utf8ByteSequenceLength(source[i]) catch 1;
+        if (i + cp_len > source.len) break;
+        const cp = std.unicode.utf8Decode(source[i .. i + cp_len]) catch 0xFFFD;
+        const utf8_len: usize = if (cp <= 0x7f) 1 else if (cp <= 0x7ff) 2 else if (cp <= 0xffff) 3 else 4;
+        if (written + utf8_len > output.len) break;
+        @memcpy(output[written .. written + utf8_len], source[i .. i + cp_len]);
+        written += utf8_len;
+        read += if (cp > 0xffff) 2 else 1;
+        i += cp_len;
+    }
+
+    const result = local.newObject();
+    _ = try result.set("read", read, .{});
+    _ = try result.set("written", written, .{});
+    return result.toValue();
+}
+
 pub const JsApi = struct {
     pub const bridge = js.Bridge(TextEncoder);
 
@@ -53,6 +81,7 @@ pub const JsApi = struct {
 
     pub const constructor = bridge.constructor(TextEncoder.init, .{});
     pub const encode = bridge.function(TextEncoder.encode, .{ .as_typed_array = true });
+    pub const encodeInto = bridge.function(TextEncoder.encodeInto, .{});
     pub const encoding = bridge.property("utf-8", .{ .template = false });
 };
 

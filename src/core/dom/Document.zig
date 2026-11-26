@@ -761,12 +761,26 @@ pub fn adoptNode(self: *const Document, node: *Node, frame: *Frame) !*Node {
     return node;
 }
 
-pub fn importNode(_: *const Document, node: *Node, deep_: ?bool, frame: *Frame) !*Node {
+fn retargetImportedTree(frame: *Frame, node: *Node, owner: *Document) !void {
+    try frame.setNodeOwnerDocument(node, owner);
+    var it = node.childrenIterator();
+    while (it.next()) |child| {
+        try retargetImportedTree(frame, child, owner);
+    }
+}
+
+pub fn importNode(self: *const Document, node: *Node, deep_: ?bool, frame: *Frame) !*Node {
     if (node._type == .document) {
         return error.NotSupported;
     }
 
-    return node.cloneNode(deep_, frame);
+    const imported = try node.cloneNode(deep_, frame);
+    // cloneNode preserves the source node document.  importNode is the
+    // cross-document operation, so retarget the complete cloned subtree to
+    // the document receiving it; unlike adoptNode this must not run adopted
+    // callbacks and must leave the source tree untouched.
+    try retargetImportedTree(self._frame orelse frame, imported, @constCast(self));
+    return imported;
 }
 
 pub fn append(self: *Document, nodes: []const Node.NodeOrText, frame: *Frame) !void {

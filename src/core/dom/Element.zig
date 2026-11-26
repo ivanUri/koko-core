@@ -1002,6 +1002,10 @@ pub fn computedStyleMap(self: *Element, frame: *Frame) !*TypedOM {
     return TypedOM.init(self, self.asNode().ownerFrame(frame));
 }
 
+pub fn computedStyleMap(self: *Element, frame: *Frame) !*TypedOM {
+    return TypedOM.init(self, self.asNode().ownerFrame(frame));
+}
+
 fn getStyle(self: *Element, frame: *Frame) ?*CSSStyleProperties {
     return self.asNode().ownerFrame(frame)._element_styles.get(self);
 }

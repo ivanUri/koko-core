@@ -411,6 +411,7 @@ fn _getTemplateContentsCallback(self: *Parser, node: *Node) !*anyopaque {
     const element = node.as(Element);
     const template = element._type.html.is(Element.Html.Template) orelse unreachable;
     const content_node = template.getContent().asNode();
+    content_node._is_template_content = true;
 
     // Create a ParsedNode wrapper for the content DocumentFragment
     const pn = try self.arena.create(ParsedNode);

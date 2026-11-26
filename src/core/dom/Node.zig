@@ -46,6 +46,9 @@ _child_link: LinkedList.Node = .{},
 // browsing context performs the mutation.  The tree remains the only DOM
 // representation; this is ownership metadata, not a second tree.
 _owner_document: ?*Document = null,
+// Nodes parsed into HTMLTemplateElement.content are inert until cloned into
+// an active document. This is metadata on the single authoritative tree.
+_is_template_content: bool = false,
 // Stable per-frame identity used by the Stylo adapter. This is metadata on
 // the authoritative Zig node, not a second DOM-side table. The frame
 // component changes when a node is adopted into another browsing context, so
