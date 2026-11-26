@@ -1256,7 +1256,7 @@ pub const IDBObjectStore = struct {
         });
         transaction.requestStarted();
         try cursor.schedule();
-        return request;
+        return cursor_request;
     }
 
     const Success = struct {
