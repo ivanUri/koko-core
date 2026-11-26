@@ -22,6 +22,7 @@ const dump = @import("../../../core/browser/dump.zig");
 const js = @import("../../../core/js/js.zig");
 const DOMNode = @import("../../../core/dom/Node.zig");
 const Selector = @import("../../../core/webapi/selector/Selector.zig");
+const String = @import("../../../support/string.zig").String;
 
 const log = @import("../../../support/log.zig");
 const Allocator = std.mem.Allocator;
@@ -29,6 +30,7 @@ const Allocator = std.mem.Allocator;
 pub fn processMessage(cmd: *CDP.Command) !void {
     const action = std.meta.stringToEnum(enum {
         enable,
+        disable,
         getDocument,
         performSearch,
         getSearchResults,
@@ -44,10 +46,19 @@ pub fn processMessage(cmd: *CDP.Command) !void {
         getFrameOwner,
         getOuterHTML,
         requestNode,
+        getAttributes,
+        setAttributeValue,
+        removeAttribute,
+        removeNode,
+        setNodeName,
+        setNodeValue,
+        setOuterHTML,
+        setAttributesAsText,
     }, cmd.input.action) orelse return error.UnknownMethod;
 
     switch (action) {
         .enable => return cmd.sendResult(null, .{}),
+        .disable => return disable(cmd),
         .getDocument => return getDocument(cmd),
         .performSearch => return performSearch(cmd),
         .getSearchResults => return getSearchResults(cmd),
@@ -63,7 +74,25 @@ pub fn processMessage(cmd: *CDP.Command) !void {
         .getFrameOwner => return getFrameOwner(cmd),
         .getOuterHTML => return getOuterHTML(cmd),
         .requestNode => return requestNode(cmd),
+        .getAttributes => return getAttributes(cmd),
+        .setAttributeValue => return setAttributeValue(cmd),
+        .removeAttribute => return removeAttribute(cmd),
+        .removeNode => return removeNode(cmd),
+        .setNodeName => return setNodeName(cmd),
+        .setNodeValue => return setNodeValue(cmd),
+        .setOuterHTML => return setOuterHTML(cmd),
+        .setAttributesAsText => return setAttributesAsText(cmd),
     }
+}
+
+fn disable(cmd: *CDP.Command) !void {
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+
+    // DOM node ids and search results belong to an enabled DOM agent. Releasing
+    // them here also prevents detached documents from being retained by CDP.
+    bc.node_search_list.reset();
+    bc.node_registry.reset();
+    return cmd.sendResult(null, .{});
 }
 
 // https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-getDocument
@@ -189,7 +218,7 @@ fn getSearchResults(cmd: *CDP.Command) !void {
         toIndex: u32,
     })) orelse return error.InvalidParams;
 
-    if (params.fromIndex >= params.toIndex) {
+    if (params.fromIndex > params.toIndex) {
         return error.BadIndices;
     }
 
@@ -205,6 +234,160 @@ fn getSearchResults(cmd: *CDP.Command) !void {
     if (params.toIndex > node_ids.len) return error.BadToIndex;
 
     return cmd.sendResult(.{ .nodeIds = node_ids[params.fromIndex..params.toIndex] }, .{});
+}
+
+fn getAttributes(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        nodeId: ?Node.Id = null,
+        backendNodeId: ?Node.Id = null,
+        objectId: ?[]const u8 = null,
+    })) orelse return error.InvalidParams;
+
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    const node = try getNode(cmd.arena, bc, params.nodeId, params.backendNodeId, params.objectId);
+    const element = node.dom.is(DOMNode.Element) orelse return error.NodeIsNotAnElement;
+    const frame = bc.session.currentFrame() orelse return error.FrameNotLoaded;
+    const names = try element.getAttributeNames(frame);
+    const attributes = try cmd.arena.alloc([]const u8, names.len * 2);
+
+    for (names, 0..) |name, index| {
+        attributes[index * 2] = name;
+        attributes[index * 2 + 1] = (try element.getAttribute(.wrap(name), frame)).?.str();
+    }
+
+    return cmd.sendResult(.{ .attributes = attributes }, .{});
+}
+
+fn setAttributeValue(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        nodeId: Node.Id,
+        name: []const u8,
+        value: []const u8,
+    })) orelse return error.InvalidParams;
+
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    const frame = bc.session.currentFrame() orelse return error.FrameNotLoaded;
+    const node = try getNode(cmd.arena, bc, params.nodeId, null, null);
+    const element = node.dom.is(DOMNode.Element) orelse return error.NodeIsNotAnElement;
+    try element.setAttribute(.wrap(params.name), .wrap(params.value), frame);
+    return cmd.sendResult(null, .{});
+}
+
+fn removeAttribute(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        nodeId: Node.Id,
+        name: []const u8,
+    })) orelse return error.InvalidParams;
+
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    const frame = bc.session.currentFrame() orelse return error.FrameNotLoaded;
+    const node = try getNode(cmd.arena, bc, params.nodeId, null, null);
+    const element = node.dom.is(DOMNode.Element) orelse return error.NodeIsNotAnElement;
+    try element.removeAttribute(.wrap(params.name), frame);
+    return cmd.sendResult(null, .{});
+}
+
+fn removeNode(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        nodeId: Node.Id,
+    })) orelse return error.InvalidParams;
+
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    const frame = bc.session.currentFrame() orelse return error.FrameNotLoaded;
+    const node = try getNode(cmd.arena, bc, params.nodeId, null, null);
+    const parent = node.dom._parent orelse return error.NodeNotFound;
+    _ = try parent.removeChild(node.dom, frame);
+    return cmd.sendResult(null, .{});
+}
+
+fn setNodeValue(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        nodeId: Node.Id,
+        value: []const u8,
+    })) orelse return error.InvalidParams;
+
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    const frame = bc.session.currentFrame() orelse return error.FrameNotLoaded;
+    const node = try getNode(cmd.arena, bc, params.nodeId, null, null);
+    try node.dom.setNodeValue(String.wrap(params.value), frame);
+    return cmd.sendResult(null, .{});
+}
+
+fn setOuterHTML(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        nodeId: Node.Id,
+        outerHTML: []const u8,
+    })) orelse return error.InvalidParams;
+
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    const frame = bc.session.currentFrame() orelse return error.FrameNotLoaded;
+    const node = try getNode(cmd.arena, bc, params.nodeId, null, null);
+    const element = node.dom.is(DOMNode.Element) orelse return error.NodeIsNotAnElement;
+    try element.setOuterHTML(params.outerHTML, frame);
+    return cmd.sendResult(null, .{});
+}
+
+fn setNodeName(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        nodeId: Node.Id,
+        name: []const u8,
+    })) orelse return error.InvalidParams;
+
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    const frame = bc.session.currentFrame() orelse return error.FrameNotLoaded;
+    const node = try getNode(cmd.arena, bc, params.nodeId, null, null);
+    const element = node.dom.is(DOMNode.Element) orelse return error.NodeIsNotAnElement;
+    const parent = node.dom._parent orelse return error.NoModificationAllowed;
+
+    // Element stores specialized HTML implementations for many tag names, so
+    // changing the tag in place would invalidate the concrete DOM object. Use
+    // the existing document factory and move the live children instead.
+    const replacement = try frame.document.createElement(params.name, null, frame);
+    const names = try element.getAttributeNames(frame);
+    for (names) |name| {
+        const value = (try element.getAttribute(.wrap(name), frame)).?;
+        try replacement.setAttribute(.wrap(name), value, frame);
+    }
+    while (node.dom.firstChild()) |child| {
+        _ = try replacement.asNode().appendChild(child, frame);
+    }
+    _ = try parent.replaceChild(replacement.asNode(), node.dom, frame);
+    return cmd.sendResult(null, .{});
+}
+
+fn setAttributesAsText(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        nodeId: Node.Id,
+        text: []const u8,
+        name: ?[]const u8 = null,
+    })) orelse return error.InvalidParams;
+
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    const frame = bc.session.currentFrame() orelse return error.FrameNotLoaded;
+    const node = try getNode(cmd.arena, bc, params.nodeId, null, null);
+    const element = node.dom.is(DOMNode.Element) orelse return error.NodeIsNotAnElement;
+
+    // Parse with html5ever so quoting, entity decoding, duplicate handling and
+    // malformed attribute recovery remain identical to normal HTML parsing.
+    const fragment = try DOMNode.DocumentFragment.init(frame);
+    const fragment_node = fragment.asNode();
+    var source = std.Io.Writer.Allocating.init(frame.call_arena);
+    try source.writer.print("<div {s}></div>", .{params.text});
+    try frame.parseHtmlAsChildren(fragment_node, source.written());
+    const parsed = fragment_node.firstChild() orelse return error.InvalidParams;
+    const parsed_element = parsed.is(DOMNode.Element) orelse return error.InvalidParams;
+
+    const old_names = try element.getAttributeNames(frame);
+    for (old_names) |name| {
+        try element.removeAttribute(.wrap(name), frame);
+    }
+    const new_names = try parsed_element.getAttributeNames(frame);
+    for (new_names) |name| {
+        const value = (try parsed_element.getAttribute(.wrap(name), frame)).?;
+        try element.setAttribute(.wrap(name), value, frame);
+    }
+
+    return cmd.sendResult(null, .{});
 }
 
 fn querySelector(cmd: *CDP.Command) !void {
@@ -631,6 +814,27 @@ test "cdp.dom: search flow" {
         .params = .{ .searchId = "0", .fromIndex = 0, .toIndex = 1 },
     });
     try ctx.expectSentError(-31998, "SearchResultNotFound", .{ .id = 17 });
+}
+
+test "cdp.dom: empty search result range is valid" {
+    var ctx = try testing.context();
+    defer ctx.deinit();
+
+    _ = try ctx.loadBrowserContext(.{ .id = "BID-A", .url = "cdp/dom1.html" });
+
+    try ctx.processMessage(.{
+        .id = 20,
+        .method = "DOM.performSearch",
+        .params = .{ .query = "selector-that-does-not-match" },
+    });
+    try ctx.expectSentResult(.{ .searchId = "0", .resultCount = 0 }, .{ .id = 20 });
+
+    try ctx.processMessage(.{
+        .id = 21,
+        .method = "DOM.getSearchResults",
+        .params = .{ .searchId = "0", .fromIndex = 0, .toIndex = 0 },
+    });
+    try ctx.expectSentResult(.{ .nodeIds = &.{} }, .{ .id = 21 });
 }
 
 test "cdp.dom: querySelector unknown search id" {
