@@ -160,6 +160,18 @@ fn createBrowserContext(cmd: *CDP.Command) !void {
         }
     }
 
+    // Koko currently exposes one active BrowserContext through CDP.  A raw
+    // CDP client may still have the runner's bootstrap context alive when it
+    // asks for an isolated context.  Dispose that context through CDP's real
+    // deferred-teardown path before creating the requested replacement.  This
+    // keeps the single-context ownership model explicit and avoids claiming
+    // that two contexts exist when the core cannot route commands to both.
+    if (cmd.browser_context) |existing| {
+        if (!cmd.cdp.disposeBrowserContext(existing.id)) {
+            return error.BrowserContextNotLoaded;
+        }
+    }
+
     const bc = cmd.createBrowserContext() catch |err| switch (err) {
         error.AlreadyExists => return cmd.sendError(-32000, "Cannot have more than one browser context at a time", .{}),
         else => return err,
@@ -206,13 +218,19 @@ fn createTarget(cmd: *CDP.Command) !void {
         else => return err,
     };
 
-    if (bc.target_id != null) {
-        return error.TargetAlreadyLoaded;
-    }
     if (params.browserContextId) |param_browser_context_id| {
         if (std.mem.eql(u8, param_browser_context_id, bc.id) == false) {
             return error.UnknownBrowserContextId;
         }
+    }
+
+    // CDP clients commonly bootstrap a page before issuing their own
+    // Target.createTarget.  Koko has one active page slot, so a new target
+    // request replaces the old target at this lifecycle boundary.  Retire it
+    // through the same detach/page teardown path as Target.closeTarget; do
+    // not return a second target id while leaving the old page aliased.
+    if (bc.target_id != null) {
+        try retireCurrentTarget(cmd, bc);
     }
 
     // if target_id is null, we should never have a blank frame
@@ -354,6 +372,19 @@ fn closeTarget(cmd: *CDP.Command) !void {
 
     try cmd.sendResult(.{ .success = true }, .{ .include_session_id = false });
 
+    try retireCurrentTarget(cmd, bc);
+}
+
+/// Tear down the one page target owned by a BrowserContext.
+///
+/// This is shared by Target.closeTarget and Target.createTarget replacement
+/// so the latter cannot leave a stale session/frame behind.  The target id is
+/// copied by the struct field itself and remains valid until the events below
+/// have been serialized; the context fields are cleared only after page
+/// teardown completes.
+fn retireCurrentTarget(cmd: *CDP.Command, bc: *CDP.BrowserContext) !void {
+    const target_id = &(bc.target_id orelse return error.TargetNotLoaded);
+
     // could be null, created but never attached
     if (bc.session_id) |session_id| {
         // Inspector.detached event
@@ -373,6 +404,7 @@ fn closeTarget(cmd: *CDP.Command) !void {
 
     bc.session.removePage();
     bc.target_id = null;
+    bc.frame_sessions.clearRetainingCapacity();
 }
 
 fn getTargetInfo(cmd: *CDP.Command) !void {
