@@ -121,7 +121,14 @@ const layout_property_names = [_][]const u8{
 };
 const text_property_names = [_][]const u8{
     "font-size", "font-family", "font-weight", "font-style", "line-height",
-    "direction",
+    "direction", "white-space",
+};
+
+/// Per-node extension marker for layout features not representable by the
+/// Rust/Taffy projection yet. This must not become a second document-wide
+/// layout engine.
+const LayoutExtensionReason = enum {
+    unsupported_style,
 };
 
 // Keep HTML's default presentation in the same CSS engine as author rules.
@@ -514,6 +521,7 @@ _layout_engine: LayoutEngine,
 // nodes and all Rust handles die with the per-document layout session.
 _layout_node_handles: std.AutoHashMapUnmanaged(*Node, u64) = .empty,
 _layout_geometry: std.AutoHashMapUnmanaged(*Node, LayoutGeometryAbi) = .empty,
+_layout_extension_nodes: std.AutoHashMapUnmanaged(*Node, LayoutExtensionReason) = .empty,
 _layout_generation: u64 = 0,
 _layout_dirty: bool = true,
 _layout_building: bool = false,
@@ -855,6 +863,7 @@ fn beginStyleDocumentLifecycle(self: *Frame, document: *Document) void {
     _ = self._layout_engine.reset();
     self._layout_node_handles.clearRetainingCapacity();
     self._layout_geometry.clearRetainingCapacity();
+    self._layout_extension_nodes.clearRetainingCapacity();
     self._layout_generation = 0;
     self._layout_dirty = true;
     _ = self._style_engine.resetDocument();
@@ -874,6 +883,7 @@ fn endStyleDocumentLifecycle(self: *Frame) void {
         _ = self._layout_engine.reset();
         self._layout_node_handles.clearRetainingCapacity();
         self._layout_geometry.clearRetainingCapacity();
+        self._layout_extension_nodes.clearRetainingCapacity();
         self._layout_generation = 0;
         self._layout_dirty = true;
         self._stylo_node_lookup.clearRetainingCapacity();
@@ -886,6 +896,7 @@ fn endStyleDocumentLifecycle(self: *Frame) void {
     _ = self._layout_engine.reset();
     self._layout_node_handles.clearRetainingCapacity();
     self._layout_geometry.clearRetainingCapacity();
+    self._layout_extension_nodes.clearRetainingCapacity();
     self._layout_generation = 0;
     self._layout_dirty = true;
     self._style_engine_document = null;
@@ -951,42 +962,52 @@ fn appendLayoutProperties(
     self: *Frame,
     node: *Node,
     properties: *std.ArrayListUnmanaged(LayoutProperty),
-) bool {
+) LayoutModule.Status {
     const node_id = self.styleNodeId(node);
     for (layout_property_names) |name| {
-        var output = self.call_arena.alloc(u8, 4096) catch return false;
+        var output = self.call_arena.alloc(u8, 4096) catch return .internal_error;
         var result = self._style_engine.layoutProperty(node_id, name, output);
         if (result.status == .output_buffer_too_small and result.bytes_written > output.len) {
-            output = self.call_arena.alloc(u8, result.bytes_written) catch return false;
+            output = self.call_arena.alloc(u8, result.bytes_written) catch return .internal_error;
             result = self._style_engine.layoutProperty(node_id, name, output);
         }
-        if (!result.isOk()) return false;
+        if (!result.isOk()) return switch (result.status) {
+            .bridge_unsupported => .unsupported,
+            else => .internal_error,
+        };
         const value = output[0..result.bytes_written];
-        properties.append(self.call_arena, .{ .name = name, .value = value }) catch return false;
+        properties.append(self.call_arena, .{ .name = name, .value = value }) catch return .internal_error;
     }
-    return true;
+    return .ok;
 }
 
 fn appendTextProperties(
     self: *Frame,
     node: *Node,
     properties: *std.ArrayListUnmanaged(LayoutProperty),
-) bool {
+) LayoutModule.Status {
     const node_id = self.styleNodeId(node);
     for (text_property_names) |name| {
-        var output = self.call_arena.alloc(u8, 4096) catch return false;
+        var output = self.call_arena.alloc(u8, 4096) catch return .internal_error;
         var result = self._style_engine.layoutProperty(node_id, name, output);
         if (result.status == .output_buffer_too_small and result.bytes_written > output.len) {
-            output = self.call_arena.alloc(u8, result.bytes_written) catch return false;
+            output = self.call_arena.alloc(u8, result.bytes_written) catch return .internal_error;
             result = self._style_engine.layoutProperty(node_id, name, output);
         }
-        if (!result.isOk()) return false;
+        if (!result.isOk()) return switch (result.status) {
+            .bridge_unsupported => .unsupported,
+            else => .internal_error,
+        };
         properties.append(self.call_arena, .{
             .name = name,
             .value = output[0..result.bytes_written],
-        }) catch return false;
+        }) catch return .internal_error;
     }
-    return true;
+    return .ok;
+}
+
+fn markLayoutExtension(self: *Frame, node: *Node) void {
+    self._layout_extension_nodes.put(self.arena, node, .unsupported_style) catch {};
 }
 
 fn buildLayoutNode(self: *Frame, node: *Node) ?u64 {
@@ -996,21 +1017,48 @@ fn buildLayoutNode(self: *Frame, node: *Node) ?u64 {
     switch (node._type) {
         .element => {
             var properties: std.ArrayListUnmanaged(LayoutProperty) = .empty;
-            if (!self.appendLayoutProperties(node, &properties)) return null;
-            const viewport = self.windowProfile();
-            if (self._layout_engine.setComputedStyle(
-                handle,
-                properties.items,
-                @floatFromInt(viewport.inner_width),
-                @floatFromInt(viewport.inner_height),
-            ) != .ok) return null;
+            const property_status = self.appendLayoutProperties(node, &properties);
+            if (property_status == .unsupported) {
+                self.markLayoutExtension(node);
+            } else if (property_status != .ok) {
+                return null;
+            } else {
+                const viewport = self.windowProfile();
+                const style_status = self._layout_engine.setComputedStyle(
+                    handle,
+                    properties.items,
+                    @floatFromInt(viewport.inner_width),
+                    @floatFromInt(viewport.inner_height),
+                );
+                if (style_status == .unsupported) {
+                    self.markLayoutExtension(node);
+                } else if (style_status != .ok) {
+                    return null;
+                }
+            }
         },
         .cdata => {
-            if (self._layout_engine.setText(handle, node.getData().str()) != .ok) return null;
+            const text_status = self._layout_engine.setText(handle, node.getData().str());
+            if (text_status == .unsupported) {
+                self.markLayoutExtension(node);
+            } else if (text_status != .ok) {
+                return null;
+            }
             if (node.parentElement()) |parent| {
                 var text_properties: std.ArrayListUnmanaged(LayoutProperty) = .empty;
-                if (!self.appendTextProperties(parent.asNode(), &text_properties)) return null;
-                if (self._layout_engine.setTextStyle(handle, text_properties.items) != .ok) return null;
+                const property_status = self.appendTextProperties(parent.asNode(), &text_properties);
+                if (property_status == .unsupported) {
+                    self.markLayoutExtension(node);
+                } else if (property_status != .ok) {
+                    return null;
+                } else {
+                    const text_style_status = self._layout_engine.setTextStyle(handle, text_properties.items);
+                    if (text_style_status == .unsupported) {
+                        self.markLayoutExtension(node);
+                    } else if (text_style_status != .ok) {
+                        return null;
+                    }
+                }
             }
         },
         else => {},
@@ -1045,6 +1093,7 @@ pub fn flushLayout(self: *Frame) bool {
     if (self._layout_engine.reset() != .ok) return false;
     self._layout_node_handles.clearRetainingCapacity();
     self._layout_geometry.clearRetainingCapacity();
+    self._layout_extension_nodes.clearRetainingCapacity();
 
     const root_element = self.document.getDocumentElement() orelse return false;
     const root_handle = self.buildLayoutNode(root_element.asNode()) orelse return false;
@@ -1076,6 +1125,13 @@ pub fn layoutGeometry(self: *Frame, node: *Node) ?LayoutGeometryAbi {
     if (!self.flushLayout()) return null;
     if (self._layout_geometry.get(node)) |geometry| return geometry;
     return null;
+}
+
+/// True only for nodes that need the Zig extension path. Rust/Taffy remains
+/// authoritative for every node that has a successful style projection.
+pub fn layoutExtensionRequired(self: *Frame, node: *Node) bool {
+    if (!self.flushLayout()) return true;
+    return self._layout_extension_nodes.contains(node);
 }
 
 fn styloFrame(user_data: ?*anyopaque) ?*Frame {
@@ -5069,11 +5125,6 @@ pub fn scriptAddedCallback(self: *Frame, comptime from_parser: bool, script: *El
     }
 
     if (comptime from_parser) {
-        // A parser callback can reach a body script before html5ever has
-        // surfaced the attributes of earlier head scripts. Make those head
-        // scripts run first so webpack-style bootstraps keep document order.
-        self.activatePendingHeadScripts(script);
-
         // parser-inserted scripts have force-async set to false, but only if
         // they have src or non-empty content
         // html5ever populates the DOM attribute directly; `_src` is primarily
@@ -5087,6 +5138,14 @@ pub fn scriptAddedCallback(self: *Frame, comptime from_parser: bool, script: *El
         if (has_src or script.asNode().firstChild() != null) {
             script._force_async = false;
         }
+
+        // A parser callback can reach a body script before html5ever has
+        // surfaced the attributes of earlier head scripts. Make those head
+        // scripts run first so webpack-style bootstraps keep document order.
+        // Set force-async above before this scan: the scan can recursively
+        // activate an earlier parser script whose attributes arrived through
+        // the same html5ever callback path.
+        self.activatePendingHeadScripts(script);
     }
 
     self._script_manager.addFromElement(from_parser, script, "parsing") catch |err| {

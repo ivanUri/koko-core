@@ -12,6 +12,7 @@ use std::ffi::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 use std::rc::Rc;
+use std::sync::Once;
 
 use style::context::QuirksMode;
 use style::properties::{parse_style_attribute, PropertyId};
@@ -159,6 +160,12 @@ struct Engine {
 
 impl Engine {
     fn new(callbacks: StyloDomCallbacks) -> Self {
+        static INIT_STYLO_PREFS: Once = Once::new();
+        INIT_STYLO_PREFS.call_once(|| {
+            // Expose the CSS Text values used by the computed-style bridge.
+            stylo_static_prefs::set_pref!("layout.css.hyphens.enabled", true);
+            stylo_static_prefs::set_pref!("layout.css.text-wrap-style.balance.enabled", true);
+        });
         let shared_lock = Rc::new(style::shared_lock::SharedRwLock::new());
         let mut stylists = HashMap::new();
         stylists.insert(
@@ -428,7 +435,7 @@ impl Engine {
         };
         let serialized = match stylist.serialize_computed_property(&style, &property_id) {
             Ok(value) => value,
-            Err(status) => return self.error(status, "pseudo property is not a longhand"),
+            Err(status) => return self.error(status, "cannot serialize computed pseudo property"),
         };
         let status = copy_buffer(serialized.as_bytes(), out, capacity, written);
         if status != StyloStatus::Ok {
@@ -785,7 +792,7 @@ pub extern "C" fn koko_stylo_engine_serialize_property(
         };
         let serialized = match stylist.serialize_computed_property(&computed, &property_id) {
             Ok(value) => value,
-            Err(status) => return inner.error(status, "property is not a longhand"),
+            Err(status) => return inner.error(status, "cannot serialize computed property"),
         };
         let status = copy_buffer(serialized.as_bytes(), out, capacity, written);
         if status != StyloStatus::Ok {
@@ -1063,6 +1070,118 @@ mod tests {
             read_node: Some(read_node_tree),
             read_attr: Some(read_attr_tree),
         }
+    }
+
+    fn assert_computed_properties(css: &str, node_id: u64, properties: &[(&str, &str)]) {
+        let mut engine = StyloEngine {
+            inner: Engine::new(tree_callbacks()),
+        };
+        let input = StyloStylesheetInput {
+            sheet_id: 1,
+            scope_id: 0,
+            origin: StyloStylesheetOrigin::Author,
+            enabled: 1,
+            reserved: [0; 7],
+            css: StyloSlice {
+                ptr: css.as_ptr(),
+                len: css.len(),
+            },
+        };
+        assert_eq!(
+            koko_stylo_engine_replace_stylesheets(&mut engine, &input, 1),
+            StyloStatus::Ok
+        );
+        for &(property, expected) in properties {
+            let mut output = [0u8; 128];
+            let mut written = 0;
+            let status = koko_stylo_engine_serialize_property(
+                &mut engine,
+                node_id,
+                StyloSlice {
+                    ptr: property.as_ptr(),
+                    len: property.len(),
+                },
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written,
+            );
+            assert_eq!(status, StyloStatus::Ok, "{property}");
+            assert_eq!(&output[..written], expected.as_bytes(), "{property}");
+        }
+    }
+
+    #[test]
+    fn serializes_grid_tracks_and_placement() {
+        assert_computed_properties(
+            "",
+            2,
+            &[
+                ("grid-template-columns", "none"),
+                ("grid-template-rows", "none"),
+                ("grid-column", "auto"),
+                ("grid-row", "auto"),
+                ("grid-area", "auto"),
+            ],
+        );
+        assert_computed_properties(
+            "main { font-size: 10px; grid-template-columns: [start] 2em minmax(min-content, 1fr);
+                    grid-template-rows: auto max-content 25%; }
+             div { grid-template-columns: inherit; grid-template-rows: inherit;
+                   grid-area: 2 / named / span 3; grid-column-end: 4;
+                   row-gap: 5px; column-gap: 8px; }",
+            2,
+            &[
+                ("grid-template-columns", "[start] 20px minmax(min-content, 1fr)"),
+                ("grid-template-rows", "auto max-content 25%"),
+                ("row-gap", "5px"),
+                ("column-gap", "8px"),
+                (
+                    "grid-template",
+                    "auto max-content 25% / [start] 20px minmax(min-content, 1fr)",
+                ),
+                ("gap", "5px 8px"),
+                ("grid-column", "named / 4"),
+                ("grid-row", "2 / span 3"),
+                ("grid-area", "2 / named / span 3 / 4"),
+            ],
+        );
+        assert_computed_properties("div { grid-area: named }", 2, &[("grid-area", "named")]);
+    }
+
+    #[test]
+    fn serializes_inherited_css_text_values() {
+        assert_computed_properties(
+            "",
+            2,
+            &[
+                ("hyphens", "manual"),
+                ("text-justify", "auto"),
+                ("text-wrap", "wrap"),
+                ("text-wrap-mode", "wrap"),
+                ("text-wrap-style", "auto"),
+                ("white-space", "normal"),
+                ("white-space-collapse", "collapse"),
+            ],
+        );
+        assert_computed_properties(
+            "main { hyphens: none; text-justify: inter-character;
+                    text-wrap-style: balance; white-space: pre-wrap; }",
+            2,
+            &[
+                ("hyphens", "none"),
+                ("text-justify", "inter-character"),
+                ("text-wrap", "balance"),
+                ("text-wrap-mode", "wrap"),
+                ("text-wrap-style", "balance"),
+                ("white-space", "pre-wrap"),
+                ("white-space-collapse", "preserve"),
+            ],
+        );
+        assert_computed_properties(
+            "main { text-wrap: nowrap }",
+            2,
+            &[("text-wrap", "nowrap"), ("white-space", "nowrap")],
+        );
     }
 
     #[test]

@@ -29,7 +29,7 @@ use taffy::prelude::{
     Dimension, Display, FlexDirection, FlexWrap, LengthPercentage, LengthPercentageAuto, Position,
     Style,
 };
-use taffy::{AvailableSpace, NodeId, Overflow, Size, TaffyTree};
+use taffy::{AvailableSpace, GridAutoFlow, NodeId, Overflow, Size, TaffyTree, TrackSizingFunction};
 
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,7 +79,14 @@ struct PropertySnapshot {
 
 impl taffy_mapping::ComputedStyleSource for PropertySnapshot {
     fn computed_property(&self, property: &str) -> Option<String> {
-        self.values.get(property).cloned()
+        let value = self.values.get(property)?;
+        match (property, value.as_str()) {
+            // The used value of a normal flex/grid gap is zero.
+            ("row-gap" | "column-gap", "normal") => Some("0px".into()),
+            // Stylo serializes dense row flow as just "dense".
+            ("grid-auto-flow", "dense") => Some("row dense".into()),
+            _ => Some(value.clone()),
+        }
     }
 }
 
@@ -422,9 +429,8 @@ fn to_align_items(value: taffy_mapping::Align) -> AlignItems {
         taffy_mapping::Align::FlexStart => AlignItems::FLEX_START,
         taffy_mapping::Align::FlexEnd => AlignItems::FLEX_END,
         taffy_mapping::Align::Center => AlignItems::CENTER,
-        taffy_mapping::Align::Stretch
-        | taffy_mapping::Align::Auto
-        | taffy_mapping::Align::Normal => AlignItems::NORMAL,
+        taffy_mapping::Align::Stretch => AlignItems::STRETCH,
+        taffy_mapping::Align::Auto | taffy_mapping::Align::Normal => AlignItems::NORMAL,
         taffy_mapping::Align::Baseline => AlignItems::BASELINE,
         taffy_mapping::Align::SpaceBetween
         | taffy_mapping::Align::SpaceAround
@@ -439,9 +445,8 @@ fn to_align_content(value: taffy_mapping::Align) -> AlignContent {
         taffy_mapping::Align::FlexStart => AlignContent::FLEX_START,
         taffy_mapping::Align::FlexEnd => AlignContent::FLEX_END,
         taffy_mapping::Align::Center => AlignContent::CENTER,
-        taffy_mapping::Align::Stretch
-        | taffy_mapping::Align::Auto
-        | taffy_mapping::Align::Normal => AlignContent::NORMAL,
+        taffy_mapping::Align::Stretch => AlignContent::STRETCH,
+        taffy_mapping::Align::Auto | taffy_mapping::Align::Normal => AlignContent::NORMAL,
         taffy_mapping::Align::SpaceBetween => AlignContent::SPACE_BETWEEN,
         taffy_mapping::Align::SpaceAround => AlignContent::SPACE_AROUND,
         taffy_mapping::Align::SpaceEvenly => AlignContent::SPACE_EVENLY,
@@ -505,8 +510,14 @@ fn to_taffy_style(mapped: taffy_mapping::LayoutStyle) -> Result<Style, KokoLayou
     style.flex_shrink = mapped.flex.shrink;
     style.flex_basis = to_dimension(mapped.flex.basis)?;
     style.align_items = to_align_items(mapped.flex.align_items);
+    if mapped.flex.align_self != taffy_mapping::Align::Auto {
+        style.align_self = Some(to_align_items(mapped.flex.align_self));
+    }
     style.align_content = to_align_content(mapped.flex.align_content);
-    style.justify_content = to_align_content(mapped.flex.justify_content);
+    style.justify_content = match (style.display, mapped.flex.justify_content) {
+        (Display::Flex, taffy_mapping::Align::Stretch) => AlignContent::FLEX_START,
+        (_, align) => to_align_content(align),
+    };
     style.position = match mapped.position.position {
         taffy_mapping::Position::Static => Position::Static,
         taffy_mapping::Position::Relative => Position::Relative,
@@ -524,17 +535,25 @@ fn to_taffy_style(mapped: taffy_mapping::LayoutStyle) -> Result<Style, KokoLayou
         x: to_overflow(mapped.overflow.x),
         y: to_overflow(mapped.overflow.y),
     };
-    if let taffy_mapping::GridTemplate::Tracks(columns) = mapped.grid.columns {
-        style.grid_template_columns = columns
-            .into_iter()
-            .map(to_grid_track)
-            .collect::<Result<Vec<_>, _>>()?;
-    }
-    if let taffy_mapping::GridTemplate::Tracks(rows) = mapped.grid.rows {
-        style.grid_template_rows = rows
-            .into_iter()
-            .map(to_grid_track)
-            .collect::<Result<Vec<_>, _>>()?;
+    if style.display == Display::Grid {
+        style.grid_template_columns = to_grid_template(mapped.grid.columns)?;
+        style.grid_template_rows = to_grid_template(mapped.grid.rows)?;
+        if mapped.grid.auto_columns != taffy_mapping::Length::Auto {
+            style
+                .grid_auto_columns
+                .push(to_implicit_grid_track(mapped.grid.auto_columns)?);
+        }
+        if mapped.grid.auto_rows != taffy_mapping::Length::Auto {
+            style
+                .grid_auto_rows
+                .push(to_implicit_grid_track(mapped.grid.auto_rows)?);
+        }
+        style.grid_auto_flow = match mapped.grid.auto_flow {
+            taffy_mapping::GridAutoFlow::Row => GridAutoFlow::Row,
+            taffy_mapping::GridAutoFlow::Column => GridAutoFlow::Column,
+            taffy_mapping::GridAutoFlow::RowDense => GridAutoFlow::RowDense,
+            taffy_mapping::GridAutoFlow::ColumnDense => GridAutoFlow::ColumnDense,
+        };
     }
     Ok(style)
 }
@@ -548,19 +567,54 @@ fn to_overflow(value: taffy_mapping::Overflow) -> Overflow {
     }
 }
 
-fn to_grid_track(
-    value: taffy_mapping::GridTrack,
-) -> Result<taffy::GridTemplateComponent<String>, KokoLayoutStatus> {
+fn to_grid_track(value: taffy_mapping::GridTrack) -> Result<TrackSizingFunction, KokoLayoutStatus> {
+    use taffy_mapping::GridTrack;
+
     match value {
-        taffy_mapping::GridTrack::Px(value) => Ok(length(value)),
-        taffy_mapping::GridTrack::Percent(value) => Ok(percent(value)),
-        taffy_mapping::GridTrack::Flex(value) => Ok(fr(value)),
-        taffy_mapping::GridTrack::Auto => Ok(auto()),
-        taffy_mapping::GridTrack::MinContent => Ok(min_content()),
-        taffy_mapping::GridTrack::MaxContent => Ok(max_content()),
-        taffy_mapping::GridTrack::MinMax(_, _) | taffy_mapping::GridTrack::FitContent(_) => {
-            Err(KokoLayoutStatus::Unsupported)
+        GridTrack::Px(value) => Ok(length(value)),
+        GridTrack::Percent(value) => Ok(percent(value)),
+        GridTrack::Flex(value) => Ok(fr(value)),
+        GridTrack::Auto => Ok(auto()),
+        GridTrack::MinContent => Ok(min_content()),
+        GridTrack::MaxContent => Ok(max_content()),
+        GridTrack::MinMax(min, max) => {
+            if matches!(*min, GridTrack::Flex(_) | GridTrack::MinMax(_, _))
+                || matches!(*max, GridTrack::MinMax(_, _))
+            {
+                return Err(KokoLayoutStatus::Unsupported);
+            }
+            Ok(taffy::style_helpers::minmax(
+                to_grid_track(*min)?.min,
+                to_grid_track(*max)?.max,
+            ))
         }
+        GridTrack::FitContent(_) => Err(KokoLayoutStatus::Unsupported),
+    }
+}
+
+fn to_grid_template(
+    template: taffy_mapping::GridTemplate,
+) -> Result<Vec<taffy::GridTemplateComponent<String>>, KokoLayoutStatus> {
+    match template {
+        taffy_mapping::GridTemplate::None => Ok(Vec::new()),
+        taffy_mapping::GridTemplate::Tracks(tracks) => tracks
+            .into_iter()
+            .map(|track| to_grid_track(track).map(taffy::GridTemplateComponent::Single))
+            .collect(),
+        taffy_mapping::GridTemplate::Unsupported(_) => Err(KokoLayoutStatus::Unsupported),
+    }
+}
+
+fn to_implicit_grid_track(
+    value: taffy_mapping::Length,
+) -> Result<TrackSizingFunction, KokoLayoutStatus> {
+    match value {
+        taffy_mapping::Length::Px(value) => Ok(length(value)),
+        taffy_mapping::Length::Percent(value) => Ok(percent(value)),
+        taffy_mapping::Length::Auto => Ok(auto()),
+        taffy_mapping::Length::MinContent => Ok(min_content()),
+        taffy_mapping::Length::MaxContent => Ok(max_content()),
+        _ => Err(KokoLayoutStatus::Unsupported),
     }
 }
 
@@ -1188,6 +1242,254 @@ mod tests {
                 value_len: value.len(),
             })
             .collect()
+    }
+
+    unsafe fn styled_node(
+        session: *mut LayoutSession,
+        display: &str,
+        width: &str,
+        height: &str,
+        overrides: &[(&str, &str)],
+    ) -> u64 {
+        let node = koko_layout_node_new(session);
+        assert_ne!(node, 0);
+        let mut values = computed_properties(display, width, height, "0");
+        values.extend(
+            overrides
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.to_string())),
+        );
+        let abi = property_abi(&values);
+        assert_eq!(
+            koko_layout_node_set_computed_style(
+                session,
+                node,
+                abi.as_ptr(),
+                abi.len() as u64,
+                600.0,
+                600.0,
+            ),
+            KokoLayoutStatus::Ok,
+            "computed style for {display} {width} × {height}: {overrides:?}",
+        );
+        node
+    }
+
+    unsafe fn compute_geometry(
+        session: *mut LayoutSession,
+        root: u64,
+        nodes: &[u64],
+    ) -> Vec<KokoLayoutGeometry> {
+        assert_eq!(
+            koko_layout_compute(session, root, 600.0, 600.0),
+            KokoLayoutStatus::Ok
+        );
+        let mut geometry = vec![KokoLayoutGeometry::default(); nodes.len()];
+        let mut count = 0;
+        assert_eq!(
+            koko_layout_snapshot_batch(
+                session,
+                nodes.as_ptr(),
+                nodes.len() as u64,
+                geometry.as_mut_ptr(),
+                geometry.len() as u64,
+                &mut count,
+            ),
+            KokoLayoutStatus::Ok,
+        );
+        assert_eq!(count, nodes.len() as u64);
+        geometry
+    }
+
+    #[test]
+    fn flex_wrap_uses_line_cross_size_from_align_content_wrap_002() {
+        unsafe {
+            for (direction, width, height) in
+                [("row", "600px", "100px"), ("column", "100px", "600px")]
+            {
+                for (wrap, item_count, expected) in
+                    [("nowrap", 3, 80.0), ("wrap", 3, 150.0), ("wrap", 5, 150.0)]
+                {
+                    let mut session = LayoutSession::new();
+                    let session = &mut session as *mut LayoutSession;
+                    let root = styled_node(
+                        session,
+                        "flex",
+                        width,
+                        height,
+                        &[
+                            ("flex-direction", direction),
+                            ("flex-wrap", wrap),
+                            ("align-items", "normal"),
+                            ("row-gap", "normal"),
+                            ("column-gap", "normal"),
+                        ],
+                    );
+                    let mut items = Vec::new();
+                    for cross in ["150px", "100px", "50px", "150px", "100px"]
+                        .into_iter()
+                        .take(item_count)
+                    {
+                        let (item_width, item_height, content_width, content_height) =
+                            if direction == "row" {
+                                ("150px", "auto", "100px", cross)
+                            } else {
+                                ("auto", "150px", cross, "100px")
+                            };
+                        let item = styled_node(
+                            session,
+                            "block",
+                            item_width,
+                            item_height,
+                            &[
+                                ("min-width", "auto"),
+                                ("min-height", "auto"),
+                                ("flex-shrink", "0"),
+                                ("margin-top", "10px"),
+                                ("margin-bottom", "10px"),
+                                ("margin-left", "10px"),
+                                ("margin-right", "10px"),
+                                ("row-gap", "normal"),
+                                ("column-gap", "normal"),
+                            ],
+                        );
+                        let content =
+                            styled_node(session, "block", content_width, content_height, &[]);
+                        assert_eq!(
+                            koko_layout_append_child(session, item, content),
+                            KokoLayoutStatus::Ok
+                        );
+                        assert_eq!(
+                            koko_layout_append_child(session, root, item),
+                            KokoLayoutStatus::Ok
+                        );
+                        items.push(item);
+                    }
+                    for rect in compute_geometry(session, root, &items) {
+                        let cross = if direction == "row" {
+                            rect.height
+                        } else {
+                            rect.width
+                        };
+                        assert_eq!(cross, expected, "{direction} {wrap}, {item_count} items");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn flex_preserves_gap_and_item_alignment() {
+        unsafe {
+            let mut session = LayoutSession::new();
+            let session = &mut session as *mut LayoutSession;
+            let root = styled_node(
+                session,
+                "flex",
+                "100px",
+                "60px",
+                &[("align-items", "center"), ("column-gap", "10%")],
+            );
+            let first = styled_node(session, "block", "20px", "20px", &[]);
+            let second = styled_node(
+                session,
+                "block",
+                "20px",
+                "auto",
+                &[("align-self", "stretch")],
+            );
+            for child in [first, second] {
+                assert_eq!(
+                    koko_layout_append_child(session, root, child),
+                    KokoLayoutStatus::Ok
+                );
+            }
+            let rects = compute_geometry(session, root, &[first, second]);
+            assert_eq!((rects[0].x, rects[0].y, rects[0].height), (0.0, 20.0, 20.0));
+            assert_eq!((rects[1].x, rects[1].y, rects[1].height), (30.0, 0.0, 60.0));
+        }
+    }
+
+    #[test]
+    fn grid_uses_computed_implicit_tracks_and_auto_flow() {
+        unsafe {
+            let mut session = LayoutSession::new();
+            let session = &mut session as *mut LayoutSession;
+            let root = styled_node(
+                session,
+                "grid",
+                "200px",
+                "100px",
+                &[
+                    ("grid-template-rows", "20px 25px"),
+                    ("grid-auto-columns", "50px"),
+                    ("grid-auto-flow", "column dense"),
+                    ("row-gap", "5px"),
+                    ("column-gap", "8px"),
+                ],
+            );
+            let items = [0; 3].map(|_| {
+                let node = styled_node(session, "block", "auto", "auto", &[]);
+                assert_eq!(
+                    koko_layout_append_child(session, root, node),
+                    KokoLayoutStatus::Ok
+                );
+                node
+            });
+            let rects = compute_geometry(session, root, &items);
+            let boxes: Vec<_> = rects
+                .iter()
+                .map(|rect| (rect.x, rect.y, rect.width, rect.height))
+                .collect();
+            assert_eq!(
+                boxes,
+                [
+                    (0.0, 0.0, 50.0, 20.0),
+                    (0.0, 25.0, 50.0, 25.0),
+                    (58.0, 0.0, 50.0, 20.0)
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn grid_minmax_tracks_preserve_default_auto_placement() {
+        unsafe {
+            let mut session = LayoutSession::new();
+            let session = &mut session as *mut LayoutSession;
+            let root = styled_node(
+                session,
+                "grid",
+                "200px",
+                "100px",
+                &[
+                    ("grid-template-columns", "minmax(30px, 50px) 1fr"),
+                    ("row-gap", "normal"),
+                    ("column-gap", "normal"),
+                ],
+            );
+            let items = [0; 3].map(|_| {
+                let node = styled_node(session, "block", "auto", "auto", &[]);
+                assert_eq!(
+                    koko_layout_append_child(session, root, node),
+                    KokoLayoutStatus::Ok
+                );
+                node
+            });
+            let rects = compute_geometry(session, root, &items);
+            let boxes: Vec<_> = rects
+                .iter()
+                .map(|rect| (rect.x, rect.y, rect.width, rect.height))
+                .collect();
+            assert_eq!(
+                boxes,
+                [
+                    (0.0, 0.0, 50.0, 50.0),
+                    (50.0, 0.0, 150.0, 50.0),
+                    (0.0, 50.0, 50.0, 50.0),
+                ]
+            );
+        }
     }
 
     #[test]

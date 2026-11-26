@@ -386,6 +386,13 @@ fn _addAttrsIfMissingCallback(self: *Parser, node: *Node, attributes: h5e.Attrib
             // available so parser order is preserved; ScriptManager's
             // `_executed` guard makes this safe for scripts already started.
             if (!script._executed) {
+                // html5ever's attribute callback is the first place where a
+                // parser-created script is guaranteed to have its `src`,
+                // `async`, and `defer` attributes. Clear the dynamic-script
+                // force-async default before handing it to ScriptManager;
+                // otherwise a classic external script is classified as async
+                // here and can run ahead of the next parser script.
+                script._force_async = false;
                 try frame.scriptAddedCallback(true, script);
             }
         }

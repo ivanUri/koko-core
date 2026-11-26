@@ -2512,11 +2512,13 @@ pub fn getClientWidth(self: *Element, frame: *Frame) f64 {
 
 fn getClientWidthInner(self: *Element, frame: *Frame) f64 {
     if (self.isHiddenForLayout(frame)) return 0.0;
+    if (frame.layoutExtensionRequired(self.asNode())) {
+        return self.getElementDimensions(frame).width;
+    }
     if (frame.layoutGeometry(self.asNode())) |geometry| {
         return @max(0.0, @as(f64, geometry.width) - @as(f64, geometry.border_left) - @as(f64, geometry.border_right));
     }
-    const dims = self.getElementDimensions(frame);
-    return dims.width;
+    return 0.0;
 }
 
 pub fn getClientHeight(self: *Element, frame: *Frame) f64 {
@@ -2525,11 +2527,13 @@ pub fn getClientHeight(self: *Element, frame: *Frame) f64 {
 
 fn getClientHeightInner(self: *Element, frame: *Frame) f64 {
     if (self.isHiddenForLayout(frame)) return 0.0;
+    if (frame.layoutExtensionRequired(self.asNode())) {
+        return self.getElementDimensions(frame).height;
+    }
     if (frame.layoutGeometry(self.asNode())) |geometry| {
         return @max(0.0, @as(f64, geometry.height) - @as(f64, geometry.border_top) - @as(f64, geometry.border_bottom));
     }
-    const dims = self.getElementDimensions(frame);
-    return dims.height;
+    return 0.0;
 }
 
 pub fn getBoundingClientRect(self: *Element, frame: *Frame) DOMRect {
@@ -2555,13 +2559,49 @@ fn getBoundingClientRectForJs(self: *Element, frame: *Frame) !*DOMRect {
 // Some cases need a the BoundingClientRect but have already done the
 // visibility check.
 pub fn getBoundingClientRectForVisible(self: *Element, frame: *Frame) DOMRect {
-    if (ClientRectsIntelligent.lookup(self, frame)) |golden| {
-        return golden;
-    }
+    if (frame.layoutExtensionRequired(self.asNode())) {
+        if (ClientRectsIntelligent.lookup(self, frame)) |golden| {
+            return golden;
+        }
 
-    const pos_kind = layoutPositionKind(self, frame);
-    if (pos_kind == .absolute or pos_kind == .fixed) {
-        return self.getPositionedBoundingClientRect(frame);
+        const pos_kind = layoutPositionKind(self, frame);
+        if (pos_kind == .absolute or pos_kind == .fixed) {
+            return self.getPositionedBoundingClientRect(frame);
+        }
+
+        const dims = self.getElementDimensions(frame);
+        if (dims.width == 0.0 and dims.height == 0.0) {
+            return .{
+                ._x = 0.0,
+                ._y = 0.0,
+                ._width = 0.0,
+                ._height = 0.0,
+            };
+        }
+
+        const scroll_x = @as(f64, @floatFromInt(frame.window.getScrollX()));
+        const scroll_y = @as(f64, @floatFromInt(frame.window.getScrollY()));
+        const offset = getLayoutOffset(self, frame);
+        const y = calculateDocumentPosition(self.asNode(), frame) + offset.top;
+
+        if (shadowTreeHost(self.asNode())) |host| {
+            const host_rect = host.getBoundingClientRectForVisible(frame);
+            const local_x = calculateSiblingPosition(self.asNode(), frame) + offset.left;
+            const local_y = calculateDocumentPosition(self.asNode(), frame) + offset.top;
+            return finalizeClientRect(self, frame, .{
+                ._x = host_rect._x + local_x,
+                ._y = host_rect._y + local_y,
+                ._width = dims.width,
+                ._height = dims.height,
+            });
+        }
+
+        return finalizeClientRect(self, frame, .{
+            ._x = offset.left - scroll_x,
+            ._y = y - scroll_y,
+            ._width = dims.width,
+            ._height = dims.height,
+        });
     }
 
     // Taffy owns the current CSS geometry. Convert its document-space
@@ -2578,40 +2618,7 @@ pub fn getBoundingClientRectForVisible(self: *Element, frame: *Frame) DOMRect {
         });
     }
 
-    const dims = self.getElementDimensions(frame);
-
-    if (dims.width == 0.0 and dims.height == 0.0) {
-        return .{
-            ._x = 0.0,
-            ._y = 0.0,
-            ._width = 0.0,
-            ._height = 0.0,
-        };
-    }
-
-    const scroll_x = @as(f64, @floatFromInt(frame.window.getScrollX()));
-    const scroll_y = @as(f64, @floatFromInt(frame.window.getScrollY()));
-    const offset = getLayoutOffset(self, frame);
-    const y = calculateDocumentPosition(self.asNode(), frame) + offset.top;
-
-    if (shadowTreeHost(self.asNode())) |host| {
-        const host_rect = host.getBoundingClientRectForVisible(frame);
-        const local_x = calculateSiblingPosition(self.asNode(), frame) + offset.left;
-        const local_y = calculateDocumentPosition(self.asNode(), frame) + offset.top;
-        return finalizeClientRect(self, frame, .{
-            ._x = host_rect._x + local_x,
-            ._y = host_rect._y + local_y,
-            ._width = dims.width,
-            ._height = dims.height,
-        });
-    }
-
-    return finalizeClientRect(self, frame, .{
-        ._x = offset.left - scroll_x,
-        ._y = y - scroll_y,
-        ._width = dims.width,
-        ._height = dims.height,
-    });
+    return .{ ._x = 0.0, ._y = 0.0, ._width = 0.0, ._height = 0.0 };
 }
 
 pub fn getClientRects(self: *Element, frame: *Frame) ![]DOMRect {
@@ -2663,6 +2670,42 @@ pub fn setScrollLeft(self: *Element, value: i32, frame: *Frame) !void {
 pub fn getScrollHeight(self: *Element, frame: *Frame) f64 {
     if (self.isHiddenForLayout(frame)) return 0.0;
 
+    if (!frame.layoutExtensionRequired(self.asNode())) {
+        if (frame.layoutGeometry(self.asNode())) |geometry| {
+            var max_bottom = @as(f64, geometry.y) + @as(f64, geometry.height);
+            var stack: std.ArrayList(*Node) = .empty;
+            defer stack.deinit(frame.call_arena);
+
+            var child = self.asNode().firstChild();
+            while (child) |node| : (child = node.nextSibling()) {
+                stack.append(frame.call_arena, node) catch return @as(f64, geometry.height);
+            }
+            while (stack.items.len > 0) {
+                const node = stack.pop() orelse break;
+                if (node.is(Element)) |element| {
+                    if (!element.isHiddenForLayout(frame)) {
+                        if (frame.layoutExtensionRequired(element.asNode())) {
+                            const dims = element.getElementDimensions(frame);
+                            max_bottom = @max(max_bottom, @as(f64, geometry.y) + dims.height);
+                        } else if (frame.layoutGeometry(node)) |child_geometry| {
+                            max_bottom = @max(max_bottom, @as(f64, child_geometry.y) + @as(f64, child_geometry.height));
+                        }
+                    }
+                }
+                var nested = node.firstChild();
+                while (nested) |nested_node| : (nested = nested_node.nextSibling()) {
+                    stack.append(frame.call_arena, nested_node) catch {};
+                }
+            }
+
+            return @max(
+                @max(0.0, @as(f64, geometry.height) - @as(f64, geometry.border_top) - @as(f64, geometry.border_bottom)),
+                max_bottom - @as(f64, geometry.y),
+            );
+        }
+        return 0.0;
+    }
+
     const height = self.getElementDimensions(frame).height;
 
     // html/body have synthetic viewport-sized dimensions in this headless
@@ -2674,6 +2717,42 @@ pub fn getScrollHeight(self: *Element, frame: *Frame) f64 {
 
 pub fn getScrollWidth(self: *Element, frame: *Frame) f64 {
     if (self.isHiddenForLayout(frame)) return 0.0;
+
+    if (!frame.layoutExtensionRequired(self.asNode())) {
+        if (frame.layoutGeometry(self.asNode())) |geometry| {
+            var max_right = @as(f64, geometry.x) + @as(f64, geometry.width);
+            var stack: std.ArrayList(*Node) = .empty;
+            defer stack.deinit(frame.call_arena);
+
+            var child = self.asNode().firstChild();
+            while (child) |node| : (child = node.nextSibling()) {
+                stack.append(frame.call_arena, node) catch return @as(f64, geometry.width);
+            }
+            while (stack.items.len > 0) {
+                const node = stack.pop() orelse break;
+                if (node.is(Element)) |element| {
+                    if (!element.isHiddenForLayout(frame)) {
+                        if (frame.layoutExtensionRequired(element.asNode())) {
+                            const dims = element.getElementDimensions(frame);
+                            max_right = @max(max_right, @as(f64, geometry.x) + dims.width);
+                        } else if (frame.layoutGeometry(node)) |child_geometry| {
+                            max_right = @max(max_right, @as(f64, child_geometry.x) + @as(f64, child_geometry.width));
+                        }
+                    }
+                }
+                var nested = node.firstChild();
+                while (nested) |nested_node| : (nested = nested_node.nextSibling()) {
+                    stack.append(frame.call_arena, nested_node) catch {};
+                }
+            }
+
+            return @max(
+                @max(0.0, @as(f64, geometry.width) - @as(f64, geometry.border_left) - @as(f64, geometry.border_right)),
+                max_right - @as(f64, geometry.x),
+            );
+        }
+        return 0.0;
+    }
 
     const width = self.getElementDimensions(frame).width;
     const tag = self.getTag();
@@ -2731,9 +2810,11 @@ pub fn getOffsetHeight(self: *Element, frame: *Frame) f64 {
 
 fn getOffsetHeightInner(self: *Element, frame: *Frame) f64 {
     if (self.isHiddenForLayout(frame)) return 0.0;
+    if (frame.layoutExtensionRequired(self.asNode())) {
+        return self.getElementDimensions(frame).height;
+    }
     if (frame.layoutGeometry(self.asNode())) |geometry| return @as(f64, geometry.height);
-    const dims = self.getElementDimensions(frame);
-    return dims.height;
+    return 0.0;
 }
 
 pub fn getOffsetWidth(self: *Element, frame: *Frame) f64 {
@@ -2741,16 +2822,24 @@ pub fn getOffsetWidth(self: *Element, frame: *Frame) f64 {
 }
 
 fn getOffsetWidthInner(self: *Element, frame: *Frame) f64 {
-    if (readLayoutCache(self, frame)) |cached| return cached.width;
     if (self.isHiddenForLayout(frame)) return 0.0;
+    if (frame.layoutExtensionRequired(self.asNode())) {
+        return self.getElementDimensions(frame).width;
+    }
     if (frame.layoutGeometry(self.asNode())) |geometry| return @as(f64, geometry.width);
-    const dims = self.getElementDimensions(frame);
-    return dims.width;
+    return 0.0;
 }
 
 pub fn getOffsetTop(self: *Element, frame: *Frame) f64 {
     if (!self.checkVisibilityCached(null, frame)) {
         return 0.0;
+    }
+    if (!frame.layoutExtensionRequired(self.asNode())) {
+        const rect = self.getBoundingClientRect(frame);
+        const parent = offsetParentElement(self, frame) orelse return rect.getTop();
+        const parent_rect = parent.getBoundingClientRect(frame);
+        const parent_geometry = frame.layoutGeometry(parent.asNode()) orelse return rect.getTop() - parent_rect.getTop();
+        return rect.getTop() - parent_rect.getTop() + @as(f64, parent_geometry.border_top);
     }
     return calculateDocumentPosition(self.asNode(), frame);
 }
@@ -2758,6 +2847,13 @@ pub fn getOffsetTop(self: *Element, frame: *Frame) f64 {
 pub fn getOffsetLeft(self: *Element, frame: *Frame) f64 {
     if (!self.checkVisibilityCached(null, frame)) {
         return 0.0;
+    }
+    if (!frame.layoutExtensionRequired(self.asNode())) {
+        const rect = self.getBoundingClientRect(frame);
+        const parent = offsetParentElement(self, frame) orelse return rect.getLeft();
+        const parent_rect = parent.getBoundingClientRect(frame);
+        const parent_geometry = frame.layoutGeometry(parent.asNode()) orelse return rect.getLeft() - parent_rect.getLeft();
+        return rect.getLeft() - parent_rect.getLeft() + @as(f64, parent_geometry.border_left);
     }
     return calculateSiblingPosition(self.asNode(), frame);
 }

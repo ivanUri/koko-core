@@ -23,7 +23,7 @@ use style::dom::TNode;
 use style::font_metrics::FontMetrics;
 use style::media_queries::MediaType;
 use style::properties::style_structs::Font;
-use style::properties::{ComputedValues, PropertyId};
+use style::properties::{ComputedValues, PropertyId, ShorthandId};
 use style::queries::values::{
     PrefersColorScheme, PrefersContrast, PrefersReducedMotion, PrefersReducedTransparency,
 };
@@ -36,6 +36,7 @@ use style::style_resolver::{
 use style::stylesheets::{DocumentStyleSheet, Origin, Stylesheet, UrlExtraData};
 use style::stylist::{RuleInclusion, Stylist};
 use style::values::computed::{CSSPixelLength, Length};
+use style::values::resolved::Context as ResolvedValueContext;
 use style::Atom;
 use style_traits::{CSSPixel, DevicePixel};
 
@@ -220,14 +221,61 @@ impl StylistStore {
         style: &ComputedValues,
         property: &PropertyId,
     ) -> Result<String, StyloStatus> {
-        let declaration_id = match property {
-            PropertyId::NonCustom(_) => property
-                .longhand_id()
-                .map(style::properties::PropertyDeclarationId::Longhand)
-                .ok_or(StyloStatus::Unsupported)?,
-            PropertyId::Custom(name) => style::properties::PropertyDeclarationId::Custom(name),
+        let shorthand = match property.as_shorthand() {
+            Err(declaration) => return Ok(style.computed_value_to_string(declaration)),
+            Ok(shorthand) => shorthand,
         };
-        Ok(style.computed_value_to_string(declaration_id))
+        // Other shorthands still follow the embedder's existing fallback path.
+        match shorthand {
+            ShorthandId::GridArea
+            | ShorthandId::GridColumn
+            | ShorthandId::GridRow
+            | ShorthandId::GridTemplate
+            | ShorthandId::Gap
+            | ShorthandId::TextWrap
+            | ShorthandId::WhiteSpace => {}
+            _ => return Err(StyloStatus::Unsupported),
+        }
+
+        // `gap` is a pair of independent longhands.  Stylo's resolved-value
+        // context treats the shorthand itself as the current property and can
+        // therefore expose the initial `normal` value even when one of the
+        // longhands was authored explicitly.  Serialize the cascaded
+        // longhands directly so CSSOM and the layout bridge see the authored
+        // computed pair.
+        if shorthand == ShorthandId::Gap {
+            let values: Vec<_> = shorthand
+                .longhands()
+                .map(|id| {
+                    style.computed_value_to_string(
+                        style::properties::PropertyDeclarationId::Longhand(id),
+                    )
+                })
+                .collect();
+            return Ok(match values.as_slice() {
+                [first, second] if first == second => first.clone(),
+                [first, second] => format!("{first} {second}"),
+                _ => String::new(),
+            });
+        }
+
+        // Build the shorthand from the cascaded longhands, including values
+        // inherited from a parent or set by separate declarations.
+        let mut context = ResolvedValueContext {
+            style,
+            for_property: property.clone(),
+            current_longhand: None,
+        };
+        let declarations: Vec<_> = shorthand
+            .longhands()
+            .map(|id| style.computed_or_resolved_declaration(id, Some(&mut context)))
+            .collect();
+        let declarations: Vec<_> = declarations.iter().collect();
+        let mut serialized = String::new();
+        shorthand
+            .longhands_to_css(&declarations, &mut serialized)
+            .map_err(|_| StyloStatus::Unsupported)?;
+        Ok(serialized)
     }
 
     pub(crate) fn replace(&mut self, inputs: &[StyloStylesheetInput]) -> Result<(), StyloStatus> {
