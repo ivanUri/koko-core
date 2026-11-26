@@ -23,6 +23,7 @@ const CDP = @import("../CDP.zig");
 const js = @import("../../../core/js/js.zig");
 const URL = @import("../../../core/browser/URL.zig");
 const Frame = @import("../../../core/browser/Frame.zig");
+const HTMLDocument = @import("../../../core/webapi/HTMLDocument.zig");
 const timestampF = @import("../../../support/datetime.zig").timestamp;
 const Notification = @import("../../../runtime/Notification.zig");
 
@@ -32,7 +33,12 @@ const Allocator = std.mem.Allocator;
 pub fn processMessage(cmd: *CDP.Command) !void {
     const action = std.meta.stringToEnum(enum {
         enable,
+        disable,
+        bringToFront,
         getFrameTree,
+        getNavigationHistory,
+        resetNavigationHistory,
+        setDocumentContent,
         setLifecycleEventsEnabled,
         addScriptToEvaluateOnNewDocument,
         removeScriptToEvaluateOnNewDocument,
@@ -49,7 +55,12 @@ pub fn processMessage(cmd: *CDP.Command) !void {
 
     switch (action) {
         .enable => return cmd.sendResult(null, .{}),
+        .disable => return disable(cmd),
+        .bringToFront => return bringToFront(cmd),
         .getFrameTree => return getFrameTree(cmd),
+        .getNavigationHistory => return getNavigationHistory(cmd),
+        .resetNavigationHistory => return resetNavigationHistory(cmd),
+        .setDocumentContent => return setDocumentContent(cmd),
         .setLifecycleEventsEnabled => return setLifecycleEventsEnabled(cmd),
         .addScriptToEvaluateOnNewDocument => return addScriptToEvaluateOnNewDocument(cmd),
         .removeScriptToEvaluateOnNewDocument => return removeScriptToEvaluateOnNewDocument(cmd),
@@ -63,6 +74,87 @@ pub fn processMessage(cmd: *CDP.Command) !void {
         .getLayoutMetrics => return getLayoutMetrics(cmd),
         .handleJavaScriptDialog => return handleJavaScriptDialog(cmd),
     }
+}
+
+fn disable(cmd: *CDP.Command) !void {
+    // Koko does not maintain a separate Page event subscription. Page events
+    // are scoped to the attached CDP session, so disabling the domain is a
+    // protocol lifecycle operation with no additional state to tear down.
+    return cmd.sendResult(null, .{});
+}
+
+fn bringToFront(cmd: *CDP.Command) !void {
+    // Koko currently exposes one headless page per browser context. That page
+    // is necessarily the active/foreground page; accepting this command is
+    // therefore meaningful only when that page exists.
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    if (bc.target_id == null or !bc.session.hasPage()) return error.TargetNotLoaded;
+    return cmd.sendResult(null, .{});
+}
+
+const NavigationEntry = struct {
+    id: i64,
+    url: []const u8,
+    userTypedURL: []const u8,
+    title: []const u8,
+    transitionType: []const u8,
+};
+
+fn getNavigationHistory(cmd: *CDP.Command) !void {
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    const frame = bc.session.currentFrame() orelse return error.FrameNotLoaded;
+    const navigation = frame.navigationStore();
+    const entries = try cmd.arena.alloc(NavigationEntry, navigation._entries.items.len);
+    const current_title = try frame.getTitle() orelse "";
+
+    for (navigation._entries.items, 0..) |entry, i| {
+        const url = entry._url orelse "about:blank";
+        // NavigationHistoryEntry currently stores URL/state but not a title or
+        // transition type. Preserve the real entry data and use the current
+        // document title only for the current entry; never invent a URL.
+        entries[i] = .{
+            .id = std.fmt.parseInt(i64, entry._id, 10) catch @intCast(i),
+            .url = url,
+            .userTypedURL = url,
+            .title = if (i == navigation._index) current_title else "",
+            .transitionType = "typed",
+        };
+    }
+
+    return cmd.sendResult(.{
+        .currentIndex = navigation._index,
+        .entries = entries,
+    }, .{});
+}
+
+fn resetNavigationHistory(cmd: *CDP.Command) !void {
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    const frame = bc.session.currentFrame() orelse return error.FrameNotLoaded;
+    const navigation = frame.navigationStore();
+    const current = navigation.getCurrentEntryOrNull() orelse return error.FrameNotLoaded;
+
+    navigation._entries.clearRetainingCapacity();
+    try navigation._entries.append(bc.session.arena, current);
+    navigation._index = 0;
+    return cmd.sendResult(null, .{});
+}
+
+fn setDocumentContent(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        frameId: []const u8,
+        html: []const u8,
+    })) orelse return error.InvalidParams;
+
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    const frame = bc.session.findFrameByFrameId(try id.parseFrameId(params.frameId)) orelse
+        return cmd.sendError(-32000, "Frame with the given id does not belong to the target.", .{});
+
+    // Reuse the native HTMLDocument/Frame fragment parser. This preserves the
+    // authoritative Zig DOM, mutation notifications, resource callbacks, and
+    // Stylo invalidation path instead of creating a parallel CDP document.
+    const document = frame.document.is(HTMLDocument) orelse return error.NotSupported;
+    try document.setBody(params.html, frame);
+    return cmd.sendResult(null, .{});
 }
 
 const CDPFrame = struct {
