@@ -7,7 +7,7 @@
 //! the callback-backed Stylo DOM adapter without creating a second DOM.
 
 use servo_arc::Arc;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
@@ -23,6 +23,13 @@ mod dom_adapter;
 mod stylist_store;
 
 const ABI_VERSION: u32 = 2;
+
+const DOM_INVALIDATION_SUBTREE: u32 = 0;
+const DOM_INVALIDATION_ATTRIBUTES: u32 = 1;
+const DOM_INVALIDATION_TEXT: u32 = 2;
+const DOM_INVALIDATION_NODE_INSERTED: u32 = 3;
+const DOM_INVALIDATION_NODE_REMOVED: u32 = 4;
+const DOM_INVALIDATION_DOCUMENT: u32 = 5;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -141,6 +148,20 @@ pub struct StyloFlushResult {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StyloMetrics {
+    pub stylesheet_rebuilds: u64,
+    pub stylesheet_parses: u64,
+    pub stylesheet_bytes: u64,
+    pub dom_invalidations: u64,
+    pub restyled_nodes: u64,
+    pub computed_cache_hits: u64,
+    pub computed_cache_misses: u64,
+    pub ffi_calls: u64,
+    pub copied_bytes: u64,
+}
+
+#[repr(C)]
 pub struct StyloEngine {
     inner: Engine,
 }
@@ -153,8 +174,10 @@ struct Engine {
     stylists: HashMap<u64, stylist_store::StylistStore>,
     node_records: HashMap<u64, Box<dom_adapter::NodeRecord>>,
     computed_styles: HashMap<u64, Arc<style::properties::ComputedValues>>,
+    pending_dom_invalidations: HashMap<u64, u32>,
     url_data: UrlExtraData,
     invalidation_generation: u64,
+    metrics: StyloMetrics,
     last_error: String,
 }
 
@@ -178,11 +201,13 @@ impl Engine {
             stylists,
             node_records: HashMap::new(),
             computed_styles: HashMap::new(),
+            pending_dom_invalidations: HashMap::new(),
             url_data: UrlExtraData::from(
                 url::Url::parse("about:blank")
                     .expect("the static about:blank URL must always be valid"),
             ),
             invalidation_generation: 0,
+            metrics: StyloMetrics::default(),
             last_error: String::new(),
         }
     }
@@ -230,6 +255,15 @@ impl Engine {
     }
 
     fn replace_stylesheets(&mut self, inputs: &[StyloStylesheetInput]) -> Result<(), StyloStatus> {
+        self.metrics.stylesheet_rebuilds = self.metrics.stylesheet_rebuilds.wrapping_add(1);
+        self.metrics.stylesheet_parses = self
+            .metrics
+            .stylesheet_parses
+            .wrapping_add(inputs.len() as u64);
+        self.metrics.stylesheet_bytes = self
+            .metrics
+            .stylesheet_bytes
+            .wrapping_add(inputs.iter().map(|input| input.css.len as u64).sum::<u64>());
         let mut grouped: HashMap<u64, Vec<StyloStylesheetInput>> = HashMap::new();
         for input in inputs {
             grouped.entry(input.scope_id).or_default().push(*input);
@@ -279,14 +313,132 @@ impl Engine {
     }
 
     fn invalidate_stylesheets(&mut self) {
+        self.pending_dom_invalidations.clear();
         self.computed_styles.clear();
         self.invalidation_generation = self.invalidation_generation.wrapping_add(1);
         self.last_error.clear();
     }
 
+    fn node_is_descendant_of(&self, node_id: u64, ancestor_id: u64) -> bool {
+        if node_id == 0 || ancestor_id == 0 {
+            return false;
+        }
+        let mut current = node_id;
+        let mut seen = HashSet::new();
+        while current != 0 && seen.insert(current) {
+            if current == ancestor_id {
+                return true;
+            }
+            current = self
+                .node_records
+                .get(&current)
+                .map(|record| record.info.parent_id)
+                .unwrap_or(0);
+        }
+        false
+    }
+
+    fn merge_dom_invalidation(previous: u32, current: u32) -> u32 {
+        if previous == DOM_INVALIDATION_DOCUMENT || current == DOM_INVALIDATION_DOCUMENT {
+            return DOM_INVALIDATION_DOCUMENT;
+        }
+        if matches!(
+            previous,
+            DOM_INVALIDATION_SUBTREE
+                | DOM_INVALIDATION_NODE_INSERTED
+                | DOM_INVALIDATION_NODE_REMOVED
+        ) || matches!(
+            current,
+            DOM_INVALIDATION_SUBTREE
+                | DOM_INVALIDATION_NODE_INSERTED
+                | DOM_INVALIDATION_NODE_REMOVED
+        ) {
+            return DOM_INVALIDATION_SUBTREE;
+        }
+        previous
+    }
+
+    fn dom_mutation_affects_candidate(
+        &self,
+        candidate_id: u64,
+        node_id: u64,
+        kind: u32,
+    ) -> bool {
+        let parent_id = self
+            .node_records
+            .get(&node_id)
+            .map(|record| record.info.parent_id)
+            .unwrap_or(0);
+        let candidate_parent = self
+            .node_records
+            .get(&candidate_id)
+            .map(|record| record.info.parent_id)
+            .unwrap_or(0);
+        let same_parent = parent_id != 0 && candidate_parent == parent_id;
+        match kind {
+            DOM_INVALIDATION_DOCUMENT => true,
+            DOM_INVALIDATION_ATTRIBUTES | DOM_INVALIDATION_TEXT => {
+                candidate_id == node_id
+                    || self.node_is_descendant_of(candidate_id, node_id)
+                    || self.node_is_descendant_of(node_id, candidate_id)
+                    || same_parent
+            }
+            DOM_INVALIDATION_SUBTREE
+            | DOM_INVALIDATION_NODE_INSERTED
+            | DOM_INVALIDATION_NODE_REMOVED => {
+                candidate_id == node_id
+                    || self.node_is_descendant_of(candidate_id, node_id)
+                    || self.node_is_descendant_of(node_id, candidate_id)
+                    || same_parent
+            }
+            _ => true,
+        }
+    }
+
+    fn apply_pending_dom_invalidations(&mut self) {
+        if self.pending_dom_invalidations.is_empty() {
+            return;
+        }
+        let pending = std::mem::take(&mut self.pending_dom_invalidations);
+        let cached = self.computed_styles.keys().copied().collect::<Vec<_>>();
+        for candidate_id in cached {
+            if pending.iter().any(|(&node_id, &kind)| {
+                self.dom_mutation_affects_candidate(candidate_id, node_id, kind)
+            }) {
+                self.computed_styles.remove(&candidate_id);
+            }
+        }
+        self.invalidation_generation = self.invalidation_generation.wrapping_add(1);
+    }
+
+    fn invalidate_dom(&mut self, node: *const c_void, kind: u32) -> StyloStatus {
+        if node.is_null() {
+            return self.error(StyloStatus::NullPointer, "node is null");
+        }
+        self.metrics.dom_invalidations = self.metrics.dom_invalidations.wrapping_add(1);
+        let node_id = node as usize as u64;
+        if kind != DOM_INVALIDATION_NODE_REMOVED {
+            let status = self.sync_node(node, None);
+            if status != StyloStatus::Ok {
+                return status;
+            }
+        }
+
+        // Keep the parsed stylesheet stores intact. Defer cache filtering so
+        // repeated mutations before a synchronous style/layout flush are
+        // coalesced into one conservative pass over the cached records.
+        self.pending_dom_invalidations
+            .entry(node_id)
+            .and_modify(|previous| *previous = Self::merge_dom_invalidation(*previous, kind))
+            .or_insert(kind);
+        self.last_error.clear();
+        StyloStatus::Ok
+    }
+
     fn reset_document(&mut self) {
         self.node_records.clear();
         self.computed_styles.clear();
+        self.pending_dom_invalidations.clear();
         self.invalidation_generation = self.invalidation_generation.wrapping_add(1);
         self.last_error.clear();
     }
@@ -299,9 +451,13 @@ impl Engine {
         if node_id == 0 {
             return Err(StyloStatus::InvalidArgument);
         }
+        self.apply_pending_dom_invalidations();
         if let Some(style) = self.computed_styles.get(&node_id) {
+            self.metrics.computed_cache_hits = self.metrics.computed_cache_hits.wrapping_add(1);
             return Ok(style.clone());
         }
+        self.metrics.computed_cache_misses = self.metrics.computed_cache_misses.wrapping_add(1);
+        self.metrics.restyled_nodes = self.metrics.restyled_nodes.wrapping_add(1);
         let (kind, parent_id) = {
             let record = self
                 .ensure_node_record(node_id)
@@ -469,6 +625,7 @@ impl Engine {
         engine_ptr: *mut StyloEngine,
         nodes: &[u64],
     ) -> Result<usize, StyloStatus> {
+        self.apply_pending_dom_invalidations();
         for stylist in self.stylists.values_mut() {
             stylist.flush();
         }
@@ -478,6 +635,15 @@ impl Engine {
             changed += 1;
         }
         Ok(changed)
+    }
+
+    fn copied_node_bytes(info: &StyloNodeInfo) -> u64 {
+        info.tag_name.len as u64
+            + info.namespace_name.len as u64
+            + info.id.len as u64
+            + info.classes.len as u64
+            + info.style.len as u64
+            + info.attribute_names.len as u64
     }
 
     fn sync_node(&mut self, node: *const c_void, out: Option<*mut StyloNodeInfo>) -> StyloStatus {
@@ -497,14 +663,16 @@ impl Engine {
         if unsafe { (*info).node_id } == 0 {
             return self.error(StyloStatus::InvalidArgument, "callback returned node_id 0");
         }
+        self.metrics.copied_bytes = self
+            .metrics
+            .copied_bytes
+            .wrapping_add(Self::copied_node_bytes(unsafe { &*info }));
         if self
             .ensure_node_record_mut(unsafe { (*info).node_id })
             .is_none()
         {
             return self.error(StyloStatus::CallbackFailed, "node metadata is invalid");
         }
-        self.computed_styles.clear();
-        self.invalidation_generation = self.invalidation_generation.wrapping_add(1);
         self.last_error.clear();
         StyloStatus::Ok
     }
@@ -567,8 +735,11 @@ fn with_engine<T>(
     if engine.is_null() {
         return Err(StyloStatus::NullPointer);
     }
-    catch_unwind(AssertUnwindSafe(|| unsafe { f(&mut (*engine).inner) }))
-        .map_err(|_| StyloStatus::Panic)
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        (*engine).inner.metrics.ffi_calls = (*engine).inner.metrics.ffi_calls.wrapping_add(1);
+        f(&mut (*engine).inner)
+    }))
+    .map_err(|_| StyloStatus::Panic)
 }
 
 fn copy_buffer(bytes: &[u8], out: *mut u8, capacity: usize, written: *mut usize) -> StyloStatus {
@@ -672,6 +843,20 @@ pub extern "C" fn koko_stylo_engine_sync_node(
     }
 }
 
+/// Invalidate computed styles for one authoritative DOM mutation without
+/// rebuilding stylesheet parsing/cascade state. The node pointer is the
+/// stable Koko node identity, not an owned Rust DOM node.
+#[unsafe(no_mangle)]
+pub extern "C" fn koko_stylo_engine_invalidate_dom(
+    engine: *mut StyloEngine,
+    node: *const c_void,
+    kind: u32,
+) -> StyloStatus {
+    match with_engine(engine, |inner| inner.invalidate_dom(node, kind)) {
+        Ok(status) | Err(status) => status,
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn koko_stylo_engine_reset_document(engine: *mut StyloEngine) -> StyloStatus {
     match with_engine(engine, |inner| {
@@ -710,6 +895,21 @@ pub extern "C" fn koko_stylo_engine_invalidation_generation(
             return StyloStatus::NullPointer;
         }
         unsafe { *out_generation = (*engine).inner.invalidation_generation };
+        StyloStatus::Ok
+    }))
+    .unwrap_or(StyloStatus::Panic)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn koko_stylo_engine_metrics(
+    engine: *const StyloEngine,
+    out_metrics: *mut StyloMetrics,
+) -> StyloStatus {
+    catch_unwind(AssertUnwindSafe(|| {
+        if engine.is_null() || out_metrics.is_null() {
+            return StyloStatus::NullPointer;
+        }
+        unsafe { *out_metrics = (*engine).inner.metrics };
         StyloStatus::Ok
     }))
     .unwrap_or(StyloStatus::Panic)
@@ -1211,7 +1411,57 @@ mod tests {
             engine.sync_node(1usize as *const c_void, None),
             StyloStatus::Ok
         );
-        assert_eq!(engine.invalidation_generation, 1);
+        assert_eq!(engine.invalidation_generation, 0);
+    }
+
+    #[test]
+    fn dom_invalidation_preserves_stylesheet_store() {
+        let mut engine = StyloEngine {
+            inner: Engine::new(tree_callbacks()),
+        };
+        let css = b"div { color: red }";
+        let input = StyloStylesheetInput {
+            sheet_id: 1,
+            scope_id: 0,
+            origin: StyloStylesheetOrigin::Author,
+            enabled: 1,
+            reserved: [0; 7],
+            css: StyloSlice {
+                ptr: css.as_ptr(),
+                len: css.len(),
+            },
+        };
+        assert_eq!(
+            koko_stylo_engine_replace_stylesheets(&mut engine, &input, 1),
+            StyloStatus::Ok
+        );
+        assert_eq!(engine.inner.stylesheet_count(), 1);
+        let nodes = [2u64];
+        let mut result = StyloFlushResult::default();
+        assert_eq!(
+            koko_stylo_engine_flush_styles(&mut engine, nodes.as_ptr(), 1, &mut result),
+            StyloStatus::Ok
+        );
+        assert_eq!(
+            koko_stylo_engine_invalidate_dom(
+                &mut engine,
+                2usize as *const c_void,
+                DOM_INVALIDATION_ATTRIBUTES,
+            ),
+            StyloStatus::Ok
+        );
+        let generation_before_flush = engine.inner.invalidation_generation;
+        assert_eq!(engine.inner.stylesheet_count(), 1);
+        assert_eq!(engine.inner.invalidation_generation, generation_before_flush);
+        assert_eq!(
+            koko_stylo_engine_flush_styles(&mut engine, nodes.as_ptr(), 1, &mut result),
+            StyloStatus::Ok
+        );
+        assert_eq!(
+            engine.inner.invalidation_generation,
+            generation_before_flush.wrapping_add(1)
+        );
+        assert_eq!(engine.inner.stylesheet_count(), 1);
     }
 
     #[test]

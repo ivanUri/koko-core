@@ -36,7 +36,7 @@ const limits = {
   cssRules: 4_096,
   styleNodes: 1_000,
   styleReads: 100,
-  incrementalNodes: 128,
+  incrementalNodes: 1_000,
   memorySamples: 20,
   memoryIntervalMs: 5_000,
   timeoutMs: 120_000,
@@ -446,6 +446,7 @@ async function runComputedStyle(server, factories, options, records, kind) {
           const result = await session.evaluate(expression, options.timeoutMs);
           const evaluateWallMs = performance.now() - wallStarted;
           if (result?.status !== "pass") throw new Error(result?.reason ?? "computed-style workload unsupported");
+          const metricsAfter = await styleEngineProvenance(session);
           addRecord(records, {
             baseline: factory.id,
             workload,
@@ -460,7 +461,7 @@ async function runComputedStyle(server, factories, options, records, kind) {
               touchedNodes: result.touchedNodes,
               checksum: result.checksum,
             },
-            details: { provenance },
+            details: { provenance, metricsAfter },
           });
         } catch (error) {
           addRecord(records, { baseline: factory.id, workload, iteration, warmup, startedAt, error });
