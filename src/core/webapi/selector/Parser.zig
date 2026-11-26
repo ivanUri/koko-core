@@ -440,7 +440,7 @@ fn pseudoClass(self: *Parser, arena: Allocator) !Selector.PseudoClass {
                 if (self.peek() == 0) return error.InvalidPseudoClass;
 
                 // Parse a full selector (with potential combinators and compounds)
-                const selector = try self.parseRelativeSelector(arena);
+                const selector = try parse(arena, self.consumeUntilCommaOrParen());
                 try selectors.append(arena, selector);
 
                 _ = self.skipSpaces();
@@ -467,7 +467,7 @@ fn pseudoClass(self: *Parser, arena: Allocator) !Selector.PseudoClass {
                 if (self.peek() == ')') break;
                 if (self.peek() == 0) return error.InvalidPseudoClass;
 
-                const selector = try parse(arena, self.consumeUntilCommaOrParen());
+                const selector = try self.parseRelativeSelector(arena);
                 try selectors.append(arena, selector);
 
                 _ = self.skipSpaces();
@@ -521,7 +521,7 @@ fn pseudoClass(self: *Parser, arena: Allocator) !Selector.PseudoClass {
                 if (self.peek() == ')') break;
                 if (self.peek() == 0) return error.InvalidPseudoClass;
 
-                const selector = try parse(arena, self.consumeUntilCommaOrParen());
+                const selector = try self.parseRelativeSelector(arena);
                 try selectors.append(arena, selector);
 
                 _ = self.skipSpaces();
