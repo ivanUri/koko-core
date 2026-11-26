@@ -54,6 +54,13 @@ pub fn processMessage(cmd: *CDP.Command) !void {
         setNodeValue,
         setOuterHTML,
         setAttributesAsText,
+        focus,
+        getNodeForLocation,
+        setFileInputFiles,
+        hideHighlight,
+        highlightNode,
+        highlightRect,
+        moveTo,
     }, cmd.input.action) orelse return error.UnknownMethod;
 
     switch (action) {
@@ -82,6 +89,13 @@ pub fn processMessage(cmd: *CDP.Command) !void {
         .setNodeValue => return setNodeValue(cmd),
         .setOuterHTML => return setOuterHTML(cmd),
         .setAttributesAsText => return setAttributesAsText(cmd),
+        .focus => return focus(cmd),
+        .getNodeForLocation => return getNodeForLocation(cmd),
+        .setFileInputFiles => return setFileInputFiles(cmd),
+        .hideHighlight => return hideHighlight(cmd),
+        .highlightNode => return highlightNode(cmd),
+        .highlightRect => return highlightRect(cmd),
+        .moveTo => return moveTo(cmd),
     }
 }
 
@@ -388,6 +402,137 @@ fn setAttributesAsText(cmd: *CDP.Command) !void {
     }
 
     return cmd.sendResult(null, .{});
+}
+
+// https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-focus
+fn focus(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        nodeId: Node.Id,
+    })) orelse return error.InvalidParams;
+
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    const frame = bc.session.currentFrame() orelse return error.FrameNotLoaded;
+    const node = bc.node_registry.lookup_by_id.get(params.nodeId) orelse return error.NodeNotFound;
+    const element = node.dom.is(DOMNode.Element) orelse return error.NodeIsNotAnElement;
+    try element.focus(frame);
+    return cmd.sendResult(null, .{});
+}
+
+// https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-getNodeForLocation
+fn getNodeForLocation(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        x: i32,
+        y: i32,
+        includeUserAgentShadowDOM: bool = false,
+        ignorePointerEventsNone: bool = false,
+    })) orelse return error.InvalidParams;
+
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    const frame = bc.session.currentFrame() orelse return error.FrameNotLoaded;
+    const element = (try frame.window._document.elementFromPoint(
+        @floatFromInt(params.x),
+        @floatFromInt(params.y),
+        frame,
+    )) orelse return error.NodeNotFound;
+
+    if (params.includeUserAgentShadowDOM) {
+        log.warn(.not_implemented, "DOM.getNodeForLocation", .{ .param = "includeUserAgentShadowDOM" });
+    }
+    if (params.ignorePointerEventsNone) {
+        log.warn(.not_implemented, "DOM.getNodeForLocation", .{ .param = "ignorePointerEventsNone" });
+    }
+
+    const node = try bc.node_registry.register(element.asNode());
+    return cmd.sendResult(.{ .backendNodeId = node.id }, .{});
+}
+
+// FileList is currently an intentionally immutable empty host object in the
+// Web API layer. Do not manufacture a JS-only FileList here: doing so would
+// make Runtime.evaluate observe state different from form submission and the
+// native input control. The missing bridge belongs in Input/FileList (outside
+// this domain's ownership) and is reported as an explicit capability error.
+fn setFileInputFiles(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        files: []const []const u8,
+        nodeId: Node.Id,
+        backendNodeId: ?Node.Id = null,
+    })) orelse return error.InvalidParams;
+    _ = params.files;
+    _ = params.backendNodeId;
+
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    const node = bc.node_registry.lookup_by_id.get(params.nodeId) orelse return error.NodeNotFound;
+    const input = node.dom.is(DOMNode.Element) orelse return error.NodeIsNotAnElement;
+    if (input.is(DOMNode.Element.Html.Input) == null) return error.NodeIsNotAnInput;
+    return cmd.sendError(-32000, "DOM.setFileInputFiles requires the native FileList bridge", .{});
+}
+
+// Headless Koko has no compositor overlay surface. The command is accepted as
+// a lifecycle operation, but no geometry or paint event is fabricated.
+fn hideHighlight(cmd: *CDP.Command) !void {
+    return cmd.sendResult(null, .{});
+}
+
+fn highlightNode(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        nodeId: ?Node.Id = null,
+        backendNodeId: ?Node.Id = null,
+        objectId: ?[]const u8 = null,
+        highlightConfig: struct {
+            showInfo: ?bool = null,
+            showStyles: ?bool = null,
+            showRulers: ?bool = null,
+            showExtensionLines: ?bool = null,
+        },
+    })) orelse return error.InvalidParams;
+    _ = params.highlightConfig;
+
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    _ = try getNode(cmd.arena, bc, params.nodeId, params.backendNodeId, params.objectId);
+    return cmd.sendResult(null, .{});
+}
+
+fn highlightRect(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        color: ?struct { r: u8, g: u8, b: u8, a: ?f64 = null } = null,
+        outlineColor: ?struct { r: u8, g: u8, b: u8, a: ?f64 = null } = null,
+    })) orelse return error.InvalidParams;
+    _ = params;
+    return cmd.sendResult(null, .{});
+}
+
+// https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-moveTo
+fn moveTo(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        nodeId: Node.Id,
+        targetNodeId: Node.Id,
+        insertBeforeNodeId: ?Node.Id = null,
+    })) orelse return error.InvalidParams;
+
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    const frame = bc.session.currentFrame() orelse return error.FrameNotLoaded;
+    const source = bc.node_registry.lookup_by_id.get(params.nodeId) orelse return error.NodeNotFound;
+    const target = bc.node_registry.lookup_by_id.get(params.targetNodeId) orelse return error.NodeNotFound;
+    const target_element = target.dom.is(DOMNode.Element) orelse return error.NodeIsNotAnElement;
+    if (source.dom == target.dom or source.dom.contains(target.dom)) return error.HierarchyRequest;
+
+    const insert_before = if (params.insertBeforeNodeId) |id_| blk: {
+        const n = bc.node_registry.lookup_by_id.get(id_) orelse return error.NodeNotFound;
+        if (n.dom._parent != target.dom) return error.NotFound;
+        break :blk n.dom;
+    } else null;
+
+    if (insert_before) |before| {
+        _ = try target_element.asNode().insertBefore(source.dom, before, frame);
+    } else {
+        _ = try target_element.asNode().appendChild(source.dom, frame);
+    }
+
+    return cmd.sendResult(.{ .nodeId = source.id }, .{});
 }
 
 fn querySelector(cmd: *CDP.Command) !void {
