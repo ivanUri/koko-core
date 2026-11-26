@@ -455,9 +455,6 @@ fn dispatchCommand(command: *Command, method: []const u8) !void {
         },
         11 => switch (@as(u88, @bitCast(domain[0..11].*))) {
             asUint(u88, "DOMDebugger") => return @import("domains/dom_debugger.zig").processMessage(command),
-            else => {},
-        },
-        11 => switch (@as(u88, @bitCast(domain[0..11].*))) {
             asUint(u88, "Performance") => return @import("domains/performance.zig").processMessage(command),
             else => {},
         },
