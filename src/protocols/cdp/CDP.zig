@@ -419,10 +419,13 @@ fn dispatchCommand(command: *Command, method: []const u8) !void {
             asUint(u56, "Runtime") => return @import("domains/runtime.zig").processMessage(command),
             asUint(u56, "Network") => return @import("domains/network.zig").processMessage(command),
             asUint(u56, "Storage") => return @import("domains/storage.zig").processMessage(command),
+            asUint(u56, "Tracing") => return @import("domains/inspector_forward.zig").processMessage(command),
             else => {},
         },
         8 => switch (@as(u64, @bitCast(domain[0..8].*))) {
             asUint(u64, "Security") => return @import("domains/security.zig").processMessage(command),
+            asUint(u64, "Debugger") => return @import("domains/inspector_forward.zig").processMessage(command),
+            asUint(u64, "Profiler") => return @import("domains/inspector_forward.zig").processMessage(command),
             else => {},
         },
         9 => switch (@as(u72, @bitCast(domain[0..9].*))) {
@@ -893,7 +896,6 @@ pub const BrowserContext = struct {
 
     pub fn axnodeWriter(self: *BrowserContext, temp_arena: Allocator, root: *const Node, opts: AXNode.Writer.Opts) !AXNode.Writer {
         const frame = self.session.currentFrame() orelse return error.FrameNotLoaded;
-        _ = opts;
         const cache = try frame.call_arena.create(Element.VisibilityCache);
         cache.* = .empty;
         const label_index = try frame.call_arena.create(Label.LabelByForIndex);
@@ -905,6 +907,7 @@ pub const BrowserContext = struct {
             .visibility_cache = cache,
             .label_index = label_index,
             .temp_arena = temp_arena,
+            .max_depth = opts.max_depth,
         };
     }
 
@@ -952,6 +955,7 @@ pub const BrowserContext = struct {
     pub fn fetchDisable(self: *BrowserContext) void {
         self.notification.unregister(.http_request_intercept, self);
         self.notification.unregister(.http_request_auth_required, self);
+        self.intercept_state.clearPatterns();
     }
 
     pub fn lifecycleEventsEnable(self: *BrowserContext) !void {

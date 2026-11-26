@@ -26,6 +26,7 @@ pub fn processMessage(cmd: *CDP.Command) !void {
         addBinding,
         callFunctionOn,
         releaseObject,
+        releaseObjectGroup,
         getProperties,
     }, cmd.input.action) orelse return error.UnknownMethod;
 

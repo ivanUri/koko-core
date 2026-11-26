@@ -19,10 +19,30 @@ pub fn processMessage(cmd: *CDP.Command) !void {
     const action = std.meta.stringToEnum(enum {
         enable,
         disable,
+        getMetrics,
     }, cmd.input.action) orelse return error.UnknownMethod;
 
     switch (action) {
         .enable => return cmd.sendResult(null, .{}),
         .disable => return cmd.sendResult(null, .{}),
+        .getMetrics => return getMetrics(cmd),
     }
+}
+
+fn getMetrics(cmd: *CDP.Command) !void {
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    const stats = bc.session.browser.env.isolate.getHeapStatistics();
+    const has_document = bc.session.currentFrame() != null;
+
+    // Keep metrics backed by live Koko/V8 state. Renderer counters are not
+    // exposed until they have real producers, rather than returning guesses.
+    const metrics = [_]struct {
+        name: []const u8,
+        value: f64,
+    }{
+        .{ .name = "Documents", .value = if (has_document) 1.0 else 0.0 },
+        .{ .name = "JSHeapUsedSize", .value = @floatFromInt(stats.used_heap_size) },
+        .{ .name = "JSHeapTotalSize", .value = @floatFromInt(stats.total_heap_size) },
+    };
+    return cmd.sendResult(.{ .metrics = metrics }, .{});
 }

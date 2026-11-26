@@ -16,6 +16,11 @@ const std = @import("std");
 const id = @import("../id.zig");
 const CDP = @import("../CDP.zig");
 
+const GetFullAXTreeParams = struct {
+    depth: ?i32 = null,
+    frameId: ?[]const u8 = null,
+};
+
 pub fn processMessage(cmd: *CDP.Command) !void {
     const action = std.meta.stringToEnum(enum {
         enable,
@@ -38,10 +43,12 @@ fn disable(cmd: *CDP.Command) !void {
 }
 
 fn getFullAXTree(cmd: *CDP.Command) !void {
-    const params = (try cmd.params(struct {
-        depth: ?i32 = null,
-        frameId: ?[]const u8 = null,
-    })) orelse return error.InvalidParams;
+    const params = (try cmd.params(GetFullAXTreeParams)) orelse GetFullAXTreeParams{};
+
+    const max_depth: ?usize = if (params.depth) |depth| blk: {
+        if (depth < 0) return error.InvalidParams;
+        break :blk @intCast(depth);
+    } else null;
 
     const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
     const session = bc.session;
@@ -61,5 +68,5 @@ fn getFullAXTree(cmd: *CDP.Command) !void {
     const temp_arena = try frame.getArena(.medium, "AXNode");
     defer frame.releaseArena(temp_arena);
 
-    return cmd.sendResult(.{ .nodes = try bc.axnodeWriter(temp_arena, node, .{}) }, .{});
+    return cmd.sendResult(.{ .nodes = try bc.axnodeWriter(temp_arena, node, .{ .max_depth = max_depth }) }, .{});
 }

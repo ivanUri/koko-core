@@ -40,8 +40,14 @@ pub const Writer = struct {
     visibility_cache: *DOMNode.Element.VisibilityCache,
     label_index: *Label.LabelByForIndex,
     temp_arena: std.mem.Allocator,
+    max_depth: ?usize,
 
-    pub const Opts = struct {};
+    pub const Opts = struct {
+        // CDP Accessibility.getFullAXTree depth is measured from the root:
+        // depth=0 serializes only the root, depth=1 includes its children.
+        // null means the complete tree.
+        max_depth: ?usize = null,
+    };
 
     pub fn jsonStringify(self: *const Writer, w: anytype) error{WriteFailed}!void {
         self.toJSON(self.root, w) catch |err| {
@@ -57,7 +63,7 @@ pub const Writer = struct {
         try w.beginArray();
         const root = AXNode.fromNode(node.dom);
         if (try self.writeNode(node.id, root, false, w)) {
-            try self.writeNodeChildren(root, false, w);
+            try self.writeNodeChildren(root, false, 0, w);
         }
         return w.endArray();
     }
@@ -70,7 +76,11 @@ pub const Writer = struct {
         try w.write(s);
     }
 
-    fn writeNodeChildren(self: *const Writer, parent: AXNode, in_aria_hidden: bool, w: anytype) !void {
+    fn writeNodeChildren(self: *const Writer, parent: AXNode, in_aria_hidden: bool, depth: usize, w: anytype) !void {
+        if (self.max_depth) |max_depth| {
+            if (depth >= max_depth) return;
+        }
+
         // Add ListMarker for listitem elements
         if (parent.dom.is(DOMNode.Element)) |parent_el| {
             if (parent_el.getTag() == .li) {
@@ -110,7 +120,7 @@ pub const Writer = struct {
             const node = try self.registry.register(dom_node);
             const axn = AXNode.fromNode(node.dom);
             if (try self.writeNode(node.id, axn, child_in_aria_hidden, w)) {
-                try self.writeNodeChildren(axn, child_in_aria_hidden, w);
+                try self.writeNodeChildren(axn, child_in_aria_hidden, depth + 1, w);
             }
         }
     }
@@ -1386,6 +1396,7 @@ test "AXNode: writer" {
         .visibility_cache = &visibility_cache,
         .label_index = &label_index,
         .temp_arena = temp_arena,
+        .max_depth = null,
     }, .{});
     defer testing.allocator.free(json);
 
@@ -1476,6 +1487,7 @@ test "AXNode: writer prunes hidden and resolves labels" {
         .visibility_cache = &visibility_cache,
         .label_index = &label_index,
         .temp_arena = temp_arena,
+        .max_depth = null,
     }, .{});
     defer testing.allocator.free(json);
 

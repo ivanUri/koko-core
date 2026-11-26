@@ -52,16 +52,24 @@ pub fn processMessage(cmd: *CDP.Command) !void {
 pub const InterceptState = struct {
     allocator: Allocator,
     waiting: std.AutoArrayHashMapUnmanaged(u32, Pending),
+    patterns: std.ArrayListUnmanaged(StoredPattern),
 
     const Pending = union(enum) {
         transfer: *HttpClient.Transfer,
         request: HttpClient.Request,
     };
 
+    const StoredPattern = struct {
+        url_pattern: []u8,
+        resource_type: ?ResourceType,
+        request_stage: RequestStage,
+    };
+
     pub fn init(allocator: Allocator) !InterceptState {
         return .{
             .waiting = .empty,
             .allocator = allocator,
+            .patterns = .empty,
         };
     }
 
@@ -97,7 +105,51 @@ pub const InterceptState = struct {
     }
 
     pub fn deinit(self: *InterceptState) void {
+        self.clearPatterns();
+        self.patterns.deinit(self.allocator);
         self.waiting.deinit(self.allocator);
+    }
+
+    pub fn setPatterns(self: *InterceptState, patterns: []const RequestPattern) !void {
+        self.clearPatterns();
+        errdefer self.clearPatterns();
+
+        // An omitted patterns parameter means all requests at the request
+        // stage, matching the Fetch domain default.
+        if (patterns.len == 0) {
+            try self.patterns.append(self.allocator, .{
+                .url_pattern = try self.allocator.dupe(u8, "*"),
+                .resource_type = null,
+                .request_stage = .Request,
+            });
+            return;
+        }
+
+        for (patterns) |pattern| {
+            try self.patterns.append(self.allocator, .{
+                .url_pattern = try self.allocator.dupe(u8, pattern.urlPattern),
+                .resource_type = pattern.resourceType,
+                .request_stage = pattern.requestStage,
+            });
+        }
+    }
+
+    pub fn clearPatterns(self: *InterceptState) void {
+        for (self.patterns.items) |pattern| {
+            self.allocator.free(pattern.url_pattern);
+        }
+        self.patterns.clearRetainingCapacity();
+    }
+
+    pub fn matches(self: *const InterceptState, request: *const HttpClient.Request) bool {
+        for (self.patterns.items) |pattern| {
+            if (pattern.request_stage != .Request) continue;
+            if (pattern.resource_type) |resource_type| {
+                if (!resourceTypeMatches(resource_type, request.params.resource_type)) continue;
+            }
+            if (wildcardMatch(pattern.url_pattern, request.params.url)) return true;
+        }
+        return false;
     }
 
     pub fn pendingIntercepts(self: *const InterceptState) []Pending {
@@ -169,10 +221,11 @@ fn enable(cmd: *CDP.Command) !void {
     const params = (try cmd.params(EnableParam)) orelse EnableParam{};
     if (!arePatternsSupported(params.patterns)) {
         log.warn(.not_implemented, "Fetch.enable", .{ .params = "pattern" });
-        return cmd.sendResult(null, .{});
+        return error.NotImplemented;
     }
 
     const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    try bc.intercept_state.setPatterns(params.patterns);
     try bc.fetchEnable(params.handleAuthRequests);
 
     return cmd.sendResult(null, .{});
@@ -182,26 +235,72 @@ fn arePatternsSupported(patterns: []RequestPattern) bool {
     if (patterns.len == 0) {
         return true;
     }
-    if (patterns.len > 1) {
+    for (patterns) |pattern| {
+        // Response-stage interception requires response callbacks and a
+        // different continuation path; do not acknowledge it as if it were
+        // request-stage interception.
+        if (pattern.requestStage != .Request) return false;
+    }
+    return true;
+}
+
+fn resourceTypeMatches(pattern: ResourceType, actual: HttpClient.RequestParams.ResourceType) bool {
+    return switch (pattern) {
+        .Document => actual == .document,
+        .Stylesheet => actual == .stylesheet,
+        .Image => actual == .image,
+        .Script => actual == .script or actual == .worker,
+        .XHR => actual == .xhr,
+        .Fetch => actual == .fetch,
+        .Ping => actual == .beacon,
+        // Koko's HTTP layer does not currently classify these resource types.
+        .Media, .Font, .TextTrack, .Prefetch, .EventSource, .WebSocket, .Manifest, .SignedExchange, .CSPViolationReport, .Preflight, .FedCM, .Other => false,
+    };
+}
+
+/// Match Fetch.urlPattern without allocating. '*' matches zero or more
+/// characters, '?' matches one, and '\\' quotes the following character.
+fn wildcardMatch(pattern: []const u8, text: []const u8) bool {
+    var pattern_index: usize = 0;
+    var text_index: usize = 0;
+    var star_index: ?usize = null;
+    var star_text_index: usize = 0;
+
+    while (text_index < text.len) {
+        if (pattern_index < pattern.len) {
+            const ch = pattern[pattern_index];
+            if (ch == '*') {
+                star_index = pattern_index;
+                pattern_index += 1;
+                star_text_index = text_index;
+                continue;
+            }
+            if (ch == '\\' and pattern_index + 1 < pattern.len) {
+                if (pattern[pattern_index + 1] == text[text_index]) {
+                    pattern_index += 2;
+                    text_index += 1;
+                    continue;
+                }
+            } else if (ch == '?' or ch == text[text_index]) {
+                pattern_index += 1;
+                text_index += 1;
+                continue;
+            }
+        }
+
+        if (star_index) |star| {
+            pattern_index = star + 1;
+            star_text_index += 1;
+            text_index = star_text_index;
+            continue;
+        }
         return false;
     }
 
-    // While we don't support patterns, yet, both Playwright and Puppeteer send
-    // a default pattern which happens to be what we support:
-    // [{"urlPattern":"*","requestStage":"Request"}]
-    // So, rather than erroring on this case because we don't support patterns,
-    // we'll allow it, because this pattern is how it works as-is.
-    const pattern = patterns[0];
-    if (!std.mem.eql(u8, pattern.urlPattern, "*")) {
-        return false;
+    while (pattern_index < pattern.len and pattern[pattern_index] == '*') {
+        pattern_index += 1;
     }
-    if (pattern.resourceType != null) {
-        return false;
-    }
-    if (pattern.requestStage != .Request) {
-        return false;
-    }
-    return true;
+    return pattern_index == pattern.len;
 }
 
 pub fn requestIntercept(bc: *CDP.BrowserContext, intercept: *const Notification.RequestIntercept) !void {
@@ -213,6 +312,7 @@ pub fn requestIntercept(bc: *CDP.BrowserContext, intercept: *const Notification.
     // TODO: What to do when receiving replies for a previous frame's requests?
 
     const request = intercept.request;
+    if (!bc.intercept_state.matches(request)) return;
     try bc.intercept_state.putRequest(request.*);
 
     try bc.cdp.sendEvent("Fetch.requestPaused", .{
@@ -492,4 +592,13 @@ fn idFromRequestId(request_id: []const u8) !u32 {
         return error.InvalidParams;
     }
     return std.fmt.parseInt(u32, request_id[4..], 10) catch return error.InvalidParams;
+}
+
+test "Fetch urlPattern wildcard matching" {
+    try std.testing.expect(wildcardMatch("*", "https://example.test/path"));
+    try std.testing.expect(wildcardMatch("*abbfetch-real*", "https://example.test/v0_2/fetch/abbfetch-real?x=1"));
+    try std.testing.expect(!wildcardMatch("*abbfetch-real*", "https://example.test/v0_2/fetch/other"));
+    try std.testing.expect(wildcardMatch("https://example.test/?", "https://example.test/a"));
+    try std.testing.expect(!wildcardMatch("https://example.test/?", "https://example.test/ab"));
+    try std.testing.expect(wildcardMatch("https://example.test/\\*", "https://example.test/*"));
 }
