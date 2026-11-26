@@ -213,6 +213,14 @@ fn cookieMatches(cookie: *const Cookie, name: []const u8, domain: ?[]const u8, p
     return true;
 }
 
+fn cookieDomainMatchesUrl(cookie: *const Cookie, host: []const u8) bool {
+    if (cookie.domain.len == 0) return false;
+    if (cookie.domain[0] != '.') return std.mem.eql(u8, cookie.domain, host);
+
+    const domain = cookie.domain[1..];
+    return std.mem.eql(u8, domain, host) or std.mem.endsWith(u8, host, cookie.domain);
+}
+
 fn deleteCookies(cmd: *CDP.Command) !void {
     const params = (try cmd.params(struct {
         name: []const u8,
@@ -231,16 +239,37 @@ fn deleteCookies(cmd: *CDP.Command) !void {
     const want_partition = params.partitionKey != null;
     const partition_site: ?[]const u8 = if (params.partitionKey) |pk| pk.topLevelSite else null;
 
+    // CDP's URL form matches the cookie's domain against the URL host and uses
+    // RFC 6265 path-match semantics. It is not an exact comparison against the
+    // URL's default path: a cookie set without an explicit path is commonly
+    // stored at "/" and must still be deleted for a deeper URL.
+    const url_host = if (params.url) |url| URL.getHostname(url) else null;
+    const url_path = if (params.url) |url| URL.getPathname(url) else null;
+    const exact_domain = if (params.domain) |domain|
+        try Cookie.parseDomain(cmd.arena, params.url, domain)
+    else
+        null;
+    const exact_path = if (params.path) |path|
+        try Cookie.parsePath(cmd.arena, params.url, path)
+    else
+        null;
+
     var index = cookies.items.len;
     while (index > 0) {
         index -= 1;
         const cookie = &cookies.items[index];
-        const domain = try Cookie.parseDomain(cmd.arena, params.url, params.domain);
-        const path = try Cookie.parsePath(cmd.arena, params.url, params.path);
 
-        // We do not want to use Cookie.appliesTo here. As a Cookie with a shorter path would match.
-        // Similar to deduplicating with areCookiesEqual, except domain and path are optional.
-        if (!cookieMatches(cookie, params.name, domain, path)) continue;
+        if (!cookieMatches(cookie, params.name, exact_domain, exact_path)) continue;
+        if (exact_domain == null) {
+            if (url_host) |host| {
+                if (!cookieDomainMatchesUrl(cookie, host)) continue;
+            }
+        }
+        if (exact_path == null) {
+            if (url_path) |path| {
+                if (!Cookie.pathMatches(cookie.path, path)) continue;
+            }
+        }
 
         if (want_partition) {
             // Only CHIPS cookies in the given top-level site partition.
@@ -875,6 +904,46 @@ test "cdp.Network: cookies" {
         .params = .{ .browserContextId = "BID-S" },
     });
     try ctx.expectSentResult(.{ .cookies = &[_]ResCookie{} }, .{ .id = 10 });
+}
+
+test "cdp.Network.deleteCookies matches URL cookie path semantics" {
+    const CdpCookie = CdpStorage.CdpCookie;
+    const ResCookie = CdpStorage.ResCookie;
+
+    var ctx = try testing.context();
+    defer ctx.deinit();
+    _ = try ctx.loadBrowserContext(.{ .id = "BID-DELETE-URL" });
+
+    // Network.setCookies currently gives an omitted path the CDP default "/".
+    // Deleting by the same deep URL must use path-match semantics, not compare
+    // that cookie path with the URL's RFC default path as an exact string.
+    try ctx.processMessage(.{
+        .id = 1,
+        .method = "Network.setCookies",
+        .params = .{
+            .cookies = &[_]CdpCookie{
+                .{ .name = "default_path", .value = "x", .url = "https://example.com/v2/t2a/netpage" },
+            },
+        },
+    });
+    try ctx.expectSentResult(null, .{ .id = 1 });
+
+    try ctx.processMessage(.{
+        .id = 2,
+        .method = "Network.deleteCookies",
+        .params = .{
+            .name = "default_path",
+            .url = "https://example.com/v2/t2a/netpage",
+        },
+    });
+    try ctx.expectSentResult(null, .{ .id = 2 });
+
+    try ctx.processMessage(.{
+        .id = 3,
+        .method = "Storage.getCookies",
+        .params = .{ .browserContextId = "BID-DELETE-URL" },
+    });
+    try ctx.expectSentResult(.{ .cookies = &[_]ResCookie{} }, .{ .id = 3 });
 }
 
 test "cdp.Network: clearBrowserCookies accepts empty params object" {
