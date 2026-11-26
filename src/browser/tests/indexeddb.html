@@ -19,6 +19,13 @@
     if (!openRequest.result.objectStoreNames.contains("records")) {
       throw new Error("objectStoreNames is not a live DOMStringList");
     }
+    if (store.indexNames.length !== 0 || store.indexNames.contains("byValue")) {
+      throw new Error("new object store has unexpected indexes");
+    }
+    store.createIndex("byValue", "value");
+    if (!store.indexNames.contains("byValue")) {
+      throw new Error("indexNames is not a live DOMStringList");
+    }
     store.put({ value: 42 }, "key");
   };
 
