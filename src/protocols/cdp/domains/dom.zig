@@ -366,7 +366,17 @@ fn setNodeName(cmd: *CDP.Command) !void {
         _ = try replacement.asNode().appendChild(child, frame);
     }
     _ = try parent.replaceChild(replacement.asNode(), node.dom, frame);
-    return cmd.sendResult(null, .{});
+
+    // The replacement is a distinct DOM object, so it must receive its own
+    // CDP identity. Remove the detached node from both registry indexes before
+    // releasing its registry entry; otherwise the old nodeId would resolve to a
+    // stale object after this operation.
+    const replacement_node = try bc.node_registry.register(replacement.asNode());
+    _ = bc.node_registry.lookup_by_node.remove(node.dom);
+    _ = bc.node_registry.lookup_by_id.remove(node.id);
+    bc.node_registry.node_pool.destroy(node);
+
+    return cmd.sendResult(.{ .nodeId = replacement_node.id }, .{});
 }
 
 fn setAttributesAsText(cmd: *CDP.Command) !void {
