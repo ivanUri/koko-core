@@ -392,6 +392,20 @@ fn dispatchCommand(command: *Command, method: []const u8) !void {
         break :blk method[0..i];
     };
 
+    // These adapters have separate implementations because they serialize
+    // larger protocol payloads than the regular DOM/Page handlers.
+    if (std.mem.eql(u8, method, "DOM.getFlattenedDocument")) {
+        return @import("domains/dom_flattened.zig").processMessage(command);
+    }
+    if (std.mem.eql(u8, method, "DOMSnapshot.captureSnapshot")) {
+        return @import("domains/dom_snapshot.zig").processMessage(command);
+    }
+    if (std.mem.eql(u8, method, "Page.getResourceTree") or
+        std.mem.eql(u8, method, "Page.searchInResource"))
+    {
+        return @import("domains/page_resources.zig").processMessage(command);
+    }
+
     switch (domain.len) {
         3 => switch (@as(u24, @bitCast(domain[0..3].*))) {
             asUint(u24, "DOM") => return @import("domains/dom.zig").processMessage(command),

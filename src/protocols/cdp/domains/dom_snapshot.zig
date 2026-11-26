@@ -36,13 +36,14 @@ const DocumentSnapshot = struct {
 pub fn processMessage(cmd: *CDP.Command) !void {
     if (!std.mem.eql(u8, cmd.input.action, "captureSnapshot")) return error.UnknownMethod;
 
-    const params = (try cmd.params(struct {
+    const Params = struct {
         computedStyles: []const []const u8 = &.{},
         includePaintOrder: bool = false,
         includeDOMRects: bool = false,
         includeBlendedBackgroundColors: bool = false,
         includeTextColorOpacities: bool = false,
-    })) orelse .{};
+    };
+    const params = (try cmd.params(Params)) orelse Params{};
     _ = params.includePaintOrder;
     _ = params.includeDOMRects;
     _ = params.includeBlendedBackgroundColors;

@@ -232,12 +232,12 @@ fn synthesizeScrollGesture(cmd: *CDP.Command) !void {
     const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
     const frame = bc.session.currentFrame() orelse return error.FrameNotLoaded;
     if (params.yDistance) |distance| {
-        const next_y = @max(@as(i32, 0), frame.window.getScrollY() + @as(i32, @intFromFloat(-distance)));
-        try frame.window.scrollTo(.{ .x = frame.window.getScrollX() }, next_y, frame);
+        const next_y = @max(@as(i32, 0), @as(i32, @intCast(frame.window.getScrollY())) + @as(i32, @intFromFloat(-distance)));
+        try frame.window.scrollTo(.{ .x = @intCast(frame.window.getScrollX()) }, next_y, frame);
     }
     if (params.xDistance) |distance| {
-        const next_x = @max(@as(i32, 0), frame.window.getScrollX() + @as(i32, @intFromFloat(-distance)));
-        try frame.window.scrollTo(.{ .x = next_x }, frame.window.getScrollY(), frame);
+        const next_x = @max(@as(i32, 0), @as(i32, @intCast(frame.window.getScrollX())) + @as(i32, @intFromFloat(-distance)));
+        try frame.window.scrollTo(.{ .x = next_x }, @intCast(frame.window.getScrollY()), frame);
     }
     return cmd.sendResult(null, .{});
 }

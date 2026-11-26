@@ -93,10 +93,11 @@ const FlattenedWriter = struct {
 pub fn processMessage(cmd: *CDP.Command) !void {
     if (!std.mem.eql(u8, cmd.input.action, "getFlattenedDocument")) return error.UnknownMethod;
 
-    const params = (try cmd.params(struct {
+    const Params = struct {
         depth: i32 = -1,
         pierce: bool = false,
-    })) orelse .{};
+    };
+    const params = (try cmd.params(Params)) orelse Params{};
     if (params.depth < -1) return error.InvalidParams;
     if (params.pierce) return error.NotImplemented;
 

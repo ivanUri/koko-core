@@ -204,14 +204,15 @@ fn clearIdleOverride(cmd: *CDP.Command) !void {
 }
 
 fn setDefaultBackgroundColorOverride(cmd: *CDP.Command) !void {
-    const params = (try cmd.params(struct {
+    const Params = struct {
         color: ?struct {
             r: u8,
             g: u8,
             b: u8,
             a: f64,
         } = null,
-    })) orelse .{};
+    };
+    const params = (try cmd.params(Params)) orelse Params{};
     _ = params;
     log.warn(.not_implemented, "Emulation.setDefaultBackgroundColorOverride", .{ .info = "painting has no background override producer" });
     return cmd.sendResult(null, .{});
