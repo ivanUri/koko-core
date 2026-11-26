@@ -426,6 +426,7 @@ fn dispatchCommand(command: *Command, method: []const u8) !void {
         6 => switch (@as(u48, @bitCast(domain[0..6].*))) {
             asUint(u48, "Target") => return @import("domains/target.zig").processMessage(command),
             asUint(u48, "Audits") => return @import("domains/audits.zig").processMessage(command),
+            asUint(u48, "Schema") => return @import("domains/schema.zig").processMessage(command),
             else => {},
         },
         7 => switch (@as(u56, @bitCast(domain[0..7].*))) {
@@ -434,6 +435,7 @@ fn dispatchCommand(command: *Command, method: []const u8) !void {
             asUint(u56, "Network") => return @import("domains/network.zig").processMessage(command),
             asUint(u56, "Storage") => return @import("domains/storage.zig").processMessage(command),
             asUint(u56, "Tracing") => return @import("domains/inspector_forward.zig").processMessage(command),
+            asUint(u56, "Overlay") => return @import("domains/overlay.zig").processMessage(command),
             else => {},
         },
         8 => switch (@as(u64, @bitCast(domain[0..8].*))) {
@@ -445,6 +447,14 @@ fn dispatchCommand(command: *Command, method: []const u8) !void {
         9 => switch (@as(u72, @bitCast(domain[0..9].*))) {
             asUint(u72, "Emulation") => return @import("domains/emulation.zig").processMessage(command),
             asUint(u72, "Inspector") => return @import("domains/inspector.zig").processMessage(command),
+            else => {},
+        },
+        2 => switch (@as(u16, @bitCast(domain[0..2].*))) {
+            asUint(u16, "IO") => return @import("domains/io.zig").processMessage(command),
+            else => {},
+        },
+        10 => switch (@as(u80, @bitCast(domain[0..10].*))) {
+            asUint(u80, "DOMDebugger") => return @import("domains/dom_debugger.zig").processMessage(command),
             else => {},
         },
         11 => switch (@as(u88, @bitCast(domain[0..11].*))) {

@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const CDP = @import("../CDP.zig");
+const datetime = @import("../../../support/datetime.zig");
 
 pub fn processMessage(cmd: *CDP.Command) !void {
     const action = std.meta.stringToEnum(enum {
@@ -40,6 +41,7 @@ fn getMetrics(cmd: *CDP.Command) !void {
         name: []const u8,
         value: f64,
     }{
+        .{ .name = "Timestamp", .value = @as(f64, @floatFromInt(datetime.milliTimestamp(.clock))) / 1000.0 },
         .{ .name = "Documents", .value = if (has_document) 1.0 else 0.0 },
         .{ .name = "JSHeapUsedSize", .value = @floatFromInt(stats.used_heap_size) },
         .{ .name = "JSHeapTotalSize", .value = @floatFromInt(stats.total_heap_size) },

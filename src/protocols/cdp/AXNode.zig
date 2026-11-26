@@ -270,11 +270,8 @@ pub const Writer = struct {
         try w.objectField("value");
         switch (value) {
             .integer => |v| {
-                // CDP spec requires integer values to be serialized as strings.
-                // 20 bytes is enough for the decimal representation of a 64-bit integer.
-                var buf: [20]u8 = undefined;
-                const s = try std.fmt.bufPrint(&buf, "{d}", .{v});
-                try w.write(s);
+                // AXValue.integer is a JSON number, not a quoted string.
+                try w.write(v);
             },
             inline else => |v| try w.write(v),
         }
@@ -435,7 +432,9 @@ pub const Writer = struct {
                 .button => {
                     const is_disabled = el.isDisabled();
                     try self.writeAXProperty(.{ .name = .invalid, .value = .{ .token = "false" } }, w);
-                    if (!is_disabled) {
+                    if (is_disabled) {
+                        try self.writeAXProperty(.{ .name = .disabled, .value = .{ .boolean = true } }, w);
+                    } else {
                         try self.writeAXProperty(.{ .name = .focusable, .value = .{ .booleanOrUndefined = true } }, w);
                     }
                 },
@@ -513,7 +512,7 @@ pub const Writer = struct {
             try w.beginArray();
             try w.beginObject();
             try w.objectField("name");
-            try w.write("uninteresting");
+            try w.write(if (in_aria_hidden) "ariaHiddenSubtree" else "uninteresting");
             try w.objectField("value");
             try self.writeAXValue(.{ .boolean = true }, w);
             try w.endObject();
@@ -648,7 +647,7 @@ pub const AXRole = enum(u8) {
     paragraph, presentation, progressbar, radio, region, row, rowgroup,
     rowheader, searchbox, separator, slider, spinbutton, status, strong,
     subscript, superscript, @"switch", table, term, textbox, time, RootWebArea, LineBreak,
-    StaticText,
+    StaticText, Iframe,
     // zig fmt: on
 
     fn fromNode(node: *DOMNode) !AXRole {
@@ -745,6 +744,7 @@ pub const AXRole = enum(u8) {
                 .details => .group,
                 .summary => .button,
                 .dialog => .dialog,
+                .iframe => .Iframe,
 
                 // Media
                 .img => .image,
