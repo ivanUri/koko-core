@@ -47,8 +47,15 @@ typedef struct KokoLayoutProperty {
     uintptr_t value_len;
 } KokoLayoutProperty;
 
+typedef struct KokoLayoutMetrics {
+    uint64_t layout_computations;
+} KokoLayoutMetrics;
+
 KokoLayoutSession *koko_layout_session_new(void);
 void koko_layout_session_free(KokoLayoutSession *session);
+KokoLayoutStatus koko_layout_metrics(
+    const KokoLayoutSession *session,
+    KokoLayoutMetrics *out);
 
 KokoLayoutStatus koko_layout_session_begin_batch(KokoLayoutSession *session);
 KokoLayoutStatus koko_layout_session_end_batch(KokoLayoutSession *session);

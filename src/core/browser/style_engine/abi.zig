@@ -60,6 +60,18 @@ pub const FlushResult = extern struct {
     changed_node_count: usize = 0,
 };
 
+pub const Metrics = extern struct {
+    stylesheet_rebuilds: u64 = 0,
+    stylesheet_parses: u64 = 0,
+    stylesheet_bytes: u64 = 0,
+    dom_invalidations: u64 = 0,
+    restyled_nodes: u64 = 0,
+    computed_cache_hits: u64 = 0,
+    computed_cache_misses: u64 = 0,
+    ffi_calls: u64 = 0,
+    copied_bytes: u64 = 0,
+};
+
 pub const CreateFn = *const fn (
     user_data: ?*anyopaque,
     frame_id: FrameId,
@@ -117,6 +129,12 @@ pub const FlushStylesFn = *const fn (
     out_result: *FlushResult,
 ) callconv(.c) StatusCode;
 
+pub const MetricsFn = *const fn (
+    user_data: ?*anyopaque,
+    engine: ?*anyopaque,
+    out_metrics: *Metrics,
+) callconv(.c) StatusCode;
+
 pub const PrepareForLayoutFn = *const fn (
     user_data: ?*anyopaque,
     engine: ?*anyopaque,
@@ -172,6 +190,7 @@ pub const Api = extern struct {
     sync_node: ?SyncNodeFn = null,
     reset_document: ?ResetDocumentFn = null,
     flush_styles: ?FlushStylesFn = null,
+    metrics: ?MetricsFn = null,
     prepare_for_layout: ?PrepareForLayoutFn,
     computed_value: ?QueryFn,
     computed_pseudo_value: ?PseudoQueryFn = null,

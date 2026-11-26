@@ -202,6 +202,17 @@ const StyloCFlushResult = extern struct {
     invalidation_generation: u64,
     changed_node_count: usize,
 };
+const StyloCMetrics = extern struct {
+    stylesheet_rebuilds: u64,
+    stylesheet_parses: u64,
+    stylesheet_bytes: u64,
+    dom_invalidations: u64,
+    restyled_nodes: u64,
+    computed_cache_hits: u64,
+    computed_cache_misses: u64,
+    ffi_calls: u64,
+    copied_bytes: u64,
+};
 
 extern fn koko_stylo_engine_new(
     callbacks: *const StyloCDomCallbacks,
@@ -214,6 +225,11 @@ extern fn koko_stylo_engine_replace_stylesheets(
     count: usize,
 ) StyloCStatus;
 extern fn koko_stylo_engine_invalidate_stylesheets(engine: ?*anyopaque) StyloCStatus;
+extern fn koko_stylo_engine_invalidate_dom(
+    engine: ?*anyopaque,
+    node: ?*const anyopaque,
+    kind: u32,
+) StyloCStatus;
 extern fn koko_stylo_engine_stylesheet_count(engine: ?*anyopaque, out_count: *usize) StyloCStatus;
 extern fn koko_stylo_engine_sync_node(engine: ?*anyopaque, node: ?*const anyopaque) StyloCStatus;
 extern fn koko_stylo_engine_reset_document(engine: ?*anyopaque) StyloCStatus;
@@ -222,6 +238,10 @@ extern fn koko_stylo_engine_flush_styles(
     nodes: [*c]const u64,
     node_count: usize,
     out_result: *StyloCFlushResult,
+) StyloCStatus;
+extern fn koko_stylo_engine_metrics(
+    engine: ?*anyopaque,
+    out_metrics: *StyloCMetrics,
 ) StyloCStatus;
 extern fn koko_stylo_engine_serialize_property(
     engine: ?*anyopaque,
@@ -530,7 +550,7 @@ _style_engine_hooks: ?StyleEngineHooks = null,
 _style_engine_document: ?*Document = null,
 _style_engine_generation: u64 = 0,
 _style_engine_active: bool = false,
-_stylo_prepared_generation: u64 = 0,
+_stylo_prepared_stylesheet_generation: u64 = 0,
 _stylo_adopted_stylesheet_signature: u64 = 0,
 _style_node_sequence: u32 = 1,
 _stylo_node_lookup: std.AutoHashMapUnmanaged(u32, *Node) = .empty,
@@ -867,6 +887,8 @@ fn beginStyleDocumentLifecycle(self: *Frame, document: *Document) void {
     self._layout_generation = 0;
     self._layout_dirty = true;
     _ = self._style_engine.resetDocument();
+    self._stylo_prepared_stylesheet_generation = 0;
+    self._stylo_adopted_stylesheet_signature = 0;
     self._stylo_node_lookup.clearRetainingCapacity();
     self._style_engine_document = document;
     self._style_engine_active = true;
@@ -886,6 +908,8 @@ fn endStyleDocumentLifecycle(self: *Frame) void {
         self._layout_extension_nodes.clearRetainingCapacity();
         self._layout_generation = 0;
         self._layout_dirty = true;
+        self._stylo_prepared_stylesheet_generation = 0;
+        self._stylo_adopted_stylesheet_signature = 0;
         self._stylo_node_lookup.clearRetainingCapacity();
         return;
     };
@@ -899,6 +923,8 @@ fn endStyleDocumentLifecycle(self: *Frame) void {
     self._layout_extension_nodes.clearRetainingCapacity();
     self._layout_generation = 0;
     self._layout_dirty = true;
+    self._stylo_prepared_stylesheet_generation = 0;
+    self._stylo_adopted_stylesheet_signature = 0;
     self._style_engine_document = null;
     self._style_engine_active = false;
     self._style_engine_generation +%= 1;
@@ -932,10 +958,10 @@ pub fn invalidateStyleEngine(self: *Frame, kind: StyleEngineInvalidation, node: 
 pub fn styleSheetChanged(self: *Frame, node: ?*Node) void {
     _ = self._style_engine.invalidateStylesheets();
     if (node) |changed| {
-        // Stylesheet changes can affect arbitrary descendants.  The stylesheet
-        // callback clears Stylo's global cache; syncing the owner node also
-        // refreshes callback-backed DOM metadata before the next query.
-        _ = self._style_engine.invalidateDom(self.styleNodeId(changed), .subtree);
+        // Stylesheet invalidation owns the computed-style invalidation. Keep
+        // the owner metadata synchronized without treating this as a second
+        // DOM mutation; stylesheet generation and DOM generation are separate.
+        _ = self._style_engine.syncNode(self.styleNodeId(changed));
     }
     self.invalidateStyleEngine(.stylesheet, node);
 }
@@ -1380,11 +1406,15 @@ fn styloInvalidateDom(
     _: ?*anyopaque,
     engine: ?*anyopaque,
     node_id: Abi.NodeId,
-    _: u32,
+    kind: u32,
     _: Abi.Generation,
 ) callconv(.c) Abi.StatusCode {
     if (node_id == 0) return Abi.status_ok;
-    return styloMapStatus(koko_stylo_engine_sync_node(engine, @ptrFromInt(node_id)));
+    return styloMapStatus(koko_stylo_engine_invalidate_dom(
+        engine,
+        @ptrFromInt(node_id),
+        kind,
+    ));
 }
 
 fn styloReplaceStylesheets(
@@ -1438,6 +1468,38 @@ fn styloFlushStyles(
     out_result.* = .{
         .generation = result.invalidation_generation,
         .changed_node_count = result.changed_node_count,
+    };
+    return Abi.status_ok;
+}
+
+fn styloMetrics(
+    _: ?*anyopaque,
+    engine: ?*anyopaque,
+    out_metrics: *Abi.Metrics,
+) callconv(.c) Abi.StatusCode {
+    var metrics = StyloCMetrics{
+        .stylesheet_rebuilds = 0,
+        .stylesheet_parses = 0,
+        .stylesheet_bytes = 0,
+        .dom_invalidations = 0,
+        .restyled_nodes = 0,
+        .computed_cache_hits = 0,
+        .computed_cache_misses = 0,
+        .ffi_calls = 0,
+        .copied_bytes = 0,
+    };
+    const status = koko_stylo_engine_metrics(engine, &metrics);
+    if (status != 0) return styloMapStatus(status);
+    out_metrics.* = .{
+        .stylesheet_rebuilds = metrics.stylesheet_rebuilds,
+        .stylesheet_parses = metrics.stylesheet_parses,
+        .stylesheet_bytes = metrics.stylesheet_bytes,
+        .dom_invalidations = metrics.dom_invalidations,
+        .restyled_nodes = metrics.restyled_nodes,
+        .computed_cache_hits = metrics.computed_cache_hits,
+        .computed_cache_misses = metrics.computed_cache_misses,
+        .ffi_calls = metrics.ffi_calls,
+        .copied_bytes = metrics.copied_bytes,
     };
     return Abi.status_ok;
 }
@@ -1556,9 +1618,9 @@ fn styloPrepareForLayout(
     // Stylesheet snapshots are immutable until an explicit stylesheet
     // invalidation. Avoid reparsing the UA and author sheets for every
     // getComputedStyle()/layout read in a stable generation.
-    const generation = frame._style_engine.generation();
+    const stylesheet_generation = frame._style_engine.stylesheetGeneration();
     const adopted_signature = styloAdoptedStylesheetSignature(frame);
-    if (frame._stylo_prepared_generation == generation and
+    if (frame._stylo_prepared_stylesheet_generation == stylesheet_generation and
         frame._stylo_adopted_stylesheet_signature == adopted_signature) return Abi.status_ok;
     // Parser-time <style> callbacks intentionally defer CSSStyleSheet
     // allocation. Materialize those deferred sheets before taking the Stylo
@@ -1600,7 +1662,7 @@ fn styloPrepareForLayout(
     const ptr: [*c]const Abi.StylesheetInput = if (inputs.items.len == 0) null else inputs.items.ptr;
     const status = styloMapStatus(koko_stylo_engine_replace_stylesheets(engine, ptr, inputs.items.len));
     if (status == Abi.status_ok) {
-        frame._stylo_prepared_generation = frame._style_engine.generation();
+        frame._stylo_prepared_stylesheet_generation = frame._style_engine.stylesheetGeneration();
         frame._stylo_adopted_stylesheet_signature = adopted_signature;
     }
     return status;
@@ -1686,6 +1748,7 @@ fn styloBridgeApi(frame: *Frame) StyleEngine.AbiApi {
         .sync_node = styloSyncNode,
         .reset_document = styloResetDocument,
         .flush_styles = styloFlushStyles,
+        .metrics = styloMetrics,
         .prepare_for_layout = styloPrepareForLayout,
         .computed_value = styloComputedValue,
         .computed_pseudo_value = styloPseudoComputedValue,

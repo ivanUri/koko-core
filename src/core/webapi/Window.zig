@@ -708,6 +708,39 @@ pub fn getKokoStyleEngine(self: *const Window) !js.Object {
     if (!(try result.set("stylesheetCount", if (stylesheet_count.status == .ok) stylesheet_count.value else @as(usize, 0), .{}))) {
         return error.CreateObjectFailure;
     }
+    const style_metrics = self._frame.styleEngine().metrics();
+    if (style_metrics.status == .ok) {
+        if (!(try result.set("stylesheetRebuilds", style_metrics.value.stylesheet_rebuilds, .{}))) {
+            return error.CreateObjectFailure;
+        }
+        if (!(try result.set("stylesheetParses", style_metrics.value.stylesheet_parses, .{}))) {
+            return error.CreateObjectFailure;
+        }
+        if (!(try result.set("domInvalidations", style_metrics.value.dom_invalidations, .{}))) {
+            return error.CreateObjectFailure;
+        }
+        if (!(try result.set("restyledNodes", style_metrics.value.restyled_nodes, .{}))) {
+            return error.CreateObjectFailure;
+        }
+        if (!(try result.set("computedCacheHits", style_metrics.value.computed_cache_hits, .{}))) {
+            return error.CreateObjectFailure;
+        }
+        if (!(try result.set("computedCacheMisses", style_metrics.value.computed_cache_misses, .{}))) {
+            return error.CreateObjectFailure;
+        }
+        if (!(try result.set("styleFfiCalls", style_metrics.value.ffi_calls, .{}))) {
+            return error.CreateObjectFailure;
+        }
+        if (!(try result.set("styleCopiedBytes", style_metrics.value.copied_bytes, .{}))) {
+            return error.CreateObjectFailure;
+        }
+    }
+    const layout_metrics = self._frame.layoutEngine().metrics();
+    if (layout_metrics.status == .ok) {
+        if (!(try result.set("layoutComputations", layout_metrics.value.layout_computations, .{}))) {
+            return error.CreateObjectFailure;
+        }
+    }
     var error_bytes = self._frame.call_arena.alloc(u8, 4096) catch return error.OutOfMemory;
     const error_result = self._frame.styleEngine().lastError(error_bytes);
     const error_text = if (error_result.status == .ok)

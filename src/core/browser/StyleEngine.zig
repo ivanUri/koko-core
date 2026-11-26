@@ -78,7 +78,13 @@ pub const StyleEngine = struct {
     };
 
     frame_id: FrameId,
+    /// Changes to the authoritative DOM invalidate computed style/layout but
+    /// never imply that stylesheet sources or StylistStores changed.
     generation_value: Generation = 1,
+    /// Only stylesheet source/order/scope changes advance this generation.
+    /// Frame.prepareForLayout uses it to decide whether a stylesheet snapshot
+    /// must be rebuilt.
+    stylesheet_generation_value: Generation = 1,
     api: ?AbiApi = null,
     engine: ?*anyopaque = null,
     availability: Status,
@@ -137,6 +143,10 @@ pub const StyleEngine = struct {
         return self.generation_value;
     }
 
+    pub fn stylesheetGeneration(self: *const Self) Generation {
+        return self.stylesheet_generation_value;
+    }
+
     /// Reports bridge/lifetime availability, not the result of the last call.
     pub fn status(self: *const Self) Status {
         return if (!self.alive) .closed else self.availability;
@@ -144,10 +154,10 @@ pub const StyleEngine = struct {
 
     pub fn invalidateStylesheets(self: *Self) Status {
         if (!self.alive) return .closed;
-        self.bumpGeneration();
+        self.bumpStylesheetGeneration();
         const api = self.api orelse return self.status();
         const invalidate = api.invalidate_stylesheets orelse return .bridge_unsupported;
-        return mapStatus(invalidate(api.user_data, self.engine, self.generation_value));
+        return mapStatus(invalidate(api.user_data, self.engine, self.stylesheet_generation_value));
     }
 
     pub fn invalidateDom(self: *Self, node_id: NodeId, kind: DomInvalidationKind) Status {
@@ -165,7 +175,7 @@ pub const StyleEngine = struct {
         const api = self.api orelse return self.status();
         const replace = api.replace_stylesheets orelse return .bridge_unsupported;
         const ptr: [*c]const Abi.StylesheetInput = if (inputs.len == 0) null else inputs.ptr;
-        self.bumpGeneration();
+        self.bumpStylesheetGeneration();
         return mapStatus(replace(api.user_data, self.engine, ptr, inputs.len));
     }
 
@@ -214,11 +224,20 @@ pub const StyleEngine = struct {
         };
     }
 
+    pub fn metrics(self: *Self) struct { status: Status, value: Abi.Metrics = .{} } {
+        if (!self.alive) return .{ .status = .closed };
+        const api = self.api orelse return .{ .status = self.status() };
+        const read_metrics = api.metrics orelse return .{ .status = .bridge_unsupported };
+        var value = Abi.Metrics{};
+        const result_status = mapStatus(read_metrics(api.user_data, self.engine, &value));
+        return .{ .status = result_status, .value = if (result_status == .ok) value else .{} };
+    }
+
     pub fn prepareForLayout(self: *Self) Status {
         if (!self.alive) return .closed;
         const api = self.api orelse return self.status();
         const prepare = api.prepare_for_layout orelse return .bridge_unsupported;
-        return mapStatus(prepare(api.user_data, self.engine, self.generation_value));
+        return mapStatus(prepare(api.user_data, self.engine, self.stylesheet_generation_value));
     }
 
     pub fn computedValue(self: *Self, node_id: NodeId, property: []const u8, output: []u8) QueryResult {
@@ -304,6 +323,11 @@ pub const StyleEngine = struct {
     fn bumpGeneration(self: *Self) void {
         self.generation_value +%= 1;
         if (self.generation_value == 0) self.generation_value = 1;
+    }
+
+    fn bumpStylesheetGeneration(self: *Self) void {
+        self.stylesheet_generation_value +%= 1;
+        if (self.stylesheet_generation_value == 0) self.stylesheet_generation_value = 1;
     }
 
     const QueryOperation = enum { computed_value, custom_property, layout_property };
@@ -405,21 +429,27 @@ test "StyleEngine reports unavailable without fabricated CSS values" {
 test "StyleEngine generation advances only for live invalidations" {
     var engine = StyleEngine.init(.{ .frame_id = 11 });
     try std.testing.expectEqual(@as(u64, 1), engine.generation());
+    try std.testing.expectEqual(@as(u64, 1), engine.stylesheetGeneration());
     try std.testing.expectEqual(StyleEngine.Status.bridge_unavailable, engine.invalidateStylesheets());
-    try std.testing.expectEqual(@as(u64, 2), engine.generation());
+    try std.testing.expectEqual(@as(u64, 1), engine.generation());
+    try std.testing.expectEqual(@as(u64, 2), engine.stylesheetGeneration());
     try std.testing.expectEqual(StyleEngine.Status.bridge_unavailable, engine.invalidateDom(3, .attributes));
-    try std.testing.expectEqual(@as(u64, 3), engine.generation());
+    try std.testing.expectEqual(@as(u64, 2), engine.generation());
+    try std.testing.expectEqual(@as(u64, 2), engine.stylesheetGeneration());
     engine.deinit();
     try std.testing.expectEqual(StyleEngine.Status.closed, engine.invalidateDom(3, .text));
-    try std.testing.expectEqual(@as(u64, 3), engine.generation());
+    try std.testing.expectEqual(@as(u64, 2), engine.generation());
     engine.deinit();
 }
 
 test "StyleEngine generation never publishes zero after wraparound" {
     var engine = StyleEngine.init(.{ .frame_id = 13 });
     engine.generation_value = std.math.maxInt(u64);
-    try std.testing.expectEqual(StyleEngine.Status.bridge_unavailable, engine.invalidateStylesheets());
+    try std.testing.expectEqual(StyleEngine.Status.bridge_unavailable, engine.invalidateDom(3, .attributes));
     try std.testing.expectEqual(@as(u64, 1), engine.generation());
+    engine.stylesheet_generation_value = std.math.maxInt(u64);
+    try std.testing.expectEqual(StyleEngine.Status.bridge_unavailable, engine.invalidateStylesheets());
+    try std.testing.expectEqual(@as(u64, 1), engine.stylesheetGeneration());
     engine.deinit();
 }
 
@@ -636,10 +666,11 @@ test "StyleEngine adapter forwards the stable C ABI" {
     try std.testing.expectEqual(StyleEngine.Status.bridge_unsupported, engine.customProperty(9, "--x", &output).status);
 
     try std.testing.expectEqual(StyleEngine.Status.ok, engine.invalidateStylesheets());
-    try std.testing.expectEqual(@as(u64, 2), engine.generation());
+    try std.testing.expectEqual(@as(u64, 1), engine.generation());
+    try std.testing.expectEqual(@as(u64, 2), engine.stylesheetGeneration());
     try std.testing.expectEqual(@as(u64, 2), state.last_generation);
     try std.testing.expectEqual(StyleEngine.Status.ok, engine.invalidateDom(9, .attributes));
-    try std.testing.expectEqual(@as(u64, 3), state.last_generation);
+    try std.testing.expectEqual(@as(u64, 2), state.last_generation);
     try std.testing.expectEqual(@as(u32, 2), state.invalidation_count);
 
     const css = "div { color: red }";
@@ -651,7 +682,8 @@ test "StyleEngine adapter forwards the stable C ABI" {
         .css = .{ .ptr = css.ptr, .len = css.len },
     };
     try std.testing.expectEqual(StyleEngine.Status.ok, engine.replaceStylesheets(&.{sheet}));
-    try std.testing.expectEqual(@as(u64, 4), engine.generation());
+    try std.testing.expectEqual(@as(u64, 2), engine.generation());
+    try std.testing.expectEqual(@as(u64, 3), engine.stylesheetGeneration());
     try std.testing.expectEqual(@as(u32, 1), state.stylesheet_replace_count);
     try std.testing.expectEqual(StyleEngine.Status.ok, engine.syncNode(9));
     const flushed = engine.flushStyles(&.{9});

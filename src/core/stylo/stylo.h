@@ -86,6 +86,18 @@ typedef struct StyloFlushResult {
     size_t changed_node_count;
 } StyloFlushResult;
 
+typedef struct StyloMetrics {
+    uint64_t stylesheet_rebuilds;
+    uint64_t stylesheet_parses;
+    uint64_t stylesheet_bytes;
+    uint64_t dom_invalidations;
+    uint64_t restyled_nodes;
+    uint64_t computed_cache_hits;
+    uint64_t computed_cache_misses;
+    uint64_t ffi_calls;
+    uint64_t copied_bytes;
+} StyloMetrics;
+
 uint32_t koko_stylo_abi_version(void);
 
 StyloStatus koko_stylo_engine_new(
@@ -105,6 +117,11 @@ StyloStatus koko_stylo_engine_sync_node(
     StyloEngine *engine,
     const void *node);
 
+StyloStatus koko_stylo_engine_invalidate_dom(
+    StyloEngine *engine,
+    const void *node,
+    uint32_t kind);
+
 StyloStatus koko_stylo_engine_reset_document(
     StyloEngine *engine);
 
@@ -116,6 +133,10 @@ StyloStatus koko_stylo_engine_sync_node_info(
 StyloStatus koko_stylo_engine_invalidation_generation(
     const StyloEngine *engine,
     uint64_t *out_generation);
+
+StyloStatus koko_stylo_engine_metrics(
+    const StyloEngine *engine,
+    StyloMetrics *out_metrics);
 
 StyloStatus koko_stylo_engine_flush_styles(
     StyloEngine *engine,

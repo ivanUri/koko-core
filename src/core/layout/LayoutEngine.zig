@@ -38,9 +38,14 @@ const status_ok: StatusCode = 0;
 const status_not_ready: StatusCode = 3;
 const status_unsupported: StatusCode = 6;
 
+const CLayoutMetrics = extern struct {
+    layout_computations: u64,
+};
+
 extern fn koko_layout_session_new() ?*CSession;
 extern fn koko_layout_session_free(session: ?*CSession) void;
 extern fn koko_layout_session_reset(session: ?*CSession) StatusCode;
+extern fn koko_layout_metrics(session: ?*const CSession, out: *CLayoutMetrics) StatusCode;
 extern fn koko_layout_node_new(session: ?*CSession) u64;
 extern fn koko_layout_node_free(session: ?*CSession, node: u64) StatusCode;
 extern fn koko_layout_node_set_computed_style(
@@ -122,6 +127,10 @@ pub const LayoutEngine = struct {
     alive: bool = false,
     generation: u64 = 1,
 
+    pub const Metrics = struct {
+        layout_computations: u64 = 0,
+    };
+
     pub fn init() LayoutEngine {
         const session = koko_layout_session_new();
         return .{ .session = session, .alive = session != null };
@@ -138,6 +147,13 @@ pub const LayoutEngine = struct {
 
     pub fn status(self: *const LayoutEngine) Status {
         return if (!self.alive) .unavailable else .ok;
+    }
+
+    pub fn metrics(self: *const LayoutEngine) struct { status: Status, value: Metrics } {
+        if (!self.alive) return .{ .status = .unavailable, .value = .{} };
+        var abi: CLayoutMetrics = .{ .layout_computations = 0 };
+        const result = Status.fromCode(koko_layout_metrics(self.session, &abi));
+        return .{ .status = result, .value = .{ .layout_computations = abi.layout_computations } };
     }
 
     pub fn invalidate(self: *LayoutEngine) Status {

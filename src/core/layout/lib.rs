@@ -310,6 +310,13 @@ pub struct LayoutSession {
     next_handle: u64,
     batch_depth: u32,
     layout_ready: bool,
+    layout_computations: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct KokoLayoutMetrics {
+    pub layout_computations: u64,
 }
 
 impl LayoutSession {
@@ -323,6 +330,7 @@ impl LayoutSession {
             next_handle: 1,
             batch_depth: 0,
             layout_ready: false,
+            layout_computations: 0,
         }
     }
 
@@ -726,6 +734,18 @@ pub unsafe extern "C" fn koko_layout_session_free(session: *mut LayoutSession) {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn koko_layout_metrics(
+    session: *const LayoutSession,
+    out: *mut KokoLayoutMetrics,
+) -> KokoLayoutStatus {
+    if session.is_null() || out.is_null() {
+        return KokoLayoutStatus::InvalidArgument;
+    }
+    (*out).layout_computations = (*session).layout_computations;
+    KokoLayoutStatus::Ok
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn koko_layout_session_begin_batch(
     session: *mut LayoutSession,
 ) -> KokoLayoutStatus {
@@ -1001,6 +1021,7 @@ pub unsafe extern "C" fn koko_layout_compute(
             Ok(node) => node,
             Err(error) => return error,
         };
+        session.layout_computations = session.layout_computations.wrapping_add(1);
         let available = Size {
             width: AvailableSpace::Definite(viewport_width),
             height: AvailableSpace::Definite(viewport_height),
