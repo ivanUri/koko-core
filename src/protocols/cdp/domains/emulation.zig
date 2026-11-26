@@ -32,6 +32,13 @@ pub fn processMessage(cmd: *CDP.Command) !void {
         setGeolocationOverride,
         setNavigatorOverrides,
         clearDeviceMetricsOverride,
+        clearGeolocationOverride,
+        setIdleOverride,
+        clearIdleOverride,
+        setDefaultBackgroundColorOverride,
+        setEmulatedOSTextScale,
+        setEmulatedVisionDeficiency,
+        setScriptExecutionDisabled,
     }, cmd.input.action) orelse return error.UnknownMethod;
 
     switch (action) {
@@ -45,6 +52,13 @@ pub fn processMessage(cmd: *CDP.Command) !void {
         .setGeolocationOverride => return setGeolocationOverride(cmd),
         .setNavigatorOverrides => return setNavigatorOverrides(cmd),
         .clearDeviceMetricsOverride => return clearDeviceMetricsOverride(cmd),
+        .clearGeolocationOverride => return clearGeolocationOverride(cmd),
+        .setIdleOverride => return setIdleOverride(cmd),
+        .clearIdleOverride => return clearIdleOverride(cmd),
+        .setDefaultBackgroundColorOverride => return setDefaultBackgroundColorOverride(cmd),
+        .setEmulatedOSTextScale => return setEmulatedOSTextScale(cmd),
+        .setEmulatedVisionDeficiency => return setEmulatedVisionDeficiency(cmd),
+        .setScriptExecutionDisabled => return setScriptExecutionDisabled(cmd),
     }
 }
 
@@ -165,6 +179,76 @@ fn setGeolocationOverride(cmd: *CDP.Command) !void {
         .longitude = params.longitude,
         .accuracy = params.accuracy,
     };
+    return cmd.sendResult(null, .{});
+}
+
+fn clearGeolocationOverride(cmd: *CDP.Command) !void {
+    const bc = try browserContext(cmd);
+    bc.emulation.geolocation = null;
+    return cmd.sendResult(null, .{});
+}
+
+fn setIdleOverride(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        isUserActive: bool,
+        isScreenUnlocked: bool,
+    })) orelse return error.InvalidParams;
+    _ = params;
+    log.warn(.not_implemented, "Emulation.setIdleOverride", .{ .info = "idle state has no runtime producer" });
+    return cmd.sendResult(null, .{});
+}
+
+fn clearIdleOverride(cmd: *CDP.Command) !void {
+    log.warn(.not_implemented, "Emulation.clearIdleOverride", .{ .info = "idle state has no runtime producer" });
+    return cmd.sendResult(null, .{});
+}
+
+fn setDefaultBackgroundColorOverride(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        color: ?struct {
+            r: u8,
+            g: u8,
+            b: u8,
+            a: f64,
+        } = null,
+    })) orelse .{};
+    _ = params;
+    log.warn(.not_implemented, "Emulation.setDefaultBackgroundColorOverride", .{ .info = "painting has no background override producer" });
+    return cmd.sendResult(null, .{});
+}
+
+fn setEmulatedOSTextScale(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        scale: f64,
+    })) orelse return error.InvalidParams;
+    if (!std.math.isFinite(params.scale) or params.scale < 0) return error.InvalidParams;
+    log.warn(.not_implemented, "Emulation.setEmulatedOSTextScale", .{ .info = "text shaping has no OS scale producer" });
+    return cmd.sendResult(null, .{});
+}
+
+fn setEmulatedVisionDeficiency(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        type: enum {
+            none,
+            blurredVision,
+            reducedContrast,
+            achromatopsia,
+            deuteranopia,
+            protanopia,
+            tritanopia,
+        },
+    })) orelse return error.InvalidParams;
+    _ = params;
+    log.warn(.not_implemented, "Emulation.setEmulatedVisionDeficiency", .{ .info = "rendering has no vision deficiency producer" });
+    return cmd.sendResult(null, .{});
+}
+
+fn setScriptExecutionDisabled(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        value: bool,
+    })) orelse return error.InvalidParams;
+    _ = params;
+    log.warn(.not_implemented, "Emulation.setScriptExecutionDisabled", .{ .info = "script scheduler has no execution-disable producer" });
     return cmd.sendResult(null, .{});
 }
 

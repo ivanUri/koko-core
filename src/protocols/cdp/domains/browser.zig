@@ -30,6 +30,7 @@ pub fn processMessage(cmd: *CDP.Command) !void {
         resetPermissions,
         grantPermissions,
         getWindowForTarget,
+        getWindowBounds,
         setDownloadBehavior,
     }, cmd.input.action) orelse return error.UnknownMethod;
 
@@ -40,6 +41,7 @@ pub fn processMessage(cmd: *CDP.Command) !void {
         .resetPermissions => return resetPermissions(cmd),
         .grantPermissions => return grantPermissions(cmd),
         .getWindowForTarget => return getWindowForTarget(cmd),
+        .getWindowBounds => return getWindowBounds(cmd),
         .setDownloadBehavior => return setDownloadBehavior(cmd),
     }
 }
@@ -83,6 +85,27 @@ fn getWindowForTarget(cmd: *CDP.Command) !void {
     // })) orelse return error.InvalidParams;
 
     return cmd.sendResult(.{ .windowId = DEV_TOOLS_WINDOW_ID, .bounds = .{
+        .windowState = "normal",
+    } }, .{});
+}
+
+fn getWindowBounds(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        windowId: i32,
+    })) orelse return error.InvalidParams;
+    _ = params;
+
+    var window = cmd.cdp.browser.app.config.profile.identityPtr().window;
+    if (cmd.browser_context) |bc| {
+        if (bc.session.currentFrame()) |frame| {
+            window = frame.windowProfile();
+        }
+    }
+    return cmd.sendResult(.{ .bounds = .{
+        .left = 0,
+        .top = 0,
+        .width = window.outer_width,
+        .height = window.outer_height,
         .windowState = "normal",
     } }, .{});
 }

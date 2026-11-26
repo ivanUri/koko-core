@@ -19,9 +19,29 @@ pub fn processMessage(cmd: *CDP.Command) !void {
     const action = std.meta.stringToEnum(enum {
         enable,
         disable,
+        clear,
+        startViolationsReport,
+        stopViolationsReport,
     }, cmd.input.action) orelse return error.UnknownMethod;
 
     switch (action) {
-        .enable, .disable => return cmd.sendResult(null, .{}),
+        .enable, .disable, .clear => return cmd.sendResult(null, .{}),
+        .startViolationsReport => return startViolationsReport(cmd),
+        .stopViolationsReport => return stopViolationsReport(cmd),
     }
+}
+
+fn startViolationsReport(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        config: []const struct {
+            name: []const u8,
+            threshold: i64,
+        },
+    })) orelse return error.InvalidParams;
+    _ = params;
+    return cmd.sendResult(null, .{});
+}
+
+fn stopViolationsReport(cmd: *CDP.Command) !void {
+    return cmd.sendResult(null, .{});
 }

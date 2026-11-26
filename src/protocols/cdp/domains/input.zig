@@ -14,18 +14,27 @@
 
 const std = @import("std");
 const CDP = @import("../CDP.zig");
+const log = @import("../../../support/log.zig");
 
 pub fn processMessage(cmd: *CDP.Command) !void {
     const action = std.meta.stringToEnum(enum {
         dispatchKeyEvent,
         dispatchMouseEvent,
         insertText,
+        cancelDragging,
+        dispatchTouchEvent,
+        setIgnoreInputEvents,
+        synthesizeScrollGesture,
     }, cmd.input.action) orelse return error.UnknownMethod;
 
     switch (action) {
         .dispatchKeyEvent => return dispatchKeyEvent(cmd),
         .dispatchMouseEvent => return dispatchMouseEvent(cmd),
         .insertText => return insertText(cmd),
+        .cancelDragging => return cancelDragging(cmd),
+        .dispatchTouchEvent => return dispatchTouchEvent(cmd),
+        .setIgnoreInputEvents => return setIgnoreInputEvents(cmd),
+        .synthesizeScrollGesture => return synthesizeScrollGesture(cmd),
     }
 }
 
@@ -156,4 +165,79 @@ fn insertText(cmd: *CDP.Command) !void {
     try frame.insertText(params.text);
 
     try cmd.sendResult(null, .{});
+}
+
+fn cancelDragging(cmd: *CDP.Command) !void {
+    log.warn(.not_implemented, "Input.cancelDragging", .{ .info = "drag controller has no cancellation producer" });
+    return cmd.sendResult(null, .{});
+}
+
+fn dispatchTouchEvent(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        type: enum { touchStart, touchMove, touchEnd, touchCancel },
+        touchPoints: []const struct {
+            x: f64,
+            y: f64,
+            radiusX: ?f64 = null,
+            radiusY: ?f64 = null,
+            rotationAngle: ?f64 = null,
+            force: ?f64 = null,
+            id: ?i32 = null,
+        },
+        modifiers: ?u8 = null,
+    })) orelse return error.InvalidParams;
+    _ = params;
+    log.warn(.not_implemented, "Input.dispatchTouchEvent", .{ .info = "touch input has no native producer" });
+    return cmd.sendResult(null, .{});
+}
+
+fn setIgnoreInputEvents(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        ignore: bool,
+    })) orelse return error.InvalidParams;
+    _ = params;
+    log.warn(.not_implemented, "Input.setIgnoreInputEvents", .{ .info = "input controller has no ignore-state producer" });
+    return cmd.sendResult(null, .{});
+}
+
+fn synthesizeScrollGesture(cmd: *CDP.Command) !void {
+    const params = (try cmd.params(struct {
+        gestureSourceType: ?enum { default, touch, mouse } = null,
+        x: ?f64 = null,
+        y: ?f64 = null,
+        xDistance: ?f64 = null,
+        yDistance: ?f64 = null,
+        xOverscroll: ?f64 = null,
+        yOverscroll: ?f64 = null,
+        speed: ?i32 = null,
+        maxTimeIntoGesture: ?i32 = null,
+        preventFling: ?bool = null,
+        repeatCount: ?i32 = null,
+        repeatDelayMs: ?i32 = null,
+        interactionMarkerName: ?[]const u8 = null,
+    })) orelse return error.InvalidParams;
+
+    _ = params.gestureSourceType;
+    _ = params.x;
+    _ = params.y;
+    _ = params.xOverscroll;
+    _ = params.yOverscroll;
+    _ = params.speed;
+    _ = params.maxTimeIntoGesture;
+    _ = params.preventFling;
+    _ = params.repeatCount;
+    _ = params.repeatDelayMs;
+    _ = params.interactionMarkerName;
+
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    const frame = bc.session.currentFrame() orelse return error.FrameNotLoaded;
+    if (params.yDistance) |distance| {
+        const next_y = @max(@as(i32, 0), frame.window.getScrollY() + @as(i32, @intFromFloat(-distance)));
+        try frame.window.scrollTo(.{ .x = frame.window.getScrollX() }, next_y, frame);
+    }
+    if (params.xDistance) |distance| {
+        const next_x = @max(@as(i32, 0), frame.window.getScrollX() + @as(i32, @intFromFloat(-distance)));
+        try frame.window.scrollTo(.{ .x = next_x }, frame.window.getScrollY(), frame);
+    }
+    return cmd.sendResult(null, .{});
 }
