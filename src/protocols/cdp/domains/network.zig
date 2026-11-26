@@ -1025,3 +1025,39 @@ test "cdp.Network: getAllCookies returns whole jar regardless of current origin"
         },
     }, .{ .id = 3 });
 }
+
+test "cdp.Network.getResponseBody preserves text and encodes binary" {
+    var ctx = try testing.context();
+    defer ctx.deinit();
+    const bc = try ctx.loadBrowserContext(.{ .id = "BID-RESPONSE-BODY" });
+
+    const text_key: CDP.BrowserContext.CapturedResponseKey = .{ .kind = .request, .id = 11 };
+    const text_entry = try bc.captured_responses.getOrPut(bc.frame_arena, text_key);
+    text_entry.value_ptr.* = .{ .must_encode = false, .data = .empty };
+    try text_entry.value_ptr.data.appendSlice(bc.frame_arena, "REAL-SERVER-BODY-alpha7");
+
+    try ctx.processMessage(.{
+        .id = 1,
+        .method = "Network.getResponseBody",
+        .params = .{ .requestId = "REQ-11" },
+    });
+    try ctx.expectSentResult(.{
+        .body = "REAL-SERVER-BODY-alpha7",
+        .base64Encoded = false,
+    }, .{ .id = 1 });
+
+    const binary_key: CDP.BrowserContext.CapturedResponseKey = .{ .kind = .request, .id = 12 };
+    const binary_entry = try bc.captured_responses.getOrPut(bc.frame_arena, binary_key);
+    binary_entry.value_ptr.* = .{ .must_encode = true, .data = .empty };
+    try binary_entry.value_ptr.data.appendSlice(bc.frame_arena, &[_]u8{ 0, 0xff, 0x7f });
+
+    try ctx.processMessage(.{
+        .id = 2,
+        .method = "Network.getResponseBody",
+        .params = .{ .requestId = "REQ-12" },
+    });
+    try ctx.expectSentResult(.{
+        .body = "AP9/",
+        .base64Encoded = true,
+    }, .{ .id = 2 });
+}

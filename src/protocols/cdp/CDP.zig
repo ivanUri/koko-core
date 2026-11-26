@@ -26,6 +26,7 @@ const Mime = @import("../../core/browser/Mime.zig");
 const Element = @import("../../core/dom/Element.zig");
 const Label = @import("../../core/webapi/element/html/Label.zig");
 const Request = @import("../../core/browser/HttpClient.zig").Request;
+const Response = @import("../../core/browser/HttpClient.zig").Response;
 const CDPClient = @import("../../core/browser/HttpClient.zig").CDPClient;
 const WsConnection = @import("../../runtime/network/WsConnection.zig");
 
@@ -1079,6 +1080,17 @@ pub const BrowserContext = struct {
             .{ .kind = .request, .id = req.params.request_id };
     }
 
+    fn responseBodyMustEncode(response: *const Response) !bool {
+        const content_type = response.contentType() orelse return true;
+        const mime = try Mime.parse(content_type);
+        if (!mime.isText()) return true;
+
+        // Mime.parse normalizes explicit parameters to lower case, while the
+        // default charset is stored as "UTF-8". CDP returns text bodies as
+        // decoded strings regardless of that spelling.
+        return !std.ascii.eqlIgnoreCase(mime.charsetString(), "utf-8");
+    }
+
     pub fn onHttpResponseHeadersDone(ctx: *anyopaque, msg: *const Notification.ResponseHeaderDone) !void {
         const self: *BrowserContext = @ptrCast(@alignCast(ctx));
         defer self.resetNotificationArena();
@@ -1093,21 +1105,7 @@ pub const BrowserContext = struct {
                 .data = .empty,
                 // Encode the data in base64 by default, but don't encode
                 // for well known content-type.
-                .must_encode = blk: {
-                    const response = msg.response;
-                    if (response.contentType()) |ct| {
-                        const mime = try Mime.parse(ct);
-
-                        if (!mime.isText()) {
-                            break :blk true;
-                        }
-
-                        if (std.mem.eql(u8, "UTF-8", mime.charsetString())) {
-                            break :blk false;
-                        }
-                    }
-                    break :blk true;
-                },
+                .must_encode = try responseBodyMustEncode(msg.response),
             };
         }
 
