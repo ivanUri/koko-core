@@ -120,7 +120,7 @@ fn getEventListeners(cmd: *CDP.Command) !void {
         if (entry.key_ptr.*.event_target != @intFromPtr(node.asEventTarget())) continue;
         var listeners = entry.value_ptr.*.*.first;
         while (listeners) |item| : (listeners = item.next) {
-            const listener: *const @import("../../../core/browser/EventManagerBase.zig").Listener = @fieldParentPtr("node", item);
+            const listener: *const @import("../../../core/browser/EventManagerBase.zig").Listener = @alignCast(@fieldParentPtr("node", item));
             if (!listener.removed) count += 1;
         }
     }
@@ -132,7 +132,7 @@ fn getEventListeners(cmd: *CDP.Command) !void {
         if (entry.key_ptr.*.event_target != @intFromPtr(node.asEventTarget())) continue;
         var item = entry.value_ptr.*.*.first;
         while (item) |current| : (item = current.next) {
-            const listener: *const @import("../../../core/browser/EventManagerBase.zig").Listener = @fieldParentPtr("node", current);
+            const listener: *const @import("../../../core/browser/EventManagerBase.zig").Listener = @alignCast(@fieldParentPtr("node", current));
             if (listener.removed) continue;
             const handler = try remoteHandler(cmd, bc, frame, listener);
             listeners[index] = .{
