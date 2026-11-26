@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "status": "not-fetched",
+  "policy": "All generated inventories must record an immutable commit, browser version, build configuration, feature flags, and content hash. This manifest is intentionally uninitialized until update-upstream is run.",
+  "repositories": {
+    "webref": {
+      "url": "https://github.com/w3c/webref.git",
+      "ref": "main",
+      "commit": null,
+      "contentHash": null,
+      "checkout": "compatibility/upstream/webref"
+    },
+    "wpt": {
+      "url": "https://github.com/web-platform-tests/wpt.git",
+      "ref": "master",
+      "commit": null,
+      "contentHash": null,
+      "checkout": "compatibility/upstream/wpt"
+    },
+    "mdn-browser-compat-data": {
+      "url": "https://github.com/mdn/browser-compat-data.git",
+      "ref": "main",
+      "commit": null,
+      "contentHash": null,
+      "checkout": "compatibility/upstream/mdn-browser-compat-data"
+    },
+    "chromium-blink": {
+      "url": "https://chromium.googlesource.com/chromium/src.git",
+      "ref": "main",
+      "commit": null,
+      "contentHash": null,
+      "checkout": "compatibility/upstream/chromium-blink",
+      "optional": true,
+      "note": "Optional because a full Chromium checkout is large; normal runs should provide a smaller pinned Blink WebIDL artifact via --input."
+    }
+  },
+  "chromium": {
+    "browserVersion": null,
+    "revision": null,
+    "buildConfiguration": null,
+    "featureFlags": []
+  }
+}

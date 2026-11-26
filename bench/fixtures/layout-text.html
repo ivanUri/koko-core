@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Koko layout text fixture</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body { font-family: Arial, sans-serif; font-size: 16px; }
+    #text-box { width: 320px; padding: 12px; border: 2px solid #203040; line-height: 24px; white-space: normal; }
+    #latin { display: inline; }
+    #bidi { direction: rtl; unicode-bidi: isolate; }
+    #nowrap { white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <p id="text-box"><span id="latin">Deterministic text wraps across a fixed width so line breaking and measurement are observable.</span> <span id="bidi">مرحبا بالعالم</span> <span id="nowrap">nowrap-token</span></p>
+</body>
+</html>

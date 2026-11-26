@@ -33,7 +33,7 @@ _proto: *CSSStyleDeclaration,
 
 pub fn init(element: ?*Element, is_computed: bool, frame: *Frame) !*CSSStyleProperties {
     return frame._factory.create(CSSStyleProperties{
-        ._proto = try CSSStyleDeclaration.init(element, is_computed, frame),
+        ._proto = try CSSStyleDeclaration.init(element, is_computed, frame, null),
     });
 }
 

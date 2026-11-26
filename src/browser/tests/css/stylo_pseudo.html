@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8">
+<script src="stylo_fixture.js"></script>
+<style>
+  #stylo-target::before { content: "stylo"; display: inline-block; color: rgb(21, 31, 41); }
+  #stylo-target::after { content: ""; display: block; border-top: 1px solid rgb(51, 61, 71); }
+</style>
+<body><div id="stylo-target">pseudo</div></body>
+<script>
+  styloFixture.install(() => {
+    const target = document.querySelector("#stylo-target");
+    const before = styloFixture.readStyle(target, ["content", "display", "color"], "::before");
+    const after = styloFixture.readStyle(target, ["content", "display", "border-top-width"], "::after");
+    if (before.status) return before;
+    if (after.status) return after;
+    return { status: "pass", observations: { before, after } };
+  });
+</script>

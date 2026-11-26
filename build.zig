@@ -96,11 +96,12 @@ pub fn build(b: *Build) !void {
         try linkV8(b, mod, enable_asan, enable_tsan, v8_enable_pointer_compression, prebuilt_v8_path);
         try linkCurl(b, mod, enable_tsan);
         linkZlibModule(b, mod, enable_tsan);
-        try linkHtml5Ever(b, mod);
+        try linkLayout(b, mod);
         try linkWebRtc(b, mod, enable_tsan);
         try linkNghttp2ForKoko(b, mod, enable_tsan);
         if (target.result.os.tag == .macos) {
             mod.addSystemFrameworkPath(.{ .cwd_relative = "/System/Library/Frameworks" });
+            mod.linkFramework("Foundation", .{});
             mod.linkFramework("CoreGraphics", .{});
             mod.linkFramework("CoreText", .{});
             mod.addCSourceFile(.{
@@ -285,35 +286,43 @@ fn linkV8(
     mod.addImport("v8", dep.module("v8"));
 }
 
-fn linkHtml5Ever(b: *Build, mod: *Build.Module) !void {
+fn linkLayout(b: *Build, mod: *Build.Module) !void {
     const is_debug = if (mod.optimize.? == .Debug) true else false;
 
     const exec_cargo = b.addSystemCommand(&.{
-        "cargo",           "build",
-        "--profile",       if (is_debug) "dev" else "release",
-        "--manifest-path", "src/core/html5ever/Cargo.toml",
+        "cargo",                            "build",
+        "--locked",                         "--profile",
+        if (is_debug) "dev" else "release", "--manifest-path",
+        "src/core/layout/Cargo.toml",
     });
 
-    // Track Rust sources so edits invalidate the cargo step's cache.
-    // Without this, Zig keys the step on argv only and won't re-run cargo
-    // when lib.rs/Cargo.toml change.
+    // Track all Rust bridge inputs so changes invalidate the single combined
+    // archive instead of reusing stale output. Keeping these bridges in one
+    // Cargo invocation avoids duplicate Rust runtime symbols at final link.
     for ([_][]const u8{
-        "src/core/html5ever/Cargo.toml",
-        "src/core/html5ever/Cargo.lock",
+        "src/core/layout/Cargo.toml",
+        "src/core/layout/Cargo.lock",
+        "src/core/layout/build.rs",
+        "src/core/layout/lib.rs",
+        "src/core/layout/layout.h",
         "src/core/html5ever/lib.rs",
         "src/core/html5ever/sink.rs",
         "src/core/html5ever/types.rs",
+        "src/core/stylo/lib.rs",
+        "src/core/stylo/dom_adapter.rs",
+        "src/core/stylo/stylist_store.rs",
+        "src/core/stylo/stylo.h",
+        "src/core/stylo/parley_adapter.rs",
+        "src/core/stylo/taffy_mapping.rs",
     }) |path| {
         exec_cargo.addFileInput(b.path(path));
     }
 
-    // TODO: We can prefer `--artifact-dir` once it become stable.
-    const out_dir = exec_cargo.addPrefixedOutputDirectoryArg("--target-dir=", "html5ever");
+    const out_dir = exec_cargo.addPrefixedOutputDirectoryArg("--target-dir=", "layout");
+    const layout_step = b.step("layout", "Install the Taffy and Parley Rust layout bridge (requires cargo)");
+    layout_step.dependOn(&exec_cargo.step);
 
-    const html5ever_step = b.step("html5ever", "Install html5ever dependency (requires cargo)");
-    html5ever_step.dependOn(&exec_cargo.step);
-
-    const obj = out_dir.path(b, if (is_debug) "debug" else "release").path(b, "liblitefetch_html5ever.a");
+    const obj = out_dir.path(b, if (is_debug) "debug" else "release").path(b, "libkoko_layout.a");
     mod.addObjectFile(obj);
 }
 

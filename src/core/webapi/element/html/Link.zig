@@ -56,7 +56,7 @@ pub fn setHref(self: *Link, value: []const u8, frame: *Frame) !void {
     try element.setAttributeSafe(comptime .wrap("href"), .wrap(value), frame);
 
     if (element.asNode().isConnected()) {
-        try self.linkAddedCallback(frame);
+        try self.linkAddedCallback(element.asNode().ownerFrame(frame));
     }
 }
 
@@ -67,7 +67,7 @@ pub fn getRel(self: *Link) []const u8 {
 pub fn setRel(self: *Link, value: []const u8, frame: *Frame) !void {
     try self.asElement().setAttributeSafe(comptime .wrap("rel"), .wrap(value), frame);
     if (self.asElement().asNode().isConnected()) {
-        try self.linkAddedCallback(frame);
+        try self.linkAddedCallback(self.asNode().ownerFrame(frame));
     }
 }
 
@@ -77,6 +77,14 @@ pub fn getAs(self: *const Link) []const u8 {
 
 pub fn setAs(self: *Link, value: []const u8, frame: *Frame) !void {
     return self.asElement().setAttributeSafe(comptime .wrap("as"), .wrap(value), frame);
+}
+
+fn hasRelToken(rel: []const u8, token: []const u8) bool {
+    var tokens = std.mem.tokenizeAny(u8, rel, " \t\r\n\x0c");
+    while (tokens.next()) |candidate| {
+        if (std.ascii.eqlIgnoreCase(candidate, token)) return true;
+    }
+    return false;
 }
 
 pub fn getCrossOrigin(self: *const Link) ?[]const u8 {
@@ -92,48 +100,67 @@ pub fn setCrossOrigin(self: *Link, value: []const u8, frame: *Frame) !void {
 }
 
 pub fn linkAddedCallback(self: *Link, frame: *Frame) !void {
+    const owner_frame = self.asNode().ownerFrame(frame);
     // if we're planning on navigating to another frame, don't trigger load event.
-    if (frame.isGoingAway()) {
+    if (owner_frame.isGoingAway()) {
         return;
     }
 
     const element = self.asElement();
 
-    const rel = element.getAttributeSafe(comptime .wrap("rel")) orelse return;
+    const rel = element.getAttributeSafe(comptime .wrap("rel")) orelse {
+        try self.removeRegisteredSheet(owner_frame);
+        return;
+    };
 
-    if (std.mem.eql(u8, rel, "modulepreload")) {
-        const href = element.getAttributeSafe(comptime .wrap("href")) orelse return;
-        if (href.len == 0) return;
-        const resolved = try self.asNode().resolveURL(href, frame, .{});
+    if (hasRelToken(rel, "modulepreload")) {
+        const href = element.getAttributeSafe(comptime .wrap("href")) orelse {
+            try self.removeRegisteredSheet(owner_frame);
+            return;
+        };
+        if (href.len == 0) {
+            try self.removeRegisteredSheet(owner_frame);
+            return;
+        }
+        const resolved = try self.asNode().resolveURL(href, owner_frame, .{});
         const resolved_z: [:0]const u8 = resolved.ptr[0..resolved.len :0];
-        try frame._script_manager.base.preloadImport(resolved_z, frame.base());
+        try owner_frame._script_manager.base.preloadImport(resolved_z, owner_frame.base());
         return;
     }
 
-    const is_stylesheet = std.ascii.eqlIgnoreCase(rel, "stylesheet");
-    const is_preload = std.mem.eql(u8, rel, "preload");
+    const is_stylesheet = hasRelToken(rel, "stylesheet");
+    const is_preload = hasRelToken(rel, "preload");
     if (!is_stylesheet and !is_preload) {
+        try self.removeRegisteredSheet(owner_frame);
         return;
     }
 
-    const href = element.getAttributeSafe(comptime .wrap("href")) orelse return;
+    const href = element.getAttributeSafe(comptime .wrap("href")) orelse {
+        try self.removeRegisteredSheet(owner_frame);
+        return;
+    };
     if (href.len == 0) {
+        try self.removeRegisteredSheet(owner_frame);
         return;
     }
 
     if (is_preload and std.ascii.eqlIgnoreCase(self.getAs(), "image")) {
-        if (!frame.shouldLoadImages() or frame.shouldDeferImages()) return;
-        try self.fetchPreloadImage(frame, href);
+        try self.removeRegisteredSheet(owner_frame);
+        if (!owner_frame.shouldLoadImages() or owner_frame.shouldDeferImages()) return;
+        try self.fetchPreloadImage(owner_frame, href);
         return;
     }
 
     if (is_stylesheet) {
-        if (!frame.shouldLoadExternalStylesheets()) return;
-        try self.fetchStylesheet(frame, href);
+        if (!owner_frame.shouldLoadExternalStylesheets()) {
+            try self.removeRegisteredSheet(owner_frame);
+            return;
+        }
+        try self.fetchStylesheet(owner_frame, href);
         return;
     }
 
-    try frame.queueLoad(self._proto);
+    try owner_frame.queueLoad(self._proto);
 }
 
 fn fetchStylesheet(self: *Link, frame: *Frame, href: []const u8) !void {
@@ -160,9 +187,9 @@ fn fetchStylesheet(self: *Link, frame: *Frame, href: []const u8) !void {
         }
     }
 
+    try self.removeRegisteredSheet(frame);
     self._stylesheet_loading = true;
     self._stylesheet_url = owned_url;
-    self._sheet = null;
 
     const session = frame._session;
     const http_client = &session.browser.http_client;
@@ -207,6 +234,14 @@ fn fetchStylesheet(self: *Link, frame: *Frame, href: []const u8) !void {
         .error_callback = StylesheetLoad.errorCallback,
         .shutdown_callback = StylesheetLoad.shutdownCallback,
     });
+}
+
+fn removeRegisteredSheet(self: *Link, frame: *Frame) !void {
+    const sheet = self._sheet orelse return;
+    const sheets = try frame.document.getStyleSheets(frame);
+    sheets.remove(sheet);
+    self._sheet = null;
+    frame.styleSheetChanged(self.asNode());
 }
 
 const StylesheetLoad = struct {
@@ -278,6 +313,7 @@ const StylesheetLoad = struct {
             return;
         };
         self.link._sheet = sheet;
+        self.frame.styleSheetChanged(self.link.asNode());
         try self.frame.queueLoad(self.link._proto);
     }
 
@@ -572,6 +608,12 @@ pub const Build = struct {
 };
 
 const testing = @import("../../../../testing/testing.zig");
+test "Link rel values are tokenized as a space-separated list" {
+    try std.testing.expect(hasRelToken("preload stylesheet", "stylesheet"));
+    try std.testing.expect(hasRelToken("STYLESHEET", "stylesheet"));
+    try std.testing.expect(!hasRelToken("icon", "stylesheet"));
+}
+
 test "WebApi: HTML.Link" {
     try testing.htmlRunner("element/html/link.html", .{});
 }

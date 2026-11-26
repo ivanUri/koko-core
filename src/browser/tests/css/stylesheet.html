@@ -1,0 +1,46 @@
+<!doctype html>
+<meta charset="utf-8">
+<style id="fixture-sheet">#target { display: none; }</style>
+<body>
+  <div id="target"></div>
+  <script>
+    window.testing = {
+      assertOk: () => document.body.id === "stylesheet-pass",
+      printTimeoutState: () => console.log(document.body.textContent),
+    };
+
+    const target = document.getElementById("target");
+    const style = document.getElementById("fixture-sheet");
+    const sheet = style.sheet;
+    const rules = sheet.cssRules;
+    const inline = target.style;
+
+    if (target.style !== inline) throw new Error("inline style identity changed");
+    if (sheet.cssRules !== rules) throw new Error("cssRules identity changed");
+    if (rules.length !== 1 || rules[0].selectorText !== "#target") {
+      throw new Error("initial stylesheet rule was not preserved");
+    }
+
+    inline.setProperty("margin-top", "0px");
+    if (inline.cssText !== "margin-top: 0px;" || target.getAttribute("style") !== inline.cssText) {
+      throw new Error("inline CSSOM serialization changed");
+    }
+
+    const inserted = sheet.insertRule("#target { visibility: hidden; }");
+    if (inserted !== 1 || sheet.cssRules.length !== 2) throw new Error("insertRule failed");
+    sheet.deleteRule(inserted);
+    if (sheet.cssRules.length !== 1) throw new Error("deleteRule failed");
+
+    sheet.replaceSync("#target { display: block; }");
+    if (sheet.cssRules.length !== 1 || sheet.cssRules[0].cssText.indexOf("display: block") < 0) {
+      throw new Error("replaceSync serialization failed");
+    }
+
+    sheet.disabled = true;
+    if (!sheet.disabled) throw new Error("disabled setter failed");
+    sheet.disabled = false;
+
+    document.body.id = "stylesheet-pass";
+    document.body.textContent = "stylesheet-pass";
+  </script>
+</body>

@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8">
+<script src="stylo_fixture.js"></script>
+<style>
+  #stylo-parent { color: rgb(12, 34, 56); font-family: serif; }
+  #stylo-child { line-height: 1.4; }
+</style>
+<body>
+  <div id="stylo-parent"><span id="stylo-child">inheritance</span></div>
+</body>
+<script>
+  styloFixture.install(() => {
+    const parent = document.querySelector("#stylo-parent");
+    const child = document.querySelector("#stylo-child");
+    const parentStyle = styloFixture.readStyle(parent, ["color", "font-family"]);
+    const childStyle = styloFixture.readStyle(child, ["color", "font-family", "line-height"]);
+    if (parentStyle.status) return parentStyle;
+    if (childStyle.status) return childStyle;
+    return { status: "pass", observations: { parent: parentStyle, child: childStyle } };
+  });
+</script>

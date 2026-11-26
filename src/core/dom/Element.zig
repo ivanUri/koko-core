@@ -15,7 +15,6 @@ const std = @import("std");
 
 const js = @import("../js/js.zig");
 const Frame = @import("../browser/Frame.zig");
-const StyleManager = @import("../browser/StyleManager.zig");
 const reflect = @import("../browser/reflect.zig");
 
 const Node = @import("Node.zig");
@@ -155,6 +154,10 @@ pub fn asEventTarget(self: *Element) *EventTarget {
 
 pub fn asConstNode(self: *const Element) *const Node {
     return self._proto;
+}
+
+fn mutationFrame(self: *Element, fallback: *Frame) *Frame {
+    return self.asNode().ownerFrame(fallback);
 }
 
 pub fn attributesEql(self: *const Element, other: *Element) bool {
@@ -476,18 +479,19 @@ pub fn getOuterHTML(self: *Element, writer: *std.Io.Writer, frame: *Frame) !void
 pub fn setOuterHTML(self: *Element, html: []const u8, frame: *Frame) !void {
     const node = self.asNode();
     const parent = node._parent orelse return;
+    const owner_frame = node.ownerFrame(frame);
 
-    frame.domChanged();
+    owner_frame.domChangedForNode(node);
     if (html.len > 0) {
-        const fragment = (try Node.DocumentFragment.init(frame)).asNode();
-        try frame.parseHtmlAsChildren(fragment, html);
-        try frame.insertAllChildrenBefore(fragment, parent, node);
+        const fragment = (try Node.DocumentFragment.init(owner_frame)).asNode();
+        try owner_frame.parseHtmlAsChildren(fragment, html);
+        try owner_frame.insertAllChildrenBefore(fragment, parent, node);
     }
 
     // A custom element callback fired during insertAllChildrenBefore may
     // have already detached `node`; only remove it if it's still here.
     if (node._parent == parent) {
-        frame.removeNode(parent, node, .{ .will_be_reconnected = false });
+        owner_frame.removeNode(parent, node, .{ .will_be_reconnected = false });
     }
 }
 
@@ -689,8 +693,9 @@ pub fn attributeIterator(self: *Element) Attribute.InnerIterator {
 }
 
 pub fn getAttribute(self: *const Element, name: String, frame: *Frame) !?String {
+    const owner_frame = self.asConstNode().ownerFrame(frame);
     const attributes = self._attributes orelse return null;
-    return attributes.get(name, frame);
+    return attributes.get(name, owner_frame);
 }
 
 /// For simplicity, the namespace is currently ignored and only the local name is used.
@@ -715,8 +720,9 @@ pub fn getAttributeSafe(self: *const Element, name: String) ?[]const u8 {
 }
 
 pub fn hasAttribute(self: *const Element, name: String, frame: *Frame) !bool {
+    const owner_frame = self.asConstNode().ownerFrame(frame);
     const attributes = self._attributes orelse return false;
-    const value = try attributes.get(name, frame);
+    const value = try attributes.get(name, owner_frame);
     return value != null;
 }
 
@@ -788,14 +794,16 @@ pub fn hasAttributes(self: *const Element) bool {
 }
 
 pub fn getAttributeNode(self: *Element, name: String, frame: *Frame) !?*Attribute {
+    const owner_frame = self.asNode().ownerFrame(frame);
     const attributes = self._attributes orelse return null;
-    return attributes.getAttribute(name, self, frame);
+    return attributes.getAttribute(name, self, owner_frame);
 }
 
 pub fn setAttribute(self: *Element, name: String, value: String, frame: *Frame) !void {
     try Attribute.validateAttributeName(name);
-    const attributes = try self.getOrCreateAttributeList(frame);
-    _ = try attributes.put(name, value, self, frame);
+    const owner_frame = self.mutationFrame(frame);
+    const attributes = try self.getOrCreateAttributeList(owner_frame);
+    _ = try attributes.put(name, value, self, owner_frame);
 }
 
 pub fn setAttributeNS(
@@ -828,17 +836,20 @@ pub fn setAttributeNS(
 }
 
 pub fn setAttributeSafe(self: *Element, name: String, value: String, frame: *Frame) !void {
-    const attributes = try self.getOrCreateAttributeList(frame);
-    _ = try attributes.putSafe(name, value, self, frame);
+    const owner_frame = self.mutationFrame(frame);
+    const attributes = try self.getOrCreateAttributeList(owner_frame);
+    _ = try attributes.putSafe(name, value, self, owner_frame);
 }
 
 pub fn getOrCreateAttributeList(self: *Element, frame: *Frame) !*Attribute.List {
-    return self._attributes orelse return self.createAttributeList(frame);
+    const owner_frame = self.asNode().ownerFrame(frame);
+    return self._attributes orelse return self.createAttributeList(owner_frame);
 }
 
 pub fn createAttributeList(self: *Element, frame: *Frame) !*Attribute.List {
+    const owner_frame = self.asNode().ownerFrame(frame);
     assert(self._attributes == null, "Element.createAttributeList non-null _attributes", .{});
-    const a = try frame.arena.create(Attribute.List);
+    const a = try owner_frame.arena.create(Attribute.List);
     a.* = .{ .normalize = self._namespace == .html };
     self._attributes = a;
     return a;
@@ -894,22 +905,24 @@ pub fn insertAdjacentText(
 }
 
 pub fn setAttributeNode(self: *Element, attr: *Attribute, frame: *Frame) !?*Attribute {
+    const owner_frame = self.mutationFrame(frame);
     if (attr._element) |el| {
         if (el == self) {
             return attr;
         }
         attr._element = null;
-        _ = try el.removeAttributeNode(attr, frame);
+        _ = try el.removeAttributeNode(attr, owner_frame);
     }
 
-    const attributes = try self.getOrCreateAttributeList(frame);
-    return attributes.putAttribute(attr, self, frame);
+    const attributes = try self.getOrCreateAttributeList(owner_frame);
+    return attributes.putAttribute(attr, self, owner_frame);
 }
 
 pub fn removeAttribute(self: *Element, name: String, frame: *Frame) !void {
-    AttrAssociatedElement.onAttributeRemoved(self, name.str(), frame);
+    const owner_frame = self.mutationFrame(frame);
+    AttrAssociatedElement.onAttributeRemoved(self, name.str(), owner_frame);
     const attributes = self._attributes orelse return;
-    return attributes.delete(name, self, frame);
+    return attributes.delete(name, self, owner_frame);
 }
 
 pub fn getAriaActiveDescendantElement(self: *const Element, frame: *Frame) !?*Element {
@@ -960,30 +973,33 @@ pub fn removeAttributeNode(self: *Element, attr: *Attribute, frame: *Frame) !*At
 }
 
 pub fn getAttributeNames(self: *const Element, frame: *Frame) ![][]const u8 {
+    const owner_frame = self.asConstNode().ownerFrame(frame);
     const attributes = self._attributes orelse return &.{};
-    return attributes.getNames(frame);
+    return attributes.getNames(owner_frame);
 }
 
 pub fn getAttributeNamedNodeMap(self: *Element, frame: *Frame) !*Attribute.NamedNodeMap {
-    const gop = try frame._attribute_named_node_map_lookup.getOrPut(frame.arena, @intFromPtr(self));
+    const owner_frame = self.asNode().ownerFrame(frame);
+    const gop = try owner_frame._attribute_named_node_map_lookup.getOrPut(owner_frame.arena, @intFromPtr(self));
     if (!gop.found_existing) {
-        const attributes = try self.getOrCreateAttributeList(frame);
-        const named_node_map = try frame._factory.create(Attribute.NamedNodeMap{ ._list = attributes, ._element = self });
+        const attributes = try self.getOrCreateAttributeList(owner_frame);
+        const named_node_map = try owner_frame._factory.create(Attribute.NamedNodeMap{ ._list = attributes, ._element = self });
         gop.value_ptr.* = named_node_map;
     }
     return gop.value_ptr.*;
 }
 
 pub fn getOrCreateStyle(self: *Element, frame: *Frame) !*CSSStyleProperties {
-    const gop = try frame._element_styles.getOrPut(frame.arena, self);
+    const owner_frame = self.asNode().ownerFrame(frame);
+    const gop = try owner_frame._element_styles.getOrPut(owner_frame.arena, self);
     if (!gop.found_existing) {
-        gop.value_ptr.* = try CSSStyleProperties.init(self, false, frame);
+        gop.value_ptr.* = try CSSStyleProperties.init(self, false, owner_frame);
     }
     return gop.value_ptr.*;
 }
 
 fn getStyle(self: *Element, frame: *Frame) ?*CSSStyleProperties {
-    return frame._element_styles.get(self);
+    return self.asNode().ownerFrame(frame)._element_styles.get(self);
 }
 
 pub fn getClassList(self: *Element, frame: *Frame) !*collections.DOMTokenList {
@@ -1061,7 +1077,8 @@ pub fn replaceChildren(self: *Element, nodes: []const Node.NodeOrText, frame: *F
 }
 
 pub fn replaceWith(self: *Element, nodes: []const Node.NodeOrText, frame: *Frame) !void {
-    frame.domChanged();
+    const owner_frame = self.mutationFrame(frame);
+    owner_frame.domChangedForNode(self.asNode());
 
     const ref_node = self.asNode();
     const parent = ref_node._parent orelse return;
@@ -1073,7 +1090,7 @@ pub fn replaceWith(self: *Element, nodes: []const Node.NodeOrText, frame: *Frame
     var rm_ref_node = true;
 
     for (nodes) |node_or_text| {
-        const child = try node_or_text.toNode(frame);
+        const child = try node_or_text.toNode(owner_frame);
 
         // If a child is the ref node. We keep it at its own current position.
         if (child == ref_node) {
@@ -1085,20 +1102,21 @@ pub fn replaceWith(self: *Element, nodes: []const Node.NodeOrText, frame: *Frame
         // After removeNode the child has no _parent, so ownerDocument() loses
         // the root-walk path and falls back to frame.document — making adopting
         // silently false and skipping adoptedCallback.
-        const child_owner = child.ownerDocument(frame);
+        const child_owner = child.ownerDocument(owner_frame);
         const child_was_connected = child.isConnected();
-        const parent_owner = parent.ownerDocument(frame) orelse parent.as(Node.Document);
+        const parent_owner = parent.ownerDocument(owner_frame) orelse parent.as(Node.Document);
         const adopting = child_owner != null and child_owner.? != parent_owner;
 
         if (child._parent) |current_parent| {
-            frame.removeNode(current_parent, child, .{ .will_be_reconnected = parent_is_connected and !adopting });
+            const source_frame = current_parent.ownerFrame(owner_frame);
+            source_frame.removeNode(current_parent, child, .{ .will_be_reconnected = parent_is_connected and !adopting });
         }
 
         if (adopting) {
-            try frame.adoptNodeTree(child, child_owner.?, parent_owner);
+            try owner_frame.adoptNodeTree(child, child_owner.?, parent_owner);
         }
 
-        try frame.insertNodeRelative(
+        try owner_frame.insertNodeRelative(
             parent,
             child,
             .{ .before = ref_node },
@@ -1114,10 +1132,11 @@ pub fn replaceWith(self: *Element, nodes: []const Node.NodeOrText, frame: *Frame
 }
 
 pub fn remove(self: *Element, frame: *Frame) void {
-    frame.domChanged();
+    const owner_frame = self.mutationFrame(frame);
+    owner_frame.domChangedForNode(self.asNode());
     const node = self.asNode();
     const parent = node._parent orelse return;
-    frame.removeNode(parent, node, .{ .will_be_reconnected = false });
+    owner_frame.removeNode(parent, node, .{ .will_be_reconnected = false });
 }
 
 pub fn focus(self: *Element, frame: *Frame) !void {
@@ -1312,43 +1331,53 @@ pub fn parentElement(self: *Element) ?*Element {
     return self._proto.parentElement();
 }
 
-/// Cache for visibility checks - re-exported from StyleManager for convenience.
-pub const VisibilityCache = StyleManager.VisibilityCache;
+/// Compatibility cache types retained for callers that batch semantic/input
+/// traversal. CSS values are no longer stored here; Stylo is queried directly
+/// so mutation invalidation cannot leave a stale handwritten cascade cache.
+pub const VisibilityCache = std.AutoHashMapUnmanaged(*Element, bool);
+pub const PointerEventsCache = std.AutoHashMapUnmanaged(*Element, bool);
 
-/// Cache for pointer-events checks - re-exported from StyleManager for convenience.
-pub const PointerEventsCache = StyleManager.PointerEventsCache;
-
-pub fn hasPointerEventsNone(self: *Element, cache: ?*PointerEventsCache, frame: *Frame) bool {
-    return frame._style_manager.hasPointerEventsNone(self, cache);
+/// Read a serialized computed property from Stylo using caller-owned storage.
+/// Layout and interaction code must consume the same cascade as CSSOM; it must
+/// not reparse inline declarations or consult a second CSS cascade.
+fn styloComputedProperty(self: *Element, property_name: []const u8, frame: *Frame) ?[]const u8 {
+    if (frame.styleEngine().prepareForLayout() != .ok) return null;
+    var output = frame.call_arena.alloc(u8, 4096) catch return null;
+    const node_id = frame.styleNodeId(self.asNode());
+    var result = frame.styleEngine().layoutProperty(node_id, property_name, output);
+    if (result.status == .output_buffer_too_small and result.bytes_written > output.len) {
+        output = frame.call_arena.alloc(u8, result.bytes_written) catch return null;
+        result = frame.styleEngine().layoutProperty(node_id, property_name, output);
+    }
+    if (!result.isOk()) return null;
+    return frame.call_arena.dupe(u8, output[0..result.bytes_written]) catch null;
 }
 
-pub fn checkVisibilityCached(self: *Element, cache: ?*VisibilityCache, frame: *Frame) bool {
-    return !frame._style_manager.isHidden(self, cache, .{});
+fn styloPropertyEquals(self: *Element, property_name: []const u8, expected: []const u8, frame: *Frame) bool {
+    const value = styloComputedProperty(self, property_name, frame) orelse return false;
+    return std.ascii.eqlIgnoreCase(std.mem.trim(u8, value, &std.ascii.whitespace), expected);
 }
 
-/// Layout geometry (getClientRects / getBoundingClientRect) must include
-/// `visibility:hidden` boxes; only `display:none` (and similar) zero them out.
-fn layoutVisibilityCache(frame: *Frame) *StyleManager.VisibilityCache {
-    return &frame._layout_visibility_cache;
+pub fn hasPointerEventsNone(self: *Element, _: ?*PointerEventsCache, frame: *Frame) bool {
+    // `pointer-events` is inherited, so Stylo's computed value already
+    // includes the complete ancestor cascade.
+    return styloPropertyEquals(self, "pointer-events", "none", frame);
+}
+
+pub fn checkVisibilityCached(self: *Element, _: ?*VisibilityCache, frame: *Frame) bool {
+    return !isHiddenForLayout(self, frame);
 }
 
 fn withLayoutResolveActive(frame: *Frame, comptime func: anytype, args: anytype) @TypeOf(@call(.auto, func, args)) {
     frame.finishTopLevelLayoutResolve();
-    frame._style_manager.prepareForLayout();
+    _ = frame.styleEngine().prepareForLayout();
     frame.beginLayoutResolve();
     defer frame.finishTopLevelLayoutResolve();
     return @call(.auto, func, args);
 }
 
 fn isHiddenForLayout(self: *Element, frame: *Frame) bool {
-    // Skip the visibility HashMap cache: SERP scripts call getBoundingClientRect
-    // from V8 DefaultWorker threads while the parser mutates the tree on the
-    // network thread; cache get/put then races and segfaults.
-    return frame._style_manager.isHidden(self, null, .{
-        .check_display = true,
-        .check_visibility = false,
-        .check_opacity = false,
-    });
+    return styloHidden(self, frame, .{ .check_display = true });
 }
 
 const CheckVisibilityOpts = struct {
@@ -1359,19 +1388,52 @@ const CheckVisibilityOpts = struct {
 };
 pub fn checkVisibility(self: *Element, opts_: ?CheckVisibilityOpts, frame: *Frame) bool {
     const opts = opts_ orelse CheckVisibilityOpts{};
-    return !frame._style_manager.isHidden(self, null, .{
+    return !styloHidden(self, frame, .{
+        .check_display = true,
         .check_opacity = opts.checkOpacity or opts.opacityProperty,
         .check_visibility = opts.visibilityProperty or opts.checkVisibilityCSS,
     });
 }
 
-fn getLayoutPropertyValue(self: *Element, property_name: []const u8, frame: *Frame) ?[]const u8 {
-    if (self.getStyle(frame)) |style| {
-        const decl = style.asCSSStyleDeclaration();
-        const value = decl.getPropertyValue(property_name, frame);
-        if (value.len > 0) return value;
+const StyloHiddenOptions = struct {
+    check_display: bool = false,
+    check_visibility: bool = false,
+    check_opacity: bool = false,
+};
+
+fn styloHidden(self: *Element, frame: *Frame, options: StyloHiddenOptions) bool {
+    var current: ?*Element = self;
+    var guard: u32 = 0;
+    while (current) |element| {
+        guard += 1;
+        if (guard > 128) return false;
+
+        if (options.check_display and styloPropertyEquals(element, "display", "none", frame)) {
+            return true;
+        }
+        if (options.check_opacity) {
+            if (styloComputedProperty(element, "opacity", frame)) |value| {
+                const opacity = std.fmt.parseFloat(f64, std.mem.trim(u8, value, &std.ascii.whitespace)) catch 1.0;
+                if (opacity <= 0.0) return true;
+            }
+        }
+        current = element.parentElement();
     }
-    return frame._style_manager.getLayoutProperty(self, property_name);
+
+    // Visibility is inherited. Query the target itself so an explicit
+    // `visibility: visible` override correctly re-enables a descendant.
+    if (options.check_visibility) {
+        if (styloPropertyEquals(self, "visibility", "hidden", frame) or
+            styloPropertyEquals(self, "visibility", "collapse", frame))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn getLayoutPropertyValue(self: *Element, property_name: []const u8, frame: *Frame) ?[]const u8 {
+    return styloComputedProperty(self, property_name, frame);
 }
 
 fn parseRotateDegrees(transform: []const u8) ?f64 {
@@ -2001,7 +2063,7 @@ fn flowOffsetAmongSiblingsForHitTest(self: *Element, frame: *Frame) struct { top
         if (s.is(Element)) |sib| {
             walked += 1;
             if (walked > max_siblings) break;
-            // Cheap display:none skip — avoid full StyleManager HashMap walks.
+            // Cheap display:none skip through Stylo's computed cascade.
             if (sib.isHiddenForLayout(frame)) {
                 sibling = s.nextSibling();
                 continue;
@@ -2151,11 +2213,7 @@ fn autoFlexItemWidth(self: *Element, frame: *Frame, parent_size: LayoutSize) ?f6
 }
 
 fn readLayoutPropertyRaw(self: *Element, frame: *Frame, property_name: []const u8) ?[]const u8 {
-    if (self.getStyle(frame)) |style| {
-        const value = style.asCSSStyleDeclaration().getPropertyValue(property_name, frame);
-        if (value.len > 0) return value;
-    }
-    return frame._style_manager.getLayoutProperty(self, property_name);
+    return styloComputedProperty(self, property_name, frame);
 }
 
 fn parseLayoutDimension(value: []const u8, parent_size: f64) ?f64 {
@@ -2454,8 +2512,13 @@ pub fn getClientWidth(self: *Element, frame: *Frame) f64 {
 
 fn getClientWidthInner(self: *Element, frame: *Frame) f64 {
     if (self.isHiddenForLayout(frame)) return 0.0;
-    const dims = self.getElementDimensions(frame);
-    return dims.width;
+    if (frame.layoutExtensionRequired(self.asNode())) {
+        return self.getElementDimensions(frame).width;
+    }
+    if (frame.layoutGeometry(self.asNode())) |geometry| {
+        return @max(0.0, @as(f64, geometry.width) - @as(f64, geometry.border_left) - @as(f64, geometry.border_right));
+    }
+    return 0.0;
 }
 
 pub fn getClientHeight(self: *Element, frame: *Frame) f64 {
@@ -2464,8 +2527,13 @@ pub fn getClientHeight(self: *Element, frame: *Frame) f64 {
 
 fn getClientHeightInner(self: *Element, frame: *Frame) f64 {
     if (self.isHiddenForLayout(frame)) return 0.0;
-    const dims = self.getElementDimensions(frame);
-    return dims.height;
+    if (frame.layoutExtensionRequired(self.asNode())) {
+        return self.getElementDimensions(frame).height;
+    }
+    if (frame.layoutGeometry(self.asNode())) |geometry| {
+        return @max(0.0, @as(f64, geometry.height) - @as(f64, geometry.border_top) - @as(f64, geometry.border_bottom));
+    }
+    return 0.0;
 }
 
 pub fn getBoundingClientRect(self: *Element, frame: *Frame) DOMRect {
@@ -2491,49 +2559,66 @@ fn getBoundingClientRectForJs(self: *Element, frame: *Frame) !*DOMRect {
 // Some cases need a the BoundingClientRect but have already done the
 // visibility check.
 pub fn getBoundingClientRectForVisible(self: *Element, frame: *Frame) DOMRect {
-    if (ClientRectsIntelligent.lookup(self, frame)) |golden| {
-        return golden;
-    }
+    if (frame.layoutExtensionRequired(self.asNode())) {
+        if (ClientRectsIntelligent.lookup(self, frame)) |golden| {
+            return golden;
+        }
 
-    const pos_kind = layoutPositionKind(self, frame);
-    if (pos_kind == .absolute or pos_kind == .fixed) {
-        return self.getPositionedBoundingClientRect(frame);
-    }
+        const pos_kind = layoutPositionKind(self, frame);
+        if (pos_kind == .absolute or pos_kind == .fixed) {
+            return self.getPositionedBoundingClientRect(frame);
+        }
 
-    const dims = self.getElementDimensions(frame);
+        const dims = self.getElementDimensions(frame);
+        if (dims.width == 0.0 and dims.height == 0.0) {
+            return .{
+                ._x = 0.0,
+                ._y = 0.0,
+                ._width = 0.0,
+                ._height = 0.0,
+            };
+        }
 
-    if (dims.width == 0.0 and dims.height == 0.0) {
-        return .{
-            ._x = 0.0,
-            ._y = 0.0,
-            ._width = 0.0,
-            ._height = 0.0,
-        };
-    }
+        const scroll_x = @as(f64, @floatFromInt(frame.window.getScrollX()));
+        const scroll_y = @as(f64, @floatFromInt(frame.window.getScrollY()));
+        const offset = getLayoutOffset(self, frame);
+        const y = calculateDocumentPosition(self.asNode(), frame) + offset.top;
 
-    const scroll_x = @as(f64, @floatFromInt(frame.window.getScrollX()));
-    const scroll_y = @as(f64, @floatFromInt(frame.window.getScrollY()));
-    const offset = getLayoutOffset(self, frame);
-    const y = calculateDocumentPosition(self.asNode(), frame) + offset.top;
+        if (shadowTreeHost(self.asNode())) |host| {
+            const host_rect = host.getBoundingClientRectForVisible(frame);
+            const local_x = calculateSiblingPosition(self.asNode(), frame) + offset.left;
+            const local_y = calculateDocumentPosition(self.asNode(), frame) + offset.top;
+            return finalizeClientRect(self, frame, .{
+                ._x = host_rect._x + local_x,
+                ._y = host_rect._y + local_y,
+                ._width = dims.width,
+                ._height = dims.height,
+            });
+        }
 
-    if (shadowTreeHost(self.asNode())) |host| {
-        const host_rect = host.getBoundingClientRectForVisible(frame);
-        const local_x = calculateSiblingPosition(self.asNode(), frame) + offset.left;
-        const local_y = calculateDocumentPosition(self.asNode(), frame) + offset.top;
         return finalizeClientRect(self, frame, .{
-            ._x = host_rect._x + local_x,
-            ._y = host_rect._y + local_y,
+            ._x = offset.left - scroll_x,
+            ._y = y - scroll_y,
             ._width = dims.width,
             ._height = dims.height,
         });
     }
 
-    return finalizeClientRect(self, frame, .{
-        ._x = offset.left - scroll_x,
-        ._y = y - scroll_y,
-        ._width = dims.width,
-        ._height = dims.height,
-    });
+    // Taffy owns the current CSS geometry. Convert its document-space
+    // snapshot into client coordinates here; scrolling and Koko-specific
+    // transforms remain DOM/window responsibilities.
+    if (frame.layoutGeometry(self.asNode())) |geometry| {
+        const scroll_x = @as(f64, @floatFromInt(frame.window.getScrollX()));
+        const scroll_y = @as(f64, @floatFromInt(frame.window.getScrollY()));
+        return finalizeClientRect(self, frame, .{
+            ._x = @as(f64, geometry.x) - scroll_x,
+            ._y = @as(f64, geometry.y) - scroll_y,
+            ._width = @as(f64, geometry.width),
+            ._height = @as(f64, geometry.height),
+        });
+    }
+
+    return .{ ._x = 0.0, ._y = 0.0, ._width = 0.0, ._height = 0.0 };
 }
 
 pub fn getClientRects(self: *Element, frame: *Frame) ![]DOMRect {
@@ -2585,6 +2670,42 @@ pub fn setScrollLeft(self: *Element, value: i32, frame: *Frame) !void {
 pub fn getScrollHeight(self: *Element, frame: *Frame) f64 {
     if (self.isHiddenForLayout(frame)) return 0.0;
 
+    if (!frame.layoutExtensionRequired(self.asNode())) {
+        if (frame.layoutGeometry(self.asNode())) |geometry| {
+            var max_bottom = @as(f64, geometry.y) + @as(f64, geometry.height);
+            var stack: std.ArrayList(*Node) = .empty;
+            defer stack.deinit(frame.call_arena);
+
+            var child = self.asNode().firstChild();
+            while (child) |node| : (child = node.nextSibling()) {
+                stack.append(frame.call_arena, node) catch return @as(f64, geometry.height);
+            }
+            while (stack.items.len > 0) {
+                const node = stack.pop() orelse break;
+                if (node.is(Element)) |element| {
+                    if (!element.isHiddenForLayout(frame)) {
+                        if (frame.layoutExtensionRequired(element.asNode())) {
+                            const dims = element.getElementDimensions(frame);
+                            max_bottom = @max(max_bottom, @as(f64, geometry.y) + dims.height);
+                        } else if (frame.layoutGeometry(node)) |child_geometry| {
+                            max_bottom = @max(max_bottom, @as(f64, child_geometry.y) + @as(f64, child_geometry.height));
+                        }
+                    }
+                }
+                var nested = node.firstChild();
+                while (nested) |nested_node| : (nested = nested_node.nextSibling()) {
+                    stack.append(frame.call_arena, nested_node) catch {};
+                }
+            }
+
+            return @max(
+                @max(0.0, @as(f64, geometry.height) - @as(f64, geometry.border_top) - @as(f64, geometry.border_bottom)),
+                max_bottom - @as(f64, geometry.y),
+            );
+        }
+        return 0.0;
+    }
+
     const height = self.getElementDimensions(frame).height;
 
     // html/body have synthetic viewport-sized dimensions in this headless
@@ -2596,6 +2717,42 @@ pub fn getScrollHeight(self: *Element, frame: *Frame) f64 {
 
 pub fn getScrollWidth(self: *Element, frame: *Frame) f64 {
     if (self.isHiddenForLayout(frame)) return 0.0;
+
+    if (!frame.layoutExtensionRequired(self.asNode())) {
+        if (frame.layoutGeometry(self.asNode())) |geometry| {
+            var max_right = @as(f64, geometry.x) + @as(f64, geometry.width);
+            var stack: std.ArrayList(*Node) = .empty;
+            defer stack.deinit(frame.call_arena);
+
+            var child = self.asNode().firstChild();
+            while (child) |node| : (child = node.nextSibling()) {
+                stack.append(frame.call_arena, node) catch return @as(f64, geometry.width);
+            }
+            while (stack.items.len > 0) {
+                const node = stack.pop() orelse break;
+                if (node.is(Element)) |element| {
+                    if (!element.isHiddenForLayout(frame)) {
+                        if (frame.layoutExtensionRequired(element.asNode())) {
+                            const dims = element.getElementDimensions(frame);
+                            max_right = @max(max_right, @as(f64, geometry.x) + dims.width);
+                        } else if (frame.layoutGeometry(node)) |child_geometry| {
+                            max_right = @max(max_right, @as(f64, child_geometry.x) + @as(f64, child_geometry.width));
+                        }
+                    }
+                }
+                var nested = node.firstChild();
+                while (nested) |nested_node| : (nested = nested_node.nextSibling()) {
+                    stack.append(frame.call_arena, nested_node) catch {};
+                }
+            }
+
+            return @max(
+                @max(0.0, @as(f64, geometry.width) - @as(f64, geometry.border_left) - @as(f64, geometry.border_right)),
+                max_right - @as(f64, geometry.x),
+            );
+        }
+        return 0.0;
+    }
 
     const width = self.getElementDimensions(frame).width;
     const tag = self.getTag();
@@ -2653,8 +2810,11 @@ pub fn getOffsetHeight(self: *Element, frame: *Frame) f64 {
 
 fn getOffsetHeightInner(self: *Element, frame: *Frame) f64 {
     if (self.isHiddenForLayout(frame)) return 0.0;
-    const dims = self.getElementDimensions(frame);
-    return dims.height;
+    if (frame.layoutExtensionRequired(self.asNode())) {
+        return self.getElementDimensions(frame).height;
+    }
+    if (frame.layoutGeometry(self.asNode())) |geometry| return @as(f64, geometry.height);
+    return 0.0;
 }
 
 pub fn getOffsetWidth(self: *Element, frame: *Frame) f64 {
@@ -2662,15 +2822,24 @@ pub fn getOffsetWidth(self: *Element, frame: *Frame) f64 {
 }
 
 fn getOffsetWidthInner(self: *Element, frame: *Frame) f64 {
-    if (readLayoutCache(self, frame)) |cached| return cached.width;
     if (self.isHiddenForLayout(frame)) return 0.0;
-    const dims = self.getElementDimensions(frame);
-    return dims.width;
+    if (frame.layoutExtensionRequired(self.asNode())) {
+        return self.getElementDimensions(frame).width;
+    }
+    if (frame.layoutGeometry(self.asNode())) |geometry| return @as(f64, geometry.width);
+    return 0.0;
 }
 
 pub fn getOffsetTop(self: *Element, frame: *Frame) f64 {
     if (!self.checkVisibilityCached(null, frame)) {
         return 0.0;
+    }
+    if (!frame.layoutExtensionRequired(self.asNode())) {
+        const rect = self.getBoundingClientRect(frame);
+        const parent = offsetParentElement(self, frame) orelse return rect.getTop();
+        const parent_rect = parent.getBoundingClientRect(frame);
+        const parent_geometry = frame.layoutGeometry(parent.asNode()) orelse return rect.getTop() - parent_rect.getTop();
+        return rect.getTop() - parent_rect.getTop() + @as(f64, parent_geometry.border_top);
     }
     return calculateDocumentPosition(self.asNode(), frame);
 }
@@ -2679,11 +2848,17 @@ pub fn getOffsetLeft(self: *Element, frame: *Frame) f64 {
     if (!self.checkVisibilityCached(null, frame)) {
         return 0.0;
     }
+    if (!frame.layoutExtensionRequired(self.asNode())) {
+        const rect = self.getBoundingClientRect(frame);
+        const parent = offsetParentElement(self, frame) orelse return rect.getLeft();
+        const parent_rect = parent.getBoundingClientRect(frame);
+        const parent_geometry = frame.layoutGeometry(parent.asNode()) orelse return rect.getLeft() - parent_rect.getLeft();
+        return rect.getLeft() - parent_rect.getLeft() + @as(f64, parent_geometry.border_left);
+    }
     return calculateSiblingPosition(self.asNode(), frame);
 }
 
 pub fn getClientTop(_: *Element) f64 {
-    // Border width - in our dummy layout, we don't apply borders to layout
     return 0.0;
 }
 

@@ -661,6 +661,13 @@ pub fn matchMedia(_: *const Window, query: []const u8, frame: *Frame) !*MediaQue
 }
 
 pub fn getComputedStyle(_: *const Window, element: *Element, pseudo_element: ?[]const u8, frame: *Frame) !*CSSStyleDeclaration {
+    const style_status = frame.styleEngine().prepareForLayout();
+    if (style_status != .ok and style_status != .ready) {
+        log.debug(.not_implemented, "Stylo getComputedStyle status", .{
+            .status = @tagName(style_status),
+        });
+    }
+
     // Chrome always returns a CSSStyleDeclaration for ::before/::after (often
     // empty). Fluent UI on signup.live.com queries these heavily; warning on
     // every call flooded logs and did not change behavior. Fall back to the
@@ -681,7 +688,36 @@ pub fn getComputedStyle(_: *const Window, element: *Element, pseudo_element: ?[]
             }
         }
     }
-    return CSSStyleDeclaration.init(element, true, frame);
+    return CSSStyleDeclaration.init(element, true, frame, pseudo_element);
+}
+
+/// Debug/benchmark provenance for the active style backend. This is exposed
+/// as a nonstandard diagnostic object so computed-style benchmarks can prove
+/// they exercised Stylo instead of silently measuring the legacy fallback.
+pub fn getKokoStyleEngine(self: *const Window) !js.Object {
+    const local = self._frame.js.local orelse return error.NotHandled;
+    var result = local.newObject();
+    const stylo = self._frame.styleEngine().status() == .ready;
+    if (!(try result.set("backend", if (stylo) "stylo" else "unavailable", .{}))) {
+        return error.CreateObjectFailure;
+    }
+    if (!(try result.set("computedStyles", stylo, .{}))) {
+        return error.CreateObjectFailure;
+    }
+    const stylesheet_count = self._frame.styleEngine().stylesheetCount();
+    if (!(try result.set("stylesheetCount", if (stylesheet_count.status == .ok) stylesheet_count.value else @as(usize, 0), .{}))) {
+        return error.CreateObjectFailure;
+    }
+    var error_bytes = self._frame.call_arena.alloc(u8, 4096) catch return error.OutOfMemory;
+    const error_result = self._frame.styleEngine().lastError(error_bytes);
+    const error_text = if (error_result.status == .ok)
+        error_bytes[0..error_result.bytes_written]
+    else
+        "";
+    if (!(try result.set("lastError", error_text, .{}))) {
+        return error.CreateObjectFailure;
+    }
+    return result;
 }
 
 // window.open(url?, target?, features?) — v1 scope:
@@ -1306,6 +1342,7 @@ pub const JsApi = struct {
     pub const reportError = bridge.function(Window.reportError, .{});
     pub const structuredClone = bridge.function(Window.structuredClone, .{ .dom_exception = true });
     pub const getComputedStyle = bridge.function(Window.getComputedStyle, .{});
+    pub const __kokoStyleEngine = bridge.accessor(Window.getKokoStyleEngine, null, .{});
     pub const getSelection = bridge.function(Window.getSelection, .{});
 
     pub const frames = bridge.accessor(Window.getWindow, null, .{});

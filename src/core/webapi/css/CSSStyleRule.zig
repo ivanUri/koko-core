@@ -52,13 +52,23 @@ pub fn getStyle(self: *CSSStyleRule, frame: *Frame) !*CSSStyleProperties {
     return style;
 }
 
+/// CSSOM [PutForwards=cssText]: assigning to `rule.style` updates the
+/// identity-stable CSSStyleDeclaration rather than replacing it.
+pub fn setStyle(self: *CSSStyleRule, text: []const u8, frame: *Frame) !void {
+    const style = try self.getStyle(frame);
+    try style.asCSSStyleDeclaration().setCssText(text, frame);
+}
+
 pub fn getCssText(self: *CSSStyleRule, frame: *Frame) ![]const u8 {
     const style_props = try self.getStyle(frame);
     const style = style_props.asCSSStyleDeclaration();
+    const style_text = try style.getCssText(frame);
     var buf = std.Io.Writer.Allocating.init(frame.call_arena);
-    try buf.writer.print("{s} {{ ", .{self._selector_text});
-    try style.format(&buf.writer);
-    try buf.writer.writeAll(" }");
+    if (style_text.len == 0) {
+        try buf.writer.print("{s} {{ }}", .{self._selector_text});
+    } else {
+        try buf.writer.print("{s} {{ {s} }}", .{ self._selector_text, style_text });
+    }
     return buf.written();
 }
 
@@ -72,6 +82,6 @@ pub const JsApi = struct {
     };
 
     pub const selectorText = bridge.accessor(CSSStyleRule.getSelectorText, CSSStyleRule.setSelectorText, .{});
-    pub const style = bridge.accessor(CSSStyleRule.getStyle, null, .{});
+    pub const style = bridge.accessor(CSSStyleRule.getStyle, CSSStyleRule.setStyle, .{});
     pub const cssText = bridge.accessor(CSSStyleRule.getCssText, null, .{});
 };

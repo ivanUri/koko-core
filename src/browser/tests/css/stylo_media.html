@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<script src="stylo_fixture.js"></script>
+<style>
+  #stylo-target { display: inline; }
+  @media screen { #stylo-target { display: block; color: rgb(101, 102, 103); } }
+</style>
+<body><div id="stylo-target">media</div></body>
+<script>
+  styloFixture.install(() => {
+    if (typeof window.matchMedia !== "function") return styloFixture.unsupported("matchMedia is unavailable");
+    const target = document.querySelector("#stylo-target");
+    const style = styloFixture.readStyle(target, ["display", "color"]);
+    if (style.status) return style;
+    return { status: "pass", observations: { mediaMatches: window.matchMedia("screen").matches, style } };
+  });
+</script>

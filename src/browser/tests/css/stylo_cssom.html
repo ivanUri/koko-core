@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>
+  <script>
+    window.testing = {
+      assertOk: () => document.body.id === "stylo-cssom-pass",
+      printTimeoutState: () => console.log(document.body.textContent),
+    };
+
+    const target = document.createElement("div");
+    target.id = "target";
+    target.style.cssText = "color: red; padding: 0px;";
+    document.body.appendChild(target);
+
+    const computed = getComputedStyle(target);
+    if (computed.getPropertyValue("color") === "") throw new Error("computed color unavailable");
+    if (target.style.cssText !== "color: red; padding: 0px;") {
+      throw new Error("inline cssText was not serialized");
+    }
+
+    target.style.setProperty("padding", "1px");
+    if (target.style.getPropertyValue("padding") !== "1px") throw new Error("inline mutation failed");
+    if (target.getAttribute("style") !== target.style.cssText) throw new Error("style attribute drifted");
+
+    document.body.id = "stylo-cssom-pass";
+    document.body.textContent = "stylo-cssom-pass";
+  </script>
+</body>

@@ -16,6 +16,7 @@ zig-out
 /vendor/curl-impersonate/linux/lib.tgz
 koko.id
 /src/html5ever/target/
+/src/core/stylo/target/
 src/snapshot.bin
 *.bak
 *.bak/
@@ -26,6 +27,13 @@ node_modules/.lp-cache/
 curl-impersonate/
 node_modules
 /bench-results/
+
+# Compatibility upstream checkouts and generated reports.
+/compatibility/upstream/webref/
+/compatibility/upstream/wpt/
+/compatibility/upstream/mdn-browser-compat-data/
+/compatibility/upstream/chromium-blink/
+/compatibility/reports/
 
 # Ephemeral probes / export dumps (do not accumulate in repo)
 /artifacts/

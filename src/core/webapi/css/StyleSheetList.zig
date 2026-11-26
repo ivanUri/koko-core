@@ -20,6 +20,13 @@ pub fn item(self: *const StyleSheetList, index: usize) ?*CSSStyleSheet {
     return self._sheets.items[index];
 }
 
+/// Borrow the authoritative document-order sheet snapshot for the Stylo
+/// bridge. The returned slice is valid while the list's backing storage is
+/// unchanged; callers consume it synchronously.
+pub fn items(self: *const StyleSheetList) []const *CSSStyleSheet {
+    return self._sheets.items;
+}
+
 pub fn add(self: *StyleSheetList, sheet: *CSSStyleSheet, frame: *Frame) !void {
     // StyleSheetList and CSSStyleSheet live on the page factory (frame_arena).
     // Always grow the list with the same arena so re-nav / recycled arenas cannot

@@ -21,7 +21,12 @@ const Factory = @import("Factory.zig");
 const Session = @import("Session.zig");
 const EventManager = @import("EventManager.zig");
 const ScriptManager = @import("ScriptManager.zig");
-const StyleManager = @import("StyleManager.zig");
+const StyleEngine = @import("StyleEngine.zig").StyleEngine;
+const LayoutModule = @import("../layout/LayoutEngine.zig");
+const LayoutEngine = LayoutModule.LayoutEngine;
+const LayoutGeometryAbi = LayoutModule.Geometry;
+const LayoutProperty = LayoutModule.Property;
+const Abi = @import("style_engine/abi.zig");
 
 const Parser = @import("../parser/Parser.zig");
 const h5e = @import("../parser/html5ever.zig");
@@ -36,6 +41,8 @@ const Event = @import("../webapi/Event.zig");
 const EventTarget = @import("../webapi/EventTarget.zig");
 const CData = @import("../webapi/CData.zig");
 const Element = @import("../dom/Element.zig");
+const CSSStyleSheet = @import("../webapi/css/CSSStyleSheet.zig");
+const StyleSheetList = @import("../webapi/css/StyleSheetList.zig");
 const HtmlElement = @import("../webapi/element/Html.zig");
 const Window = @import("../webapi/Window.zig");
 const HTMLDocument = @import("../webapi/HTMLDocument.zig");
@@ -83,6 +90,174 @@ const IFrame = Element.Html.IFrame;
 const IFrameSandbox = @import("IFrameSandbox.zig");
 const Allocator = std.mem.Allocator;
 const IS_DEBUG = builtin.mode == .Debug;
+
+// Complete inputs consumed by the Rust Stylo -> Taffy mapper. Keeping this
+// list centralized prevents layout from reparsing declarations or silently
+// using a second cascade for a missing property.
+const layout_property_names = [_][]const u8{
+    "display",               "box-sizing",
+    "width",                 "height",
+    "min-width",             "min-height",
+    "max-width",             "max-height",
+    "margin-top",            "margin-right",
+    "margin-bottom",         "margin-left",
+    "padding-top",           "padding-right",
+    "padding-bottom",        "padding-left",
+    "border-top-width",      "border-right-width",
+    "border-bottom-width",   "border-left-width",
+    "row-gap",               "column-gap",
+    "flex-direction",        "flex-wrap",
+    "flex-grow",             "flex-shrink",
+    "flex-basis",            "align-content",
+    "align-items",           "align-self",
+    "justify-content",       "order",
+    "grid-template-columns", "grid-template-rows",
+    "grid-auto-columns",     "grid-auto-rows",
+    "grid-auto-flow",        "position",
+    "top",                   "right",
+    "bottom",                "left",
+    "z-index",               "overflow-x",
+    "overflow-y",
+};
+const text_property_names = [_][]const u8{
+    "font-size", "font-family", "font-weight", "font-style", "line-height",
+    "direction", "white-space",
+};
+
+/// Per-node extension marker for layout features not representable by the
+/// Rust/Taffy projection yet. This must not become a second document-wide
+/// layout engine.
+const LayoutExtensionReason = enum {
+    unsupported_style,
+};
+
+// Keep HTML's default presentation in the same CSS engine as author rules.
+// This is a UA-origin stylesheet, not a second cascade implementation. It is
+// intentionally small and limited to HTML rendering defaults that Koko needs
+// before layout; Stylo still parses, matches, cascades, and serializes it.
+const koko_user_agent_css =
+    "*:not(html, body, head, title, meta, link, style, script, template, slot, " ++
+    "area, base, col, embed, param, source, track) { display: block; }" ++
+    "html, body, div, dl, dt, dd, fieldset, figcaption, figure, footer, form, " ++
+    "h1, h2, h3, h4, h5, h6, header, hr, main, nav, ol, p, pre, section, ul, " ++
+    "article, aside, details, dialog, hgroup, menu, summary, table, tbody, " ++
+    "thead, tfoot, tr, td, th, caption, colgroup, option, select, canvas, " ++
+    "button, input, textarea, iframe, img, video, audio, object, embed, " ++
+    "blockquote, address { display: block; }" ++
+    "a, abbr, b, bdi, bdo, cite, code, dfn, em, i, kbd, label, mark, q, s, " ++
+    "samp, small, span, strong, sub, sup, time, u, var, wbr, br, font { display: inline; }" ++
+    "table { display: table; } tbody { display: table-row-group; } " ++
+    "thead { display: table-header-group; } tfoot { display: table-footer-group; } " ++
+    "tr { display: table-row; } td, th { display: table-cell; } " ++
+    "colgroup { display: table-column-group; } col { display: table-column; } " ++
+    "caption { display: table-caption; }" ++
+    "head, title, meta, link, style, script, template, base, area, col, " ++
+    "embed, param, source, track, [hidden], input[type=hidden i] { display: none !important; }" ++
+    "details:not([open]) > * { display: none !important; }" ++
+    "details:not([open]) > summary { display: block !important; }";
+const koko_user_agent_sheet_id = std.math.maxInt(u64);
+
+const StyloCStatus = i32;
+const StyloCSlice = extern struct {
+    ptr: [*c]const u8,
+    len: usize,
+};
+const StyloCNodeInfo = extern struct {
+    node_id: u64,
+    parent_id: u64,
+    first_child_id: u64,
+    last_child_id: u64,
+    prev_sibling_id: u64,
+    next_sibling_id: u64,
+    shadow_host_id: u64,
+    shadow_root_id: u64,
+    kind: u32,
+    flags: u64,
+    text_len: u32,
+    tag_name: StyloCSlice,
+    namespace_name: StyloCSlice,
+    id: StyloCSlice,
+    classes: StyloCSlice,
+    style: StyloCSlice,
+    attribute_names: StyloCSlice,
+};
+const StyloReadNodeFn = *const fn (
+    ctx: ?*anyopaque,
+    node: ?*const anyopaque,
+    out: *StyloCNodeInfo,
+) callconv(.c) StyloCStatus;
+const StyloReadAttrFn = *const fn (
+    ctx: ?*anyopaque,
+    node: ?*const anyopaque,
+    name: StyloCSlice,
+    namespace_name: StyloCSlice,
+    out: *StyloCSlice,
+) callconv(.c) StyloCStatus;
+const StyloCDomCallbacks = extern struct {
+    ctx: ?*anyopaque,
+    read_node: ?StyloReadNodeFn,
+    read_attr: ?StyloReadAttrFn,
+};
+const StyloCFlushResult = extern struct {
+    invalidation_generation: u64,
+    changed_node_count: usize,
+};
+
+extern fn koko_stylo_engine_new(
+    callbacks: *const StyloCDomCallbacks,
+    out_engine: *?*anyopaque,
+) StyloCStatus;
+extern fn koko_stylo_engine_destroy(engine: ?*anyopaque) StyloCStatus;
+extern fn koko_stylo_engine_replace_stylesheets(
+    engine: ?*anyopaque,
+    inputs: [*c]const Abi.StylesheetInput,
+    count: usize,
+) StyloCStatus;
+extern fn koko_stylo_engine_invalidate_stylesheets(engine: ?*anyopaque) StyloCStatus;
+extern fn koko_stylo_engine_stylesheet_count(engine: ?*anyopaque, out_count: *usize) StyloCStatus;
+extern fn koko_stylo_engine_sync_node(engine: ?*anyopaque, node: ?*const anyopaque) StyloCStatus;
+extern fn koko_stylo_engine_reset_document(engine: ?*anyopaque) StyloCStatus;
+extern fn koko_stylo_engine_flush_styles(
+    engine: ?*anyopaque,
+    nodes: [*c]const u64,
+    node_count: usize,
+    out_result: *StyloCFlushResult,
+) StyloCStatus;
+extern fn koko_stylo_engine_serialize_property(
+    engine: ?*anyopaque,
+    node_id: u64,
+    property: StyloCSlice,
+    out: [*c]u8,
+    capacity: usize,
+    written: *usize,
+) StyloCStatus;
+extern fn koko_stylo_engine_query_visibility(
+    engine: ?*anyopaque,
+    node_id: u64,
+    generation: u64,
+    out_value: *u8,
+) StyloCStatus;
+extern fn koko_stylo_engine_query_pointer_events(
+    engine: ?*anyopaque,
+    node_id: u64,
+    generation: u64,
+    out_value: *u8,
+) StyloCStatus;
+extern fn koko_stylo_engine_serialize_pseudo_property(
+    engine: ?*anyopaque,
+    node_id: u64,
+    pseudo: StyloCSlice,
+    property: StyloCSlice,
+    out: [*c]u8,
+    capacity: usize,
+    written: *usize,
+) StyloCStatus;
+extern fn koko_stylo_engine_last_error(
+    engine: ?*anyopaque,
+    out: [*c]u8,
+    capacity: usize,
+    written: *usize,
+) StyloCStatus;
 
 fn assert(ok: bool, comptime msg: []const u8, args: anytype) void {
     if (ok) return;
@@ -169,6 +344,28 @@ pub const InputHit = struct {
     frame: *Frame,
     client_x: f64,
     client_y: f64,
+};
+
+/// Optional bridge for a document-owned style engine.
+///
+/// Stylo can register these callbacks without owning or mirroring the DOM:
+/// node pointers are only invalidation subjects and the Zig DOM remains
+/// authoritative.
+/// Callbacks are deliberately synchronous and single-threaded.  A missing
+/// bridge is a supported configuration and must not change DOM behavior.
+pub const StyleEngineInvalidation = enum {
+    document,
+    tree,
+    attribute,
+    stylesheet,
+    adopted_stylesheet,
+};
+
+pub const StyleEngineHooks = struct {
+    context: *anyopaque,
+    document_attached: *const fn (*anyopaque, *Document, u64) void,
+    document_detached: *const fn (*anyopaque, *Document, u64) void,
+    invalidate: *const fn (*anyopaque, *Document, ?*Node, StyleEngineInvalidation, u64) void,
 };
 
 // This is the "id" of the frame. It can be re-used from frame-to-frame, e.g.
@@ -314,7 +511,29 @@ _cdp_poll_counter: u16 = 0,
 /// many small AppendText chunks (bitbucket.org ~591KB CSS → multi-GB RSS).
 _parser_text_cap: std.AutoHashMapUnmanaged(*CData, usize) = .empty,
 
-_style_manager: StyleManager,
+/// Per-frame Stylo owner and generation/lifetime boundary for CSS invalidation.
+_style_engine: StyleEngine,
+/// Per-frame Taffy/Parley owner. It stores only layout state; the Zig DOM is
+/// still authoritative and remains the source of node identities and styles.
+_layout_engine: LayoutEngine,
+// The layout tree is a projection of the authoritative Zig DOM. These maps
+// are rebuilt as one batch after invalidation; they never own or duplicate DOM
+// nodes and all Rust handles die with the per-document layout session.
+_layout_node_handles: std.AutoHashMapUnmanaged(*Node, u64) = .empty,
+_layout_geometry: std.AutoHashMapUnmanaged(*Node, LayoutGeometryAbi) = .empty,
+_layout_extension_nodes: std.AutoHashMapUnmanaged(*Node, LayoutExtensionReason) = .empty,
+_layout_generation: u64 = 0,
+_layout_dirty: bool = true,
+_layout_building: bool = false,
+/// Optional integration hook for embedders that observe style lifecycle.
+_style_engine_hooks: ?StyleEngineHooks = null,
+_style_engine_document: ?*Document = null,
+_style_engine_generation: u64 = 0,
+_style_engine_active: bool = false,
+_stylo_prepared_generation: u64 = 0,
+_stylo_adopted_stylesheet_signature: u64 = 0,
+_style_node_sequence: u32 = 1,
+_stylo_node_lookup: std.AutoHashMapUnmanaged(u32, *Node) = .empty,
 _script_manager: ScriptManager,
 
 // List of active live ranges (for mutation updates per DOM spec)
@@ -475,9 +694,7 @@ _element_layout_cache: std.AutoHashMapUnmanaged(usize, struct {
 }) = .empty,
 _layout_cache_dom_version: usize = 0,
 
-// Layout hot-path caches (visibility + document position). Invalidated via version on domChanged.
-_layout_visibility_cache: StyleManager.VisibilityCache = .empty,
-_layout_visibility_cache_version: usize = 0,
+// Layout hot-path cache (document position). Invalidated via version on domChanged.
 _layout_doc_position_cache: std.AutoHashMapUnmanaged(usize, f64) = .empty,
 // Image preload responses are keyed by URL + request credentials mode. The
 // eventual HTMLImageElement either subscribes to an in-flight preload or
@@ -536,7 +753,8 @@ pub fn init(self: *Frame, frame_id: u32, page: *Page, parent: ?*Frame) !void {
         ._factory = factory,
         ._pending_loads = 1, // always 1 for the ScriptManager
         ._type = if (parent == null) .root else .frame,
-        ._style_manager = undefined,
+        ._style_engine = undefined,
+        ._layout_engine = LayoutEngine.init(),
         ._script_manager = undefined,
         ._event_manager = EventManager.init(arena, self),
     };
@@ -587,8 +805,12 @@ pub fn init(self: *Frame, frame_id: u32, page: *Page, parent: ?*Frame) !void {
     }
     self._realm_has_window = true;
 
-    self._style_manager = try StyleManager.init(self);
-    errdefer self._style_manager.deinit();
+    var stylo_bridge = styloBridgeApi(self);
+    self._style_engine = StyleEngine.init(.{
+        .frame_id = frame_id,
+        .bridge = &stylo_bridge,
+    });
+    errdefer self._style_engine.deinit();
 
     const browser = session.browser;
     self._script_manager = ScriptManager.init(browser.allocator, &browser.http_client, self);
@@ -604,6 +826,7 @@ pub fn init(self: *Frame, frame_id: u32, page: *Page, parent: ?*Frame) !void {
 
     document._frame = self;
     self._realm_state = .active;
+    self.beginStyleDocumentLifecycle(document);
 
     if (comptime builtin.is_test == false) {
         if (parent == null) {
@@ -617,6 +840,881 @@ pub fn init(self: *Frame, frame_id: u32, page: *Page, parent: ?*Frame) !void {
             }.runIdleTasks, 200, .{ .name = "frame.runIdleTasks", .low_priority = true });
         }
     }
+}
+
+/// Install or replace the optional style-engine bridge.  Replacing a bridge
+/// closes the old document session before publishing the new one, so a bridge
+/// can never retain a stale document generation.
+pub fn setStyleEngineHooks(self: *Frame, hooks: ?StyleEngineHooks) void {
+    if (self._style_engine_active) {
+        self.endStyleDocumentLifecycle();
+    }
+    self._style_engine_hooks = hooks;
+    if (self._realm_state == .active and self.document._frame == self) {
+        self.beginStyleDocumentLifecycle(self.document);
+    }
+}
+
+fn beginStyleDocumentLifecycle(self: *Frame, document: *Document) void {
+    if (self._style_engine_active and self._style_engine_document == document) return;
+    if (self._style_engine_active) self.endStyleDocumentLifecycle();
+
+    self._style_engine_generation +%= 1;
+    _ = self._layout_engine.reset();
+    self._layout_node_handles.clearRetainingCapacity();
+    self._layout_geometry.clearRetainingCapacity();
+    self._layout_extension_nodes.clearRetainingCapacity();
+    self._layout_generation = 0;
+    self._layout_dirty = true;
+    _ = self._style_engine.resetDocument();
+    self._stylo_node_lookup.clearRetainingCapacity();
+    self._style_engine_document = document;
+    self._style_engine_active = true;
+
+    _ = self._style_engine.invalidateStylesheets();
+    if (self._style_engine_hooks) |hooks| {
+        hooks.document_attached(hooks.context, document, self._style_engine_generation);
+    }
+}
+
+fn endStyleDocumentLifecycle(self: *Frame) void {
+    const document = self._style_engine_document orelse {
+        self._style_engine_active = false;
+        _ = self._layout_engine.reset();
+        self._layout_node_handles.clearRetainingCapacity();
+        self._layout_geometry.clearRetainingCapacity();
+        self._layout_extension_nodes.clearRetainingCapacity();
+        self._layout_generation = 0;
+        self._layout_dirty = true;
+        self._stylo_node_lookup.clearRetainingCapacity();
+        return;
+    };
+    const generation = self._style_engine_generation;
+    if (self._style_engine_hooks) |hooks| {
+        hooks.document_detached(hooks.context, document, generation);
+    }
+    _ = self._layout_engine.reset();
+    self._layout_node_handles.clearRetainingCapacity();
+    self._layout_geometry.clearRetainingCapacity();
+    self._layout_extension_nodes.clearRetainingCapacity();
+    self._layout_generation = 0;
+    self._layout_dirty = true;
+    self._style_engine_document = null;
+    self._style_engine_active = false;
+    self._style_engine_generation +%= 1;
+    self._stylo_node_lookup.clearRetainingCapacity();
+}
+
+/// Notify Stylo after the authoritative Zig DOM has changed.
+pub fn invalidateStyleEngine(self: *Frame, kind: StyleEngineInvalidation, node: ?*Node) void {
+    _ = self._layout_engine.invalidate();
+    self._layout_dirty = true;
+    if (!self._style_engine_active or self._realm_state != .active) return;
+    const document = self._style_engine_document orelse return;
+    if (document != self.document or document._frame != self) return;
+    switch (kind) {
+        .stylesheet, .adopted_stylesheet => {},
+        else => {
+            const engine_kind: StyleEngine.DomInvalidationKind = switch (kind) {
+                .document => .document,
+                .tree => .subtree,
+                .attribute => .attributes,
+                .stylesheet, .adopted_stylesheet => unreachable,
+            };
+            _ = self._style_engine.invalidateDom(if (node) |n| self.styleNodeId(n) else 0, engine_kind);
+        },
+    }
+    if (self._style_engine_hooks) |hooks| {
+        hooks.invalidate(hooks.context, document, node, kind, self._style_engine_generation);
+    }
+}
+
+pub fn styleSheetChanged(self: *Frame, node: ?*Node) void {
+    _ = self._style_engine.invalidateStylesheets();
+    if (node) |changed| {
+        // Stylesheet changes can affect arbitrary descendants.  The stylesheet
+        // callback clears Stylo's global cache; syncing the owner node also
+        // refreshes callback-backed DOM metadata before the next query.
+        _ = self._style_engine.invalidateDom(self.styleNodeId(changed), .subtree);
+    }
+    self.invalidateStyleEngine(.stylesheet, node);
+}
+
+fn styleSheetSourceChanged(self: *Frame, node: *Node) void {
+    if (node.is(Element.Html.Style)) |style| style.sourceTextChanged();
+    self.styleSheetChanged(node);
+}
+
+pub fn adoptedStyleSheetsChanged(self: *Frame) void {
+    _ = self._style_engine.invalidateStylesheets();
+    self.invalidateStyleEngine(.adopted_stylesheet, null);
+}
+
+pub fn styleEngine(self: *Frame) *StyleEngine {
+    return &self._style_engine;
+}
+
+pub fn layoutEngine(self: *Frame) *LayoutEngine {
+    return &self._layout_engine;
+}
+
+fn appendLayoutProperties(
+    self: *Frame,
+    node: *Node,
+    properties: *std.ArrayListUnmanaged(LayoutProperty),
+) LayoutModule.Status {
+    const node_id = self.styleNodeId(node);
+    for (layout_property_names) |name| {
+        var output = self.call_arena.alloc(u8, 4096) catch return .internal_error;
+        var result = self._style_engine.layoutProperty(node_id, name, output);
+        if (result.status == .output_buffer_too_small and result.bytes_written > output.len) {
+            output = self.call_arena.alloc(u8, result.bytes_written) catch return .internal_error;
+            result = self._style_engine.layoutProperty(node_id, name, output);
+        }
+        if (!result.isOk()) return switch (result.status) {
+            .bridge_unsupported => .unsupported,
+            else => .internal_error,
+        };
+        const value = output[0..result.bytes_written];
+        properties.append(self.call_arena, .{ .name = name, .value = value }) catch return .internal_error;
+    }
+    return .ok;
+}
+
+fn appendTextProperties(
+    self: *Frame,
+    node: *Node,
+    properties: *std.ArrayListUnmanaged(LayoutProperty),
+) LayoutModule.Status {
+    const node_id = self.styleNodeId(node);
+    for (text_property_names) |name| {
+        var output = self.call_arena.alloc(u8, 4096) catch return .internal_error;
+        var result = self._style_engine.layoutProperty(node_id, name, output);
+        if (result.status == .output_buffer_too_small and result.bytes_written > output.len) {
+            output = self.call_arena.alloc(u8, result.bytes_written) catch return .internal_error;
+            result = self._style_engine.layoutProperty(node_id, name, output);
+        }
+        if (!result.isOk()) return switch (result.status) {
+            .bridge_unsupported => .unsupported,
+            else => .internal_error,
+        };
+        properties.append(self.call_arena, .{
+            .name = name,
+            .value = output[0..result.bytes_written],
+        }) catch return .internal_error;
+    }
+    return .ok;
+}
+
+fn markLayoutExtension(self: *Frame, node: *Node) void {
+    self._layout_extension_nodes.put(self.arena, node, .unsupported_style) catch {};
+}
+
+fn buildLayoutNode(self: *Frame, node: *Node) ?u64 {
+    const handle = self._layout_engine.newNode() orelse return null;
+    self._layout_node_handles.put(self.arena, node, handle) catch return null;
+
+    switch (node._type) {
+        .element => {
+            var properties: std.ArrayListUnmanaged(LayoutProperty) = .empty;
+            const property_status = self.appendLayoutProperties(node, &properties);
+            if (property_status == .unsupported) {
+                self.markLayoutExtension(node);
+            } else if (property_status != .ok) {
+                return null;
+            } else {
+                const viewport = self.windowProfile();
+                const style_status = self._layout_engine.setComputedStyle(
+                    handle,
+                    properties.items,
+                    @floatFromInt(viewport.inner_width),
+                    @floatFromInt(viewport.inner_height),
+                );
+                if (style_status == .unsupported) {
+                    self.markLayoutExtension(node);
+                } else if (style_status != .ok) {
+                    return null;
+                }
+            }
+        },
+        .cdata => {
+            const text_status = self._layout_engine.setText(handle, node.getData().str());
+            if (text_status == .unsupported) {
+                self.markLayoutExtension(node);
+            } else if (text_status != .ok) {
+                return null;
+            }
+            if (node.parentElement()) |parent| {
+                var text_properties: std.ArrayListUnmanaged(LayoutProperty) = .empty;
+                const property_status = self.appendTextProperties(parent.asNode(), &text_properties);
+                if (property_status == .unsupported) {
+                    self.markLayoutExtension(node);
+                } else if (property_status != .ok) {
+                    return null;
+                } else {
+                    const text_style_status = self._layout_engine.setTextStyle(handle, text_properties.items);
+                    if (text_style_status == .unsupported) {
+                        self.markLayoutExtension(node);
+                    } else if (text_style_status != .ok) {
+                        return null;
+                    }
+                }
+            }
+        },
+        else => {},
+    }
+
+    var child = node.firstChild();
+    while (child) |child_node| : (child = child_node.nextSibling()) {
+        switch (child_node._type) {
+            .element, .cdata => {
+                const child_handle = self.buildLayoutNode(child_node) orelse return null;
+                if (self._layout_engine.appendChild(handle, child_handle) != .ok) return null;
+            },
+            else => {},
+        }
+    }
+    return handle;
+}
+
+/// Flush the single authoritative Zig DOM into Stylo/Taffy and cache one
+/// absolute snapshot per DOM node. This is intentionally synchronous: DOM
+/// geometry APIs require a current layout before returning a value.
+pub fn flushLayout(self: *Frame) bool {
+    if (!self._layout_engine.alive or self._realm_state != .active or self.document._frame != self) {
+        return false;
+    }
+    if (!self._layout_dirty and self._layout_generation == self._layout_engine.generation) return true;
+    if (self._layout_building) return false;
+    self._layout_building = true;
+    defer self._layout_building = false;
+
+    if (self._style_engine.prepareForLayout() != .ok) return false;
+    if (self._layout_engine.reset() != .ok) return false;
+    self._layout_node_handles.clearRetainingCapacity();
+    self._layout_geometry.clearRetainingCapacity();
+    self._layout_extension_nodes.clearRetainingCapacity();
+
+    const root_element = self.document.getDocumentElement() orelse return false;
+    const root_handle = self.buildLayoutNode(root_element.asNode()) orelse return false;
+    const viewport = self.windowProfile();
+    const viewport_width: f32 = @floatFromInt(viewport.inner_width);
+    const viewport_height: f32 = @floatFromInt(viewport.inner_height);
+    if (self._layout_engine.compute(root_handle, viewport_width, viewport_height) != .ok) return false;
+
+    var nodes: std.ArrayListUnmanaged(*Node) = .empty;
+    var handles: std.ArrayListUnmanaged(u64) = .empty;
+    defer nodes.deinit(self.call_arena);
+    defer handles.deinit(self.call_arena);
+    var iterator = self._layout_node_handles.iterator();
+    while (iterator.next()) |entry| {
+        nodes.append(self.call_arena, entry.key_ptr.*) catch return false;
+        handles.append(self.call_arena, entry.value_ptr.*) catch return false;
+    }
+    const snapshots = self.call_arena.alloc(LayoutGeometryAbi, handles.items.len) catch return false;
+    if (self._layout_engine.snapshotAbsolute(handles.items, snapshots) != .ok) return false;
+    for (nodes.items, snapshots) |node, geometry| {
+        self._layout_geometry.put(self.arena, node, geometry) catch return false;
+    }
+    self._layout_generation = self._layout_engine.generation;
+    self._layout_dirty = false;
+    return true;
+}
+
+pub fn layoutGeometry(self: *Frame, node: *Node) ?LayoutGeometryAbi {
+    if (!self.flushLayout()) return null;
+    if (self._layout_geometry.get(node)) |geometry| return geometry;
+    return null;
+}
+
+/// True only for nodes that need the Zig extension path. Rust/Taffy remains
+/// authoritative for every node that has a successful style projection.
+pub fn layoutExtensionRequired(self: *Frame, node: *Node) bool {
+    if (!self.flushLayout()) return true;
+    return self._layout_extension_nodes.contains(node);
+}
+
+fn styloFrame(user_data: ?*anyopaque) ?*Frame {
+    const data = user_data orelse return null;
+    return @ptrCast(@alignCast(data));
+}
+
+fn styloMapStatus(status: StyloCStatus) Abi.StatusCode {
+    return switch (status) {
+        0 => Abi.status_ok,
+        1, 2 => Abi.status_invalid_argument,
+        6 => Abi.status_unsupported,
+        8 => Abi.status_buffer_too_small,
+        else => Abi.status_internal_error,
+    };
+}
+
+fn styloSlice(value: []const u8) StyloCSlice {
+    return .{
+        .ptr = if (value.len == 0) null else value.ptr,
+        .len = value.len,
+    };
+}
+
+/// Values mirror stylo_dom::ElementState.  Keeping the mapping at this
+/// boundary lets Stylo match dynamic selectors against Koko's live DOM state
+/// without teaching the Rust adapter about Zig element implementations.
+const StyloElementState = struct {
+    const active: u64 = 1 << 0;
+    const focus: u64 = 1 << 1;
+    const enabled: u64 = 1 << 3;
+    const disabled: u64 = 1 << 4;
+    const checked: u64 = 1 << 5;
+    const indeterminate: u64 = 1 << 6;
+    const url_target: u64 = 1 << 8;
+    const required: u64 = 1 << 15;
+    const optional: u64 = 1 << 16;
+    const visited: u64 = 1 << 18;
+    const unvisited: u64 = 1 << 19;
+    const readonly: u64 = 1 << 23;
+    const readwrite: u64 = 1 << 24;
+    const focus_within: u64 = 1 << 31;
+};
+
+fn styloElementState(frame: *Frame, element: *Element) u64 {
+    var state: u64 = 0;
+    const tag = element.getTag();
+
+    if (element.hasDisabledConcept()) {
+        if (element.isDisabled()) state |= StyloElementState.disabled else state |= StyloElementState.enabled;
+    }
+    if (element.getAttributeSafe(comptime .wrap("required")) != null) {
+        state |= StyloElementState.required;
+    } else if (element.hasDisabledConcept()) {
+        state |= StyloElementState.optional;
+    }
+    if (element.getAttributeSafe(comptime .wrap("readonly")) != null) {
+        state |= StyloElementState.readonly;
+    } else if (element.hasDisabledConcept()) {
+        state |= StyloElementState.readwrite;
+    }
+
+    if (element.is(Element.Html.Input)) |input| {
+        if (input.getChecked()) state |= StyloElementState.checked;
+        if (input.getIndeterminate()) state |= StyloElementState.indeterminate;
+    }
+
+    if (tag == .anchor or tag == .area) {
+        if (element.getAttributeSafe(comptime .wrap("href")) != null) {
+            // Koko does not yet persist browsing history, so links are
+            // intentionally exposed as unvisited rather than guessed visited.
+            state |= StyloElementState.unvisited;
+        }
+    }
+
+    if (frame.document._active_element) |active| {
+        if (active == element) state |= StyloElementState.focus;
+        if (element.asNode().contains(active.asNode())) state |= StyloElementState.focus_within;
+    }
+
+    if (element.getAttributeSafe(comptime .wrap("id"))) |id| {
+        if (frame.document._location) |location| {
+            const hash = location.getHash(frame);
+            if (hash.len > 1 and std.mem.eql(u8, id, hash[1..])) {
+                state |= StyloElementState.url_target;
+            }
+        }
+    }
+    return state;
+}
+
+fn styloReadNode(
+    ctx: ?*anyopaque,
+    opaque_node: ?*const anyopaque,
+    out: *StyloCNodeInfo,
+) callconv(.c) StyloCStatus {
+    const frame = styloFrame(ctx) orelse return 5;
+    const encoded = @intFromPtr(opaque_node orelse return 2);
+    const encoded_frame: u32 = @truncate(encoded >> 32);
+    if (encoded_frame != frame._frame_id) return 2;
+    const local_id: u32 = @truncate(encoded);
+    const node = frame._stylo_node_lookup.get(local_id) orelse return 5;
+
+    var info = StyloCNodeInfo{
+        .node_id = encoded,
+        .parent_id = 0,
+        .first_child_id = 0,
+        .last_child_id = 0,
+        .prev_sibling_id = 0,
+        .next_sibling_id = 0,
+        .shadow_host_id = 0,
+        .shadow_root_id = 0,
+        .kind = 0,
+        .flags = 0,
+        .text_len = 0,
+        .tag_name = styloSlice(""),
+        .namespace_name = styloSlice(""),
+        .id = styloSlice(""),
+        .classes = styloSlice(""),
+        .style = styloSlice(""),
+        .attribute_names = styloSlice(""),
+    };
+    if (node._parent) |parent| {
+        info.parent_id = frame.styleNodeId(parent);
+    }
+    if (node.firstChild()) |child| info.first_child_id = frame.styleNodeId(child);
+    if (node.lastChild()) |child| info.last_child_id = frame.styleNodeId(child);
+    if (node.previousSibling()) |sibling| info.prev_sibling_id = frame.styleNodeId(sibling);
+    if (node.nextSibling()) |sibling| info.next_sibling_id = frame.styleNodeId(sibling);
+    switch (node._type) {
+        .document => info.kind = 0,
+        .cdata => |cdata| {
+            info.kind = 2;
+            info.text_len = @intCast(cdata._data.str().len);
+        },
+        .document_type, .attribute => info.kind = 2,
+        .document_fragment => {
+            const shadow_root = node.is(ShadowRoot) orelse blk: {
+                // Some wrapper paths expose the ShadowRoot through its
+                // DocumentFragment prototype while retaining the same
+                // authoritative node. Resolve it from the frame's root map
+                // as a robust fallback for the Stylo adapter.
+                var roots = frame._element_shadow_roots.iterator();
+                while (roots.next()) |entry| {
+                    if (entry.value_ptr.*.asNode() == node) break :blk entry.value_ptr.*;
+                }
+                break :blk null;
+            };
+            if (shadow_root) |root| {
+                info.kind = 3;
+                info.shadow_host_id = frame.styleNodeId(root._host.asNode());
+            } else {
+                info.kind = 0;
+            }
+        },
+        .element => |element| {
+            info.kind = 1;
+            info.flags = styloElementState(frame, element);
+            if (frame._element_shadow_roots.get(element)) |shadow_root| {
+                info.shadow_root_id = frame.styleNodeId(shadow_root.asNode());
+            }
+            info.tag_name = styloSlice(element.getTagNameLower());
+            info.namespace_name = styloSlice(element.getNamespaceURI() orelse "");
+            info.id = styloSlice(element.getId());
+            info.classes = styloSlice(element.getClassName());
+            info.style = styloSlice(element.getAttributeSafe(comptime .wrap("style")) orelse "");
+            const names = element.getAttributeNames(frame) catch return 5;
+            var total: usize = 0;
+            for (names) |attribute_name| total += attribute_name.len + 1;
+            if (total != 0) {
+                const encoded_names = frame.call_arena.alloc(u8, total) catch return 5;
+                var offset: usize = 0;
+                for (names) |attribute_name| {
+                    @memcpy(encoded_names[offset .. offset + attribute_name.len], attribute_name);
+                    offset += attribute_name.len;
+                    encoded_names[offset] = 0;
+                    offset += 1;
+                }
+                info.attribute_names = styloSlice(encoded_names);
+            }
+        },
+    }
+    out.* = info;
+    return 0;
+}
+
+fn styloReadAttr(
+    ctx: ?*anyopaque,
+    opaque_node: ?*const anyopaque,
+    name: StyloCSlice,
+    namespace_name: StyloCSlice,
+    out: *StyloCSlice,
+) callconv(.c) StyloCStatus {
+    const frame = styloFrame(ctx) orelse return 5;
+    if (namespace_name.len != 0) return 0;
+    const encoded = @intFromPtr(opaque_node orelse return 2);
+    const encoded_frame: u32 = @truncate(encoded >> 32);
+    if (encoded_frame != frame._frame_id) return 2;
+    const local_id: u32 = @truncate(encoded);
+    const node = frame._stylo_node_lookup.get(local_id) orelse return 5;
+    const element = switch (node._type) {
+        .element => |element| element,
+        else => return 0,
+    };
+    if (name.len == 0 or name.ptr == null) return 1;
+    const attr_name = name.ptr[0..name.len];
+    const value = element.getAttributeSafe(String.wrap(attr_name)) orelse {
+        out.* = styloSlice("");
+        return 0;
+    };
+    out.* = styloSlice(value);
+    return 0;
+}
+
+fn styloCreate(
+    user_data: ?*anyopaque,
+    _: Abi.FrameId,
+    out_engine: *?*anyopaque,
+) callconv(.c) Abi.StatusCode {
+    if (styloFrame(user_data) == null) return Abi.status_invalid_argument;
+    const callbacks = StyloCDomCallbacks{
+        .ctx = user_data,
+        .read_node = styloReadNode,
+        .read_attr = styloReadAttr,
+    };
+    var engine: ?*anyopaque = null;
+    const status = koko_stylo_engine_new(&callbacks, &engine);
+    if (status != 0 or engine == null) return styloMapStatus(status);
+    out_engine.* = engine;
+    return Abi.status_ok;
+}
+
+fn styloDestroy(_: ?*anyopaque, engine: ?*anyopaque) callconv(.c) void {
+    if (engine != null) _ = koko_stylo_engine_destroy(engine);
+}
+
+fn styloInvalidateStylesheets(
+    _: ?*anyopaque,
+    engine: ?*anyopaque,
+    _: Abi.Generation,
+) callconv(.c) Abi.StatusCode {
+    return styloMapStatus(koko_stylo_engine_invalidate_stylesheets(engine));
+}
+
+fn styloInvalidateDom(
+    _: ?*anyopaque,
+    engine: ?*anyopaque,
+    node_id: Abi.NodeId,
+    _: u32,
+    _: Abi.Generation,
+) callconv(.c) Abi.StatusCode {
+    if (node_id == 0) return Abi.status_ok;
+    return styloMapStatus(koko_stylo_engine_sync_node(engine, @ptrFromInt(node_id)));
+}
+
+fn styloReplaceStylesheets(
+    _: ?*anyopaque,
+    engine: ?*anyopaque,
+    inputs: [*c]const Abi.StylesheetInput,
+    count: usize,
+) callconv(.c) Abi.StatusCode {
+    return styloMapStatus(koko_stylo_engine_replace_stylesheets(engine, inputs, count));
+}
+
+fn styloStylesheetCount(
+    _: ?*anyopaque,
+    engine: ?*anyopaque,
+    out_count: *usize,
+) callconv(.c) Abi.StatusCode {
+    return styloMapStatus(koko_stylo_engine_stylesheet_count(engine, out_count));
+}
+
+fn styloSyncNode(
+    _: ?*anyopaque,
+    engine: ?*anyopaque,
+    node_id: Abi.NodeId,
+) callconv(.c) Abi.StatusCode {
+    if (node_id == 0) return Abi.status_invalid_argument;
+    return styloMapStatus(koko_stylo_engine_sync_node(engine, @ptrFromInt(node_id)));
+}
+
+fn styloResetDocument(
+    _: ?*anyopaque,
+    engine: ?*anyopaque,
+) callconv(.c) Abi.StatusCode {
+    return styloMapStatus(koko_stylo_engine_reset_document(engine));
+}
+
+fn styloFlushStyles(
+    _: ?*anyopaque,
+    engine: ?*anyopaque,
+    nodes: [*c]const Abi.NodeId,
+    node_count: usize,
+    out_result: *Abi.FlushResult,
+) callconv(.c) Abi.StatusCode {
+    var result = StyloCFlushResult{ .invalidation_generation = 0, .changed_node_count = 0 };
+    const status = koko_stylo_engine_flush_styles(
+        engine,
+        @ptrCast(nodes),
+        node_count,
+        &result,
+    );
+    if (status != 0) return styloMapStatus(status);
+    out_result.* = .{
+        .generation = result.invalidation_generation,
+        .changed_node_count = result.changed_node_count,
+    };
+    return Abi.status_ok;
+}
+
+fn appendStyloStylesheetInput(
+    frame: *Frame,
+    inputs: *std.ArrayListUnmanaged(Abi.StylesheetInput),
+    sheet: *CSSStyleSheet,
+    scope_id: u64,
+) !void {
+    const sheet_id = @intFromPtr(sheet);
+    for (inputs.items) |input| {
+        if (input.sheet_id == sheet_id and input.scope_id == scope_id) return;
+    }
+
+    const css = try sheet.getTextForStyleEngine(frame);
+    try inputs.append(frame.call_arena, .{
+        .sheet_id = sheet_id,
+        .scope_id = scope_id,
+        .origin = .author,
+        .enabled = if (sheet.getDisabled()) 0 else 1,
+        .css = .{ .ptr = if (css.len == 0) null else css.ptr, .len = css.len },
+    });
+}
+
+fn appendStyloUserAgentStylesheet(
+    frame: *Frame,
+    inputs: *std.ArrayListUnmanaged(Abi.StylesheetInput),
+    scope_id: u64,
+) !void {
+    for (inputs.items) |input| {
+        if (input.sheet_id == koko_user_agent_sheet_id and input.scope_id == scope_id) return;
+    }
+    try inputs.append(frame.call_arena, .{
+        .sheet_id = koko_user_agent_sheet_id,
+        .scope_id = scope_id,
+        .origin = .user_agent,
+        .enabled = 1,
+        .css = .{ .ptr = koko_user_agent_css.ptr, .len = koko_user_agent_css.len },
+    });
+}
+
+fn appendStyloAdoptedStylesheets(
+    frame: *Frame,
+    inputs: *std.ArrayListUnmanaged(Abi.StylesheetInput),
+    adopted: JS.Object.Global,
+    scope_id: u64,
+) !void {
+    const local = frame.js.local orelse return;
+    const array = adopted.local(local).toValue().toArray();
+    for (0..array.len()) |index| {
+        const value = try array.get(@intCast(index));
+        const sheet = try value.toZig(*CSSStyleSheet);
+        try appendStyloStylesheetInput(frame, inputs, sheet, scope_id);
+    }
+}
+
+fn styloMixAdoptedStylesheetSignature(signature: *u64, value: u64) void {
+    signature.* = (signature.* ^ value) *% 0x100000001b3;
+    signature.* ^= signature.* >> 29;
+}
+
+fn styloAdoptedStylesheetSignature(frame: *Frame) u64 {
+    var signature: u64 = 0xcbf29ce484222325;
+    const appendArray = struct {
+        fn run(frame_: *Frame, signature_: *u64, adopted: JS.Object.Global) void {
+            const local = frame_.js.local orelse return;
+            const array = adopted.local(local).toValue().toArray();
+            styloMixAdoptedStylesheetSignature(signature_, @intCast(array.len()));
+            for (0..array.len()) |index| {
+                const value = array.get(@intCast(index)) catch {
+                    styloMixAdoptedStylesheetSignature(signature_, std.math.maxInt(u64));
+                    continue;
+                };
+                const sheet = value.toZig(*CSSStyleSheet) catch {
+                    styloMixAdoptedStylesheetSignature(signature_, std.math.maxInt(u64) -% @as(u64, @intCast(index)));
+                    continue;
+                };
+                styloMixAdoptedStylesheetSignature(signature_, @intFromPtr(sheet));
+            }
+        }
+    }.run;
+
+    if (frame.document.getAdoptedStyleSheets(frame)) |adopted| {
+        appendArray(frame, &signature, adopted);
+    } else |_| {}
+
+    var shadow_roots = frame._element_shadow_roots.iterator();
+    while (shadow_roots.next()) |entry| {
+        const shadow_root = entry.value_ptr.*;
+        styloMixAdoptedStylesheetSignature(&signature, frame.styleNodeId(shadow_root.asNode()));
+        if (shadow_root.getAdoptedStyleSheets(frame)) |adopted| {
+            appendArray(frame, &signature, adopted);
+        } else |_| {}
+    }
+    return signature;
+}
+
+fn appendStyloNativeStylesheets(
+    frame: *Frame,
+    inputs: *std.ArrayListUnmanaged(Abi.StylesheetInput),
+    sheets: []const *CSSStyleSheet,
+    scope_id: u64,
+) !void {
+    for (sheets) |sheet| {
+        try appendStyloStylesheetInput(frame, inputs, sheet, scope_id);
+    }
+}
+
+fn styloPrepareForLayout(
+    user_data: ?*anyopaque,
+    engine: ?*anyopaque,
+    _: Abi.Generation,
+) callconv(.c) Abi.StatusCode {
+    const frame = styloFrame(user_data) orelse return Abi.status_invalid_argument;
+    // Stylesheet snapshots are immutable until an explicit stylesheet
+    // invalidation. Avoid reparsing the UA and author sheets for every
+    // getComputedStyle()/layout read in a stable generation.
+    const generation = frame._style_engine.generation();
+    const adopted_signature = styloAdoptedStylesheetSignature(frame);
+    if (frame._stylo_prepared_generation == generation and
+        frame._stylo_adopted_stylesheet_signature == adopted_signature) return Abi.status_ok;
+    // Parser-time <style> callbacks intentionally defer CSSStyleSheet
+    // allocation. Materialize those deferred sheets before taking the Stylo
+    // snapshot so the first computed-style read sees the authoritative CSS.
+    var style_walker = @import("../dom/TreeWalker.zig").Full.Elements.init(frame.document.asNode(), .{});
+    while (style_walker.next()) |element| {
+        if (element.is(Element.Html.Style)) |style| {
+            _ = style.getSheet(frame) catch return Abi.status_internal_error;
+        }
+    }
+    const sheets = frame.document.getStyleSheets(frame) catch return Abi.status_internal_error;
+    var inputs: std.ArrayListUnmanaged(Abi.StylesheetInput) = .empty;
+    defer inputs.deinit(frame.call_arena);
+    appendStyloUserAgentStylesheet(frame, &inputs, 0) catch return Abi.status_internal_error;
+    for (sheets.items()) |sheet| {
+        appendStyloStylesheetInput(frame, &inputs, sheet, 0) catch return Abi.status_internal_error;
+    }
+    const adopted = frame.document.getAdoptedStyleSheets(frame) catch return Abi.status_internal_error;
+    appendStyloAdoptedStylesheets(frame, &inputs, adopted, 0) catch return Abi.status_internal_error;
+
+    // ShadowRoot styles are not part of Document.styleSheets.  Snapshot each
+    // root into its own scope so selectors cannot leak across encapsulation
+    // boundaries while inheritance still crosses through the host in Rust.
+    var shadow_roots = frame._element_shadow_roots.iterator();
+    while (shadow_roots.next()) |entry| {
+        const shadow_root = entry.value_ptr.*;
+        var shadow_style_walker = @import("../dom/TreeWalker.zig").Full.Elements.init(shadow_root.asNode(), .{});
+        while (shadow_style_walker.next()) |element| {
+            if (element.is(Element.Html.Style)) |style| {
+                _ = style.getSheet(frame) catch return Abi.status_internal_error;
+            }
+        }
+        const scope_id = frame.styleNodeId(shadow_root.asNode());
+        appendStyloUserAgentStylesheet(frame, &inputs, scope_id) catch return Abi.status_internal_error;
+        appendStyloNativeStylesheets(frame, &inputs, shadow_root.scopedStyleSheets(), scope_id) catch return Abi.status_internal_error;
+        const shadow_adopted = shadow_root.getAdoptedStyleSheets(frame) catch return Abi.status_internal_error;
+        appendStyloAdoptedStylesheets(frame, &inputs, shadow_adopted, scope_id) catch return Abi.status_internal_error;
+    }
+    const ptr: [*c]const Abi.StylesheetInput = if (inputs.items.len == 0) null else inputs.items.ptr;
+    const status = styloMapStatus(koko_stylo_engine_replace_stylesheets(engine, ptr, inputs.items.len));
+    if (status == Abi.status_ok) {
+        frame._stylo_prepared_generation = frame._style_engine.generation();
+        frame._stylo_adopted_stylesheet_signature = adopted_signature;
+    }
+    return status;
+}
+
+fn styloComputedValue(
+    _: ?*anyopaque,
+    engine: ?*anyopaque,
+    node_id: Abi.NodeId,
+    property: Abi.StringSlice,
+    output: Abi.Buffer,
+    out_len: *usize,
+) callconv(.c) Abi.StatusCode {
+    return styloMapStatus(koko_stylo_engine_serialize_property(
+        engine,
+        node_id,
+        .{ .ptr = property.ptr, .len = property.len },
+        output.ptr,
+        output.len,
+        out_len,
+    ));
+}
+
+fn styloPseudoComputedValue(
+    _: ?*anyopaque,
+    engine: ?*anyopaque,
+    node_id: Abi.NodeId,
+    pseudo: Abi.StringSlice,
+    property: Abi.StringSlice,
+    output: Abi.Buffer,
+    out_len: *usize,
+) callconv(.c) Abi.StatusCode {
+    return styloMapStatus(koko_stylo_engine_serialize_pseudo_property(
+        engine,
+        node_id,
+        .{ .ptr = pseudo.ptr, .len = pseudo.len },
+        .{ .ptr = property.ptr, .len = property.len },
+        output.ptr,
+        output.len,
+        out_len,
+    ));
+}
+
+fn styloVisibility(
+    _: ?*anyopaque,
+    engine: ?*anyopaque,
+    node_id: Abi.NodeId,
+    generation: Abi.Generation,
+    out_value: *u8,
+) callconv(.c) Abi.StatusCode {
+    return styloMapStatus(koko_stylo_engine_query_visibility(engine, node_id, generation, out_value));
+}
+
+fn styloPointerEvents(
+    _: ?*anyopaque,
+    engine: ?*anyopaque,
+    node_id: Abi.NodeId,
+    generation: Abi.Generation,
+    out_value: *u8,
+) callconv(.c) Abi.StatusCode {
+    return styloMapStatus(koko_stylo_engine_query_pointer_events(engine, node_id, generation, out_value));
+}
+
+fn styloLastError(
+    _: ?*anyopaque,
+    engine: ?*anyopaque,
+    output: Abi.Buffer,
+    out_len: *usize,
+) callconv(.c) Abi.StatusCode {
+    return styloMapStatus(koko_stylo_engine_last_error(engine, output.ptr, output.len, out_len));
+}
+
+fn styloBridgeApi(frame: *Frame) StyleEngine.AbiApi {
+    return .{
+        .abi_version = Abi.abi_version,
+        .user_data = @ptrCast(frame),
+        .create = styloCreate,
+        .destroy = styloDestroy,
+        .invalidate_stylesheets = styloInvalidateStylesheets,
+        .invalidate_dom = styloInvalidateDom,
+        .replace_stylesheets = styloReplaceStylesheets,
+        .stylesheet_count = styloStylesheetCount,
+        .sync_node = styloSyncNode,
+        .reset_document = styloResetDocument,
+        .flush_styles = styloFlushStyles,
+        .prepare_for_layout = styloPrepareForLayout,
+        .computed_value = styloComputedValue,
+        .computed_pseudo_value = styloPseudoComputedValue,
+        .last_error = styloLastError,
+        .custom_property = styloComputedValue,
+        // Layout consumers use the same serialized computed values as CSSOM.
+        .layout_property = styloComputedValue,
+        .visibility = styloVisibility,
+        .pointer_events = styloPointerEvents,
+    };
+}
+
+/// Return a stable opaque node identity for the current frame/document.
+///
+/// Stylo receives this identity through the C boundary; it must not use the
+/// Zig pointer value as a persistent node key because pointers are reused
+/// after teardown. The identity is stored on the one authoritative Zig DOM
+/// node and is namespaced by the frame id.
+pub fn styleNodeId(self: *Frame, node: *Node) StyleEngine.NodeId {
+    if (node._stylo_frame_id != self._frame_id or node._stylo_node_id == 0) {
+        var id = self._style_node_sequence;
+        if (id == 0) id = 1;
+        self._style_node_sequence = id +% 1;
+        if (self._style_node_sequence == 0) self._style_node_sequence = 1;
+        node._stylo_frame_id = self._frame_id;
+        node._stylo_node_id = id;
+    }
+    self._stylo_node_lookup.put(self.arena, node._stylo_node_id, node) catch {};
+    return (@as(StyleEngine.NodeId, self._frame_id) << 32) | node._stylo_node_id;
 }
 
 pub fn realmEpoch(self: *const Frame) RealmLifecycleKernel.Epoch {
@@ -859,6 +1957,7 @@ fn enterRealmDraining(self: *Frame) void {
 /// - script manager rejects late HTTP script callbacks
 pub fn prepareForOutgoingAbort(self: *Frame) void {
     self.enterRealmDraining();
+    self.endStyleDocumentLifecycle();
     // Break Document → Frame before further teardown so retained JS Document
     // objects cannot open/write into this departing context.
     self.document._frame = null;
@@ -982,6 +2081,9 @@ pub fn deinit(self: *Frame) void {
     // scheduler queue); it must observe `.draining` before it can attempt any
     // further entry into this frame's V8 context.
     self.enterRealmDraining();
+    self.endStyleDocumentLifecycle();
+    self._style_engine.deinit();
+    self._layout_engine.deinit();
 
     // Detach IntersectionObservers while their arena-backed objects are still
     // live. A deferred iframe teardown can run after V8 has finalized the JS
@@ -1122,8 +2224,6 @@ pub fn deinit(self: *Frame) void {
     }
 
     self._script_manager.deinit();
-    self._style_manager.deinit();
-
     page.releaseArena(self.call_arena);
 }
 
@@ -1784,10 +2884,12 @@ fn swapActiveDocument(self: *Frame) !void {
         ._proto = undefined,
     })).asDocument();
     const old_doc = self.document;
+    self.endStyleDocumentLifecycle();
     old_doc._frame = null;
     self.document = new_doc;
     self.window._document = new_doc;
     new_doc._frame = self;
+    self.beginStyleDocumentLifecycle(new_doc);
     self._head_activation_cursor = null;
     self._head_activation_blocker = null;
     self._head_activation_active = false;
@@ -4023,11 +5125,6 @@ pub fn scriptAddedCallback(self: *Frame, comptime from_parser: bool, script: *El
     }
 
     if (comptime from_parser) {
-        // A parser callback can reach a body script before html5ever has
-        // surfaced the attributes of earlier head scripts. Make those head
-        // scripts run first so webpack-style bootstraps keep document order.
-        self.activatePendingHeadScripts(script);
-
         // parser-inserted scripts have force-async set to false, but only if
         // they have src or non-empty content
         // html5ever populates the DOM attribute directly; `_src` is primarily
@@ -4041,6 +5138,14 @@ pub fn scriptAddedCallback(self: *Frame, comptime from_parser: bool, script: *El
         if (has_src or script.asNode().firstChild() != null) {
             script._force_async = false;
         }
+
+        // A parser callback can reach a body script before html5ever has
+        // surfaced the attributes of earlier head scripts. Make those head
+        // scripts run first so webpack-style bootstraps keep document order.
+        // Set force-async above before this scan: the scan can recursively
+        // activate an earlier parser script whose attributes arrived through
+        // the same html5ever callback path.
+        self.activatePendingHeadScripts(script);
     }
 
     self._script_manager.addFromElement(from_parser, script, "parsing") catch |err| {
@@ -4405,10 +5510,16 @@ pub fn invalidateElementLayoutCache(self: *Frame) void {
     // domChanged avoids it because workers raced HTTP/parser on SERP.
     self._element_layout_cache.clearRetainingCapacity();
     self._layout_cache_dom_version = self.version;
-    self._style_manager.invalidateLayoutPropertyCache();
 }
 
 pub fn domChanged(self: *Frame) void {
+    self.domChangedForNode(null);
+}
+
+/// Invalidate derived DOM/style state after the authoritative Zig tree has
+/// changed.  `node` is optional for callers that only have a document-wide
+/// mutation; the optional engine never receives a second DOM representation.
+pub fn domChangedForNode(self: *Frame, node: ?*Node) void {
     // Bulk layout reads (offsetWidth chains) must not invalidate mid-resolve.
     if (self.layoutResolveActive()) return;
     self.version += 1;
@@ -4416,8 +5527,7 @@ pub fn domChanged(self: *Frame) void {
     // worker threads raced HTTP/parser threads and segfaulted in metadata init
     // (Google SERP ~800KB hop). Lazy miss via version checks on read paths.
     self._layout_cache_dom_version = self.version;
-    self._layout_visibility_cache_version = self.version;
-    self._style_manager.invalidateLayoutPropertyCache();
+    self.invalidateStyleEngine(.tree, node);
 
     self.scheduleIntersectionChecks();
 }
@@ -5065,6 +6175,7 @@ pub fn nodeComplete(self: *Frame, node: *Node) !void {
 // Sets the owner document for a node. Only stores entries for nodes whose owner
 // is NOT frame.document to minimize memory overhead.
 pub fn setNodeOwnerDocument(self: *Frame, node: *Node, owner: *Document) !void {
+    node._owner_document = owner;
     if (owner == self.document) {
         // No need to store if it's the main document - remove if present
         _ = self._node_owner_documents.remove(node);
@@ -6213,6 +7324,9 @@ pub fn removeNode(self: *Frame, parent: *Node, child: *Node, opts: RemoveNodeOpt
         _ = self._element_assigned_slots.remove(el);
     }
 
+    if (parent.is(Element.Html.Style) != null) {
+        self.styleSheetSourceChanged(parent);
+    }
     if (self.hasMutationObservers()) {
         const removed = [_]*Node{child};
         self.childListChange(parent, &.{}, &removed, previous_sibling, next_sibling);
@@ -6258,7 +7372,7 @@ pub fn removeNode(self: *Frame, parent: *Node, child: *Node, opts: RemoveNodeOpt
                 }
                 style._sheet = null;
             }
-            self._style_manager.sheetModified();
+            self.styleSheetChanged(style.asNode());
         }
     }
 }
@@ -6268,7 +7382,8 @@ pub fn appendNode(self: *Frame, parent: *Node, child: *Node, opts: InsertNodeOpt
 }
 
 pub fn appendAllChildren(self: *Frame, parent: *Node, target: *Node) !void {
-    self.domChanged();
+    self.domChangedForNode(target);
+    const source_frame = parent.ownerFrame(self);
     const dest_connected = target.isConnected();
     // Resolve target owner once; children from a different document need adoption.
     const target_owner = target.ownerDocument(self) orelse target.as(Document);
@@ -6283,7 +7398,8 @@ pub fn appendAllChildren(self: *Frame, parent: *Node, target: *Node) !void {
         const child_owner = child.ownerDocument(self);
         const child_was_connected = child.isConnected();
         const adopting = child_owner != null and child_owner.? != target_owner;
-        self.removeNode(parent, child, .{ .will_be_reconnected = dest_connected and !adopting });
+        if (source_frame != self) source_frame.domChangedForNode(parent);
+        source_frame.removeNode(parent, child, .{ .will_be_reconnected = dest_connected and !adopting });
         if (adopting) {
             try self.adoptNodeTree(child, child_owner.?, target_owner);
         }
@@ -6295,7 +7411,8 @@ pub fn appendAllChildren(self: *Frame, parent: *Node, target: *Node) !void {
 }
 
 pub fn insertAllChildrenBefore(self: *Frame, fragment: *Node, parent: *Node, ref_node: *Node) !void {
-    self.domChanged();
+    self.domChangedForNode(parent);
+    const source_frame = fragment.ownerFrame(self);
     const dest_connected = parent.isConnected();
     // Resolve parent owner once; fragment children from a different document need adoption.
     const parent_owner = parent.ownerDocument(self) orelse parent.as(Document);
@@ -6310,7 +7427,8 @@ pub fn insertAllChildrenBefore(self: *Frame, fragment: *Node, parent: *Node, ref
         const child_owner = child.ownerDocument(self);
         const child_was_connected = child.isConnected();
         const adopting = child_owner != null and child_owner.? != parent_owner;
-        self.removeNode(fragment, child, .{ .will_be_reconnected = dest_connected and !adopting });
+        if (source_frame != self) source_frame.domChangedForNode(fragment);
+        source_frame.removeNode(fragment, child, .{ .will_be_reconnected = dest_connected and !adopting });
         if (adopting) {
             try self.adoptNodeTree(child, child_owner.?, parent_owner);
         }
@@ -6428,6 +7546,9 @@ pub fn _insertNodeRelative(self: *Frame, comptime from_parser: bool, parent: *No
     // cross-document re-nav (Google knitsail → Bing) walking _parent UAF'd
     // (SIGABRT in isConnected). Document parse always inserts into the live tree.
     if (should_notify) {
+        if (parent.is(Element.Html.Style) != null) {
+            self.styleSheetSourceChanged(parent);
+        }
         const parent_is_connected = parent.isConnected();
         if (comptime from_parser == false) {
             // When the parser adds the node, nodeIsReady is only called when the
@@ -6540,6 +7661,15 @@ pub fn _insertNodeRelative(self: *Frame, comptime from_parser: bool, parent: *No
 }
 
 pub fn attributeChange(self: *Frame, element: *Element, name: String, value: String, old_value: ?String) void {
+    const owner = element.asNode().ownerFrame(self);
+    if (owner != self) {
+        owner.attributeChange(element, name, value, old_value);
+        return;
+    }
+    self.invalidateStyleEngine(.attribute, element.asNode());
+    if (element.is(Element.Html.Style) != null or element.is(Element.Html.Link) != null) {
+        self.styleSheetChanged(element.asNode());
+    }
     _ = Element.Build.call(element, "attributeChange", .{ element, name, value, self }) catch |err| {
         log.err(.bug, "build.attributeChange", .{ .tag = element.getTag(), .name = name, .value = value, .err = err, .type = self._type, .url = self.url });
     };
@@ -6706,6 +7836,15 @@ fn deliverCssAnimationEnds(self: *Frame) void {
 }
 
 pub fn attributeRemove(self: *Frame, element: *Element, name: String, old_value: String) void {
+    const owner = element.asNode().ownerFrame(self);
+    if (owner != self) {
+        owner.attributeRemove(element, name, old_value);
+        return;
+    }
+    self.invalidateStyleEngine(.attribute, element.asNode());
+    if (element.is(Element.Html.Style) != null or element.is(Element.Html.Link) != null) {
+        self.styleSheetChanged(element.asNode());
+    }
     _ = Element.Build.call(element, "attributeRemove", .{ element, name, self }) catch |err| {
         log.err(.bug, "build.attributeRemove", .{ .tag = element.getTag(), .name = name, .err = err, .type = self._type, .url = self.url });
     };
@@ -6844,6 +7983,15 @@ pub fn characterDataChange(
     target: *Node,
     old_value: String,
 ) void {
+    const owner = target.ownerFrame(self);
+    if (owner != self) {
+        owner.characterDataChange(target, old_value);
+        return;
+    }
+    self.domChangedForNode(target);
+    if (target._parent) |parent| {
+        if (parent.is(Element.Html.Style) != null) self.styleSheetSourceChanged(parent);
+    }
     var it: ?*std.DoublyLinkedList.Node = self._mutation_observers.first;
     while (it) |node| : (it = node.next) {
         const observer: *MutationObserver = @fieldParentPtr("node", node);
@@ -6861,6 +8009,15 @@ pub fn childListChange(
     previous_sibling: ?*Node,
     next_sibling: ?*Node,
 ) void {
+    const owner = target.ownerFrame(self);
+    if (owner != self) {
+        owner.childListChange(target, added_nodes, removed_nodes, previous_sibling, next_sibling);
+        return;
+    }
+    self.invalidateStyleEngine(.tree, target);
+    if (target.is(Element.Html.Style) != null) {
+        self.styleSheetSourceChanged(target);
+    }
     // Filter out HTML wrapper element during fragment parsing (html5ever quirk)
     if (self._parse_mode == .fragment and added_nodes.len == 1) {
         if (added_nodes[0].is(Element.Html.Html) != null) {
@@ -7033,7 +8190,7 @@ fn nodeIsReady(self: *Frame, comptime from_parser: bool, node: *Node) !void {
         if (node.is(Element.Html.Script) != null or node.is(IFrame) != null) {
             // fall through
         } else if (node.is(Element.Html.Style) != null) {
-            self._style_manager.sheetModified();
+            self.styleSheetChanged(node);
             return;
         } else {
             return;
@@ -7869,6 +9026,14 @@ test "Frame: iframe Location uses its owning browsing context" {
 
 test "Frame: iframe history and navigation are isolated from parent" {
     try testing.htmlRunner("regression/iframe_history_isolated_from_parent.html", .{});
+}
+
+test "Frame: style engine DOM invalidation follows stylesheet and tree mutations" {
+    try testing.htmlRunner("regression/style_engine_dom_lifecycle.html", .{});
+}
+
+test "Frame: style engine lifecycle survives navigation teardown" {
+    try testing.htmlRunner("regression/style_engine_navigation_teardown.html", .{});
 }
 
 test "Frame: srcdoc History URL rewriting follows about-srcdoc rules" {

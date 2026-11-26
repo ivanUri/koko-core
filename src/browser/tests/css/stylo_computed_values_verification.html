@@ -1,0 +1,78 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  :root {
+    --stylo-verification-accent: rgb(17, 34, 51);
+    --stylo-verification-gap: 6px;
+    color: rgb(9, 19, 29);
+  }
+  #stylo-verification-target {
+    color: var(--stylo-verification-accent);
+    margin-top: var(--stylo-verification-gap);
+    padding: 3px;
+    display: block;
+  }
+  main > #stylo-verification-target {
+    color: rgb(70, 80, 90) !important;
+  }
+  #stylo-verification-target::before {
+    content: "stylo";
+    display: inline-block;
+    color: rgb(101, 111, 121);
+  }
+</style>
+<main>
+  <div id="stylo-verification-target"><span id="stylo-verification-child">inherited</span></div>
+</main>
+<script>
+  (() => {
+    const target = document.querySelector("#stylo-verification-target");
+    const child = document.querySelector("#stylo-verification-child");
+    const expected = {
+      color: "rgb(70, 80, 90)",
+      marginTop: "6px",
+      paddingTop: "3px",
+      display: "block",
+      customAccent: "rgb(17, 34, 51)",
+      childColor: "rgb(70, 80, 90)",
+    };
+
+    function unsupported(reason, details = {}) {
+      return { status: "unsupported", reason, details, expected };
+    }
+
+    if (!target || !child || typeof window.getComputedStyle !== "function") {
+      window.__styloComputedVerification = unsupported("getComputedStyle or fixture DOM is unavailable");
+      return;
+    }
+
+    try {
+      const style = window.getComputedStyle(target);
+      const childStyle = window.getComputedStyle(child);
+      const before = window.getComputedStyle(target, "::before");
+      if (!style || !childStyle || !before || typeof style.getPropertyValue !== "function") {
+        window.__styloComputedVerification = unsupported("computed style object is unavailable");
+        return;
+      }
+      window.__styloComputedVerification = {
+        status: "observed",
+        observations: {
+          color: style.getPropertyValue("color").trim(),
+          marginTop: style.getPropertyValue("margin-top").trim(),
+          paddingTop: style.getPropertyValue("padding-top").trim(),
+          display: style.getPropertyValue("display").trim(),
+          customAccent: style.getPropertyValue("--stylo-verification-accent").trim(),
+          childColor: childStyle.getPropertyValue("color").trim(),
+          pseudoContent: before.getPropertyValue("content").trim(),
+          pseudoDisplay: before.getPropertyValue("display").trim(),
+        },
+      };
+    } catch (error) {
+      window.__styloComputedVerification = {
+        status: "unsupported",
+        reason: `computed style threw: ${error.name || error}`,
+        expected,
+      };
+    }
+  })();
+</script>

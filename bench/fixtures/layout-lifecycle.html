@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Koko layout lifecycle fixture</title></head>
+<body>
+  <main id="lifecycle-root"></main>
+  <script>
+    const root = document.getElementById("lifecycle-root");
+    let checksum = 0;
+    for (let index = 0; index < 64; index += 1) {
+      const item = document.createElement("div");
+      item.textContent = `lifecycle-${index}`;
+      item.style.width = `${80 + (index % 5) * 10}px`;
+      item.style.padding = "2px";
+      root.appendChild(item);
+      checksum = (checksum + index * 17 + item.textContent.length) % 1000003;
+    }
+    window.__kokoLayoutLifecycle = { count: root.children.length, checksum };
+  </script>
+</body>
+</html>

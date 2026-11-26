@@ -10,10 +10,21 @@ const Node = @import("../../dom/Node.zig");
 const CSSRuleList = @import("CSSRuleList.zig");
 const CSSRule = @import("CSSRule.zig");
 const CSSStyleRule = @import("CSSStyleRule.zig");
+const CSSMediaList = @import("CSSMediaList.zig");
 
 const log = @import("../../../support/log.zig");
 
 const CSSStyleSheet = @This();
+
+// A constructed sheet may be adopted by more than one document or shadow
+// scope.  Keep only the owning frame and a reference count here: retaining a
+// ShadowRoot pointer would make a detached root observable after its slab is
+// recycled.  The frame owns the sheet's lifetime and is also the invalidation
+// boundary used by the style engine.
+const StyleScopeOwner = struct {
+    frame: *Frame,
+    references: usize = 0,
+};
 
 pub const CSSError = error{
     OutOfMemory,
@@ -26,17 +37,22 @@ pub const CSSError = error{
 _href: ?[]const u8 = null,
 _title: []const u8 = "",
 _disabled: bool = false,
+_media: *CSSMediaList,
 _css_rules: ?*CSSRuleList = null,
+_stylo_source: ?[]const u8 = null,
 _owner_rule: ?*CSSRule = null,
+_parent_style_sheet: ?*CSSStyleSheet = null,
 _owner_node: ?*Element = null,
+_style_scope_owners: std.ArrayListUnmanaged(StyleScopeOwner) = .empty,
 
 pub fn init(frame: *Frame) !*CSSStyleSheet {
-    return frame._factory.create(CSSStyleSheet{});
+    return frame._factory.create(CSSStyleSheet{ ._media = try CSSMediaList.init("", frame) });
 }
 
 pub fn initWithHref(href: []const u8, frame: *Frame) !*CSSStyleSheet {
     return frame._factory.create(CSSStyleSheet{
         ._href = try frame.dupeString(href),
+        ._media = try CSSMediaList.init("", frame),
     });
 }
 
@@ -44,11 +60,12 @@ pub fn initWithHrefOwner(href: []const u8, owner: *Element, frame: *Frame) !*CSS
     return frame._factory.create(CSSStyleSheet{
         ._href = try frame.dupeString(href),
         ._owner_node = owner,
+        ._media = try CSSMediaList.init("", frame),
     });
 }
 
 pub fn initWithOwner(owner: *Element, frame: *Frame) !*CSSStyleSheet {
-    return frame._factory.create(CSSStyleSheet{ ._owner_node = owner });
+    return frame._factory.create(CSSStyleSheet{ ._owner_node = owner, ._media = try CSSMediaList.init("", frame) });
 }
 
 pub fn getOwnerNode(self: *const CSSStyleSheet) ?*Element {
@@ -72,8 +89,71 @@ pub fn getDisabled(self: *const CSSStyleSheet) bool {
     return self._disabled;
 }
 
-pub fn setDisabled(self: *CSSStyleSheet, disabled: bool) void {
+pub fn getMedia(self: *CSSStyleSheet) *CSSMediaList {
+    return self._media;
+}
+
+pub fn setMedia(self: *CSSStyleSheet, text: []const u8, frame: *Frame) !void {
+    try self._media.setMediaText(text, frame);
+    notifyStyleSheetMutation(self, "media", frame);
+}
+
+pub fn registerStyleScopeOwner(self: *CSSStyleSheet, frame: *Frame) !void {
+    for (self._style_scope_owners.items) |*owner| {
+        if (owner.frame == frame) {
+            owner.references += 1;
+            return;
+        }
+    }
+
+    try self._style_scope_owners.append(frame.arena, .{
+        .frame = frame,
+        .references = 1,
+    });
+}
+
+pub fn unregisterStyleScopeOwner(self: *CSSStyleSheet, frame: *Frame) void {
+    for (self._style_scope_owners.items, 0..) |*owner, index| {
+        if (owner.frame != frame) continue;
+        if (owner.references > 1) {
+            owner.references -= 1;
+        } else {
+            _ = self._style_scope_owners.swapRemove(index);
+        }
+        return;
+    }
+}
+
+fn reportStyleSheetEngineStatus(operation: []const u8, frame: *Frame) void {
+    const status = frame.styleEngine().status();
+    if (status != .ok and status != .ready) {
+        log.debug(.not_implemented, "Stylo CSS stylesheet status", .{
+            .operation = operation,
+            .status = @tagName(status),
+        });
+    }
+}
+
+fn notifyStyleSheetMutation(self: *const CSSStyleSheet, operation: []const u8, frame: *Frame) void {
+    const owner_frame = ownerFrameFor(self, frame);
+    // Frame.styleSheetChanged keeps the legacy cache coherent and forwards the
+    // invalidation through the per-frame StyleEngine owner.
+    owner_frame.styleSheetChanged(if (self.getOwnerNode()) |owner| owner.asNode() else null);
+
+    // Constructed sheets have no owner node.  Notify every frame that has a
+    // live scoped reference so a replaceSync/insertRule/deleteRule mutation
+    // invalidates all adopted shadow scopes, not just the caller's document.
+    for (self._style_scope_owners.items) |scope| {
+        if (scope.frame.isGoingAway()) continue;
+        scope.frame.adoptedStyleSheetsChanged();
+    }
+    reportStyleSheetEngineStatus(operation, owner_frame);
+}
+
+pub fn setDisabled(self: *CSSStyleSheet, disabled: bool, frame: *Frame) void {
+    if (self._disabled == disabled) return;
     self._disabled = disabled;
+    notifyStyleSheetMutation(self, "disabled", frame);
 }
 
 pub fn getCssRules(self: *CSSStyleSheet, frame: *Frame) !*CSSRuleList {
@@ -86,52 +166,98 @@ pub fn getCssRules(self: *CSSStyleSheet, frame: *Frame) !*CSSRuleList {
         if (owner.is(Element.Html.Style)) |style| {
             const text = try style.asNode().getTextContentAlloc(frame.call_arena);
             try self.replaceSync(text, frame);
+            // Parsing the owner element's source initializes CSSOM objects but
+            // must not make that temporary serialization authoritative.
+            self._stylo_source = null;
         }
     }
 
     return rules;
 }
 
+/// Drop the parsed CSSOM view after the owning <style> text changes.
+pub fn sourceTextChanged(self: *CSSStyleSheet) void {
+    self._css_rules = null;
+    self._stylo_source = null;
+}
+
 pub fn getOwnerRule(self: *const CSSStyleSheet) ?*CSSRule {
     return self._owner_rule;
 }
 
-/// Map an at-rule source string to a CSSRule type tag for placeholder entries.
-/// Full at-rule CSSOM objects (CSSMediaRule, etc.) are not implemented yet; we
-/// still need stable cssRules indices so CSS-in-JS insertRule/deleteRule pairs
-/// (BBC/Next, Expo/Reanimated, styled-jsx) do not throw IndexSizeError.
-fn placeholderTypeForAtRule(rule: []const u8) CSSRule.Type {
-    const trimmed = std.mem.trim(u8, rule, &std.ascii.whitespace);
-    if (std.ascii.startsWithIgnoreCase(trimmed, "@media")) return .{ .media = {} };
-    if (std.ascii.startsWithIgnoreCase(trimmed, "@keyframes") or std.ascii.startsWithIgnoreCase(trimmed, "@-webkit-keyframes")) return .{ .keyframes = {} };
-    if (std.ascii.startsWithIgnoreCase(trimmed, "@font-face")) return .{ .font_face = {} };
-    if (std.ascii.startsWithIgnoreCase(trimmed, "@import")) return .{ .import = {} };
-    if (std.ascii.startsWithIgnoreCase(trimmed, "@supports")) return .{ .supports = {} };
-    if (std.ascii.startsWithIgnoreCase(trimmed, "@charset")) return .{ .charset = {} };
-    if (std.ascii.startsWithIgnoreCase(trimmed, "@namespace")) return .{ .namespace = {} };
-    if (std.ascii.startsWithIgnoreCase(trimmed, "@counter-style")) return .{ .counter_style = {} };
-    // @layer, @container, @property, @starting-style, etc. — keep a neutral slot.
-    return .{ .supports = {} };
+pub fn getParentStyleSheet(self: *const CSSStyleSheet) ?*CSSStyleSheet {
+    return self._parent_style_sheet;
 }
 
-fn clampInsertIndex(requested_index: u32, length: u32) u32 {
-    // Per spec, index > length should throw IndexSizeError. Because we still
-    // have incomplete at-rule support and historical length skew, clamp to tail.
-    // See #2214 (and the sibling #1970 / #1972 tolerance for at-rules).
-    if (requested_index > length) {
-        log.debug(.not_implemented, "insertRule clamped index", .{});
-        return length;
+fn attachParentStyleSheet(self: *CSSStyleSheet, rule: *CSSRule, frame: *Frame) !void {
+    _ = frame;
+    rule.setParentStyleSheet(self);
+    switch (rule._type) {
+        .import => |import_rule| {
+            if (import_rule._style_sheet) |style_sheet| {
+                style_sheet._parent_style_sheet = self;
+            }
+        },
+        else => {},
     }
+}
+
+/// Return the current stylesheet source for the Stylo bridge. Author sheets
+/// owned by a <style> element use the authoritative text node; constructed
+/// CSSOM sheets are serialized from their CSSRuleList.
+pub fn getTextForStyleEngine(self: *CSSStyleSheet, frame: *Frame) ![]const u8 {
+    if (self._stylo_source) |source| return source;
+    if (self.getOwnerNode()) |owner| {
+        if (owner.is(Element.Html.Style)) |_| {
+            if (self._css_rules == null) {
+                return try owner.asNode().getTextContentAlloc(frame.call_arena);
+            }
+        }
+    }
+    const rules = self._css_rules orelse return "";
+    var output: std.ArrayList(u8) = .empty;
+    for (0..rules.length()) |index| {
+        const rule = rules.item(index) orelse continue;
+        try output.appendSlice(frame.call_arena, try rule.getCssText(frame));
+    }
+    return try output.toOwnedSlice(frame.call_arena);
+}
+
+fn refreshStyloSource(self: *CSSStyleSheet, frame: *Frame) !void {
+    const rules = self._css_rules orelse {
+        self._stylo_source = null;
+        return;
+    };
+    var output: std.ArrayList(u8) = .empty;
+    for (0..rules.length()) |index| {
+        const rule = rules.item(index) orelse continue;
+        try output.appendSlice(frame.call_arena, try rule.getCssText(frame));
+    }
+    // The snapshot survives this JS binding and is consumed by the next
+    // getComputedStyle() call during prepareForLayout().  call_arena is reset
+    // when the top-level native binding returns, so storing a slice allocated
+    // there leaves a dangling CSS source after insertRule()/deleteRule().
+    self._stylo_source = try frame.dupeString(output.items);
+}
+
+pub fn notifyRuleMutation(self: *CSSStyleSheet, frame: *Frame) !void {
+    try self.refreshStyloSource(frame);
+    notifyStyleSheetMutation(self, "groupingRuleMutation", frame);
+}
+
+fn validateInsertIndex(requested_index: u32, length: u32) !u32 {
+    if (requested_index > length) return error.IndexSizeError;
     return requested_index;
 }
 
-fn insertPlaceholderAtRule(self: *CSSStyleSheet, rule: []const u8, requested_index: u32, frame: *Frame) !u32 {
-    log.debug(.not_implemented, "CSSStyleSheet.insertRule at-rule placeholder", .{});
+fn insertAtRule(self: *CSSStyleSheet, rule: []const u8, requested_index: u32, frame: *Frame) !u32 {
     const rules = try self.getCssRules(frame);
-    const index = clampInsertIndex(requested_index, rules.length());
-    const placeholder = try CSSRule.initRaw(placeholderTypeForAtRule(rule), rule, frame);
-    try rules.insert(index, placeholder, frame);
-    ownerFrameFor(self, frame)._style_manager.sheetModified();
+    const index = try validateInsertIndex(requested_index, rules.length());
+    const at_rule = try CSSRule.initAtRule(rule, frame);
+    try rules.insert(index, at_rule, frame);
+    try self.attachParentStyleSheet(at_rule, frame);
+    try self.refreshStyloSource(frame);
+    notifyStyleSheetMutation(self, "insertRule", frame);
     return index;
 }
 
@@ -143,7 +269,7 @@ pub fn insertRule(self: *CSSStyleSheet, rule: []const u8, maybe_index: ?u32, fra
             // Previously returned requested_index without storing a rule, which
             // left cssRules.length short and made deleteRule(index) throw
             // IndexSizeError (seen on www.bbc.com/news during Next hydration).
-            return self.insertPlaceholderAtRule(rule, requested_index, frame);
+            return self.insertAtRule(rule, requested_index, frame);
         }
         return error.SyntaxError;
     };
@@ -158,27 +284,75 @@ pub fn insertRule(self: *CSSStyleSheet, rule: []const u8, maybe_index: ?u32, fra
     try style.setCssText(parsed_rule.block, frame);
 
     const rules = try self.getCssRules(frame);
-    const index = clampInsertIndex(requested_index, rules.length());
+    const index = try validateInsertIndex(requested_index, rules.length());
     try rules.insert(index, style_rule._proto, frame);
+    try self.attachParentStyleSheet(style_rule._proto, frame);
+    try self.refreshStyloSource(frame);
 
-    // Notify StyleManager that rules have changed
-    ownerFrameFor(self, frame)._style_manager.sheetModified();
+    notifyStyleSheetMutation(self, "insertRule", frame);
 
     return index;
 }
 
 pub fn deleteRule(self: *CSSStyleSheet, index: u32, frame: *Frame) !void {
     const rules = try self.getCssRules(frame);
-    // Defensive: legacy sheets (or mixed insert paths) may still have index skew.
-    // Prefer no-op over IndexSizeError so CSS-in-JS cleanup does not crash the page.
-    if (index >= rules.length()) {
-        log.debug(.not_implemented, "deleteRule no-op out-of-range index", .{});
-        return;
+    const rule = rules.item(index) orelse return error.IndexSizeError;
+    switch (rule._type) {
+        .import => |import_rule| {
+            if (import_rule._style_sheet) |style_sheet| {
+                style_sheet._parent_style_sheet = null;
+            }
+        },
+        else => {},
     }
+    rule._parent_style_sheet = null;
+    rule._parent_rule = null;
     try rules.remove(index);
+    try self.refreshStyloSource(frame);
 
-    // Notify StyleManager that rules have changed
-    ownerFrameFor(self, frame)._style_manager.sheetModified();
+    notifyStyleSheetMutation(self, "deleteRule", frame);
+}
+
+/// Legacy CSSOM alias for insertRule(). The historical API returns -1 on
+/// success and defaults the index to the current rule-list length.
+pub fn addRule(
+    self: *CSSStyleSheet,
+    selector_: ?[]const u8,
+    style_: ?[]const u8,
+    maybe_index: ?u32,
+    frame: *Frame,
+) !i32 {
+    const selector = selector_ orelse "undefined";
+    const style_text = style_ orelse "";
+    const rules = try self.getCssRules(frame);
+    const requested_index = maybe_index orelse rules.length();
+    const index = try validateInsertIndex(requested_index, rules.length());
+
+    // The legacy API accepts an at-rule selector and a complete nested rule
+    // as its style argument.  Chromium serializes addRule("@media ...",
+    // "selector { ... }") as one CSSMediaRule rather than a CSSStyleRule
+    // whose selector happens to begin with '@'.
+    const trimmed_selector = std.mem.trim(u8, selector, &std.ascii.whitespace);
+    if (std.mem.startsWith(u8, trimmed_selector, "@")) {
+        var source = std.Io.Writer.Allocating.init(frame.call_arena);
+        try source.writer.print("{s} {{ {s} }}", .{ trimmed_selector, style_text });
+        _ = try insertAtRule(self, source.written(), index, frame);
+        return -1;
+    }
+
+    const style_rule = try CSSStyleRule.init(frame);
+    try style_rule.setSelectorText(selector, frame);
+    const style_props = try style_rule.getStyle(frame);
+    try style_props.asCSSStyleDeclaration().setCssText(style_text, frame);
+    try rules.insert(index, style_rule._proto, frame);
+    try self.attachParentStyleSheet(style_rule._proto, frame);
+    try self.refreshStyloSource(frame);
+    notifyStyleSheetMutation(self, "addRule", frame);
+    return -1;
+}
+
+pub fn removeRule(self: *CSSStyleSheet, maybe_index: ?u32, frame: *Frame) !void {
+    try self.deleteRule(maybe_index orelse 0, frame);
 }
 
 pub fn replace(self: *CSSStyleSheet, text: []const u8, frame: *Frame) CSSError!js.Promise {
@@ -203,20 +377,22 @@ pub fn replaceSync(self: *CSSStyleSheet, text: []const u8, frame: *Frame) CSSErr
                 try style.setCssText(parsed_rule.block, frame);
 
                 try rules.insert(index, style_rule._proto, frame);
+                try self.attachParentStyleSheet(style_rule._proto, frame);
                 index += 1;
             },
             .at_rule => |at_text| {
                 // Keep cssRules length aligned with real browsers so callers that
                 // index into sheets (or round-trip insertRule/deleteRule) work.
-                const placeholder = try CSSRule.initRaw(placeholderTypeForAtRule(at_text), at_text, frame);
-                try rules.insert(index, placeholder, frame);
+                const at_rule = try CSSRule.initAtRule(at_text, frame);
+                try rules.insert(index, at_rule, frame);
+                try self.attachParentStyleSheet(at_rule, frame);
                 index += 1;
             },
         }
     }
 
-    // Notify StyleManager that rules have changed
-    ownerFrameFor(self, frame)._style_manager.sheetModified();
+    self._stylo_source = try frame.dupeString(text);
+    notifyStyleSheetMutation(self, "replaceSync", frame);
 }
 
 pub const JsApi = struct {
@@ -233,10 +409,15 @@ pub const JsApi = struct {
     pub const href = bridge.accessor(CSSStyleSheet.getHref, null, .{ .null_as_undefined = true });
     pub const title = bridge.accessor(CSSStyleSheet.getTitle, null, .{});
     pub const disabled = bridge.accessor(CSSStyleSheet.getDisabled, CSSStyleSheet.setDisabled, .{});
+    pub const media = bridge.accessor(CSSStyleSheet.getMedia, CSSStyleSheet.setMedia, .{});
     pub const cssRules = bridge.accessor(CSSStyleSheet.getCssRules, null, .{});
+    pub const rules = bridge.accessor(CSSStyleSheet.getCssRules, null, .{});
     pub const ownerRule = bridge.accessor(CSSStyleSheet.getOwnerRule, null, .{});
+    pub const parentStyleSheet = bridge.accessor(CSSStyleSheet.getParentStyleSheet, null, .{});
     pub const insertRule = bridge.function(CSSStyleSheet.insertRule, .{ .dom_exception = true });
     pub const deleteRule = bridge.function(CSSStyleSheet.deleteRule, .{ .dom_exception = true });
+    pub const addRule = bridge.function(CSSStyleSheet.addRule, .{ .dom_exception = true });
+    pub const removeRule = bridge.function(CSSStyleSheet.removeRule, .{ .dom_exception = true });
     pub const replace = bridge.function(CSSStyleSheet.replace, .{});
     pub const replaceSync = bridge.function(CSSStyleSheet.replaceSync, .{});
 };

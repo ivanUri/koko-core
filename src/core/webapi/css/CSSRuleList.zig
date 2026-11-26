@@ -51,4 +51,5 @@ pub const JsApi = struct {
 
     pub const length = bridge.accessor(CSSRuleList.length, null, .{});
     pub const @"[]" = bridge.indexed(CSSRuleList.item, null, .{ .null_as_undefined = true });
+    pub const item = bridge.function(CSSRuleList.item, .{ .null_as_undefined = true });
 };

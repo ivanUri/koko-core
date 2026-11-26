@@ -14,13 +14,14 @@
 const std = @import("std");
 
 const CssParser = @import("../../browser/css/Parser.zig");
+const CssTokenizer = @import("../../browser/css/Tokenizer.zig");
+const StyleEngine = @import("../../browser/StyleEngine.zig").StyleEngine;
 
 const js = @import("../../js/js.zig");
 const Frame = @import("../../browser/Frame.zig");
 const Element = @import("../../dom/Element.zig");
 const CSSRule = @import("CSSRule.zig");
 const ComputedStyleProps = @import("computed_style_properties.zig");
-const ClientRectsIntelligent = @import("../../../runtime/profile/ClientRectsIntelligent.zig");
 
 const known_property_map: std.StaticStringMap(void) = blk: {
     var entries: [ComputedStyleProps.names.len]struct { []const u8, void } = undefined;
@@ -46,17 +47,24 @@ const String = @import("../../../support/string.zig").String;
 const Allocator = std.mem.Allocator;
 const CSSStyleDeclaration = @This();
 
+const StyloRead = struct {
+    status: StyleEngine.Status,
+    value: ?[]const u8 = null,
+};
+
 _element: ?*Element = null,
+_pseudo_element: ?[]const u8 = null,
 _properties: std.DoublyLinkedList = .{},
 _is_computed: bool = false,
 _computed_indexed_keys: []const []const u8 = &.{},
 _computed_named_keys: []const []const u8 = &.{},
 _computed_in_keys: []const []const u8 = &.{},
 
-pub fn init(element: ?*Element, is_computed: bool, frame: *Frame) !*CSSStyleDeclaration {
+pub fn init(element: ?*Element, is_computed: bool, frame: *Frame, pseudo_element: ?[]const u8) !*CSSStyleDeclaration {
     const profile = frame.loadedProfile();
     const self = try frame._factory.create(CSSStyleDeclaration{
         ._element = element,
+        ._pseudo_element = if (pseudo_element) |pseudo| try frame.dupeString(pseudo) else null,
         ._is_computed = is_computed,
         ._computed_indexed_keys = if (is_computed) profile.css_computed_indexed_keys else &.{},
         ._computed_named_keys = if (is_computed) profile.css_computed_named_keys else &.{},
@@ -124,22 +132,20 @@ pub fn getPropertyValue(self: *const CSSStyleDeclaration, property_name: []const
     const wrapped = String.wrap(normalized);
     const style_frame = styleFrameFor(self, frame);
 
-    // Computed styles must reflect stylesheet rules, not just the element's
-    // inline `style=` attribute. Limited to display/visibility — what aria
-    // tree builders (Playwright ariaSnapshot) consult on every element.
     if (self._is_computed) {
-        if (self._element) |element| {
-            if (wrapped.eql(comptime .wrap("display"))) {
-                if (style_frame._style_manager.hasDisplayNone(element)) return "none";
-            } else if (wrapped.eql(comptime .wrap("visibility"))) {
-                if (style_frame._style_manager.hasVisibilityHiddenInherited(element)) return "hidden";
-            }
-        }
+        return getComputedPropertyValue(self, wrapped, style_frame);
     }
 
     const prop = self.findProperty(wrapped) orelse {
         if (self._is_computed) {
             return getComputedPropertyValue(self, wrapped, style_frame);
+        }
+        if (boxShorthandFor(normalized)) |shorthand| {
+            if (self.findProperty(.wrap(shorthand))) |shorthand_prop| {
+                if (expandBoxShorthand(shorthand_prop._value.str(), boxSideFor(normalized))) |expanded| {
+                    return expanded;
+                }
+            }
         }
         return "";
     };
@@ -160,74 +166,64 @@ fn isColorProperty(name: String) bool {
         std.mem.eql(u8, raw, "outline-color");
 }
 
-fn getInlineStyleValue(element: *Element, property_name: []const u8) ?[]const u8 {
-    const attr_value = element.getAttributeSafe(comptime .wrap("style")) orelse return null;
-    var it = CssParser.parseDeclarationsList(attr_value);
-    while (it.next()) |declaration| {
-        if (std.ascii.eqlIgnoreCase(declaration.name, property_name)) {
-            return declaration.value;
-        }
+fn queryStylo(self: *const CSSStyleDeclaration, name: String, style_frame: *Frame) StyloRead {
+    const element = self._element orelse return .{ .status = .invalid_argument };
+    const property = name.str();
+    var output = style_frame.call_arena.alloc(u8, 4096) catch {
+        return .{ .status = .out_of_memory };
+    };
+    const node_id: StyleEngine.NodeId = style_frame.styleNodeId(element.asNode());
+    var result = if (self._pseudo_element) |pseudo|
+        style_frame.styleEngine().computedPseudoValue(node_id, pseudo, property, output)
+    else if (std.mem.startsWith(u8, property, "--"))
+        style_frame.styleEngine().customProperty(node_id, property, output)
+    else
+        style_frame.styleEngine().computedValue(node_id, property, output);
+
+    if (result.status == .output_buffer_too_small and result.bytes_written > output.len) {
+        output = style_frame.call_arena.alloc(u8, result.bytes_written) catch {
+            return .{ .status = .out_of_memory };
+        };
+        result = if (self._pseudo_element) |pseudo|
+            style_frame.styleEngine().computedPseudoValue(node_id, pseudo, property, output)
+        else if (std.mem.startsWith(u8, property, "--"))
+            style_frame.styleEngine().customProperty(node_id, property, output)
+        else
+            style_frame.styleEngine().computedValue(node_id, property, output);
     }
-    return null;
+
+    if (!result.isOk()) return .{ .status = result.status };
+    const value = style_frame.call_arena.dupe(u8, output[0..result.bytes_written]) catch {
+        return .{ .status = .out_of_memory };
+    };
+    return .{ .status = .ok, .value = value };
+}
+
+fn reportStyloComputedReadFailure(operation: []const u8, property: []const u8, status: StyleEngine.Status) void {
+    log.debug(.not_implemented, "Stylo computed-style query failed", .{
+        .operation = operation,
+        .property = property,
+        .status = @tagName(status),
+    });
+}
+
+fn invalidateInlineStyle(self: *const CSSStyleDeclaration, style_frame: *Frame) void {
+    const element = self._element orelse return;
+    const status = style_frame.styleEngine().invalidateDom(style_frame.styleNodeId(element.asNode()), .attributes);
+    if (status != .ok) {
+        log.debug(.not_implemented, "Stylo inline style invalidation", .{ .status = @tagName(status) });
+    }
 }
 
 fn getComputedPropertyValue(self: *const CSSStyleDeclaration, name: String, style_frame: *Frame) []const u8 {
-    const raw = name.str();
-    if (raw.len > 2 and raw[0] == '-' and raw[1] == '-') {
-        if (self._element) |element| {
-            if (style_frame._style_manager.getCustomProperty(element, raw)) |custom| {
-                return custom;
-            }
-        }
-        return "";
-    }
-    if (self._element) |element| {
-        if (name.eql(comptime .wrap("display"))) {
-            if (style_frame._style_manager.hasDisplayNone(element)) return "none";
-        } else if (name.eql(comptime .wrap("visibility"))) {
-            if (style_frame._style_manager.hasVisibilityHiddenInherited(element)) return "hidden";
-        }
-        if (getInlineStyleValue(element, raw)) |inline_value| {
-            return resolveColorPropertyValue(name, inline_value);
-        }
-        if (name.eql(comptime .wrap("font-family"))) {
-            if (getInlineSystemFontFamily(element)) |family| return family;
-        }
-        if (name.eql(comptime .wrap("block-size")) or name.eql(comptime .wrap("inline-size"))) {
-            if (ClientRectsIntelligent.lookupEmojiLogicalSize(element, style_frame)) |dims| {
-                const logical = if (name.eql(comptime .wrap("block-size"))) dims.block_size else dims.inline_size;
-                // Chrome serializes logical emoji sizes at ~6 decimal places.
-                const value = @round(logical * 1_000_000.0) / 1_000_000.0;
-                const formatted = std.fmt.bufPrint(&style_frame.buf, "{d}px", .{value}) catch return "auto";
-                return formatted;
-            }
-        }
-    }
-    return resolveColorPropertyValue(name, getDefaultPropertyValue(self, name));
-}
-
-fn getInlineSystemFontFamily(element: *Element) ?[]const u8 {
-    const attr_value = element.getAttributeSafe(comptime .wrap("style")) orelse return null;
-    var it = CssParser.parseDeclarationsList(attr_value);
-    while (it.next()) |declaration| {
-        if (!std.ascii.eqlIgnoreCase(declaration.name, "font")) continue;
-        var value = std.mem.trim(u8, declaration.value, " ");
-        if (std.mem.endsWith(u8, value, "!important")) {
-            value = std.mem.trimEnd(u8, value[0 .. value.len - "!important".len], " ");
-        }
-        if (resolveSystemFontKeyword(value)) |family| return family;
-    }
-    return null;
-}
-
-fn resolveSystemFontKeyword(value: []const u8) ?[]const u8 {
-    const keywords = [_][]const u8{
-        "caption", "icon", "menu", "message-box", "small-caption", "status-bar",
-    };
-    for (keywords) |kw| {
-        if (std.mem.eql(u8, value, kw)) return "Arial";
-    }
-    return null;
+    const stylo = queryStylo(self, name, style_frame);
+    if (stylo.value) |value| return value;
+    reportStyloComputedReadFailure("computed-read", name.str(), stylo.status);
+    // Stylo is authoritative for computed style. Do not synthesize a value
+    // from an alternate CSS implementation or element defaults when a property is
+    // unsupported/invalid; CSSOM represents that case as an empty value and
+    // the explicit status remains available through the diagnostics path.
+    return "";
 }
 
 pub fn getPropertyPriority(self: *const CSSStyleDeclaration, property_name: []const u8, frame: *Frame) []const u8 {
@@ -261,6 +257,7 @@ fn setPropertyImpl(self: *CSSStyleDeclaration, property_name: []const u8, value:
     }
 
     const normalized = normalizePropertyName(property_name, &frame.buf);
+    if (!isValidDeclaration(normalized, value)) return;
 
     // Normalize the value for canonical serialization
     const normalized_value = try normalizePropertyValue(frame.call_arena, normalized, value);
@@ -280,6 +277,39 @@ fn setPropertyImpl(self: *CSSStyleDeclaration, property_name: []const u8, value:
         ._important = important,
     });
     self._properties.append(&prop._node);
+}
+
+/// CSSOM drops declarations which do not name a known property or contain
+/// invalid declaration-value syntax. The stylesheet parser already removes a
+/// trailing `!important`; a remaining top-level `!` is therefore a malformed
+/// declaration (for example, `color: green!`).
+///
+/// Custom properties intentionally keep their token stream opaque. Their
+/// values are allowed to contain arbitrary component values, including `!`.
+fn isValidDeclaration(property_name: []const u8, value: []const u8) bool {
+    if (std.mem.startsWith(u8, property_name, "--")) return true;
+    if (!isKnownCSSProperty(property_name)) return false;
+
+    var tokenizer = CssTokenizer{ .input = value };
+    var depth: usize = 0;
+    while (tokenizer.next()) |token| {
+        switch (token) {
+            .bad_string, .bad_url => return false,
+            .delim => |character| {
+                if (character == '!' and depth == 0) return false;
+            },
+            .parenthesis_block, .square_bracket_block, .curly_bracket_block, .function => {
+                depth += 1;
+            },
+            .close_parenthesis, .close_square_bracket, .close_curly_bracket => {
+                if (depth == 0) return false;
+                depth -= 1;
+            },
+            else => {},
+        }
+    }
+
+    return depth == 0;
 }
 
 pub fn removeProperty(self: *CSSStyleDeclaration, property_name: []const u8, frame: *Frame) ![]const u8 {
@@ -307,6 +337,7 @@ fn syncStyleAttribute(self: *CSSStyleDeclaration, frame: *Frame) !void {
     const element = self._element orelse return;
     const css_text = try self.getCssText(frame);
     try element.setAttributeSafe(comptime .wrap("style"), .wrap(css_text), frame);
+    self.invalidateInlineStyle(styleFrameFor(self, frame));
 }
 
 pub fn getParentRule(_: *const CSSStyleDeclaration, _: *Frame) ?*CSSRule {
@@ -498,6 +529,71 @@ pub fn findProperty(self: *const CSSStyleDeclaration, name: String) ?*Property {
         node = n.next;
     }
     return null;
+}
+
+const BoxSide = enum { top, right, bottom, left };
+
+fn boxShorthandFor(name: []const u8) ?[]const u8 {
+    if (std.mem.startsWith(u8, name, "margin-") or std.mem.startsWith(u8, name, "padding-")) {
+        const prefix = name[0..7];
+        const suffix = name[7..];
+        if (std.mem.eql(u8, suffix, "top") or
+            std.mem.eql(u8, suffix, "right") or
+            std.mem.eql(u8, suffix, "bottom") or
+            std.mem.eql(u8, suffix, "left"))
+        {
+            return if (std.mem.eql(u8, prefix, "margin-")) "margin" else "padding";
+        }
+    }
+    return null;
+}
+
+fn boxSideFor(name: []const u8) BoxSide {
+    const suffix = name[7..];
+    if (std.mem.eql(u8, suffix, "right")) return .right;
+    if (std.mem.eql(u8, suffix, "bottom")) return .bottom;
+    if (std.mem.eql(u8, suffix, "left")) return .left;
+    return .top;
+}
+
+/// Resolve a CSS box shorthand for CSSOM longhand reads without replacing the
+/// authored shorthand in cssText. This mirrors the four-value expansion used
+/// by CSSOM while keeping the declaration list compact for Stylo.
+fn expandBoxShorthand(value: []const u8, side: BoxSide) ?[]const u8 {
+    var starts: [4]usize = undefined;
+    var ends: [4]usize = undefined;
+    var count: usize = 0;
+    var index: usize = 0;
+
+    while (index < value.len) {
+        while (index < value.len and std.ascii.isWhitespace(value[index])) : (index += 1) {}
+        if (index == value.len) break;
+        if (count == 4) return null;
+        starts[count] = index;
+        var depth: usize = 0;
+        while (index < value.len) {
+            const c = value[index];
+            if (c == '(') {
+                depth += 1;
+            } else if (c == ')' and depth > 0) {
+                depth -= 1;
+            } else if (std.ascii.isWhitespace(c) and depth == 0) {
+                break;
+            }
+            index += 1;
+        }
+        ends[count] = index;
+        count += 1;
+    }
+
+    if (count == 0) return null;
+    const selected = switch (side) {
+        .top => @as(usize, 0),
+        .right => if (count == 1) @as(usize, 0) else @as(usize, 1),
+        .bottom => if (count <= 2) @as(usize, 0) else @as(usize, 2),
+        .left => if (count == 1) @as(usize, 0) else if (count == 2) @as(usize, 1) else if (count == 3) @as(usize, 1) else @as(usize, 3),
+    };
+    return value[starts[selected]..ends[selected]];
 }
 
 fn normalizePropertyName(name: []const u8, buf: []u8) []const u8 {
@@ -946,162 +1042,6 @@ fn isLengthProperty(name: []const u8) bool {
     });
 
     return length_properties.has(name);
-}
-
-fn getDefaultPropertyValue(self: *const CSSStyleDeclaration, name: String) []const u8 {
-    const element = self._element orelse return "";
-
-    if (name.eql(comptime .wrap("font-family"))) {
-        return getDefaultFontFamily(element);
-    }
-    if (name.eql(comptime .wrap("font-size"))) {
-        return getDefaultFontSize(element);
-    }
-    if (name.eql(comptime .wrap("font-style"))) {
-        return "normal";
-    }
-    if (name.eql(comptime .wrap("font-weight"))) {
-        return getDefaultFontWeight(element);
-    }
-    if (name.eql(comptime .wrap("font-variant"))) {
-        return "normal";
-    }
-    if (std.mem.eql(u8, name.str(), "line-height")) {
-        return "normal";
-    }
-    if (std.mem.eql(u8, name.str(), "letter-spacing")) {
-        return "normal";
-    }
-    if (std.mem.eql(u8, name.str(), "word-spacing")) {
-        return "0px";
-    }
-    if (name.eql(comptime .wrap("text-align"))) {
-        return "start";
-    }
-    if (name.eql(comptime .wrap("text-indent"))) {
-        return "0px";
-    }
-    if (name.eql(comptime .wrap("white-space"))) {
-        return "normal";
-    }
-    if (name.eql(comptime .wrap("block-size"))) {
-        return getDefaultBlockSize(element);
-    }
-    if (name.eql(comptime .wrap("inline-size"))) {
-        return getDefaultInlineSize(element);
-    }
-
-    switch (name.len) {
-        5 => {
-            if (name.eql(comptime .wrap("color"))) {
-                return getDefaultColor(element);
-            }
-        },
-        7 => {
-            if (name.eql(comptime .wrap("opacity"))) {
-                return "1";
-            }
-            if (name.eql(comptime .wrap("display"))) {
-                return getDefaultDisplay(element);
-            }
-        },
-        10 => {
-            if (name.eql(comptime .wrap("visibility"))) {
-                return "visible";
-            }
-        },
-        16 => {
-            if (name.eqlSlice("background-color")) {
-                // transparent
-                return "rgba(0, 0, 0, 0)";
-            }
-        },
-        else => {},
-    }
-    return "";
-}
-
-fn getDefaultDisplay(element: *const Element) []const u8 {
-    switch (element._type) {
-        .html => |html| {
-            return switch (html._type) {
-                .anchor, .br, .span, .label, .time, .font, .mod, .quote => "inline",
-                .body, .div, .dl, .p, .heading, .form, .button, .canvas, .details, .dialog, .embed, .head, .html, .hr, .iframe, .img, .input, .li, .link, .meta, .ol, .option, .script, .select, .slot, .style, .template, .textarea, .title, .ul, .media, .area, .base, .datalist, .directory, .fieldset, .frameset, .legend, .map, .marquee, .meter, .object, .optgroup, .output, .param, .picture, .pre, .progress, .source, .table, .table_caption, .table_cell, .table_col, .table_row, .table_section, .track => "block",
-                .generic, .custom, .unknown, .data => blk: {
-                    const tag = element.getTagNameLower();
-                    if (isInlineTag(tag)) break :blk "inline";
-                    break :blk "block";
-                },
-            };
-        },
-        .svg => return "inline",
-    }
-}
-
-fn getDefaultFontFamily(element: *const Element) []const u8 {
-    _ = element;
-    return "Helvetica Neue";
-}
-
-fn getDefaultFontSize(element: *const Element) []const u8 {
-    _ = element;
-    return "16px";
-}
-
-fn getDefaultFontWeight(element: *const Element) []const u8 {
-    switch (element._type) {
-        .html => |html| {
-            return switch (html._type) {
-                .heading, .button => "700",
-                else => "400",
-            };
-        },
-        .svg => return "400",
-    }
-}
-
-fn getDefaultBlockSize(element: *const Element) []const u8 {
-    const display = getDefaultDisplay(element);
-    if (std.mem.eql(u8, display, "inline")) {
-        return "auto";
-    }
-    return "auto";
-}
-
-fn getDefaultInlineSize(element: *const Element) []const u8 {
-    const display = getDefaultDisplay(element);
-    if (std.mem.eql(u8, display, "inline")) {
-        return "auto";
-    }
-    return "auto";
-}
-
-fn isInlineTag(tag_name: []const u8) bool {
-    const inline_tags = [_][]const u8{
-        "abbr",  "b",    "bdi",    "bdo",  "cite", "code", "dfn",
-        "em",    "i",    "kbd",    "mark", "q",    "s",    "samp",
-        "small", "span", "strong", "sub",  "sup",  "time", "u",
-        "var",   "wbr",
-    };
-
-    for (inline_tags) |inline_tag| {
-        if (std.mem.eql(u8, tag_name, inline_tag)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-fn getDefaultColor(element: *const Element) []const u8 {
-    switch (element._type) {
-        .html => |html| {
-            return switch (html._type) {
-                .anchor => "rgb(0, 0, 238)", // blue
-                else => "rgb(0, 0, 0)",
-            };
-        },
-        .svg => return "rgb(0, 0, 0)",
-    }
 }
 
 /// Resolve CSS system colors to realistic **macOS light / Chrome-on-Mac** values.

@@ -1,0 +1,43 @@
+[package]
+name = "koko-layout"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "koko_layout"
+path = "lib.rs"
+crate-type = ["staticlib"]
+
+[dependencies]
+# The layout crate is the single Rust archive linked by Koko. It owns Taffy
+# and Parley and compiles the existing HTML and Stylo bridge modules into the
+# same crate, avoiding multiple staticlib copies of Rust's runtime.
+taffy = { version = "0.16.0", default-features = true }
+parley = { version = "0.13.0", default-features = true }
+
+# Dependencies used by the existing html5ever bridge.
+html5ever = "0.39.0"
+string_cache = "0.9.0"
+typed-arena = "2.0.2"
+tikv-jemallocator = { version = "0.6.1", features = ["stats"] }
+tikv-jemalloc-ctl = { version = "0.6.1", features = ["stats"] }
+xml5ever = "0.39.0"
+encoding_rs = "0.8"
+
+# Dependencies used by the existing Stylo bridge.
+style = { package = "stylo", git = "https://github.com/servo/stylo.git", rev = "0ab78ce95162eca027c874b505b505ef17a85ac8", default-features = false, features = ["servo"] }
+servo_arc = { git = "https://github.com/servo/stylo.git", rev = "0ab78ce95162eca027c874b505b505ef17a85ac8" }
+euclid = "0.22.14"
+app_units = "0.7.8"
+stylo_atoms = { git = "https://github.com/servo/stylo.git", rev = "0ab78ce95162eca027c874b505b505ef17a85ac8" }
+stylo_dom = { git = "https://github.com/servo/stylo.git", rev = "0ab78ce95162eca027c874b505b505ef17a85ac8" }
+stylo_static_prefs = { git = "https://github.com/servo/stylo.git", rev = "0ab78ce95162eca027c874b505b505ef17a85ac8" }
+selectors = { git = "https://github.com/servo/stylo.git", rev = "0ab78ce95162eca027c874b505b505ef17a85ac8" }
+style_traits = { package = "stylo_traits", git = "https://github.com/servo/stylo.git", rev = "0ab78ce95162eca027c874b505b505ef17a85ac8" }
+url = "2.5"
+
+[profile.release]
+lto = true
+codegen-units = 1

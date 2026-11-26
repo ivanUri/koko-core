@@ -19,10 +19,15 @@ const log = @import("../../../../support/log.zig");
 const Node = @import("../../../dom/Node.zig");
 const Element = @import("../../../dom/Element.zig");
 const HtmlElement = @import("../Html.zig");
+const ShadowRoot = @import("../../ShadowRoot.zig");
 
 const Style = @This();
 _proto: *HtmlElement,
 _sheet: ?*CSSStyleSheet = null,
+_scope: ?*ShadowRoot = null,
+_scope_sheet: ?*CSSStyleSheet = null,
+_registered_in_document: bool = false,
+_registered_sheet: ?*CSSStyleSheet = null,
 
 pub fn asElement(self: *Style) *Element {
     return self._proto._proto;
@@ -73,11 +78,53 @@ pub fn setDisabled(self: *Style, disabled: bool, frame: *Frame) !void {
 }
 
 const CSSStyleSheet = @import("../../css/CSSStyleSheet.zig");
-pub fn getSheet(self: *Style, frame: *Frame) !?*CSSStyleSheet {
+
+fn containingShadowRoot(self: *Style) ?*ShadowRoot {
+    var parent = self.asNode().parentNode();
+    var depth: u32 = 0;
+    while (parent) |node| {
+        depth += 1;
+        if (depth > 4096) return null;
+        if (node.is(ShadowRoot)) |root| return root;
+        parent = node.parentNode();
+    }
+    return null;
+}
+
+fn detachScope(self: *Style) void {
+    if (self._scope) |scope| {
+        if (self._scope_sheet) |sheet| {
+            scope.unregisterScopedStyleSheet(sheet);
+        }
+    }
+    self._scope = null;
+    self._scope_sheet = null;
+}
+
+// The sheet accessor can be reached while Document.getStyleSheets() is
+// materializing parser-deferred <style> elements.  Keep its public error set
+// explicit so that Zig does not infer a cyclic error set across those two
+// document/style lifecycle functions.
+pub fn getSheet(self: *Style, frame: *Frame) anyerror!?*CSSStyleSheet {
+    const owner_frame = self.asNode().ownerFrame(frame);
+    const scope = containingShadowRoot(self);
     // Prefer the frame argument over ownerFrame()/isConnected() parent walks.
     // Document parse after re-nav (Google knitsail → Bing) UAF'd walking _parent.
-    const in_document_parse = frame._document_parse_active and frame._parse_mode == .document;
-    if (!in_document_parse and !self.asNode().isConnected()) {
+    const in_document_parse = owner_frame._document_parse_active and owner_frame._parse_mode == .document;
+    // Shadow trees are connected through their host even though the generic
+    // Node.isConnected implementation only walks the light-DOM parent chain.
+    // Keep their scoped sheet eligible for the Stylo snapshot until the root
+    // itself is detached; otherwise a first computed-style read silently
+    // drops every <style> sheet inside a ShadowRoot.
+    if (!in_document_parse and !self.asNode().isConnected() and scope == null) {
+        self.detachScope();
+        if (self._registered_in_document) {
+            if (owner_frame.document.getStyleSheets(owner_frame) catch null) |sheets| {
+                if (self._registered_sheet) |sheet| sheets.remove(sheet);
+            }
+            self._registered_in_document = false;
+            self._registered_sheet = null;
+        }
         self._sheet = null;
         return null;
     }
@@ -86,46 +133,92 @@ pub fn getSheet(self: *Style, frame: *Frame) !?*CSSStyleSheet {
     // case-insensitive match for "text/css".
     const t = self.getType();
     if (t.len != 0 and !std.ascii.eqlIgnoreCase(t, "text/css")) {
+        self.detachScope();
+        if (self._registered_in_document) {
+            if (owner_frame.document.getStyleSheets(owner_frame) catch null) |sheets| {
+                if (self._registered_sheet) |registered_sheet| sheets.remove(registered_sheet);
+            }
+            self._registered_in_document = false;
+            self._registered_sheet = null;
+        }
         self._sheet = null;
         return null;
     }
 
-    if (self._sheet) |sheet| return sheet;
-    const sheet = try CSSStyleSheet.initWithOwner(self.asElement(), frame);
-    self._sheet = sheet;
+    const sheet = self._sheet orelse blk: {
+        const created = try CSSStyleSheet.initWithOwner(self.asElement(), owner_frame);
+        self._sheet = created;
+        break :blk created;
+    };
 
-    const sheets = try frame.document.getStyleSheets(frame);
-    try sheets.add(sheet, frame);
+    if (scope) |shadow_root| {
+        if (self._scope != shadow_root or self._scope_sheet != sheet) {
+            // Register before removing the old scope so a failed allocation
+            // leaves the current stylesheet ownership usable.
+            try shadow_root.registerScopedStyleSheet(sheet);
+            self.detachScope();
+            if (self._registered_in_document) {
+                if (owner_frame.document.getStyleSheets(owner_frame) catch null) |sheets| {
+                    if (self._registered_sheet) |registered_sheet| sheets.remove(registered_sheet);
+                }
+                self._registered_in_document = false;
+                self._registered_sheet = null;
+            }
+            self._scope = shadow_root;
+            self._scope_sheet = sheet;
+        }
+    } else if (self._scope != null or self._scope_sheet != null or !self._registered_in_document or self._registered_sheet != sheet) {
+        const sheets = try owner_frame.document.getStyleSheets(owner_frame);
+        if (!self._registered_in_document or self._registered_sheet != sheet) {
+            if (self._registered_sheet) |registered_sheet| {
+                sheets.remove(registered_sheet);
+            }
+            try sheets.add(sheet, owner_frame);
+            self._registered_in_document = true;
+            self._registered_sheet = sheet;
+        }
+        self.detachScope();
+    }
 
-    return sheet;
+    return self._sheet;
+}
+
+pub fn sourceTextChanged(self: *Style) void {
+    if (self._sheet) |sheet| sheet.sourceTextChanged();
 }
 
 pub fn styleAddedCallback(self: *Style, frame: *Frame) !void {
+    const owner_frame = self.asNode().ownerFrame(frame);
     // Main-document HTML parse: do not allocate StyleSheetList / CSSStyleSheet
     // mid-html5ever. After Google knitsail re-nav, ArrayList growth there
-    // SIGSEGV'd (Google Search → Bing). Mark StyleManager dirty; sheet is
+    // SIGSEGV'd (Google Search → Bing). Invalidate Stylo; the sheet is
     // created lazily on document.styleSheets / getSheet after parse.
-    const mid_document_parse = frame._document_parse_active and frame._parse_mode == .document;
-    if (mid_document_parse) {
-        frame._style_manager.sheetModified();
+    const mid_document_parse = owner_frame._document_parse_active and owner_frame._parse_mode == .document;
+    // Static parser-created styles are deferred until the document stylesheet
+    // snapshot is materialized. If CSSOM has already materialized that list,
+    // however, a dynamically appended <style> must be registered immediately
+    // or document.styleSheets will keep returning the previous last sheet.
+    const defer_registration = mid_document_parse and owner_frame.document._style_sheets == null;
+    if (defer_registration) {
+        owner_frame.styleSheetChanged(self.asNode());
         return;
     }
 
     // Dynamic insert / fragment: register sheet now (spec + CSSOM probes).
-    const sheet = self.getSheet(frame) catch |err| blk: {
-        log.warn(.frame, "style sheet register", .{ .err = err, .url = frame.url });
+    const sheet = self.getSheet(owner_frame) catch |err| blk: {
+        log.warn(.frame, "style sheet register", .{ .err = err, .url = owner_frame.url });
         break :blk null;
     };
     if (sheet != null) {
-        frame._style_manager.sheetModified();
+        owner_frame.styleSheetChanged(self.asNode());
     }
 
-    if (frame.isGoingAway()) {
+    if (owner_frame.isGoingAway()) {
         return;
     }
 
-    frame.queueLoad(self._proto) catch |err| {
-        log.warn(.frame, "style queueLoad", .{ .err = err, .url = frame.url });
+    owner_frame.queueLoad(self._proto) catch |err| {
+        log.warn(.frame, "style queueLoad", .{ .err = err, .url = owner_frame.url });
     };
 }
 

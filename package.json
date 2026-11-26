@@ -16,6 +16,8 @@
     "test:koko-pool": "node --test bench/tests/koko-pool.test.mjs",
     "export-site": "node scripts/export-site.js",
     "test:misa": "node scripts/test-misa-id.js",
-    "test:misa:login": "node scripts/test-misa-login.mjs"
+    "test:misa:login": "node scripts/test-misa-login.mjs",
+    "compatibility": "node compatibility/cli.mjs",
+    "compatibility:test": "node --test compatibility/tests/*.test.mjs"
   }
 }

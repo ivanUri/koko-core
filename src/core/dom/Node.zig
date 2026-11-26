@@ -42,6 +42,16 @@ _proto: *EventTarget,
 _parent: ?*Node = null,
 _children: ?*Children = null,
 _child_link: LinkedList.Node = .{},
+// Detached nodes retain their owner document even when a caller from another
+// browsing context performs the mutation.  The tree remains the only DOM
+// representation; this is ownership metadata, not a second tree.
+_owner_document: ?*Document = null,
+// Stable per-frame identity used by the Stylo adapter. This is metadata on
+// the authoritative Zig node, not a second DOM-side table. The frame
+// component changes when a node is adopted into another browsing context, so
+// stale Rust style handles cannot alias a new document node.
+_stylo_frame_id: u32 = 0,
+_stylo_node_id: u32 = 0,
 
 // Lookup for nodes that have a different owner document than frame.document
 pub const OwnerDocumentLookup = std.AutoHashMapUnmanaged(*Node, *Document);
@@ -225,7 +235,10 @@ pub fn appendChild(self: *Node, child: *Node, frame: *Frame) !*Node {
 
     try validateNodeInsertion(self, child);
 
-    frame.domChanged();
+    const owner_frame = self.ownerFrame(frame);
+    const source_frame = if (child._parent) |parent| parent.ownerFrame(owner_frame) else owner_frame;
+
+    owner_frame.domChangedForNode(self);
 
     // If the child is currently connected, and if its new parent is connected,
     // then we can remove + add a bit more efficiently (we don't have to fully
@@ -233,33 +246,34 @@ pub fn appendChild(self: *Node, child: *Node, frame: *Frame) !*Node {
     const child_connected = child.isConnected();
 
     // Check if we're adopting the node to a different document
-    const child_owner = child.ownerDocument(frame);
-    const parent_owner = self.ownerDocument(frame) orelse self.as(Document);
+    const child_owner = child.ownerDocument(owner_frame);
+    const parent_owner = self.ownerDocument(owner_frame) orelse self.as(Document);
     const adopting_to_new_document = child_owner != null and child_owner.? != parent_owner;
 
     if (child._parent) |parent| {
+        if (source_frame != owner_frame) source_frame.domChangedForNode(parent);
         // we can signal removeNode that the child will remain connected
         // (when it's appended to self) so that it can be a bit more efficient.
         // But on cross-document moves the child must fully disconnect from the
         // source document (firing disconnectedCallback) before adoption.
-        frame.removeNode(parent, child, .{
+        source_frame.removeNode(parent, child, .{
             .will_be_reconnected = self.isConnected() and !adopting_to_new_document,
         });
     }
 
     // Adopt the node tree if moving between documents
     if (adopting_to_new_document) {
-        try frame.adoptNodeTree(child, child_owner.?, parent_owner);
+        try owner_frame.adoptNodeTree(child, child_owner.?, parent_owner);
     }
 
-    try frame.appendNode(self, child, .{
+    try owner_frame.appendNode(self, child, .{
         .child_already_connected = child_connected,
         .adopting_to_new_document = adopting_to_new_document,
     });
-    frame.flushPendingSyncIframeLoads();
-    frame.drainMicrotasksAfterDomInsertion();
+    owner_frame.flushPendingSyncIframeLoads();
+    owner_frame.drainMicrotasksAfterDomInsertion();
     // yb() Promise executor calls I() after appendChild; drain await continuations.
-    frame.pumpSameTurnPromiseContinuations();
+    owner_frame.pumpSameTurnPromiseContinuations();
     return child;
 }
 
@@ -308,24 +322,25 @@ pub fn getChildTextContent(self: *Node, writer: *std.Io.Writer) error{WriteFaile
 }
 
 pub fn setTextContent(self: *Node, data: []const u8, frame: *Frame) !void {
+    const owner_frame = self.ownerFrame(frame);
     switch (self._type) {
         .element => |el| {
             if (data.len == 0) {
-                return el.replaceChildren(&.{}, frame);
+                return el.replaceChildren(&.{}, owner_frame);
             }
-            return el.replaceChildren(&.{.{ .text = data }}, frame);
+            return el.replaceChildren(&.{.{ .text = data }}, owner_frame);
         },
         // Per spec, setting textContent on CharacterData runs replaceData(0, length, value)
-        .cdata => |c| try c.replaceData(0, c.getLength(), .{ .value = data }, frame),
+        .cdata => |c| try c.replaceData(0, c.getLength(), .{ .value = data }, owner_frame),
         .document => {},
         .document_type => {},
         .document_fragment => |frag| {
             if (data.len == 0) {
-                return frag.replaceChildren(&.{}, frame);
+                return frag.replaceChildren(&.{}, owner_frame);
             }
-            return frag.replaceChildren(&.{.{ .text = data }}, frame);
+            return frag.replaceChildren(&.{.{ .text = data }}, owner_frame);
         },
-        .attribute => |attr| return attr.setValue(.wrap(data), frame),
+        .attribute => |attr| return attr.setValue(.wrap(data), owner_frame),
     }
 }
 
@@ -535,8 +550,12 @@ pub fn ownerDocument(self: *const Node, frame: *const Frame) ?*Document {
         return current._type.document;
     }
 
-    // Otherwise, this is a detached node. Check if it has a specific owner
-    // document registered (for nodes created via non-main documents).
+    // Otherwise, this is a detached node. Preserve the explicit owner before
+    // consulting the legacy per-frame lookup used by older allocations.
+    if (self._owner_document) |owner| return owner;
+
+    // Check if it has a specific owner document registered (for nodes created
+    // via non-main documents).
     if (frame._node_owner_documents.get(@constCast(self))) |owner| {
         return owner;
     }
@@ -583,11 +602,12 @@ pub fn isSameNode(self: *const Node, other: ?*Node) bool {
 }
 
 pub fn removeChild(self: *Node, child: *Node, frame: *Frame) !*Node {
+    const owner_frame = self.ownerFrame(frame);
     var it = self.childrenIterator();
     while (it.next()) |n| {
         if (n == child) {
-            frame.domChanged();
-            frame.removeNode(self, child, .{ .will_be_reconnected = false });
+            owner_frame.domChangedForNode(self);
+            owner_frame.removeNode(self, child, .{ .will_be_reconnected = false });
             return child;
         }
     }
@@ -601,7 +621,7 @@ pub fn insertBefore(self: *Node, new_node: *Node, ref_node_: ?*Node, frame: *Fra
 
     // special case: if nodes are the same, ignore the change.
     if (new_node == ref_node_) {
-        frame.domChanged();
+        self.ownerFrame(frame).domChangedForNode(self);
 
         if (frame.hasMutationObservers()) {
             const parent = new_node._parent.?;
@@ -628,22 +648,25 @@ pub fn insertBefore(self: *Node, new_node: *Node, ref_node_: ?*Node, frame: *Fra
     const child_already_connected = new_node.isConnected();
 
     // Check if we're adopting the node to a different document
-    const child_owner = new_node.ownerDocument(frame);
-    const parent_owner = self.ownerDocument(frame) orelse self.as(Document);
+    const owner_frame = self.ownerFrame(frame);
+    const source_frame = if (new_node._parent) |parent| parent.ownerFrame(owner_frame) else owner_frame;
+    const child_owner = new_node.ownerDocument(owner_frame);
+    const parent_owner = self.ownerDocument(owner_frame) orelse self.as(Document);
     const adopting_to_new_document = child_owner != null and child_owner.? != parent_owner;
 
-    frame.domChanged();
+    owner_frame.domChangedForNode(self);
     const will_be_reconnected = self.isConnected() and !adopting_to_new_document;
     if (new_node._parent) |parent| {
-        frame.removeNode(parent, new_node, .{ .will_be_reconnected = will_be_reconnected });
+        if (source_frame != owner_frame) source_frame.domChangedForNode(parent);
+        source_frame.removeNode(parent, new_node, .{ .will_be_reconnected = will_be_reconnected });
     }
 
     // Adopt the node tree if moving between documents
     if (adopting_to_new_document) {
-        try frame.adoptNodeTree(new_node, child_owner.?, parent_owner);
+        try owner_frame.adoptNodeTree(new_node, child_owner.?, parent_owner);
     }
 
-    try frame.insertNodeRelative(
+    try owner_frame.insertNodeRelative(
         self,
         new_node,
         .{ .before = ref_node },
@@ -657,20 +680,21 @@ pub fn insertBefore(self: *Node, new_node: *Node, ref_node_: ?*Node, frame: *Fra
 }
 
 pub fn replaceChild(self: *Node, new_child: *Node, old_child: *Node, frame: *Frame) !*Node {
+    const owner_frame = self.ownerFrame(frame);
     if (old_child._parent == null or old_child._parent.? != self) {
         return error.HierarchyError;
     }
 
     try validateNodeInsertion(self, new_child);
 
-    _ = try self.insertBefore(new_child, old_child, frame);
+    _ = try self.insertBefore(new_child, old_child, owner_frame);
 
     // Special case: if we replace a node by itself, we don't remove it.
     // insertBefore is an noop in this case.
     // Re-check parent after insertBefore since callbacks (e.g. connectedCallback)
     // could have already removed old_child from self.
     if (new_child != old_child and old_child._parent == self) {
-        frame.removeNode(self, old_child, .{ .will_be_reconnected = false });
+        owner_frame.removeNode(self, old_child, .{ .will_be_reconnected = false });
     }
 
     return old_child;
@@ -1075,51 +1099,53 @@ pub fn getElementsByClassName(self: *Node, class_name: []const u8, frame: *Frame
 /// Shared implementation of replaceChildren for Element, Document, and DocumentFragment.
 /// Validates all nodes, removes existing children, then appends new children.
 pub fn replaceChildren(self: *Node, nodes: []const NodeOrText, frame: *Frame) !void {
+    const owner_frame = self.ownerFrame(frame);
     // First pass: validate all nodes and collect them
     // We need to collect because DocumentFragments contribute their children, not themselves
     var children_to_add: std.ArrayList(*Node) = .empty;
 
     for (nodes) |node_or_text| {
-        const child = try node_or_text.toNode(frame);
+        const child = try node_or_text.toNode(owner_frame);
 
         // DocumentFragments contribute their children, not themselves
         if (child.is(DocumentFragment)) |frag| {
             var frag_it = frag.asNode().childrenIterator();
             while (frag_it.next()) |frag_child| {
                 try validateNodeInsertion(self, frag_child);
-                try children_to_add.append(frame.call_arena, frag_child);
+                try children_to_add.append(owner_frame.call_arena, frag_child);
             }
         } else {
             try validateNodeInsertion(self, child);
-            try children_to_add.append(frame.call_arena, child);
+            try children_to_add.append(owner_frame.call_arena, child);
         }
     }
 
-    frame.domChanged();
+    owner_frame.domChangedForNode(self);
 
     // Remove all existing children
     var it = self.childrenIterator();
     while (it.next()) |child| {
-        frame.removeNode(self, child, .{ .will_be_reconnected = false });
+        owner_frame.removeNode(self, child, .{ .will_be_reconnected = false });
     }
 
     // Append new children
     const parent_is_connected = self.isConnected();
-    const parent_owner = self.ownerDocument(frame) orelse self.as(Document);
+    const parent_owner = self.ownerDocument(owner_frame) orelse self.as(Document);
     for (children_to_add.items) |child| {
         // Snapshot owner and connected state BEFORE removeNode.
         // After removeNode the node loses its parent chain; ownerDocument()
         // would fall back to frame.document, making adoption silently false.
-        const child_owner = child.ownerDocument(frame);
+        const child_owner = child.ownerDocument(owner_frame);
         const child_was_connected = child.isConnected();
         const adopting = child_owner != null and child_owner.? != parent_owner;
         if (child._parent) |previous_parent| {
-            frame.removeNode(previous_parent, child, .{ .will_be_reconnected = parent_is_connected and !adopting });
+            const source_frame = previous_parent.ownerFrame(owner_frame);
+            source_frame.removeNode(previous_parent, child, .{ .will_be_reconnected = parent_is_connected and !adopting });
         }
         if (adopting) {
-            try frame.adoptNodeTree(child, child_owner.?, parent_owner);
+            try owner_frame.adoptNodeTree(child, child_owner.?, parent_owner);
         }
-        try frame.appendNode(self, child, .{
+        try owner_frame.appendNode(self, child, .{
             .child_already_connected = child_was_connected,
             .adopting_to_new_document = adopting,
         });
