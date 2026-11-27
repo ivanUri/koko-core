@@ -903,6 +903,7 @@ pub const IDBIndex = struct {
         limit: ?u32,
         keys_only: bool,
         count_only: bool = false,
+        single: bool = false,
 
         fn run(ptr: *anyopaque) anyerror!?u32 {
             const self: *IndexRead = @ptrCast(@alignCast(ptr));
@@ -915,6 +916,14 @@ pub const IDBIndex = struct {
             defer self.index._frame._page.frame_arena.free(entries);
             if (self.count_only) {
                 try self.request.succeed(try scope.local.zigValueToJs(entries.len, .{}));
+            } else if (self.single) {
+                if (entries.len == 0) {
+                    try self.request.succeed(try scope.local.zigValueToJs(js.Undefined{}, .{}));
+                } else {
+                    const entry = entries[0];
+                    const value = if (self.keys_only) entry.record.key.local(&scope.local) else entry.record.value.local(&scope.local);
+                    try self.request.succeed(value);
+                }
             } else {
                 const max = self.limit orelse std.math.maxInt(u32);
                 const entry_count = @min(entries.len, @as(usize, max));
@@ -957,7 +966,7 @@ pub const IDBIndex = struct {
         }
     };
 
-    fn read(self: *IDBIndex, query: ?js.Value, limit: ?u32, keys_only: bool, count_only: bool) !*IDBRequest {
+    fn read(self: *IDBIndex, query: ?js.Value, limit: ?u32, keys_only: bool, count_only: bool, single: bool) !*IDBRequest {
         if (!self._transaction._active) return error.TransactionInactiveError;
         const request = try self._frame._factory.eventTarget(IDBRequest{
             ._proto = undefined,
@@ -974,6 +983,7 @@ pub const IDBIndex = struct {
             .limit = limit,
             .keys_only = keys_only,
             .count_only = count_only,
+            .single = single,
         });
         try self._frame.js.scheduler.add(callback, IndexRead.run, 0, .{
             .name = "IndexedDB index request",
@@ -983,23 +993,23 @@ pub const IDBIndex = struct {
     }
 
     pub fn get(self: *IDBIndex, query: js.Value) !*IDBRequest {
-        return self.read(query, 1, false, false);
+        return self.read(query, 1, false, false, true);
     }
 
     pub fn getKey(self: *IDBIndex, query: js.Value) !*IDBRequest {
-        return self.read(query, 1, true, false);
+        return self.read(query, 1, true, false, true);
     }
 
     pub fn getAll(self: *IDBIndex, query: ?js.Value, limit: ?u32) !*IDBRequest {
-        return self.read(query, limit, false, false);
+        return self.read(query, limit, false, false, false);
     }
 
     pub fn getAllKeys(self: *IDBIndex, query: ?js.Value, limit: ?u32) !*IDBRequest {
-        return self.read(query, limit, true, false);
+        return self.read(query, limit, true, false, false);
     }
 
     pub fn count(self: *IDBIndex, query: ?js.Value) !*IDBRequest {
-        return self.read(query, null, true, true);
+        return self.read(query, null, true, true, false);
     }
 
     pub const JsApi = struct {
