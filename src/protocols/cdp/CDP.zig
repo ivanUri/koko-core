@@ -1147,9 +1147,39 @@ pub const BrowserContext = struct {
         const browser = self.session.browser;
         browser.cdp_eval_depth += 1;
         defer browser.cdp_eval_depth -= 1;
+
+        // V8's Runtime.evaluate(awaitPromise) enters the inspector client's
+        // runMessageLoopOnPause while it waits. Give that loop one bounded
+        // host turn at a time so IDB completion tasks can resolve the promise.
+        // Nested installation is refused by Inspector; its existing Env gates
+        // remain the authority for whether a task may enter V8.
+        const inspector = browser.env.inspector;
+        const pause_loop_installed = if (inspector) |i|
+            i.setPauseLoop(@ptrCast(browser), runInspectorHostTurn)
+        else
+            false;
+        defer if (pause_loop_installed) {
+            inspector.?.clearPauseLoop();
+        };
+
         self.inspector_session.send(msg);
         browser.env.runMicrotasks(.unknown);
         browser.env.pumpMessageLoop();
+    }
+
+    fn runInspectorHostTurn(ctx: *anyopaque) js.Inspector.PauseLoopStep {
+        const browser: *Browser = @ptrCast(@alignCast(ctx));
+        if (browser.isHostTerminationRequested()) return .stop;
+
+        // runMacrotasksCdpSlice already applies the Env lifecycle/re-entry
+        // gates, drains the microtask checkpoint around one scheduler task,
+        // pumps bounded V8 platform work, and services readable CDP input.
+        const ran = browser.runMacrotasksCdpSlice() catch return .stop;
+        if (ran) return .ran;
+
+        // Inspector sleeps between idle turns. This keeps a pending promise
+        // responsive without turning an unresolved promise into a hot loop.
+        return .idle;
     }
 
     pub fn onInspectorResponse(ctx: *anyopaque, _: u32, msg: []const u8) void {

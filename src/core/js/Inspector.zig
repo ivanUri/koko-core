@@ -16,6 +16,7 @@ const js = @import("js.zig");
 const v8 = js.v8;
 
 const TaggedOpaque = @import("TaggedOpaque.zig");
+const Timer = @import("../../support/timer.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -32,12 +33,36 @@ const IS_DEBUG = @import("builtin").mode == .Debug;
 // (not much at all)
 const Inspector = @This();
 
+/// One bounded host turn while V8 is waiting for an inspector promise.
+///
+/// V8 calls `runMessageLoopOnPause` for Runtime.evaluate with awaitPromise.
+/// The callback must not run an unbounded scheduler drain: host tasks can
+/// continuously enqueue more work. It also must not return immediately while
+/// the promise is pending, because V8 will then wait forever for quit().
+pub const PauseLoopStep = enum { ran, idle, stop };
+pub const PauseLoopRunner = *const fn (ctx: *anyopaque) PauseLoopStep;
+
+const PauseLoop = struct {
+    ctx: *anyopaque,
+    run: PauseLoopRunner,
+};
+
+const PAUSE_LOOP_IDLE_NS: u64 = std.time.ns_per_ms;
+
 unique_id: i64,
 isolate: *v8.Isolate,
 handle: *v8.Inspector,
 client: *v8.InspectorClientImpl,
 default_context: ?v8.Global,
 session: ?Session,
+
+// Installed only around one CDP inspector dispatch. The CDP owner supplies a
+// single bounded Browser.runMacrotasksCdpSlice turn; keeping this hook here
+// lets V8's awaitPromise loop make progress without making Inspector depend on
+// Browser/Env types.
+pause_loop: ?PauseLoop = null,
+pause_loop_quit: bool = false,
+pause_loop_active: bool = false,
 
 pub fn init(allocator: Allocator, isolate: *v8.Isolate) !*Inspector {
     const self = try allocator.create(Inspector);
@@ -50,6 +75,9 @@ pub fn init(allocator: Allocator, isolate: *v8.Isolate) !*Inspector {
         .client = undefined,
         .handle = undefined,
         .default_context = null,
+        .pause_loop = null,
+        .pause_loop_quit = false,
+        .pause_loop_active = false,
     };
 
     self.client = v8.v8_inspector__Client__IMPL__CREATE();
@@ -88,6 +116,37 @@ pub fn startSession(self: *Inspector, ctx: anytype) *Session {
 pub fn stopSession(self: *Inspector) void {
     self.session.?.deinit();
     self.session = null;
+}
+
+/// Install the host turn used by V8's awaitPromise message loop. Refuse a
+/// nested installation: the outer loop owns the isolate and a second loop
+/// would make its quit state ambiguous.
+pub fn setPauseLoop(self: *Inspector, ctx: *anyopaque, run: PauseLoopRunner) bool {
+    if (self.pause_loop_active or self.pause_loop != null) return false;
+    self.pause_loop = .{ .ctx = ctx, .run = run };
+    self.pause_loop_quit = false;
+    return true;
+}
+
+pub fn clearPauseLoop(self: *Inspector) void {
+    self.pause_loop_quit = true;
+    self.pause_loop = null;
+}
+
+fn runPauseLoop(self: *Inspector) void {
+    if (self.pause_loop == null or self.pause_loop_active) return;
+
+    self.pause_loop_active = true;
+    defer self.pause_loop_active = false;
+
+    while (!self.pause_loop_quit) {
+        const loop = self.pause_loop orelse break;
+        switch (loop.run(loop.ctx)) {
+            .ran => {},
+            .idle => Timer.sleepNanoseconds(PAUSE_LOOP_IDLE_NS),
+            .stop => break,
+        }
+    }
 }
 
 // From CDP docs
@@ -396,7 +455,8 @@ pub export fn v8_inspector__Client__IMPL__runMessageLoopOnPause(
     data: *anyopaque,
     context_group_id: c_int,
 ) callconv(.c) void {
-    _ = data;
+    const inspector: *Inspector = @ptrCast(@alignCast(data));
+    inspector.runPauseLoop();
     _ = context_group_id;
 }
 
@@ -404,7 +464,8 @@ pub export fn v8_inspector__Client__IMPL__quitMessageLoopOnPause(
     _: *v8.InspectorClientImpl,
     data: *anyopaque,
 ) callconv(.c) void {
-    _ = data;
+    const inspector: *Inspector = @ptrCast(@alignCast(data));
+    inspector.pause_loop_quit = true;
 }
 
 pub export fn v8_inspector__Client__IMPL__runIfWaitingForDebugger(
