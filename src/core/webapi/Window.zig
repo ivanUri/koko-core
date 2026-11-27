@@ -65,6 +65,41 @@ pub fn registerTypes() []const type {
 
 const Window = @This();
 
+const style_metric_fields = .{
+    .{ .name = "stylesheetRebuilds", .member = "stylesheet_rebuilds" },
+    .{ .name = "stylesheetParses", .member = "stylesheet_parses" },
+    .{ .name = "stylesheetBytes", .member = "stylesheet_bytes" },
+    .{ .name = "domInvalidations", .member = "dom_invalidations" },
+    .{ .name = "restyledNodes", .member = "restyled_nodes" },
+    .{ .name = "computedCacheHits", .member = "computed_cache_hits" },
+    .{ .name = "computedCacheMisses", .member = "computed_cache_misses" },
+    .{ .name = "styleFfiCalls", .member = "ffi_calls" },
+    .{ .name = "styleCopiedBytes", .member = "copied_bytes" },
+};
+
+const layout_metric_fields = .{
+    .{ .name = "layoutComputations", .member = "layout_computations" },
+    .{ .name = "layoutStyleUpdates", .member = "style_updates" },
+    .{ .name = "layoutStyleSkips", .member = "style_skips" },
+    .{ .name = "layoutTextStyleUpdates", .member = "text_style_updates" },
+    .{ .name = "layoutTextStyleSkips", .member = "text_style_skips" },
+    .{ .name = "layoutTextUpdates", .member = "text_updates" },
+    .{ .name = "layoutTextSkips", .member = "text_skips" },
+    .{ .name = "layoutChildUpdates", .member = "child_updates" },
+    .{ .name = "layoutChildSkips", .member = "child_skips" },
+    .{ .name = "textMeasureCacheHits", .member = "text_measure_cache_hits" },
+    .{ .name = "textMeasureCacheMisses", .member = "text_measure_cache_misses" },
+    .{ .name = "textMeasureCacheEvictions", .member = "text_measure_cache_evictions" },
+};
+
+fn setDiagnosticMetrics(object: js.Object, metrics: anytype, comptime fields: anytype) !void {
+    inline for (fields) |field| {
+        if (!(try object.set(field.name, @field(metrics, field.member), .{}))) {
+            return error.CreateObjectFailure;
+        }
+    }
+}
+
 _proto: *EventTarget,
 _frame: *Frame,
 _document: *Document,
@@ -710,47 +745,11 @@ pub fn getKokoStyleEngine(self: *const Window) !js.Object {
     }
     const style_metrics = self._frame.styleEngine().metrics();
     if (style_metrics.status == .ok) {
-        if (!(try result.set("stylesheetRebuilds", style_metrics.value.stylesheet_rebuilds, .{}))) {
-            return error.CreateObjectFailure;
-        }
-        if (!(try result.set("stylesheetParses", style_metrics.value.stylesheet_parses, .{}))) {
-            return error.CreateObjectFailure;
-        }
-        if (!(try result.set("domInvalidations", style_metrics.value.dom_invalidations, .{}))) {
-            return error.CreateObjectFailure;
-        }
-        if (!(try result.set("restyledNodes", style_metrics.value.restyled_nodes, .{}))) {
-            return error.CreateObjectFailure;
-        }
-        if (!(try result.set("computedCacheHits", style_metrics.value.computed_cache_hits, .{}))) {
-            return error.CreateObjectFailure;
-        }
-        if (!(try result.set("computedCacheMisses", style_metrics.value.computed_cache_misses, .{}))) {
-            return error.CreateObjectFailure;
-        }
-        if (!(try result.set("styleFfiCalls", style_metrics.value.ffi_calls, .{}))) {
-            return error.CreateObjectFailure;
-        }
-        if (!(try result.set("styleCopiedBytes", style_metrics.value.copied_bytes, .{}))) {
-            return error.CreateObjectFailure;
-        }
+        try setDiagnosticMetrics(result, style_metrics.value, style_metric_fields);
     }
     const layout_metrics = self._frame.layoutEngine().metrics();
     if (layout_metrics.status == .ok) {
-        if (!(try result.set("layoutComputations", layout_metrics.value.layout_computations, .{}))) {
-            return error.CreateObjectFailure;
-        }
-        if (!(try result.set("layoutStyleUpdates", layout_metrics.value.style_updates, .{}))) return error.CreateObjectFailure;
-        if (!(try result.set("layoutStyleSkips", layout_metrics.value.style_skips, .{}))) return error.CreateObjectFailure;
-        if (!(try result.set("layoutTextStyleUpdates", layout_metrics.value.text_style_updates, .{}))) return error.CreateObjectFailure;
-        if (!(try result.set("layoutTextStyleSkips", layout_metrics.value.text_style_skips, .{}))) return error.CreateObjectFailure;
-        if (!(try result.set("layoutTextUpdates", layout_metrics.value.text_updates, .{}))) return error.CreateObjectFailure;
-        if (!(try result.set("layoutTextSkips", layout_metrics.value.text_skips, .{}))) return error.CreateObjectFailure;
-        if (!(try result.set("layoutChildUpdates", layout_metrics.value.child_updates, .{}))) return error.CreateObjectFailure;
-        if (!(try result.set("layoutChildSkips", layout_metrics.value.child_skips, .{}))) return error.CreateObjectFailure;
-        if (!(try result.set("textMeasureCacheHits", layout_metrics.value.text_measure_cache_hits, .{}))) return error.CreateObjectFailure;
-        if (!(try result.set("textMeasureCacheMisses", layout_metrics.value.text_measure_cache_misses, .{}))) return error.CreateObjectFailure;
-        if (!(try result.set("textMeasureCacheEvictions", layout_metrics.value.text_measure_cache_evictions, .{}))) return error.CreateObjectFailure;
+        try setDiagnosticMetrics(result, layout_metrics.value, layout_metric_fields);
     }
     var error_bytes = self._frame.call_arena.alloc(u8, 4096) catch return error.OutOfMemory;
     const error_result = self._frame.styleEngine().lastError(error_bytes);
