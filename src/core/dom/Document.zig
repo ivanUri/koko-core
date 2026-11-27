@@ -27,6 +27,7 @@ const Selector = @import("../webapi/selector/Selector.zig");
 const DOMTreeWalker = @import("DOMTreeWalker.zig");
 const DOMNodeIterator = @import("DOMNodeIterator.zig");
 const DOMImplementation = @import("DOMImplementation.zig");
+const ViewTransition = @import("ViewTransition.zig");
 const StyleSheetList = @import("../webapi/css/StyleSheetList.zig");
 const FontFaceSet = @import("../webapi/css/FontFaceSet.zig");
 const Selection = @import("../webapi/Selection.zig");
@@ -1249,6 +1250,12 @@ pub fn hasFocus(_: *Document) bool {
     return true;
 }
 
+pub fn startViewTransition(self: *Document, callback: ?js.Function.Temp, frame: *Frame) !*ViewTransition {
+    const doc_frame = self._frame orelse return error.InvalidStateError;
+    if (doc_frame.document != self) return error.InvalidStateError;
+    return ViewTransition.init(callback, frame);
+}
+
 pub fn setAdoptedStyleSheets(self: *Document, sheets: js.Object) !void {
     self._adopted_style_sheets = try sheets.persist();
     if (self._frame) |frame| frame.adoptedStyleSheetsChanged();
@@ -1508,6 +1515,7 @@ pub const JsApi = struct {
         }
     }.defaultView, null, .{ .null_as_undefined = false });
     pub const hasFocus = bridge.function(Document.hasFocus, .{});
+    pub const startViewTransition = bridge.function(Document.startViewTransition, .{ .dom_exception = true });
 
     pub const prerendering = bridge.attribute(false, .{});
     pub const characterSet = bridge.accessor(getCharacterSet, null, .{});

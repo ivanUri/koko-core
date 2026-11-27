@@ -69,8 +69,6 @@ const names = [_][]const u8{
     "MathMLElement",
     // v110
     "AudioSinkInfo",
-    // v111–115
-    "ViewTransition",
     // CreepJS features (blinkWindow v72–v93) — in window-keys baseline, not full bridge types
     "FeaturePolicy",
     "FragmentDirective",
