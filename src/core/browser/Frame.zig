@@ -552,6 +552,10 @@ _layout_engine: LayoutEngine,
 _layout_node_handles: std.AutoHashMapUnmanaged(*Node, u64) = .empty,
 _layout_geometry: std.AutoHashMapUnmanaged(*Node, LayoutGeometryAbi) = .empty,
 _layout_extension_nodes: std.AutoHashMapUnmanaged(*Node, LayoutExtensionReason) = .empty,
+// Reused scratch storage for one Stylo property query at a time. Successful
+// values are copied at their actual length into call_arena; this avoids a
+// 4096-byte arena reservation for every property on every layout node.
+_layout_property_buffer: [4096]u8 = undefined,
 _layout_generation: u64 = 0,
 _layout_dirty: bool = true,
 _layout_building: bool = false,
@@ -1030,17 +1034,22 @@ fn appendLayoutProperties(
 ) LayoutModule.Status {
     const node_id = self.styleNodeId(node);
     for (layout_property_names) |name| {
-        var output = self.call_arena.alloc(u8, 4096) catch return .internal_error;
+        var output: []u8 = self._layout_property_buffer[0..];
+        var owns_output = false;
         var result = self._style_engine.layoutProperty(node_id, name, output);
         if (result.status == .output_buffer_too_small and result.bytes_written > output.len) {
             output = self.call_arena.alloc(u8, result.bytes_written) catch return .internal_error;
+            owns_output = true;
             result = self._style_engine.layoutProperty(node_id, name, output);
         }
         if (!result.isOk()) return switch (result.status) {
             .bridge_unsupported => .unsupported,
             else => .internal_error,
         };
-        const value = output[0..result.bytes_written];
+        const value = if (owns_output)
+            output[0..result.bytes_written]
+        else
+            self.call_arena.dupe(u8, output[0..result.bytes_written]) catch return .internal_error;
         properties.append(self.call_arena, .{ .name = name, .value = value }) catch return .internal_error;
     }
     return .ok;
@@ -1053,20 +1062,23 @@ fn appendTextProperties(
 ) LayoutModule.Status {
     const node_id = self.styleNodeId(node);
     for (text_property_names) |name| {
-        var output = self.call_arena.alloc(u8, 4096) catch return .internal_error;
+        var output: []u8 = self._layout_property_buffer[0..];
+        var owns_output = false;
         var result = self._style_engine.layoutProperty(node_id, name, output);
         if (result.status == .output_buffer_too_small and result.bytes_written > output.len) {
             output = self.call_arena.alloc(u8, result.bytes_written) catch return .internal_error;
+            owns_output = true;
             result = self._style_engine.layoutProperty(node_id, name, output);
         }
         if (!result.isOk()) return switch (result.status) {
             .bridge_unsupported => .unsupported,
             else => .internal_error,
         };
-        properties.append(self.call_arena, .{
-            .name = name,
-            .value = output[0..result.bytes_written],
-        }) catch return .internal_error;
+        const value = if (owns_output)
+            output[0..result.bytes_written]
+        else
+            self.call_arena.dupe(u8, output[0..result.bytes_written]) catch return .internal_error;
+        properties.append(self.call_arena, .{ .name = name, .value = value }) catch return .internal_error;
     }
     return .ok;
 }

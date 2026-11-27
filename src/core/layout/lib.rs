@@ -91,8 +91,13 @@ impl taffy_mapping::ComputedStyleSource for PropertySnapshot {
 }
 
 struct LayoutNodeContext {
+    /// The last typed style projected into Taffy. Keeping this beside the
+    /// node context lets repeated layout flushes avoid reapplying an
+    /// equivalent style and invalidating the tree again.
+    style: Style,
     text: Option<String>,
     text_style: parley_adapter::TextStyle,
+    children: Vec<NodeId>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -105,8 +110,13 @@ struct TextMeasureCacheKey {
 impl Default for LayoutNodeContext {
     fn default() -> Self {
         Self {
+            style: Style {
+                display: Display::Block,
+                ..Style::default()
+            },
             text: None,
             text_style: parley_adapter::TextStyle::default(),
+            children: Vec::new(),
         }
     }
 }
@@ -311,12 +321,34 @@ pub struct LayoutSession {
     batch_depth: u32,
     layout_ready: bool,
     layout_computations: u64,
+    style_updates: u64,
+    style_skips: u64,
+    text_style_updates: u64,
+    text_style_skips: u64,
+    text_updates: u64,
+    text_skips: u64,
+    child_updates: u64,
+    child_skips: u64,
+    text_measure_cache_hits: u64,
+    text_measure_cache_misses: u64,
+    text_measure_cache_evictions: u64,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct KokoLayoutMetrics {
     pub layout_computations: u64,
+    pub style_updates: u64,
+    pub style_skips: u64,
+    pub text_style_updates: u64,
+    pub text_style_skips: u64,
+    pub text_updates: u64,
+    pub text_skips: u64,
+    pub child_updates: u64,
+    pub child_skips: u64,
+    pub text_measure_cache_hits: u64,
+    pub text_measure_cache_misses: u64,
+    pub text_measure_cache_evictions: u64,
 }
 
 impl LayoutSession {
@@ -331,6 +363,17 @@ impl LayoutSession {
             batch_depth: 0,
             layout_ready: false,
             layout_computations: 0,
+            style_updates: 0,
+            style_skips: 0,
+            text_style_updates: 0,
+            text_style_skips: 0,
+            text_updates: 0,
+            text_skips: 0,
+            child_updates: 0,
+            child_skips: 0,
+            text_measure_cache_hits: 0,
+            text_measure_cache_misses: 0,
+            text_measure_cache_evictions: 0,
         }
     }
 
@@ -742,6 +785,17 @@ pub unsafe extern "C" fn koko_layout_metrics(
         return KokoLayoutStatus::InvalidArgument;
     }
     (*out).layout_computations = (*session).layout_computations;
+    (*out).style_updates = (*session).style_updates;
+    (*out).style_skips = (*session).style_skips;
+    (*out).text_style_updates = (*session).text_style_updates;
+    (*out).text_style_skips = (*session).text_style_skips;
+    (*out).text_updates = (*session).text_updates;
+    (*out).text_skips = (*session).text_skips;
+    (*out).child_updates = (*session).child_updates;
+    (*out).child_skips = (*session).child_skips;
+    (*out).text_measure_cache_hits = (*session).text_measure_cache_hits;
+    (*out).text_measure_cache_misses = (*session).text_measure_cache_misses;
+    (*out).text_measure_cache_evictions = (*session).text_measure_cache_evictions;
     KokoLayoutStatus::Ok
 }
 
@@ -867,12 +921,24 @@ pub unsafe extern "C" fn koko_layout_node_set_computed_style(
             Ok(style) => style,
             Err(error) => return error,
         };
-        if session.tree.set_style(node, style).is_err() {
+        let next_text_style = text_style_from_snapshot(&snapshot);
+        let unchanged = session
+            .tree
+            .get_node_context(node)
+            .map(|context| context.style == style && context.text_style == next_text_style)
+            .unwrap_or(false);
+        if unchanged {
+            session.style_skips = session.style_skips.wrapping_add(1);
+            return KokoLayoutStatus::Ok;
+        }
+        if session.tree.set_style(node, style.clone()).is_err() {
             return KokoLayoutStatus::InternalError;
         }
         if let Some(context) = session.tree.get_node_context_mut(node) {
-            context.text_style = text_style_from_snapshot(&snapshot);
+            context.style = style;
+            context.text_style = next_text_style;
         }
+        session.style_updates = session.style_updates.wrapping_add(1);
         session.invalidate();
         KokoLayoutStatus::Ok
     })
@@ -903,14 +969,24 @@ pub unsafe extern "C" fn koko_layout_node_set_text_style(
             Ok(snapshot) => snapshot,
             Err(error) => return error,
         };
+        let current_style = match session.tree.get_node_context(node) {
+            Some(context) => context.text_style.clone(),
+            None => return KokoLayoutStatus::InternalError,
+        };
+        let mut next_style = current_style.clone();
+        if let Err(error) = apply_text_style_snapshot(&mut next_style, &snapshot) {
+            return error;
+        }
+        if next_style == current_style {
+            session.text_style_skips = session.text_style_skips.wrapping_add(1);
+            return KokoLayoutStatus::Ok;
+        }
         let context = match session.tree.get_node_context_mut(node) {
             Some(context) => context,
             None => return KokoLayoutStatus::InternalError,
         };
-        if let Err(error) = apply_text_style_snapshot(&mut context.text_style, &snapshot) {
-            return error;
-        }
-        session.text_measure_cache.clear();
+        context.text_style = next_style;
+        session.text_style_updates = session.text_style_updates.wrapping_add(1);
         session.invalidate();
         KokoLayoutStatus::Ok
     })
@@ -939,14 +1015,19 @@ pub unsafe extern "C" fn koko_layout_node_set_text(
             Err(error) => return error,
         };
         let value = match std::str::from_utf8(std::slice::from_raw_parts(text, text_len as usize)) {
-            Ok(value) => value.to_owned(),
+            Ok(value) => value,
             Err(_) => return KokoLayoutStatus::InvalidArgument,
         };
         let context = match session.tree.get_node_context_mut(node) {
             Some(context) => context,
             None => return KokoLayoutStatus::InternalError,
         };
-        context.text = Some(value);
+        if context.text.as_deref() == Some(value) {
+            session.text_skips = session.text_skips.wrapping_add(1);
+            return KokoLayoutStatus::Ok;
+        }
+        context.text = Some(value.to_owned());
+        session.text_updates = session.text_updates.wrapping_add(1);
         session.invalidate();
         KokoLayoutStatus::Ok
     })
@@ -1028,6 +1109,27 @@ pub unsafe extern "C" fn koko_layout_set_children(
         } else {
             std::slice::from_raw_parts(children, child_count as usize)
         };
+        let current_children = match session.tree.get_node_context(parent_node) {
+            Some(context) => &context.children,
+            None => return KokoLayoutStatus::InternalError,
+        };
+        let mut unchanged = current_children.len() == child_handles.len();
+        if unchanged {
+            for (index, handle) in child_handles.iter().enumerate() {
+                let child_node = match session.node(*handle) {
+                    Ok(node) => node,
+                    Err(error) => return error,
+                };
+                if current_children[index] != child_node {
+                    unchanged = false;
+                    break;
+                }
+            }
+        }
+        if unchanged {
+            session.child_skips = session.child_skips.wrapping_add(1);
+            return KokoLayoutStatus::Ok;
+        }
         let mut child_nodes = Vec::with_capacity(child_handles.len());
         for handle in child_handles {
             match session.node(*handle) {
@@ -1042,6 +1144,10 @@ pub unsafe extern "C" fn koko_layout_set_children(
         {
             return KokoLayoutStatus::InternalError;
         }
+        if let Some(context) = session.tree.get_node_context_mut(parent_node) {
+            context.children = child_nodes;
+        }
+        session.child_updates = session.child_updates.wrapping_add(1);
         session.invalidate();
         KokoLayoutStatus::Ok
     })
@@ -1077,6 +1183,9 @@ pub unsafe extern "C" fn koko_layout_compute(
         let text_layout_context = &mut session.text_layout_context;
         let text_measure_cache = &mut session.text_measure_cache;
         let mut measure_failed = false;
+        let mut cache_hits = 0u64;
+        let mut cache_misses = 0u64;
+        let mut cache_evictions = 0u64;
         if tree
             .compute_layout_with_measure(root_node, available, |inputs, _, node_context, style| {
                 taffy::compute_leaf_layout(
@@ -1108,8 +1217,10 @@ pub unsafe extern "C" fn koko_layout_compute(
                         };
                         let measured = if let Some(measured) = text_measure_cache.get(&key).copied()
                         {
+                            cache_hits = cache_hits.wrapping_add(1);
                             measured
                         } else {
+                            cache_misses = cache_misses.wrapping_add(1);
                             let measured = match parley_adapter::measure_with_parley(
                                 font_context,
                                 text_layout_context,
@@ -1125,6 +1236,7 @@ pub unsafe extern "C" fn koko_layout_compute(
                             };
                             if text_measure_cache.len() >= 1024 {
                                 text_measure_cache.clear();
+                                cache_evictions = cache_evictions.wrapping_add(1);
                             }
                             text_measure_cache.insert(key, measured);
                             measured
@@ -1140,6 +1252,12 @@ pub unsafe extern "C" fn koko_layout_compute(
         {
             return KokoLayoutStatus::InternalError;
         }
+        session.text_measure_cache_hits = session.text_measure_cache_hits.wrapping_add(cache_hits);
+        session.text_measure_cache_misses =
+            session.text_measure_cache_misses.wrapping_add(cache_misses);
+        session.text_measure_cache_evictions = session
+            .text_measure_cache_evictions
+            .wrapping_add(cache_evictions);
         if measure_failed {
             session.layout_ready = false;
             return KokoLayoutStatus::InternalError;

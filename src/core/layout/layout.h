@@ -49,6 +49,17 @@ typedef struct KokoLayoutProperty {
 
 typedef struct KokoLayoutMetrics {
     uint64_t layout_computations;
+    uint64_t style_updates;
+    uint64_t style_skips;
+    uint64_t text_style_updates;
+    uint64_t text_style_skips;
+    uint64_t text_updates;
+    uint64_t text_skips;
+    uint64_t child_updates;
+    uint64_t child_skips;
+    uint64_t text_measure_cache_hits;
+    uint64_t text_measure_cache_misses;
+    uint64_t text_measure_cache_evictions;
 } KokoLayoutMetrics;
 
 KokoLayoutSession *koko_layout_session_new(void);

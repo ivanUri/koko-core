@@ -740,6 +740,17 @@ pub fn getKokoStyleEngine(self: *const Window) !js.Object {
         if (!(try result.set("layoutComputations", layout_metrics.value.layout_computations, .{}))) {
             return error.CreateObjectFailure;
         }
+        if (!(try result.set("layoutStyleUpdates", layout_metrics.value.style_updates, .{}))) return error.CreateObjectFailure;
+        if (!(try result.set("layoutStyleSkips", layout_metrics.value.style_skips, .{}))) return error.CreateObjectFailure;
+        if (!(try result.set("layoutTextStyleUpdates", layout_metrics.value.text_style_updates, .{}))) return error.CreateObjectFailure;
+        if (!(try result.set("layoutTextStyleSkips", layout_metrics.value.text_style_skips, .{}))) return error.CreateObjectFailure;
+        if (!(try result.set("layoutTextUpdates", layout_metrics.value.text_updates, .{}))) return error.CreateObjectFailure;
+        if (!(try result.set("layoutTextSkips", layout_metrics.value.text_skips, .{}))) return error.CreateObjectFailure;
+        if (!(try result.set("layoutChildUpdates", layout_metrics.value.child_updates, .{}))) return error.CreateObjectFailure;
+        if (!(try result.set("layoutChildSkips", layout_metrics.value.child_skips, .{}))) return error.CreateObjectFailure;
+        if (!(try result.set("textMeasureCacheHits", layout_metrics.value.text_measure_cache_hits, .{}))) return error.CreateObjectFailure;
+        if (!(try result.set("textMeasureCacheMisses", layout_metrics.value.text_measure_cache_misses, .{}))) return error.CreateObjectFailure;
+        if (!(try result.set("textMeasureCacheEvictions", layout_metrics.value.text_measure_cache_evictions, .{}))) return error.CreateObjectFailure;
     }
     var error_bytes = self._frame.call_arena.alloc(u8, 4096) catch return error.OutOfMemory;
     const error_result = self._frame.styleEngine().lastError(error_bytes);

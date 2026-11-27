@@ -40,6 +40,17 @@ const status_unsupported: StatusCode = 6;
 
 const CLayoutMetrics = extern struct {
     layout_computations: u64,
+    style_updates: u64,
+    style_skips: u64,
+    text_style_updates: u64,
+    text_style_skips: u64,
+    text_updates: u64,
+    text_skips: u64,
+    child_updates: u64,
+    child_skips: u64,
+    text_measure_cache_hits: u64,
+    text_measure_cache_misses: u64,
+    text_measure_cache_evictions: u64,
 };
 
 extern fn koko_layout_session_new() ?*CSession;
@@ -135,6 +146,17 @@ pub const LayoutEngine = struct {
 
     pub const Metrics = struct {
         layout_computations: u64 = 0,
+        style_updates: u64 = 0,
+        style_skips: u64 = 0,
+        text_style_updates: u64 = 0,
+        text_style_skips: u64 = 0,
+        text_updates: u64 = 0,
+        text_skips: u64 = 0,
+        child_updates: u64 = 0,
+        child_skips: u64 = 0,
+        text_measure_cache_hits: u64 = 0,
+        text_measure_cache_misses: u64 = 0,
+        text_measure_cache_evictions: u64 = 0,
     };
 
     pub fn init() LayoutEngine {
@@ -157,9 +179,35 @@ pub const LayoutEngine = struct {
 
     pub fn metrics(self: *const LayoutEngine) struct { status: Status, value: Metrics } {
         if (!self.alive) return .{ .status = .unavailable, .value = .{} };
-        var abi: CLayoutMetrics = .{ .layout_computations = 0 };
+        var abi: CLayoutMetrics = .{
+            .layout_computations = 0,
+            .style_updates = 0,
+            .style_skips = 0,
+            .text_style_updates = 0,
+            .text_style_skips = 0,
+            .text_updates = 0,
+            .text_skips = 0,
+            .child_updates = 0,
+            .child_skips = 0,
+            .text_measure_cache_hits = 0,
+            .text_measure_cache_misses = 0,
+            .text_measure_cache_evictions = 0,
+        };
         const result = Status.fromCode(koko_layout_metrics(self.session, &abi));
-        return .{ .status = result, .value = .{ .layout_computations = abi.layout_computations } };
+        return .{ .status = result, .value = .{
+            .layout_computations = abi.layout_computations,
+            .style_updates = abi.style_updates,
+            .style_skips = abi.style_skips,
+            .text_style_updates = abi.text_style_updates,
+            .text_style_skips = abi.text_style_skips,
+            .text_updates = abi.text_updates,
+            .text_skips = abi.text_skips,
+            .child_updates = abi.child_updates,
+            .child_skips = abi.child_skips,
+            .text_measure_cache_hits = abi.text_measure_cache_hits,
+            .text_measure_cache_misses = abi.text_measure_cache_misses,
+            .text_measure_cache_evictions = abi.text_measure_cache_evictions,
+        } };
     }
 
     pub fn invalidate(self: *LayoutEngine) Status {
