@@ -186,7 +186,11 @@ pub fn runMacrotasks(self: *Browser) !void {
 pub fn runMacrotasksCdpSlice(self: *Browser) !bool {
     const env = &self.env;
     env.runMicrotasks(.macrotask_loop);
-    const ran = try env.runOneMacrotaskRound();
+    // Inspector awaitPromise can keep the realm in `.draining` until its
+    // completion callback runs. The Env method still applies all lifecycle
+    // registration and V8 termination checks; only the entry policy differs
+    // for this bounded, synchronous CDP turn.
+    const ran = try env.runOneMacrotaskRoundWithMode(true);
     env.pumpMessageLoop();
     env.runMicrotasks(.macrotask_loop);
     self.drainAllRtcEvents();

@@ -34,6 +34,7 @@ const Incrementing = @import("id.zig").Incrementing;
 const InterceptState = @import("domains/fetch.zig").InterceptState;
 
 const log = @import("../../support/log.zig");
+const Timer = @import("../../support/timer.zig");
 const json = std.json;
 const posix = std.posix;
 const Allocator = std.mem.Allocator;
@@ -734,6 +735,11 @@ pub const BrowserContext = struct {
     // Inspector replies echo this session (iframe attach uses a child session).
     inspector_reply_session_id: ?[]const u8 = null,
 
+    // V8 registers Runtime.evaluate(awaitPromise) asynchronously but does not
+    // enter the debugger pause loop. Keep the owning CDP dispatch turn in the
+    // host scheduler until its inspector response arrives.
+    inspector_response_pending: bool = false,
+
     fn init(self: *BrowserContext, id: []const u8, cdp: *CDP) !void {
         const allocator = cdp.allocator;
 
@@ -1143,7 +1149,7 @@ pub const BrowserContext = struct {
         defer _ = self.cdp.notification_arena.reset(.{ .retain_with_limit = 1024 * 64 });
     }
 
-    pub fn callInspector(self: *const BrowserContext, msg: []const u8) void {
+    pub fn callInspector(self: *BrowserContext, msg: []const u8) void {
         const browser = self.session.browser;
         browser.cdp_eval_depth += 1;
         defer browser.cdp_eval_depth -= 1;
@@ -1162,9 +1168,20 @@ pub const BrowserContext = struct {
             inspector.?.clearPauseLoop();
         };
 
+        self.inspector_response_pending = true;
         self.inspector_session.send(msg);
         browser.env.runMicrotasks(.unknown);
         browser.env.pumpMessageLoop();
+
+        // awaitPromise returns from dispatchProtocolMessage before its
+        // promise settles. The regular browser runner cannot advance while
+        // this CDP command owns the isolate, so interleave bounded host turns
+        // until the matching inspector response is delivered.
+        while (self.inspector_response_pending and !browser.isHostTerminationRequested()) {
+            const ran = browser.runMacrotasksCdpSlice() catch break;
+            if (!ran) Timer.sleepNanoseconds(std.time.ns_per_ms);
+        }
+        self.inspector_response_pending = false;
     }
 
     fn runInspectorHostTurn(ctx: *anyopaque) js.Inspector.PauseLoopStep {
@@ -1183,7 +1200,9 @@ pub const BrowserContext = struct {
     }
 
     pub fn onInspectorResponse(ctx: *anyopaque, _: u32, msg: []const u8) void {
-        sendInspectorMessage(@ptrCast(@alignCast(ctx)), msg) catch |err| {
+        const self: *BrowserContext = @ptrCast(@alignCast(ctx));
+        self.inspector_response_pending = false;
+        sendInspectorMessage(self, msg) catch |err| {
             log.err(.cdp, "send inspector response", .{ .err = err });
         };
     }

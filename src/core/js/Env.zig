@@ -1151,6 +1151,15 @@ pub fn runMacrotasks(self: *Env) !void {
 /// interleaves this with inbound socket polling so Runtime.evaluate is not
 /// starved by long macrotask batches (ebay.com).
 pub fn runOneMacrotaskRound(self: *Env) !bool {
+    return self.runOneMacrotaskRoundWithMode(false);
+}
+
+/// CDP Runtime.evaluate(awaitPromise) may keep the realm in its draining
+/// lifecycle state while V8 waits for host work. That wait is still part of
+/// the active CDP operation, so its bounded scheduler turn must admit the
+/// already-owned draining realm. Normal browser turns retain the stricter
+/// active-only policy above.
+pub fn runOneMacrotaskRoundWithMode(self: *Env, allow_draining: bool) !bool {
     if (v8.v8__Isolate__IsExecutionTerminating(self.isolate.handle)) {
         return false;
     }
@@ -1172,7 +1181,7 @@ pub fn runOneMacrotaskRound(self: *Env) !bool {
             }
             continue;
         }
-        if (!exec.canEnterJs(.strict_active)) {
+        if (!(if (allow_draining) exec.canEnterJs(.allow_draining) else exec.canEnterJs(.strict_active))) {
             if (exec.realmState() == .draining) {
                 switch (ctx.global) {
                     .frame => |frame| frame.cancelOwnedSchedulerWork(),
