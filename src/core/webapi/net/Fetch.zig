@@ -1258,7 +1258,11 @@ fn scheduleDeferredFetchHeaders(self: *Fetch) !void {
     const callback = try exec.arena.create(DeferredFetchHeadersCallback);
     callback.* = .{
         .fetch = self,
-        .task_owner = exec.captureTaskOwner(),
+        // The transfer may finish after navigation has already advanced the
+        // execution epoch.  Keep the owner captured when fetch() started;
+        // capturing the current epoch here would re-home stale work into the
+        // replacement realm.
+        .task_owner = self._task_owner,
     };
     try exec._scheduler.add(callback, DeferredFetchHeadersCallback.run, 0, .{
         .name = "Fetch.headers",
@@ -1295,7 +1299,9 @@ fn scheduleDeferredFetchChunk(self: *Fetch, stream: *ReadableStream, data: []con
         .fetch = self,
         .stream = stream,
         .data = data,
-        .task_owner = exec.captureTaskOwner(),
+        // Chunks belong to the fetch's initiating realm, never to the realm
+        // that happens to be current when libcurl delivers the chunk.
+        .task_owner = self._task_owner,
     };
     self._pending_chunk_tasks += 1;
     errdefer self._pending_chunk_tasks -= 1;
@@ -1351,7 +1357,7 @@ fn scheduleDeferredFetchDone(self: *Fetch) !void {
     const callback = try exec.arena.create(DeferredFetchDoneCallback);
     callback.* = .{
         .fetch = self,
-        .task_owner = exec.captureTaskOwner(),
+        .task_owner = self._task_owner,
     };
     try exec._scheduler.add(callback, DeferredFetchDoneCallback.run, 0, .{
         .name = "Fetch.deferredDone",
@@ -1537,7 +1543,9 @@ fn scheduleDetachedFetchReject(self: *Fetch) !void {
     callback.* = .{
         .exec = exec,
         .resolver = self._resolver,
-        .task_owner = exec.captureTaskOwner(),
+        // Shutdown can run after a navigation.  Do not reject an old
+        // promise through the replacement realm's execution epoch.
+        .task_owner = self._task_owner,
     };
     try exec._scheduler.add(callback, DetachedFetchRejectCallback.run, 0, .{
         .name = "Fetch.detachedReject",

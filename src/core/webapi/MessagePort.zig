@@ -22,15 +22,12 @@ const MessageEvent = @import("event/MessageEvent.zig");
 const Frame = @import("../browser/Frame.zig");
 const Worker = @import("Worker.zig");
 const log = @import("../../support/log.zig");
+const RealmLifecycleKernel = @import("../../runtime/RealmLifecycleKernel.zig");
 
 const Allocator = std.mem.Allocator;
 
 fn scheduleDeferredPump(exec: *const js.Execution) void {
-    const frame: *Frame = switch (exec.context.global) {
-        .frame => |f| f,
-        .worker => |wgs| wgs._worker._frame,
-    };
-    scheduleDeferredMessageDelivery(frame) catch |err| {
+    scheduleDeferredMessageDelivery(exec) catch |err| {
         log.warn(.browser, "MessagePort pump", .{ .err = err });
     };
 }
@@ -51,7 +48,14 @@ fn scheduleDeferredFlush(exec: *const js.Execution, port: *MessagePort) void {
         frame.releaseArena(arena);
         return;
     };
-    callback.* = .{ .frame = frame, .port = port, .arena = arena, .attempts = 0 };
+    callback.* = .{
+        .frame = frame,
+        .port = port,
+        .exec = exec,
+        .task_owner = exec.captureTaskOwner(),
+        .arena = arena,
+        .attempts = 0,
+    };
     frame.js.scheduler.add(callback, DeferFlushCallback.run, 0, .{
         .name = "MessagePort.deferFlush",
         .low_priority = false,
@@ -64,6 +68,8 @@ fn scheduleDeferredFlush(exec: *const js.Execution, port: *MessagePort) void {
 const DeferFlushCallback = struct {
     frame: *Frame,
     port: *MessagePort,
+    exec: *const js.Execution,
+    task_owner: RealmLifecycleKernel.TaskOwner,
     arena: Allocator,
     attempts: u8,
 
@@ -75,6 +81,12 @@ const DeferFlushCallback = struct {
     fn run(ctx: *anyopaque) !?u32 {
         const self: *DeferFlushCallback = @ptrCast(@alignCast(ctx));
         if (self.port._closed) {
+            self.frame.releaseArena(self.arena);
+            return null;
+        }
+        if (self.exec.isTaskOwnerStale(self.task_owner) or
+            self.exec.realmState() != .active)
+        {
             self.frame.releaseArena(self.arena);
             return null;
         }
@@ -91,12 +103,21 @@ const DeferFlushCallback = struct {
     }
 };
 
-fn scheduleDeferredMessageDelivery(frame: *Frame) !void {
+fn scheduleDeferredMessageDelivery(exec: *const js.Execution) !void {
+    const frame: *Frame = switch (exec.context.global) {
+        .frame => |f| f,
+        .worker => |wgs| wgs._worker._frame,
+    };
     const arena = try frame.getArena(.tiny, "MessagePort.deferDelivery");
     errdefer frame.releaseArena(arena);
 
     const callback = try arena.create(DeferMessageDeliveryCallback);
-    callback.* = .{ .frame = frame, .arena = arena };
+    callback.* = .{
+        .frame = frame,
+        .exec = exec,
+        .task_owner = exec.captureTaskOwner(),
+        .arena = arena,
+    };
 
     try frame.js.scheduler.add(callback, DeferMessageDeliveryCallback.run, 0, .{
         .name = "MessagePort.deferDelivery",
@@ -107,6 +128,8 @@ fn scheduleDeferredMessageDelivery(frame: *Frame) !void {
 
 const DeferMessageDeliveryCallback = struct {
     frame: *Frame,
+    exec: *const js.Execution,
+    task_owner: RealmLifecycleKernel.TaskOwner,
     arena: Allocator,
 
     fn cancelled(ctx: *anyopaque) void {
@@ -117,6 +140,11 @@ const DeferMessageDeliveryCallback = struct {
     fn run(ctx: *anyopaque) !?u32 {
         const self: *DeferMessageDeliveryCallback = @ptrCast(@alignCast(ctx));
         defer self.frame.releaseArena(self.arena);
+        if (self.exec.isTaskOwnerStale(self.task_owner) or
+            self.exec.realmState() != .active)
+        {
+            return null;
+        }
         Worker.pumpMessageDelivery(self.frame);
         return null;
     }
@@ -328,6 +356,7 @@ fn enqueueMessage(
     const ports_copy = try receiver_exec.arena.dupe(*MessagePort, ports);
     const callback = try receiver_exec._factory.create(PostMessageCallback{
         .exec = receiver_exec,
+        .task_owner = receiver_exec.captureTaskOwner(),
         .port = self,
         .message = message,
         .ports = ports_copy,
@@ -429,6 +458,7 @@ const PostMessageCallback = struct {
     message: js.Value.Temp,
     ports: []const *MessagePort,
     exec: *const js.Execution,
+    task_owner: RealmLifecycleKernel.TaskOwner,
 
     fn deinit(self: *PostMessageCallback) void {
         self.exec._factory.destroy(self);
@@ -444,7 +474,11 @@ const PostMessageCallback = struct {
         const self: *PostMessageCallback = @ptrCast(@alignCast(ctx));
         defer self.deinit();
 
-        if (self.port._closed or !self.exec.canEnterJs(.allow_draining)) {
+        if (self.port._closed or
+            self.exec.isTaskOwnerStale(self.task_owner) or
+            self.exec.realmState() != .active or
+            !self.exec.canEnterJs(.allow_draining))
+        {
             self.message.release();
             return null;
         }

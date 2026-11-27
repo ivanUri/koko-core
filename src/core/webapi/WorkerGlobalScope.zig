@@ -379,7 +379,13 @@ pub fn scheduleDeferredFlushUndelivered(self: *WorkerGlobalScope) !void {
     errdefer self._session.releaseArena(arena);
 
     const callback = try arena.create(DeferFlushUndeliveredCallback);
-    callback.* = .{ .worker_scope = self, .session = self._session, .arena = arena };
+    callback.* = .{
+        .worker_scope = self,
+        .session = self._session,
+        .exec = &self.js.execution,
+        .task_owner = self.js.execution.captureTaskOwner(),
+        .arena = arena,
+    };
 
     try self.js.scheduler.add(callback, DeferFlushUndeliveredCallback.run, 0, .{
         .name = "WorkerGlobalScope.deferFlushUndelivered",
@@ -391,6 +397,8 @@ pub fn scheduleDeferredFlushUndelivered(self: *WorkerGlobalScope) !void {
 const DeferFlushUndeliveredCallback = struct {
     worker_scope: *WorkerGlobalScope,
     session: *Session,
+    exec: *const JS.Execution,
+    task_owner: RealmLifecycleKernel.TaskOwner,
     arena: Allocator,
 
     fn cancelled(ctx: *anyopaque) void {
@@ -401,6 +409,11 @@ const DeferFlushUndeliveredCallback = struct {
     fn run(ctx: *anyopaque) !?u32 {
         const self: *DeferFlushUndeliveredCallback = @ptrCast(@alignCast(ctx));
         defer self.session.releaseArena(self.arena);
+        if (self.exec.isTaskOwnerStale(self.task_owner) or
+            self.exec.realmState() != .active)
+        {
+            return null;
+        }
         const worker = self.worker_scope._worker;
         if (!worker.beginTask()) return null;
         defer worker.endTask();
@@ -605,7 +618,13 @@ fn scheduleDeferredSharedConnectPump(self: *WorkerGlobalScope, _: u32) !void {
     errdefer self._session.releaseArena(arena);
 
     const callback = try arena.create(DeferSharedConnectPumpCallback);
-    callback.* = .{ .worker_scope = self, .session = self._session, .arena = arena };
+    callback.* = .{
+        .worker_scope = self,
+        .session = self._session,
+        .exec = &self.js.execution,
+        .task_owner = self.js.execution.captureTaskOwner(),
+        .arena = arena,
+    };
 
     try self.js.scheduler.add(callback, DeferSharedConnectPumpCallback.run, 0, .{
         .name = "WorkerGlobalScope.deferSharedConnectPump",
@@ -617,6 +636,8 @@ fn scheduleDeferredSharedConnectPump(self: *WorkerGlobalScope, _: u32) !void {
 const DeferSharedConnectPumpCallback = struct {
     worker_scope: *WorkerGlobalScope,
     session: *Session,
+    exec: *const JS.Execution,
+    task_owner: RealmLifecycleKernel.TaskOwner,
     arena: Allocator,
 
     fn cancelled(ctx: *anyopaque) void {
@@ -627,6 +648,12 @@ const DeferSharedConnectPumpCallback = struct {
     fn run(ctx: *anyopaque) !?u32 {
         const self: *DeferSharedConnectPumpCallback = @ptrCast(@alignCast(ctx));
         const wgs = self.worker_scope;
+        if (self.exec.isTaskOwnerStale(self.task_owner) or
+            self.exec.realmState() != .active)
+        {
+            self.session.releaseArena(self.arena);
+            return null;
+        }
         const worker = wgs._worker;
         if (!worker.beginTask()) {
             self.session.releaseArena(self.arena);

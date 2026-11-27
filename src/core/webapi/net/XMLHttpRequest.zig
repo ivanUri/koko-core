@@ -722,7 +722,11 @@ fn queueSuccessfulCompletion(self: *XMLHttpRequest) !void {
         self.releaseSelfRefForGeneration(generation);
         return err;
     };
-    callback.* = .{ .xhr = self, .generation = generation };
+    callback.* = .{
+        .xhr = self,
+        .generation = generation,
+        .task_owner = self._task_owner orelse self._exec.captureTaskOwner(),
+    };
     self._exec._scheduler.add(callback, DeferredCompletionCallback.run, 0, .{
         .name = "XMLHttpRequest.complete",
         .low_priority = false,
@@ -737,6 +741,7 @@ fn queueSuccessfulCompletion(self: *XMLHttpRequest) !void {
 const DeferredCompletionCallback = struct {
     xhr: *XMLHttpRequest,
     generation: u64,
+    task_owner: RealmLifecycleKernel.TaskOwner,
     attempts: u8 = 0,
 
     fn clearQueued(self: *DeferredCompletionCallback) void {
@@ -756,6 +761,17 @@ const DeferredCompletionCallback = struct {
         const xhr = self.xhr;
 
         if (xhr._request_generation != self.generation or !xhr._active_request) {
+            self.clearQueued();
+            xhr.releaseSelfRefForGeneration(self.generation);
+            return null;
+        }
+
+        // A queued completion is owned by the realm that started this XHR.
+        // The Execution object is reused across navigations, so checking only
+        // `_active_request` would allow an old completion to enter a new realm.
+        if (xhr._exec.isTaskOwnerStale(self.task_owner) or
+            xhr._exec.realmState() != .active)
+        {
             self.clearQueued();
             xhr.releaseSelfRefForGeneration(self.generation);
             return null;

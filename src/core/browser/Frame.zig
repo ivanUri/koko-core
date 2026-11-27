@@ -1968,6 +1968,11 @@ fn detachChildFrameForIframe(self: *Frame, iframe: *IFrame) void {
     iframe._window = null;
     child_frame._detach_pending = true;
     child_frame._parent_notified = true;
+    // A detached iframe stops being a live browsing context immediately.  Do
+    // not wait for the deferred Frame.deinit task: timers, fetch/XHR
+    // completions, MessagePort delivery, and observer callbacks can otherwise
+    // run against the child between DOM removal and deferred teardown.
+    child_frame.prepareForOutgoingAbort();
     // Detach Document↔Frame immediately (before deferred deinit). JS may still
     // hold the old Document and call document.open()/write()/close(); those
     // must not use a departing browsing context (UAF / incorrect alignment).
