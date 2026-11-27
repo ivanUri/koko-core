@@ -21,6 +21,7 @@ mod parley_adapter;
 mod taffy_mapping;
 
 use std::collections::HashMap;
+use std::mem::size_of;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use parley::{FontContext, LayoutContext};
@@ -102,9 +103,141 @@ struct LayoutNodeContext {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct TextMeasureCacheKey {
+    // TextStyle already contains every text/shaping field currently projected
+    // into Parley. Koko does not currently expose a font-database or font-load
+    // generation from FontContext, so no synthetic generation is added here.
+    // The cache remains owned by this LayoutSession and is cleared at document
+    // reset; adding a font generation later must be an explicit correctness
+    // change rather than an inferred counter.
     text: String,
     style: parley_adapter::TextStyle,
     constraint: parley_adapter::TextWidthConstraint,
+}
+
+const TEXT_MEASURE_CACHE_MAX_ENTRIES: usize = 1024;
+const TEXT_MEASURE_CACHE_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+#[derive(Clone, Copy)]
+struct TextMeasureCacheEntry {
+    measured: (f32, f32),
+    bytes: usize,
+    last_used: u64,
+}
+
+struct TextMeasureCache {
+    entries: HashMap<TextMeasureCacheKey, TextMeasureCacheEntry>,
+    bytes: usize,
+    clock: u64,
+}
+
+impl TextMeasureCache {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            bytes: 0,
+            clock: 0,
+        }
+    }
+
+    fn next_timestamp(&mut self) -> u64 {
+        let timestamp = self.clock;
+        self.clock = self.clock.saturating_add(1);
+        timestamp
+    }
+
+    fn key_bytes(key: &TextMeasureCacheKey) -> usize {
+        let style = &key.style;
+        let family_bytes = style
+            .font_families
+            .iter()
+            .map(|family| family.capacity())
+            .sum::<usize>();
+        let locale_bytes = style.locale.as_ref().map_or(0, |locale| locale.capacity());
+        let feature_bytes = style
+            .font_features
+            .iter()
+            .map(|feature| feature.capacity())
+            .sum::<usize>();
+        let variation_bytes = style
+            .variation_axes
+            .iter()
+            .map(|(axis, _)| axis.capacity())
+            .sum::<usize>();
+
+        size_of::<TextMeasureCacheKey>()
+            .saturating_add(key.text.capacity())
+            .saturating_add(family_bytes)
+            .saturating_add(locale_bytes)
+            .saturating_add(feature_bytes)
+            .saturating_add(variation_bytes)
+            .saturating_add(size_of::<TextMeasureCacheEntry>())
+    }
+
+    fn get(&mut self, key: &TextMeasureCacheKey) -> Option<(f32, f32)> {
+        let timestamp = self.next_timestamp();
+        let entry = self.entries.get_mut(key)?;
+        entry.last_used = timestamp;
+        Some(entry.measured)
+    }
+
+    /// Insert one result and return the number of entries evicted.
+    ///
+    /// Eviction is incremental LRU-by-timestamp. A result larger than the
+    /// entire byte budget is deliberately not retained; it is still returned
+    /// to Taffy for the current layout computation.
+    fn insert(&mut self, key: TextMeasureCacheKey, measured: (f32, f32)) -> usize {
+        let entry_bytes = Self::key_bytes(&key);
+        if entry_bytes > TEXT_MEASURE_CACHE_MAX_BYTES {
+            return 0;
+        }
+
+        let mut evicted = 0;
+        if let Some(previous) = self.entries.remove(&key) {
+            self.bytes = self.bytes.saturating_sub(previous.bytes);
+        }
+
+        while self.entries.len() >= TEXT_MEASURE_CACHE_MAX_ENTRIES
+            || self.bytes.saturating_add(entry_bytes) > TEXT_MEASURE_CACHE_MAX_BYTES
+        {
+            let oldest_key = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(key, _)| key.clone());
+            let Some(oldest_key) = oldest_key else {
+                break;
+            };
+            if let Some(oldest) = self.entries.remove(&oldest_key) {
+                self.bytes = self.bytes.saturating_sub(oldest.bytes);
+                evicted += 1;
+            }
+        }
+
+        let entry = TextMeasureCacheEntry {
+            measured,
+            bytes: entry_bytes,
+            last_used: self.next_timestamp(),
+        };
+        self.bytes = self.bytes.saturating_add(entry.bytes);
+        self.entries.insert(key, entry);
+        evicted
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.bytes = 0;
+        self.clock = 0;
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    #[cfg(test)]
+    fn bytes(&self) -> usize {
+        self.bytes
+    }
 }
 
 impl Default for LayoutNodeContext {
@@ -315,7 +448,7 @@ pub struct LayoutSession {
     font_context: FontContext,
     #[allow(dead_code)]
     text_layout_context: LayoutContext,
-    text_measure_cache: HashMap<TextMeasureCacheKey, (f32, f32)>,
+    text_measure_cache: TextMeasureCache,
     handles: HashMap<u64, NodeId>,
     next_handle: u64,
     batch_depth: u32,
@@ -357,7 +490,7 @@ impl LayoutSession {
             tree: TaffyTree::new(),
             font_context: FontContext::new(),
             text_layout_context: LayoutContext::new(),
-            text_measure_cache: HashMap::new(),
+            text_measure_cache: TextMeasureCache::new(),
             handles: HashMap::new(),
             next_handle: 1,
             batch_depth: 0,
@@ -1215,8 +1348,7 @@ pub unsafe extern "C" fn koko_layout_compute(
                             style: node_context.text_style.clone(),
                             constraint,
                         };
-                        let measured = if let Some(measured) = text_measure_cache.get(&key).copied()
-                        {
+                        let measured = if let Some(measured) = text_measure_cache.get(&key) {
                             cache_hits = cache_hits.wrapping_add(1);
                             measured
                         } else {
@@ -1234,11 +1366,8 @@ pub unsafe extern "C" fn koko_layout_compute(
                                     return Size::ZERO;
                                 }
                             };
-                            if text_measure_cache.len() >= 1024 {
-                                text_measure_cache.clear();
-                                cache_evictions = cache_evictions.wrapping_add(1);
-                            }
-                            text_measure_cache.insert(key, measured);
+                            cache_evictions = cache_evictions
+                                .wrapping_add(text_measure_cache.insert(key, measured) as u64);
                             measured
                         };
                         Size {
@@ -1427,6 +1556,52 @@ mod tests {
                 value_len: value.len(),
             })
             .collect()
+    }
+
+    fn text_cache_key(text: &str) -> TextMeasureCacheKey {
+        TextMeasureCacheKey {
+            text: text.to_owned(),
+            style: parley_adapter::TextStyle::default(),
+            constraint: parley_adapter::TextWidthConstraint::Definite(240.0f32.to_bits()),
+        }
+    }
+
+    #[test]
+    fn text_measure_cache_is_bounded_and_evicts_least_recently_used() {
+        let mut cache = TextMeasureCache::new();
+        let first = text_cache_key("first");
+        let second = text_cache_key("second");
+
+        assert_eq!(cache.insert(first.clone(), (1.0, 2.0)), 0);
+        assert_eq!(cache.insert(second.clone(), (3.0, 4.0)), 0);
+        assert_eq!(cache.get(&first), Some((1.0, 2.0)));
+
+        for index in 0..TEXT_MEASURE_CACHE_MAX_ENTRIES - 2 {
+            let key = text_cache_key(&format!("filler-{index}"));
+            assert_eq!(cache.insert(key, (5.0, 6.0)), 0);
+        }
+
+        let newest = text_cache_key("newest");
+        assert_eq!(cache.insert(newest.clone(), (7.0, 8.0)), 1);
+        assert_eq!(cache.get(&first), Some((1.0, 2.0)));
+        assert_eq!(cache.get(&second), None);
+        assert_eq!(cache.get(&newest), Some((7.0, 8.0)));
+        assert!(cache.len() <= TEXT_MEASURE_CACHE_MAX_ENTRIES);
+        assert!(cache.bytes() <= TEXT_MEASURE_CACHE_MAX_BYTES);
+    }
+
+    #[test]
+    fn text_measure_cache_survives_ordinary_layout_invalidation() {
+        let mut session = LayoutSession::new();
+        let key = text_cache_key("stable text");
+        assert_eq!(
+            session.text_measure_cache.insert(key.clone(), (8.0, 9.0)),
+            0
+        );
+
+        session.invalidate();
+
+        assert_eq!(session.text_measure_cache.get(&key), Some((8.0, 9.0)));
     }
 
     unsafe fn styled_node(

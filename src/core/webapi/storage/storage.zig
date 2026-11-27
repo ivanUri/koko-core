@@ -15,6 +15,7 @@ const std = @import("std");
 const js = @import("../../js/js.zig");
 const Frame = @import("../../browser/Frame.zig");
 const StorageEvent = @import("../event/StorageEvent.zig");
+const RealmLifecycleKernel = @import("../../../runtime/RealmLifecycleKernel.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -80,23 +81,121 @@ pub const Lookup = struct {
 
     fn dispatchStorageEvent(source: *Frame, storage_key: ?[]const u8, old_value: ?[]const u8, new_value: ?[]const u8) void {
         const root = &source._page.frame;
-        dispatchStorageEventInTree(root, source, storage_key, old_value, new_value);
+        const allocator = source._session.browser.app.allocator;
+        var recipients: std.ArrayList(*Frame) = .empty;
+        defer recipients.deinit(allocator);
+
+        // Snapshot before queueing anything. Event handlers must not be able
+        // to mutate child_frames while this mutation is selecting recipients.
+        dispatchStorageEventInTree(root, source, &recipients, allocator);
+        for (recipients.items) |target| {
+            queueStorageEvent(target, storage_key, old_value, new_value, source.url);
+        }
     }
 
-    fn dispatchStorageEventInTree(current: *Frame, source: *Frame, storage_key: ?[]const u8, old_value: ?[]const u8, new_value: ?[]const u8) void {
-        if (current != source and current.origin != null and source.origin != null and std.mem.eql(u8, current.origin.?, source.origin.?)) {
-            const event = StorageEvent.initTrusted(comptime .wrap("storage"), .{
-                .key = storage_key,
-                .oldValue = old_value,
-                .newValue = new_value,
-                .url = source.url,
-            }, source) catch return;
-            current._event_manager.dispatch(current.window.asEventTarget(), event.asEvent()) catch {};
+    fn dispatchStorageEventInTree(
+        current: *Frame,
+        source: *Frame,
+        recipients: *std.ArrayList(*Frame),
+        allocator: Allocator,
+    ) void {
+        if (current != source and
+            !current._deinit_done and
+            current._realm_state == .active and
+            !current._detach_pending and
+            current.document._frame == current and
+            current.origin != null and
+            source.origin != null and
+            std.mem.eql(u8, current.origin.?, source.origin.?))
+        {
+            recipients.append(allocator, current) catch return;
         }
         for (current.child_frames.items) |child| {
-            dispatchStorageEventInTree(child, source, storage_key, old_value, new_value);
+            dispatchStorageEventInTree(child, source, recipients, allocator);
         }
     }
+
+    fn queueStorageEvent(
+        target: *Frame,
+        storage_key: ?[]const u8,
+        old_value: ?[]const u8,
+        new_value: ?[]const u8,
+        source_url: []const u8,
+    ) void {
+        if (target._realm_state != .active or
+            target._deinit_done or
+            target._detach_pending or
+            target.document._frame != target)
+        {
+            return;
+        }
+
+        const arena = target.getArena(.tiny, "StorageEvent.delivery") catch return;
+        var queued = false;
+        defer if (!queued) target.releaseArena(arena);
+
+        const task = arena.create(StorageEventDelivery) catch return;
+        task.* = .{
+            .target = target,
+            .task_owner = target.js.execution.captureTaskOwner(),
+            .arena = arena,
+            .payload = StorageEvent.QueuedPayload.init(
+                arena,
+                storage_key,
+                old_value,
+                new_value,
+                source_url,
+            ) catch return,
+        };
+
+        target.js.scheduler.add(task, StorageEventDelivery.run, 0, .{
+            .name = "StorageEvent.delivery",
+            .finalizer = StorageEventDelivery.cancelled,
+        }) catch return;
+
+        queued = true;
+    }
+
+    const StorageEventDelivery = struct {
+        target: *Frame,
+        task_owner: RealmLifecycleKernel.TaskOwner,
+        arena: Allocator,
+        payload: StorageEvent.QueuedPayload,
+
+        fn cancelled(ctx: *anyopaque) void {
+            const self: *StorageEventDelivery = @ptrCast(@alignCast(ctx));
+            self.target.releaseArena(self.arena);
+        }
+
+        fn run(ctx: *anyopaque) !?u32 {
+            const self: *StorageEventDelivery = @ptrCast(@alignCast(ctx));
+            defer self.target.releaseArena(self.arena);
+
+            // The scheduler finalizer handles queued teardown. These checks
+            // cover a task already popped while the frame is being detached
+            // or its document generation has changed.
+            if (self.target._deinit_done or
+                self.target._detach_pending or
+                self.target._realm_state != .active or
+                self.target.document._frame != self.target or
+                self.target.js.execution.isTaskOwnerStale(self.task_owner) or
+                !self.target.js.execution.canEnterJs(.strict_active))
+            {
+                return null;
+            }
+
+            const event = StorageEvent.initTrustedFromQueuedPayload(
+                comptime .wrap("storage"),
+                self.payload,
+                self.target,
+            ) catch return null;
+            self.target._event_manager.dispatch(
+                self.target.window.asEventTarget(),
+                event.asEvent(),
+            ) catch {};
+            return null;
+        }
+    };
 
     /// Insert or replace one value while preserving quota accounting if any
     /// allocation or validation step fails. Persistence loaders use the same

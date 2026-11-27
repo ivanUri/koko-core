@@ -645,6 +645,70 @@ pub const IDBTransaction = struct {
     };
 };
 
+const EffectiveRecord = struct {
+    key_text: []const u8,
+    record: Record,
+};
+
+/// Build the transaction-visible view of one object store without changing
+/// the committed StoreData until transaction completion.
+fn collectEffectiveRecords(transaction: *const IDBTransaction, store: *StoreData, allocator: std.mem.Allocator) ![]EffectiveRecord {
+    var pending: std.StringHashMapUnmanaged(*const Mutation) = .empty;
+    defer pending.deinit(allocator);
+    var effective: std.ArrayListUnmanaged(EffectiveRecord) = .empty;
+    errdefer effective.deinit(allocator);
+    var cleared = false;
+
+    for (transaction._mutations.items) |*mutation| {
+        switch (mutation.*) {
+            .put => |put| if (put.store == store) try pending.put(allocator, put.key_text, mutation),
+            .delete => |delete| if (delete.store == store) try pending.put(allocator, delete.key_text, mutation),
+            .clear => |cleared_store| if (cleared_store == store) {
+                pending.clearRetainingCapacity();
+                cleared = true;
+            },
+        }
+    }
+
+    if (!cleared) {
+        var records = store.records.iterator();
+        while (records.next()) |entry| {
+            if (pending.get(entry.key_ptr.*)) |mutation| {
+                switch (mutation.*) {
+                    .put => |put| try effective.append(allocator, .{
+                        .key_text = put.key_text,
+                        .record = .{ .key = put.key, .value = put.value },
+                    }),
+                    .delete => continue,
+                    .clear => unreachable,
+                }
+            } else {
+                try effective.append(allocator, .{
+                    .key_text = entry.key_ptr.*,
+                    .record = entry.value_ptr.*,
+                });
+            }
+        }
+    }
+
+    var pending_iterator = pending.iterator();
+    while (pending_iterator.next()) |entry| {
+        switch (entry.value_ptr.*.*) {
+            .put => |put| {
+                if (!cleared and store.records.contains(entry.key_ptr.*)) continue;
+                try effective.append(allocator, .{
+                    .key_text = put.key_text,
+                    .record = .{ .key = put.key, .value = put.value },
+                });
+            },
+            .delete => {},
+            .clear => unreachable,
+        }
+    }
+
+    return effective.toOwnedSlice(allocator);
+}
+
 pub const IDBKeyRange = struct {
     _frame: *Frame,
     _lower: ?js.Value.Global = null,
@@ -769,7 +833,7 @@ fn queryFromValue(value: ?js.Value) !Query {
 }
 
 const CursorEntry = struct {
-    record: *const Record,
+    record: Record,
     key: js.Value.Global,
 };
 
@@ -780,12 +844,80 @@ fn sortEntries(local: *const js.Local, entries: []CursorEntry, reverse: bool) vo
         var j = i;
         while (j > 0) {
             const order = compareKeyValues(entries[j - 1].key.local(local), item.key.local(local));
-            const should_move = if (reverse) order == .lt else order == .gt;
+            const tie_order = if (order == .eq)
+                compareKeyValues(entries[j - 1].record.key.local(local), item.record.key.local(local))
+            else
+                order;
+            const should_move = if (reverse) tie_order == .lt else tie_order == .gt;
             if (!should_move) break;
             entries[j] = entries[j - 1];
             j -= 1;
         }
         entries[j] = item;
+    }
+}
+
+fn indexValueContainsKey(value: js.Value, index_data: *const IndexData, key: js.Value) !bool {
+    const index_value = (try pathValue(value, index_data.key_path)) orelse return false;
+    if (index_data.multi_entry and index_value.isArray()) {
+        const array = index_value.toArray();
+        for (0..array.len()) |i| {
+            if (compareKeyValues(try array.get(@intCast(i)), key) == .eq) return true;
+        }
+        return false;
+    }
+    return compareKeyValues(index_value, key) == .eq;
+}
+
+fn indexValuesConflict(left: js.Value, right: js.Value, index_data: *const IndexData) !bool {
+    const left_value = (try pathValue(left, index_data.key_path)) orelse return false;
+    if (index_data.multi_entry and left_value.isArray()) {
+        const array = left_value.toArray();
+        for (0..array.len()) |i| {
+            if (try indexValueContainsKey(right, index_data, try array.get(@intCast(i)))) return true;
+        }
+        return false;
+    }
+    return indexValueContainsKey(right, index_data, left_value);
+}
+
+fn validateUniqueIndexDefinition(transaction: *const IDBTransaction, store: *StoreData, index_data: *const IndexData, local: *const js.Local, allocator: std.mem.Allocator) !void {
+    if (!index_data.unique) return;
+    const effective = try collectEffectiveRecords(transaction, store, allocator);
+    defer allocator.free(effective);
+
+    for (effective, 0..) |left, i| {
+        for (effective[i + 1 ..]) |right| {
+            if (try indexValuesConflict(left.record.value.local(local), right.record.value.local(local), index_data)) {
+                return error.ConstraintError;
+            }
+        }
+    }
+}
+
+fn validateUniqueIndexesForPut(transaction: *const IDBTransaction, store: *StoreData, value: js.Value, key_text: []const u8, local: *const js.Local, allocator: std.mem.Allocator) !void {
+    var indexes = store.indexes.valueIterator();
+    var has_unique = false;
+    while (indexes.next()) |index_data| {
+        if (index_data.*.unique) {
+            has_unique = true;
+            break;
+        }
+    }
+    if (!has_unique) return;
+
+    const effective = try collectEffectiveRecords(transaction, store, allocator);
+    defer allocator.free(effective);
+
+    var unique_indexes = store.indexes.valueIterator();
+    while (unique_indexes.next()) |index_data| {
+        if (!index_data.*.unique) continue;
+        for (effective) |existing| {
+            if (std.mem.eql(u8, existing.key_text, key_text)) continue;
+            if (try indexValuesConflict(value, existing.record.value.local(local), index_data.*)) {
+                return error.ConstraintError;
+            }
+        }
     }
 }
 
@@ -940,23 +1072,37 @@ pub const IDBIndex = struct {
 
         fn collect(self: *const IndexRead, local: *const js.Local) ![]CursorEntry {
             var entries: std.ArrayListUnmanaged(CursorEntry) = .empty;
-            var records = self.index._store.records.valueIterator();
-            while (records.next()) |record| {
-                const value = record.value.local(local);
+            const effective = try collectEffectiveRecords(self.index._transaction, self.index._store, self.index._frame._page.frame_arena);
+            defer self.index._frame._page.frame_arena.free(effective);
+            var seen_multi_entry_keys: std.ArrayListUnmanaged(js.Value) = .empty;
+            defer seen_multi_entry_keys.deinit(self.index._frame._page.frame_arena);
+
+            for (effective) |effective_record| {
+                const value = effective_record.record.value.local(local);
                 const index_value = (try pathValue(value, self.index._data.key_path)) orelse continue;
                 if (self.index._data.multi_entry and index_value.isArray()) {
                     const array = index_value.toArray();
+                    seen_multi_entry_keys.clearRetainingCapacity();
                     for (0..array.len()) |i| {
                         const item = try array.get(@intCast(i));
+                        var duplicate = false;
+                        for (seen_multi_entry_keys.items) |seen| {
+                            if (compareKeyValues(seen, item) == .eq) {
+                                duplicate = true;
+                                break;
+                            }
+                        }
+                        if (duplicate) continue;
+                        try seen_multi_entry_keys.append(self.index._frame._page.frame_arena, item);
                         if (!queryMatches(self.query, item)) continue;
                         try entries.append(self.index._frame._page.frame_arena, .{
-                            .record = record,
+                            .record = effective_record.record,
                             .key = try (try item.structuredClone()).persist(),
                         });
                     }
                 } else if (queryMatches(self.query, index_value)) {
                     try entries.append(self.index._frame._page.frame_arena, .{
-                        .record = record,
+                        .record = effective_record.record,
                         .key = try (try index_value.structuredClone()).persist(),
                     });
                 }
@@ -1102,8 +1248,9 @@ pub const IDBObjectStore = struct {
     fn putResolved(self: *IDBObjectStore, value: js.Value, resolved_key: js.Value) !*IDBRequest {
         const transaction = self._transaction orelse return error.TransactionInactiveError;
         if (!transaction._active or std.mem.eql(u8, transaction._mode, "readonly")) return error.ReadOnlyError;
-        const request_ = try self.request();
         const key_text = try self.keyString(resolved_key);
+        try validateUniqueIndexesForPut(transaction, self._data, value, key_text, self._frame.js.local.?, self._frame._page.frame_arena);
+        const request_ = try self.request();
         const cloned_key = try (try resolved_key.structuredClone()).persist();
         const cloned_value = try (try value.structuredClone()).persist();
         try transaction.queuePut(self._data, key_text, cloned_key, cloned_value);
@@ -1136,6 +1283,7 @@ pub const IDBObjectStore = struct {
             if (optionalProperty(opts, "unique")) |unique| index_data.unique = unique.toBool();
             if (optionalProperty(opts, "multiEntry")) |multi_entry| index_data.multi_entry = multi_entry.toBool();
         }
+        try validateUniqueIndexDefinition(transaction, self._data, index_data, frame.js.local.?, arena);
         try self._data.indexes.put(arena, owned_name, index_data);
         return frame._factory.create(IDBIndex{
             ._frame = frame,
@@ -1236,7 +1384,7 @@ pub const IDBObjectStore = struct {
             var records = self.store.records.valueIterator();
             while (records.next()) |record| {
                 if (queryMatches(self.query, record.key.local(local))) {
-                    try entries.append(self.request._frame._page.frame_arena, .{ .record = record, .key = record.key });
+                    try entries.append(self.request._frame._page.frame_arena, .{ .record = record.*, .key = record.key });
                 }
             }
             sortEntries(local, entries.items, false);
@@ -1279,7 +1427,7 @@ pub const IDBObjectStore = struct {
         var records = self._data.records.valueIterator();
         while (records.next()) |record| {
             if (queryMatches(normalized_query, record.key.local(frame.js.local.?))) {
-                try entries.append(frame._page.frame_arena, .{ .record = record, .key = record.key });
+                try entries.append(frame._page.frame_arena, .{ .record = record.*, .key = record.key });
             }
         }
         const reverse = if (direction) |value| std.mem.eql(u8, value, "prev") or std.mem.eql(u8, value, "prevunique") else false;

@@ -26,10 +26,54 @@ const StorageEventOptions = struct {
 
 const Options = Event.inheritOptions(StorageEvent, StorageEventOptions);
 
+/// Payload copied at the point where a storage mutation is queued.
+///
+/// Storage values are session-owned, but a queued event may outlive the
+/// mutation's call stack (or the source frame's document). Keeping an owned
+/// snapshot here prevents a later mutation or navigation from changing the
+/// observable event payload.
+pub const QueuedPayload = struct {
+    key: ?[]const u8,
+    old_value: ?[]const u8,
+    new_value: ?[]const u8,
+    url: []const u8,
+
+    pub fn init(
+        arena: anytype,
+        key: ?[]const u8,
+        old_value: ?[]const u8,
+        new_value: ?[]const u8,
+        url: []const u8,
+    ) !QueuedPayload {
+        return .{
+            .key = if (key) |value| try arena.dupe(u8, value) else null,
+            .old_value = if (old_value) |value| try arena.dupe(u8, value) else null,
+            .new_value = if (new_value) |value| try arena.dupe(u8, value) else null,
+            .url = try arena.dupe(u8, url),
+        };
+    }
+};
+
 pub fn initTrusted(typ: String, opts_: ?Options, frame: *Frame) !*StorageEvent {
     const arena = try frame.getArena(.tiny, "StorageEvent.trusted");
     errdefer frame.releaseArena(arena);
     return initWithTrusted(arena, typ, opts_, true, frame._page);
+}
+
+/// Create a trusted storage event from a queued, source-independent payload.
+/// The target frame owns the event arena; callers must pass the delivery frame,
+/// never the frame that performed the storage mutation.
+pub fn initTrustedFromQueuedPayload(
+    typ: String,
+    payload: QueuedPayload,
+    frame: *Frame,
+) !*StorageEvent {
+    return initTrusted(typ, .{
+        .key = payload.key,
+        .oldValue = payload.old_value,
+        .newValue = payload.new_value,
+        .url = payload.url,
+    }, frame);
 }
 
 fn initWithTrusted(arena: anytype, typ: String, opts_: ?Options, trusted: bool, page: *Page) !*StorageEvent {

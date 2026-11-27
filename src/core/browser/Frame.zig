@@ -998,6 +998,17 @@ pub fn invalidateStyleEngine(self: *Frame, kind: StyleEngineInvalidation, node: 
     }
 }
 
+/// Invalidate viewport-dependent style and layout state for this browsing
+/// context and its child frames.  The emulation state is session-owned, so a
+/// viewport change must reach every live document that reads that state while
+/// preserving all retained Stylo/Taffy nodes.
+pub fn invalidateViewport(self: *Frame) void {
+    self.invalidateStyleEngine(.document, null);
+    for (self.child_frames.items) |child| {
+        child.invalidateViewport();
+    }
+}
+
 pub fn styleSheetChanged(self: *Frame, node: ?*Node) void {
     _ = self._style_engine.invalidateStylesheets();
     if (node) |changed| {

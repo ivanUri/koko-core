@@ -62,12 +62,23 @@ pub const State = struct {
         return self.granted_permissions.contains(name);
     }
 
-    pub fn setDeviceMetrics(self: *State, dm: DeviceMetrics) void {
+    /// Update the viewport override and report whether its observable values
+    /// changed.  Callers use this to invalidate already-computed document
+    /// layout without dirtying a frame when CDP repeats the same override.
+    pub fn setDeviceMetrics(self: *State, dm: DeviceMetrics) bool {
+        if (self.device_metrics) |current| {
+            if (std.meta.eql(current, dm)) return false;
+        }
         self.device_metrics = dm;
+        return true;
     }
 
-    pub fn clearDeviceMetrics(self: *State) void {
+    /// Clear the viewport override and report whether there was an override
+    /// to invalidate.  This keeps repeated clears cheap and idempotent.
+    pub fn clearDeviceMetrics(self: *State) bool {
+        if (self.device_metrics == null) return false;
         self.device_metrics = null;
+        return true;
     }
 
     pub fn dupString(_: *State, arena: std.mem.Allocator, value: []const u8) ![]const u8 {

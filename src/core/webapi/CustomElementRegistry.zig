@@ -16,6 +16,7 @@ const std = @import("std");
 const js = @import("../js/js.zig");
 const Frame = @import("../browser/Frame.zig");
 const log = @import("../../support/log.zig");
+const RealmLifecycleKernel = @import("../../runtime/RealmLifecycleKernel.zig");
 
 const Node = @import("../dom/Node.zig");
 const Element = @import("../dom/Element.zig");
@@ -27,6 +28,11 @@ const CustomElementRegistry = @This();
 _definitions: std.StringHashMapUnmanaged(*CustomElementDefinition) = .{},
 _when_defined: std.StringHashMapUnmanaged(js.PromiseResolver.Global) = .{},
 _upgrade_retry_scheduled: bool = false,
+_upgrade_retry_token: u64 = 0,
+
+// Only transient V8-stack deferrals use the retry path. Keep the existing
+// bound, but preserve it on the same scheduled callback so it cannot reset.
+const max_upgrade_retry_attempts: u8 = 16;
 
 const DefineOptions = struct {
     extends: ?[]const u8 = null,
@@ -114,15 +120,23 @@ pub fn define(self: *CustomElementRegistry, name: []const u8, constructor: js.Fu
             continue;
         }
 
-        upgradeCustomElement(custom, definition, frame) catch {
-            // The constructor cannot be entered recursively while
-            // customElements.define() is still executing on the V8 stack.
-            // Keep the candidate and retry from a scheduler turn instead of
-            // permanently losing the upgrade.
-            custom._definition = null;
-            self.scheduleUpgradeRetry(frame) catch {};
-            idx += 1;
-            continue;
+        upgradeCustomElement(custom, definition, frame) catch |err| switch (err) {
+            error.CustomElementUpgradeDeferred => {
+                // The constructor cannot be entered recursively while
+                // customElements.define() is still executing on the V8 stack.
+                // Keep the candidate and retry from a scheduler turn instead
+                // of permanently losing the upgrade.
+                custom._definition = null;
+                self.scheduleUpgradeRetry(frame) catch {};
+                idx += 1;
+                continue;
+            },
+            // The element is marked as failed by upgradeCustomElement. Do not
+            // schedule another constructor invocation.
+            error.CustomElementConstructorFailed => {
+                idx += 1;
+                continue;
+            },
         };
 
         _ = frame._undefined_custom_elements.swapRemove(idx);
@@ -133,30 +147,79 @@ pub fn define(self: *CustomElementRegistry, name: []const u8, constructor: js.Fu
     }
 }
 
-fn scheduleUpgradeRetry(self: *CustomElementRegistry, frame: *Frame) !void {
+pub fn scheduleUpgradeRetry(self: *CustomElementRegistry, frame: *Frame) !void {
     if (self._upgrade_retry_scheduled) return;
-    self._upgrade_retry_scheduled = true;
+
+    self._upgrade_retry_token +%= 1;
     const callback = try frame.arena.create(UpgradeRetry);
-    callback.* = .{ .registry = self, .frame = frame, .attempts = 0 };
-    try frame.js.scheduler.add(callback, UpgradeRetry.run, 0, .{
+    callback.* = .{
+        .registry = self,
+        .frame = frame,
+        .owner = frame.js.execution.captureTaskOwner(),
+        .attempts = 0,
+        .token = self._upgrade_retry_token,
+    };
+    self._upgrade_retry_scheduled = true;
+    frame.js.scheduler.add(callback, UpgradeRetry.run, 0, .{
         .name = "CustomElementRegistry.upgrade",
         .low_priority = false,
-    });
+        .finalizer = UpgradeRetry.finalize,
+    }) catch |err| {
+        self._upgrade_retry_scheduled = false;
+        return err;
+    };
 }
 
 const UpgradeRetry = struct {
     registry: *CustomElementRegistry,
     frame: *Frame,
+    owner: RealmLifecycleKernel.TaskOwner,
     attempts: u8,
+    token: u64,
+
+    fn clearScheduled(self: *const UpgradeRetry) void {
+        if (self.registry._upgrade_retry_token == self.token) {
+            self.registry._upgrade_retry_scheduled = false;
+        }
+    }
+
+    fn finalize(ctx: *anyopaque) void {
+        const self: *UpgradeRetry = @ptrCast(@alignCast(ctx));
+        self.clearScheduled();
+    }
+
+    fn isStale(self: *const UpgradeRetry) bool {
+        return self.frame._deinit_done or
+            self.frame._detach_pending or
+            self.frame.isGoingAway() or
+            self.frame.realmState() == .draining or
+            self.frame.realmState() == .dead or
+            self.frame.js.execution.isTaskOwnerStale(self.owner);
+    }
 
     fn run(ctx: *anyopaque) !?u32 {
         const self: *UpgradeRetry = @ptrCast(@alignCast(ctx));
-        self.registry._upgrade_retry_scheduled = false;
 
+        // Navigation can replace the document while retaining this Frame.
+        // Never inspect candidates or definitions from a stale realm.
+        if (self.isStale()) {
+            self.clearScheduled();
+            return null;
+        }
+
+        var deferred = false;
         var idx: usize = 0;
         while (idx < self.frame._undefined_custom_elements.items.len) {
+            if (self.isStale()) {
+                self.clearScheduled();
+                return null;
+            }
             const custom = self.frame._undefined_custom_elements.items[idx];
             if (!custom.asNode().isConnected()) {
+                idx += 1;
+                continue;
+            }
+            if (custom._definition != null or custom._upgrade_failed) {
                 idx += 1;
                 continue;
             }
@@ -164,18 +227,36 @@ const UpgradeRetry = struct {
                 idx += 1;
                 continue;
             };
-            upgradeCustomElement(custom, definition, self.frame) catch {
-                custom._definition = null;
-                idx += 1;
-                continue;
+            upgradeCustomElementFromScheduler(custom, definition, self.frame) catch |err| switch (err) {
+                error.CustomElementUpgradeDeferred => {
+                    custom._definition = null;
+                    deferred = true;
+                    idx += 1;
+                    continue;
+                },
+                error.CustomElementConstructorFailed => {
+                    idx += 1;
+                    continue;
+                },
             };
+            if (self.isStale()) {
+                self.clearScheduled();
+                return null;
+            }
             _ = self.frame._undefined_custom_elements.swapRemove(idx);
         }
 
-        if (self.frame._undefined_custom_elements.items.len > 0 and self.attempts < 16) {
+        if (deferred and self.attempts < max_upgrade_retry_attempts) {
             self.attempts += 1;
-            self.registry.scheduleUpgradeRetry(self.frame) catch {};
+            // Re-arm this same task so attempts and the owner remain intact.
+            return 0;
         }
+        if (deferred) {
+            log.warn(.js, "custom element upgrade retry exhausted", .{
+                .attempts = self.attempts,
+            });
+        }
+        self.clearScheduled();
         return null;
     }
 };
@@ -239,7 +320,7 @@ fn upgradeElement(self: *CustomElementRegistry, element: *Element, frame: *Frame
         return Custom.checkAndAttachBuiltIn(element, frame);
     };
 
-    if (custom._definition != null) return;
+    if (custom._definition != null or custom._upgrade_failed) return;
 
     const name = custom._tag_name.str();
     const definition = self._definitions.get(name) orelse return;
@@ -248,7 +329,30 @@ fn upgradeElement(self: *CustomElementRegistry, element: *Element, frame: *Frame
 }
 
 pub fn upgradeCustomElement(custom: *Custom, definition: *CustomElementDefinition, frame: *Frame) !void {
+    return upgradeCustomElementInternal(custom, definition, frame, false);
+}
+
+fn upgradeCustomElementFromScheduler(custom: *Custom, definition: *CustomElementDefinition, frame: *Frame) !void {
+    return upgradeCustomElementInternal(custom, definition, frame, true);
+}
+
+fn upgradeCustomElementInternal(
+    custom: *Custom,
+    definition: *CustomElementDefinition,
+    frame: *Frame,
+    from_scheduler: bool,
+) !void {
+    if (custom._upgrade_failed) return error.CustomElementConstructorFailed;
+
+    // Do not attach the definition until the transient V8-stack guard passes.
+    // This lets callers distinguish a deferred upgrade from a failed element.
+    if (!from_scheduler and frame.js.env.anyContextOnV8Stack()) {
+        log.warn(.js, "custom element upgrade deferred: V8 on stack", .{ .name = definition.name });
+        return error.CustomElementUpgradeDeferred;
+    }
+
     custom._definition = definition;
+    custom._upgrade_failed = false;
 
     // Reset callback flags since this is a fresh upgrade
     custom._connected_callback_invoked = false;
@@ -259,15 +363,6 @@ pub fn upgradeCustomElement(custom: *Custom, definition: *CustomElementDefinitio
     frame._upgrading_element = node;
     defer frame._upgrading_element = prev_upgrading;
 
-    // Guard: do not call the constructor when V8 is already on the native stack.
-    // Upgrade can be triggered from DOM mutation observers or parser callbacks while
-    // V8 is still executing (e.g. nyt-betamax during IntersectionObserver delivery).
-    // A recursive constructor entry there hits V8_Fatal before TryCatch intercepts.
-    if (frame.js.env.anyContextOnV8Stack()) {
-        log.warn(.js, "custom element upgrade deferred: V8 on stack", .{ .name = definition.name });
-        return error.CustomElementUpgradeFailed;
-    }
-
     var ls: js.Local.Scope = undefined;
     frame.js.localScope(&ls);
     defer ls.deinit();
@@ -276,7 +371,8 @@ pub fn upgradeCustomElement(custom: *Custom, definition: *CustomElementDefinitio
 
     _ = ls.toLocal(definition.constructor).newInstance(&caught) catch |err| {
         log.warn(.js, "custom element upgrade", .{ .name = definition.name, .err = err, .caught = caught });
-        return error.CustomElementUpgradeFailed;
+        custom._upgrade_failed = true;
+        return error.CustomElementConstructorFailed;
     };
 
     // Invoke attributeChangedCallback for existing observed attributes

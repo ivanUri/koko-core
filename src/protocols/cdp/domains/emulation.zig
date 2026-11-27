@@ -68,6 +68,15 @@ fn browserContext(cmd: *CDP.Command) !*CDP.BrowserContext {
     return cmd.browser_context orelse error.BrowserContextNotLoaded;
 }
 
+fn invalidateViewportLayout(bc: *CDP.BrowserContext) void {
+    if (bc.session.currentPage()) |page| {
+        page.frame.invalidateViewport();
+    }
+    if (bc.session.pendingPage()) |page| {
+        page.frame.invalidateViewport();
+    }
+}
+
 fn setEmulatedMedia(cmd: *CDP.Command) !void {
     const params = (try cmd.params(struct {
         media: ?[]const u8 = null,
@@ -104,18 +113,21 @@ fn setDeviceMetricsOverride(cmd: *CDP.Command) !void {
 
     // Chrome: width=0 height=0 deviceScaleFactor=0 mobile=false clears override.
     if (params.width == 0 and params.height == 0 and params.deviceScaleFactor == 0 and !params.mobile) {
-        bc.emulation.clearDeviceMetrics();
+        if (bc.emulation.clearDeviceMetrics()) {
+            invalidateViewportLayout(bc);
+        }
         return cmd.sendResult(null, .{});
     }
 
     if (params.width <= 0 or params.height <= 0) return error.InvalidParams;
 
-    bc.emulation.setDeviceMetrics(.{
+    const changed = bc.emulation.setDeviceMetrics(.{
         .width = @intCast(params.width),
         .height = @intCast(params.height),
         .device_scale_factor = if (params.deviceScaleFactor > 0) params.deviceScaleFactor else 1.0,
         .mobile = params.mobile,
     });
+    if (changed) invalidateViewportLayout(bc);
     return cmd.sendResult(null, .{});
 }
 
@@ -137,7 +149,9 @@ fn setCPUThrottlingRate(cmd: *CDP.Command) !void {
 
 fn clearDeviceMetricsOverride(cmd: *CDP.Command) !void {
     const bc = try browserContext(cmd);
-    bc.emulation.clearDeviceMetrics();
+    if (bc.emulation.clearDeviceMetrics()) {
+        invalidateViewportLayout(bc);
+    }
     return cmd.sendResult(null, .{});
 }
 
@@ -343,9 +357,49 @@ test "cdp.Emulation: setDeviceMetricsOverride updates layout" {
 
     const bc = ctx.cdp().browser_context.?;
     const frame = bc.session.currentFrame().?;
-    try testing.expectEqual(@as(u32, 1024), frame.windowProfile().inner_width);
-    try testing.expectEqual(@as(u32, 768), frame.windowProfile().inner_height);
-    try testing.expectEqual(@as(f64, 2), frame.devicePixelRatio());
+    try testing.expect(frame.flushLayout());
+    try testing.expect(!frame._layout_dirty);
+    const previous_layout_generation = frame._layout_engine.generation;
+
+    // The geometry read above establishes a clean cached layout. A changed
+    // viewport must make the next geometry read flush with the new profile.
+    try ctx.processMessage(.{
+        .id = 2,
+        .method = "Emulation.setDeviceMetricsOverride",
+        .params = .{
+            .width = 800,
+            .height = 600,
+            .deviceScaleFactor = 1,
+            .mobile = false,
+        },
+    });
+    try ctx.expectSentResult(null, .{ .id = 2 });
+
+    try testing.expectEqual(@as(u32, 800), frame.windowProfile().inner_width);
+    try testing.expectEqual(@as(u32, 600), frame.windowProfile().inner_height);
+    try testing.expectEqual(@as(f64, 1), frame.devicePixelRatio());
+    try testing.expect(frame._layout_dirty);
+    try testing.expect(frame._layout_engine.generation != previous_layout_generation);
+
+    _ = frame.document.getDocumentElement().?.getBoundingClientRect(frame);
+    _ = frame.document.getDocumentElement().?.getBoundingClientRect(frame);
+    try testing.expect(!frame._layout_dirty);
+
+    // Repeating the same override must not invalidate a clean layout again.
+    const clean_layout_generation = frame._layout_engine.generation;
+    try ctx.processMessage(.{
+        .id = 3,
+        .method = "Emulation.setDeviceMetricsOverride",
+        .params = .{
+            .width = 800,
+            .height = 600,
+            .deviceScaleFactor = 1,
+            .mobile = false,
+        },
+    });
+    try ctx.expectSentResult(null, .{ .id = 3 });
+    try testing.expect(!frame._layout_dirty);
+    try testing.expectEqual(clean_layout_generation, frame._layout_engine.generation);
 }
 
 test "cdp.Emulation: setUserAgentOverride with valid user agent" {

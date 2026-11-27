@@ -31,6 +31,7 @@ const Custom = @This();
 _proto: *HtmlElement,
 _tag_name: String,
 _definition: ?*CustomElementDefinition,
+_upgrade_failed: bool = false,
 _connected_callback_invoked: bool = false,
 _disconnected_callback_invoked: bool = false,
 
@@ -93,12 +94,19 @@ pub fn invokeAdoptedCallbackOnElement(element: *Element, old_document: *Document
 pub fn invokeConnectedCallbackOnElement(comptime from_parser: bool, element: *Element, frame: *Frame) !void {
     // Autonomous custom element
     if (element.is(Custom)) |custom| {
+        if (custom._upgrade_failed) return;
         // If the element is undefined, check if a definition now exists and upgrade
         if (custom._definition == null) {
             const name = custom._tag_name.str();
             if (frame.window._custom_elements._definitions.get(name)) |definition| {
                 const CustomElementRegistry = @import("../../CustomElementRegistry.zig");
-                CustomElementRegistry.upgradeCustomElement(custom, definition, frame) catch {};
+                CustomElementRegistry.upgradeCustomElement(custom, definition, frame) catch |err| switch (err) {
+                    error.CustomElementUpgradeDeferred => {
+                        custom._definition = null;
+                        CustomElementRegistry.scheduleUpgradeRetry(&frame.window._custom_elements, frame) catch {};
+                    },
+                    error.CustomElementConstructorFailed => {},
+                };
                 return;
             }
         }
@@ -242,7 +250,7 @@ pub fn checkAndAttachBuiltIn(element: *Element, frame: *Frame) !void {
 }
 
 fn invokeCallback(self: *Custom, comptime callback_name: [:0]const u8, args: anytype, frame: *Frame) void {
-    if (self._definition == null) {
+    if (self._definition == null or self._upgrade_failed) {
         return;
     }
 
