@@ -69,6 +69,12 @@ extern fn koko_layout_node_set_text(
     text_len: u64,
 ) StatusCode;
 extern fn koko_layout_append_child(session: ?*CSession, parent: u64, child: u64) StatusCode;
+extern fn koko_layout_set_children(
+    session: ?*CSession,
+    parent: u64,
+    children: [*c]const u64,
+    child_count: u64,
+) StatusCode;
 extern fn koko_layout_compute(
     session: ?*CSession,
     root: u64,
@@ -187,6 +193,20 @@ pub const LayoutEngine = struct {
     pub fn appendChild(self: *LayoutEngine, parent: u64, child: u64) Status {
         if (!self.alive or parent == 0 or child == 0) return .invalid_argument;
         return Status.fromCode(koko_layout_append_child(self.session, parent, child));
+    }
+
+    /// Replace one node's child list while retaining the node and its cached
+    /// Taffy allocation. This is the incremental counterpart to rebuilding a
+    /// whole layout session after a DOM mutation.
+    pub fn setChildren(self: *LayoutEngine, parent: u64, children: []const u64) Status {
+        if (!self.alive or parent == 0) return .invalid_argument;
+        const pointer: [*c]const u64 = if (children.len == 0) null else children.ptr;
+        return Status.fromCode(koko_layout_set_children(
+            self.session,
+            parent,
+            pointer,
+            children.len,
+        ));
     }
 
     pub fn setComputedStyle(

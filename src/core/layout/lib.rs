@@ -1001,6 +1001,52 @@ pub unsafe extern "C" fn koko_layout_append_child(
     })
 }
 
+/// Replace a node's children without recreating the node itself. The caller
+/// owns the authoritative DOM; this only updates the projected Taffy tree.
+#[no_mangle]
+pub unsafe extern "C" fn koko_layout_set_children(
+    session: *mut LayoutSession,
+    parent: u64,
+    children: *const u64,
+    child_count: u64,
+) -> KokoLayoutStatus {
+    if session.is_null()
+        || parent == 0
+        || child_count > usize::MAX as u64
+        || (child_count != 0 && children.is_null())
+    {
+        return KokoLayoutStatus::InvalidArgument;
+    }
+    status(|| {
+        let session = &mut *session;
+        let parent_node = match session.node(parent) {
+            Ok(node) => node,
+            Err(error) => return error,
+        };
+        let child_handles = if child_count == 0 {
+            &[]
+        } else {
+            std::slice::from_raw_parts(children, child_count as usize)
+        };
+        let mut child_nodes = Vec::with_capacity(child_handles.len());
+        for handle in child_handles {
+            match session.node(*handle) {
+                Ok(node) => child_nodes.push(node),
+                Err(error) => return error,
+            }
+        }
+        if session
+            .tree
+            .set_children(parent_node, &child_nodes)
+            .is_err()
+        {
+            return KokoLayoutStatus::InternalError;
+        }
+        session.invalidate();
+        KokoLayoutStatus::Ok
+    })
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn koko_layout_compute(
     session: *mut LayoutSession,
@@ -1510,6 +1556,74 @@ mod tests {
                     (0.0, 50.0, 50.0, 50.0),
                 ]
             );
+        }
+    }
+
+    #[test]
+    fn set_children_updates_projection_without_recreating_handles() {
+        unsafe {
+            let session = koko_layout_session_new();
+            assert!(!session.is_null());
+            let root = koko_layout_node_new(session);
+            let first = koko_layout_node_new(session);
+            let second = koko_layout_node_new(session);
+            let root_values = computed_properties("flex", "200px", "40px", "0");
+            let child_values = computed_properties("block", "100px", "20px", "0");
+            let root_abi = property_abi(&root_values);
+            let child_abi = property_abi(&child_values);
+
+            for (node, values) in [(root, &root_abi), (first, &child_abi), (second, &child_abi)] {
+                assert_eq!(
+                    koko_layout_node_set_computed_style(
+                        session,
+                        node,
+                        values.as_ptr(),
+                        values.len() as u64,
+                        200.0,
+                        40.0,
+                    ),
+                    KokoLayoutStatus::Ok
+                );
+            }
+
+            let initial = [first, second];
+            assert_eq!(
+                koko_layout_set_children(session, root, initial.as_ptr(), initial.len() as u64),
+                KokoLayoutStatus::Ok
+            );
+            assert_eq!(
+                koko_layout_compute(session, root, 200.0, 40.0),
+                KokoLayoutStatus::Ok
+            );
+
+            // Reorder the same projected nodes. Their opaque handles stay
+            // valid while Taffy receives only the changed parent relation.
+            let reordered = [second, first];
+            assert_eq!(
+                koko_layout_set_children(session, root, reordered.as_ptr(), reordered.len() as u64),
+                KokoLayoutStatus::Ok
+            );
+            assert_eq!(
+                koko_layout_compute(session, root, 200.0, 40.0),
+                KokoLayoutStatus::Ok
+            );
+            let mut output = [KokoLayoutGeometry::default(); 2];
+            let mut count = 0;
+            assert_eq!(
+                koko_layout_snapshot_batch(
+                    session,
+                    reordered.as_ptr(),
+                    reordered.len() as u64,
+                    output.as_mut_ptr(),
+                    output.len() as u64,
+                    &mut count,
+                ),
+                KokoLayoutStatus::Ok
+            );
+            assert_eq!(count, 2);
+            assert_eq!(output[0].x, 0.0);
+            assert_eq!(output[1].x, 100.0);
+            koko_layout_session_free(session);
         }
     }
 

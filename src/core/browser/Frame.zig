@@ -1075,9 +1075,17 @@ fn markLayoutExtension(self: *Frame, node: *Node) void {
     self._layout_extension_nodes.put(self.arena, node, .unsupported_style) catch {};
 }
 
-fn buildLayoutNode(self: *Frame, node: *Node) ?u64 {
-    const handle = self._layout_engine.newNode() orelse return null;
-    self._layout_node_handles.put(self.arena, node, handle) catch return null;
+fn buildLayoutNode(
+    self: *Frame,
+    node: *Node,
+    active_nodes: *std.AutoHashMapUnmanaged(*Node, void),
+) ?u64 {
+    const handle = self._layout_node_handles.get(node) orelse blk: {
+        const fresh = self._layout_engine.newNode() orelse return null;
+        self._layout_node_handles.put(self.arena, node, fresh) catch return null;
+        break :blk fresh;
+    };
+    active_nodes.put(self.call_arena, node, {}) catch return null;
 
     switch (node._type) {
         .element => {
@@ -1129,16 +1137,19 @@ fn buildLayoutNode(self: *Frame, node: *Node) ?u64 {
         else => {},
     }
 
+    var children: std.ArrayListUnmanaged(u64) = .empty;
+    defer children.deinit(self.call_arena);
     var child = node.firstChild();
     while (child) |child_node| : (child = child_node.nextSibling()) {
         switch (child_node._type) {
             .element, .cdata => {
-                const child_handle = self.buildLayoutNode(child_node) orelse return null;
-                if (self._layout_engine.appendChild(handle, child_handle) != .ok) return null;
+                const child_handle = self.buildLayoutNode(child_node, active_nodes) orelse return null;
+                children.append(self.call_arena, child_handle) catch return null;
             },
             else => {},
         }
     }
+    if (self._layout_engine.setChildren(handle, children.items) != .ok) return null;
     return handle;
 }
 
@@ -1155,13 +1166,29 @@ pub fn flushLayout(self: *Frame) bool {
     defer self._layout_building = false;
 
     if (self._style_engine.prepareForLayout() != .ok) return false;
-    if (self._layout_engine.reset() != .ok) return false;
-    self._layout_node_handles.clearRetainingCapacity();
     self._layout_geometry.clearRetainingCapacity();
     self._layout_extension_nodes.clearRetainingCapacity();
 
     const root_element = self.document.getDocumentElement() orelse return false;
-    const root_handle = self.buildLayoutNode(root_element.asNode()) orelse return false;
+    var active_nodes: std.AutoHashMapUnmanaged(*Node, void) = .empty;
+    defer active_nodes.deinit(self.call_arena);
+    const root_handle = self.buildLayoutNode(root_element.asNode(), &active_nodes) orelse return false;
+
+    // Remove projected nodes that no longer have a layout-bearing DOM node.
+    // Collect first because the hash map cannot be mutated while iterating.
+    var stale_nodes: std.ArrayListUnmanaged(*Node) = .empty;
+    defer stale_nodes.deinit(self.call_arena);
+    var existing = self._layout_node_handles.iterator();
+    while (existing.next()) |entry| {
+        if (!active_nodes.contains(entry.key_ptr.*)) {
+            stale_nodes.append(self.call_arena, entry.key_ptr.*) catch return false;
+        }
+    }
+    for (stale_nodes.items) |stale| {
+        const stale_handle = self._layout_node_handles.get(stale) orelse continue;
+        if (self._layout_engine.freeNode(stale_handle) != .ok) return false;
+        _ = self._layout_node_handles.remove(stale);
+    }
     const viewport = self.windowProfile();
     const viewport_width: f32 = @floatFromInt(viewport.inner_width);
     const viewport_height: f32 = @floatFromInt(viewport.inner_height);
